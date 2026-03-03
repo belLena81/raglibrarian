@@ -8,4 +8,4 @@ require (
 	google.golang.org/grpc                          v1.70.0
 )
 
-replace github.com/belLena81/raglibrarian/pkg/proto => ../../pkg/proto
+replace github.com/belLena81/raglibrarian/pkg/proto => ../proto

@@ -34,6 +34,6 @@ require (
 )
 
 replace (
-    github.com/belLena81/raglibrarian/pkg/events    => ../../pkg/events
-    github.com/belLena81/raglibrarian/pkg/telemetry => ../../pkg/telemetry
+    github.com/belLena81/raglibrarian/pkg/events    => ../pkg/events
+    github.com/belLena81/raglibrarian/pkg/telemetry => ../pkg/telemetry
 )

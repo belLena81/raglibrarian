@@ -17,7 +17,6 @@ require (
 
     // ── PDF processing ────────────────────────────────────────────────────────
     github.com/pdfcpu/pdfcpu                  v0.9.1    // primary: text extraction, TOC, page metadata
-    github.com/ledongthuc/pdf                 v0.0.0-20240201131950-da5b75280516 // fallback: text layer
 
     // ── Chunking ──────────────────────────────────────────────────────────────
     github.com/belLena81/raglibrarian/pkg/chunker  v0.0.0
@@ -32,7 +31,7 @@ require (
 )
 
 replace (
-    github.com/belLena81/raglibrarian/pkg/chunker   => ../../pkg/chunker
-    github.com/belLena81/raglibrarian/pkg/events    => ../../pkg/events
-    github.com/belLena81/raglibrarian/pkg/telemetry => ../../pkg/telemetry
+    github.com/belLena81/raglibrarian/pkg/chunker   => ../pkg/chunker
+    github.com/belLena81/raglibrarian/pkg/events    => ../pkg/events
+    github.com/belLena81/raglibrarian/pkg/telemetry => ../pkg/telemetry
 )

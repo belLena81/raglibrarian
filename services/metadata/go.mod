@@ -6,45 +6,20 @@ module github.com/belLena81/raglibrarian/services/metadata
 
 go 1.26
 
+// ── gRPC server ──────────────────────────────────────────────────────────
+require google.golang.org/grpc v1.70.0
+
 require (
-    // ── gRPC server ──────────────────────────────────────────────────────────
-    google.golang.org/grpc                            v1.70.0
-    google.golang.org/protobuf                        v1.36.5
-    github.com/belLena81/raglibrarian/pkg/proto        v0.0.0
-
-    // ── Database ─────────────────────────────────────────────────────────────
-    github.com/jackc/pgx/v5                           v5.7.2
-    github.com/jmoiron/sqlx                           v1.4.0
-    github.com/golang-migrate/migrate/v4              v4.18.1
-
-    // ── Job queue ─────────────────────────────────────────────────────────────
-    // River: Postgres-backed durable job queue; used for async index status updates
-    // that must be retried on failure without losing the event.
-    github.com/riverqueue/river                       v0.14.2
-    github.com/riverqueue/river/riverdriver/riverpgxv5 v0.14.2
-
-    // ── Config ───────────────────────────────────────────────────────────────
-    github.com/spf13/viper                            v1.20.0
-
-    // ── Observability ────────────────────────────────────────────────────────
-    github.com/belLena81/raglibrarian/pkg/telemetry    v0.0.0
-    go.uber.org/zap                                   v1.27.0
-    go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.59.0
-
-    // ── Assertions & mocking ─────────────────────────────────────────────────
-        github.com/stretchr/testify          v1.10.0   // assert + require + suite
-
-    // ── API mocking ──────────────────────────────────────────────────────────
-    github.com/jarcoal/httpmock          v1.3.1    // mock Anthropic API calls in unit tests
-
-    // ── Real infra in tests (no mocks for Postgres + Qdrant + RabbitMQ) ──────
-    github.com/testcontainers/testcontainers-go          v0.35.0
-    github.com/testcontainers/testcontainers-go/modules/postgres   v0.35.0
-    github.com/testcontainers/testcontainers-go/modules/rabbitmq   v0.35.0
-
+	go.opentelemetry.io/otel v1.34.0 // indirect
+	go.opentelemetry.io/otel/sdk/metric v1.34.0 // indirect
+	golang.org/x/net v0.34.0 // indirect
+	golang.org/x/sys v0.31.0 // indirect
+	golang.org/x/text v0.23.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20250115164207-1a7da9e5054f // indirect
+	google.golang.org/protobuf v1.36.5 // indirect
 )
 
 replace (
-    github.com/belLena81/raglibrarian/pkg/proto     => ../../pkg/proto
-    github.com/belLena81/raglibrarian/pkg/telemetry => ../../pkg/telemetry
+	github.com/belLena81/raglibrarian/pkg/proto => ../../pkg/proto
+	github.com/belLena81/raglibrarian/pkg/telemetry => ../../pkg/telemetry
 )

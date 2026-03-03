@@ -11,8 +11,8 @@ package tokenverifier
 import (
 	"context"
 
+	"github.com/belLena81/raglibrarian/pkg/proto/auth"
 	"github.com/google/uuid"
-	"github.com/yourname/raglibrarian/pkg/proto/auth"
 )
 
 // Role mirrors domain/user.Role but lives in the shared package so

@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package auth.v1;
 
-option go_package = "github.com/yourname/raglibrarian/pkg/proto/auth;authpb";
+option go_package = "github.com/belLena81/raglibrarian/pkg/proto/auth;authpb";
 
 // AuthService is consumed by Metadata and Retrieval services to validate
 // tokens arriving on inbound gRPC calls without each service needing to
@@ -22,5 +22,10 @@ message ValidateTokenRequest {
 message ValidateTokenResponse {
   string    user_id = 1; // UUID as string
   string    email   = 2;
-  string    role    = 3; // "reader" | "librarian" | "admin"
+  Role    role    = 3; // "reader" | "librarian" | "admin"
+  enum Role {
+    Admin = 0;
+    Librarian = 1;
+    Reader = 2;
+  }
 }
