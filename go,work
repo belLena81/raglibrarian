@@ -1,0 +1,15 @@
+go 1.26
+
+use (
+    ./pkg/proto
+    ./pkg/events
+    ./pkg/chunker
+    ./pkg/telemetry
+    ./services/query
+    ./services/retrieval
+    ./services/metadata
+    ./lambda/ingest
+    ./lambda/embedder
+    ./lambda/metadata-updater
+    ./lambda/reindex-scheduler
+)
