@@ -1,0 +1,1 @@
+module github.com/belLena81/raglibrarian/pkg/domain
