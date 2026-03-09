@@ -1,13 +1,12 @@
 # ── Workspace layout ──────────────────────────────────────────────────────────
-# This is a Go workspace (go.work) where each package is its own module.
-# There is NO go.mod at the root — all go commands must target individual
-# modules, not ./... from the root.
+# This is a Go workspace (go.work). Each directory listed in go.work has its
+# own go.mod. There is NO go.mod at the repo root.
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt build run-query tidy migrate-up migrate-down infra-up infra-down keygen
+.PHONY: test test-race lint fmt build run-query dev tidy e2e migrate-up migrate-down infra-up infra-down keygen
 
-# Every module listed in go.work — keep in sync with the use() block.
+# Service/library modules — looped over by test, lint, tidy, fmt.
 MODULES := \
 	pkg/domain \
 	pkg/auth \
@@ -26,8 +25,6 @@ _require_root:
 	}
 
 # ── Test ──────────────────────────────────────────────────────────────────────
-# go test ./... at the workspace root fails — no go.mod there.
-# We run `go test` per-module instead.
 test: _require_root
 	@fail=0; \
 	for mod in $(MODULES); do \
@@ -45,9 +42,6 @@ test-race: _require_root
 	exit $$fail
 
 # ── Lint ──────────────────────────────────────────────────────────────────────
-# golangci-lint v2 does not support go.work workspace mode.
-# Run per-module with GOWORK=off so it reads each module's own go.mod.
-# See https://github.com/golangci/golangci-lint/issues/3841
 lint: _require_root
 	@echo "Running golangci-lint across all modules..."
 	@fail=0; \
@@ -59,9 +53,6 @@ lint: _require_root
 	exit $$fail
 
 # ── Fmt ───────────────────────────────────────────────────────────────────────
-# Rewrites all .go files in place. Use goimports when available — it is a
-# strict superset of gofmt that also sorts and groups import blocks.
-# Install: go install golang.org/x/tools/cmd/goimports@latest
 fmt: _require_root
 	@if command -v goimports > /dev/null 2>&1; then \
 		echo "Running goimports across all modules..."; \
@@ -77,25 +68,61 @@ fmt: _require_root
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 build: _require_root
-	go build -o bin/query ./services/query/cmd/main.go
+	cd services/query && go build -o ../../bin/query ./cmd/main.go
 
+# ── Run ───────────────────────────────────────────────────────────────────────
+# run-query: requires AUTH_SECRET_KEY and POSTGRES_DSN already exported.
+# Use `make dev` to load .env automatically.
 run-query: _require_root
-	go run ./services/query/cmd/main.go
+	cd services/query && go run ./cmd/main.go
+
+# dev: loads .env then starts the service — the everyday local workflow.
+# Usage: make dev
+# Prerequisites: .env file exists (copy from .env.example, fill in values).
+dev: _require_root
+	@test -f .env || { \
+		echo ""; \
+		echo "  !! .env not found. Run: cp .env.example .env && make keygen >> .env !!"; \
+		echo ""; \
+		exit 1; \
+	}
+	@set -a && . ./.env && set +a && \
+		cd services/query && go run ./cmd/main.go
 
 # ── Tidy ──────────────────────────────────────────────────────────────────────
 tidy: _require_root
-	@for mod in $(MODULES); do \
+	@for mod in $(MODULES) tests/e2e; do \
 		echo "Tidying $$mod..."; \
 		(cd $$mod && go mod tidy); \
 	done
 	go work sync
 
+# ── E2e ───────────────────────────────────────────────────────────────────────
+# Requires a running service. Start with:
+#   make dev                            (in a separate terminal)
+#   make infra-up && make migrate-up    (once)
+#
+# Override target URL:
+#   E2E_BASE_URL=http://staging:8080 make e2e
+e2e: _require_root
+	cd tests/e2e && go test -v -tags e2e ./...
+
 # ── Database ──────────────────────────────────────────────────────────────────
+# Uses psql directly — no migrate CLI dependency.
+# Files are applied in lexicographic order (001_, 002_, ...).
 migrate-up: _require_root
-	migrate -path migrations -database "$$POSTGRES_DSN" up
+	@set -a && . ./.env && set +a && \
+		for f in $(CURDIR)/migrations/*.up.sql; do \
+			echo "Applying $$f..."; \
+			psql "$$POSTGRES_DSN" -f "$$f" || exit 1; \
+		done
 
 migrate-down: _require_root
-	migrate -path migrations -database "$$POSTGRES_DSN" down 1
+	@set -a && . ./.env && set +a && \
+		for f in $$(ls -r $(CURDIR)/migrations/*.down.sql); do \
+			echo "Reverting $$f..."; \
+			psql "$$POSTGRES_DSN" -f "$$f" || exit 1; \
+		done
 
 # ── Infrastructure ────────────────────────────────────────────────────────────
 infra-up:
@@ -105,5 +132,6 @@ infra-down:
 	docker-compose down
 
 # ── Keygen ────────────────────────────────────────────────────────────────────
+# Prints a new AUTH_SECRET_KEY line ready to paste into .env.
 keygen: _require_root
-	go run ./pkg/auth/cmd/keygen
+	cd pkg/auth && go run ./cmd/keygen/
