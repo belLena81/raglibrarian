@@ -30,3 +30,14 @@ var (
 	ErrEmptyPages   = errors.New("search result: pages must not be empty")
 	ErrInvalidScore = errors.New("search result: score must be between 0 and 1")
 )
+
+// User errors
+var (
+	ErrEmptyEmail        = errors.New("user: email must not be empty")
+	ErrInvalidEmail      = errors.New("user: email format is invalid")
+	ErrEmptyPasswordHash = errors.New("user: password hash must not be empty")
+	ErrInvalidRole       = errors.New("user: role must be admin or reader")
+	ErrEmailTaken        = errors.New("user: email is already registered")
+	ErrUserNotFound      = errors.New("user: not found")
+	ErrInvalidPassword   = errors.New("user: password is incorrect")
+)

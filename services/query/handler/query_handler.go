@@ -22,7 +22,7 @@ import (
 // QueryRequest is the JSON body accepted by POST /query.
 type QueryRequest struct {
 	Question string `json:"question"`
-	UserId   string `json:"user_id"`
+	UserID   string `json:"user_id"`
 }
 
 // BookDTO is the nested book representation in a query response.
@@ -90,20 +90,20 @@ func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := h.uc.Answer(r.Context(), req.UserId, req.Question)
+	results, err := h.uc.Answer(r.Context(), req.UserID, req.Question)
 	if err != nil {
 		status := domainErrToStatus(err)
 		if status >= http.StatusInternalServerError {
 			// Unexpected error — log at Error so it pages on-call.
 			reqLog.Error("query use case returned unexpected error",
 				zap.Error(err),
-				zap.String("user_id", req.UserId),
+				zap.String("user_id", req.UserID),
 			)
 		} else {
 			// Client error — log at Debug; it's not actionable for operators.
 			reqLog.Debug("query rejected due to invalid input",
 				zap.Error(err),
-				zap.String("user_id", req.UserId),
+				zap.String("user_id", req.UserID),
 			)
 		}
 		writeError(w, status, err.Error())

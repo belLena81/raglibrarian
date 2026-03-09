@@ -1,0 +1,39 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: raglibrarian
+      POSTGRES_PASSWORD: raglibrarian
+      POSTGRES_DB: raglibrarian
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raglibrarian"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  query:
+    build:
+      context: .
+      dockerfile: services/query/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      QUERY_ADDR: ":8080"
+      POSTGRES_DSN: "postgres://raglibrarian:raglibrarian@postgres:5432/raglibrarian?sslmode=disable"
+      # Generate with: openssl rand -hex 32
+      AUTH_SECRET_KEY: "${AUTH_SECRET_KEY}"
+      TOKEN_TTL: "24h"
+      LOG_ENV: "production"
+      LOG_LEVEL: "info"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

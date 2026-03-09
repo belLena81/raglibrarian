@@ -1,55 +1,41 @@
-# ==============================================================================
-# raglibrarian — Iteration 0 (pkg/domain only)
-# ==============================================================================
+.PHONY: test test-race lint run-query build tidy migrate-up migrate-down
 
-.DEFAULT_GOAL := help
-SHELL         := /bin/bash
-.SHELLFLAGS   := -eu -o pipefail -c
+# Run all tests
+test:
+	go test ./...
 
-GO            := go
-GOLANGCI_LINT := golangci-lint
+# Run tests with race detector (always use in CI)
+test-race:
+	go test -race ./...
 
-# Reads module paths from go.work so every command covers all modules
-MODULES       := $(shell $(GO) work edit -json | grep '"DiskPath"' | sed 's/.*"DiskPath": "\(.*\)".*/\1/')
+# Lint (requires golangci-lint in PATH)
+lint:
+	golangci-lint run ./...
 
-# ==============================================================================
-# Help
-# ==============================================================================
+# Start the query service locally (requires .env to be sourced)
+run-query:
+	go run ./services/query/cmd/main.go
 
-.PHONY: help
-help: ## Show available commands
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
-		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+# Build the query service binary
+build:
+	go build -o bin/query ./services/query/cmd/main.go
 
-# ==============================================================================
-# Code Quality
-# ==============================================================================
+# Apply pending DB migrations
+migrate-up:
+	migrate -path migrations -database "$$POSTGRES_DSN" up
 
-.PHONY: fmt
-fmt: ## Format all Go code across all workspace modules
-	@for m in $(MODULES); do $(GO) fmt $$m/...; done
+# Roll back the last migration
+migrate-down:
+	migrate -path migrations -database "$$POSTGRES_DSN" down 1
 
-.PHONY: vet
-vet: ## Run go vet across all workspace modules
-	@for m in $(MODULES); do $(GO) vet $$m/...; done
+# Tidy modules
+tidy:
+	go mod tidy
 
-.PHONY: lint
-lint: ## Run golangci-lint across all workspace modules
-	@which $(GOLANGCI_LINT) > /dev/null 2>&1 || \
-		(echo "golangci-lint not found. Install: https://golangci-lint.run/welcome/install" && exit 1)
-	@for m in $(MODULES); do $(GOLANGCI_LINT) run $$m/...; done
+# Start local infrastructure (Postgres)
+infra-up:
+	docker-compose up -d postgres
 
-# ==============================================================================
-# Test
-# ==============================================================================
-
-.PHONY: test
-test: ## Run all tests with race detector across all workspace modules
-	@for m in $(MODULES); do $(GO) test -race -count=1 $$m/...; done
-
-# ==============================================================================
-# Composite
-# ==============================================================================
-
-.PHONY: check
-check: fmt vet lint test ## Run fmt, vet, lint, and test in order
+# Stop local infrastructure
+infra-down:
+	docker-compose down

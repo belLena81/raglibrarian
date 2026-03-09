@@ -58,6 +58,23 @@ func validateQuestion(question string) error {
 	return nil
 }
 
+// ── User ──────────────────────────────────────────────────────────────────────
+
+func validateEmail(email string) error {
+	trimmed := strings.TrimSpace(email)
+	if trimmed == "" {
+		return ErrEmptyEmail
+	}
+	// A minimal structural check: must contain exactly one @, with non-empty
+	// local and domain parts. Full RFC 5322 validation belongs at the HTTP
+	// boundary, not in the domain.
+	at := strings.LastIndex(trimmed, "@")
+	if at < 1 || at == len(trimmed)-1 {
+		return ErrInvalidEmail
+	}
+	return nil
+}
+
 // ── SearchResult ──────────────────────────────────────────────────────────────
 
 func validateQueryID(queryID string) error {

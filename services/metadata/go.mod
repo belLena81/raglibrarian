@@ -4,47 +4,34 @@
 
 module github.com/belLena81/raglibrarian/services/metadata
 
-go 1.26
+go 1.26.0
 
 require (
-    // ── gRPC server ──────────────────────────────────────────────────────────
-    google.golang.org/grpc                            v1.70.0
-    google.golang.org/protobuf                        v1.36.5
-    github.com/belLena81/raglibrarian/pkg/proto        v0.0.0
+	github.com/belLena81/raglibrarian/pkg/auth v0.0.0-00010101000000-000000000000
+	github.com/belLena81/raglibrarian/pkg/domain v0.0.0-20260309122639-6b9c9a70dd75
+	github.com/jackc/pgx/v5 v5.8.0
+	github.com/stretchr/testify v1.11.1
+)
 
-    // ── Database ─────────────────────────────────────────────────────────────
-    github.com/jackc/pgx/v5                           v5.7.2
-    github.com/jmoiron/sqlx                           v1.4.0
-    github.com/golang-migrate/migrate/v4              v4.18.1
-
-    // ── Job queue ─────────────────────────────────────────────────────────────
-    // River: Postgres-backed durable job queue; used for async index status updates
-    // that must be retried on failure without losing the event.
-    github.com/riverqueue/river                       v0.14.2
-    github.com/riverqueue/river/riverdriver/riverpgxv5 v0.14.2
-
-    // ── Config ───────────────────────────────────────────────────────────────
-    github.com/spf13/viper                            v1.20.0
-
-    // ── Observability ────────────────────────────────────────────────────────
-    github.com/belLena81/raglibrarian/pkg/telemetry    v0.0.0
-    go.uber.org/zap                                   v1.27.0
-    go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.59.0
-
-    // ── Assertions & mocking ─────────────────────────────────────────────────
-        github.com/stretchr/testify          v1.10.0   // assert + require + suite
-
-    // ── API mocking ──────────────────────────────────────────────────────────
-    github.com/jarcoal/httpmock          v1.3.1    // mock Anthropic API calls in unit tests
-
-    // ── Real infra in tests (no mocks for Postgres + Qdrant + RabbitMQ) ──────
-    github.com/testcontainers/testcontainers-go          v0.35.0
-    github.com/testcontainers/testcontainers-go/modules/postgres   v0.35.0
-    github.com/testcontainers/testcontainers-go/modules/rabbitmq   v0.35.0
-
+require (
+	aidanwoods.dev/go-paseto v1.6.0 // indirect
+	aidanwoods.dev/go-result v0.3.1 // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/kr/text v0.2.0 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/rogpeppe/go-internal v1.14.1 // indirect
+	golang.org/x/crypto v0.48.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 replace (
-    github.com/belLena81/raglibrarian/pkg/proto     => ../../pkg/proto
-    github.com/belLena81/raglibrarian/pkg/telemetry => ../../pkg/telemetry
+	github.com/belLena81/raglibrarian/pkg/auth => ../../pkg/auth
+	github.com/belLena81/raglibrarian/pkg/domain => ../../pkg/domain
 )
