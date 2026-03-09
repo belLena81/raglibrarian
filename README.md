@@ -2,7 +2,7 @@
 
 > A production-grade Retrieval-Augmented Generation (RAG) system for technical books — built in Go with a microservices architecture, gRPC inter-service communication, and Qdrant vector search.
 
-[![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://golang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ---
@@ -25,19 +25,19 @@ The project is being built iteratively. This is what exists today:
 
 **Iteration 2 complete** — authentication layer is live and all e2e tests pass.
 
-| Layer | Status | Notes |
-|---|---|---|
-| Domain model | ✅ | `User`, `Book`, `Chunk`, `Query`, `SearchResult` value objects |
-| Auth tokens | ✅ | PASETO v4 local (symmetric, XChaCha20-Poly1305 + BLAKE2b) |
-| Password hashing | ✅ | bcrypt |
-| HTTP API | ✅ | chi router, graceful shutdown, structured logging |
-| Auth endpoints | ✅ | register, login, `/me`, logout |
-| Query endpoint | ✅ | stub — returns no results yet |
-| DB migrations | ✅ | `users` table |
-| e2e test suite | ✅ | 18 tests, all passing |
+| Layer | Status         | Notes |
+|---|----------------|---|
+| Domain model | ✅              | `User`, `Book`, `Chunk`, `Query`, `SearchResult` value objects |
+| Auth tokens | ✅              | PASETO v4 local (symmetric, XChaCha20-Poly1305 + BLAKE2b) |
+| Password hashing | ✅              | bcrypt |
+| HTTP API | ✅              | chi router, graceful shutdown, structured logging |
+| Auth endpoints | ✅              | register, login, `/me`, logout |
+| Query endpoint | ✅              | stub — returns no results yet |
+| DB migrations | ✅              | `users` table |
+| e2e test suite | ✅              | 18 tests, all passing |
 | gRPC metadata service | 🔜 Iteration 3 | metadata service split |
-| Vector search | 🔜 Iteration 4 | Qdrant integration |
-| PDF ingestion | 🔜 Iteration 5 | chunking + embedding pipeline |
+| Vector search | 🔜 Iteration 5 | Qdrant integration |
+| PDF ingestion | 🔜 Iteration 6 | chunking + embedding pipeline |
 | Token revocation | 🔜 Iteration 4 | Redis blocklist in metadata service |
 
 ---
