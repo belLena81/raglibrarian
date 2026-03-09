@@ -129,6 +129,52 @@ func TestRouter_POST_Query_WithInvalidToken_Returns401(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 }
 
+func TestRouter_GET_AuthMe_WithValidToken_Returns200WithIdentity(t *testing.T) {
+	router, issuer := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
+	req.Header.Set("Authorization", "Bearer "+validAuthToken(t, issuer))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var body map[string]string
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+	assert.Equal(t, "test@example.com", body["email"])
+	assert.Equal(t, "reader", body["role"])
+	assert.NotEmpty(t, body["user_id"])
+}
+
+func TestRouter_GET_AuthMe_WithoutToken_Returns401(t *testing.T) {
+	router, _ := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+}
+
+func TestRouter_POST_AuthLogout_WithValidToken_Returns200(t *testing.T) {
+	router, issuer := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	req.Header.Set("Authorization", "Bearer "+validAuthToken(t, issuer))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var body map[string]string
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+	assert.Equal(t, "logged out", body["message"])
+}
+
+func TestRouter_POST_AuthLogout_WithoutToken_Returns401(t *testing.T) {
+	router, _ := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+}
+
 func TestRouter_UnknownRoute_Returns404(t *testing.T) {
 	router, _ := newTestRouter(t)
 	req := httptest.NewRequest(http.MethodGet, "/nonexistent", nil)

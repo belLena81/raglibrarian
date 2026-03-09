@@ -1,8 +1,8 @@
 // Package query wires the chi router for the query service.
 // Route groups define the security boundary:
 //
-//	Public  — /healthz, /auth/*  (no token required)
-//	Private — /query/*           (valid PASETO token required)
+//	Public  — /healthz, /auth/register, /auth/login  (no token required)
+//	Private — /auth/me, /auth/logout, /query/*        (valid PASETO token required)
 //
 // Middleware order (outermost to innermost) is documented below and must not
 // be changed without updating the comment — order has observable consequences.
@@ -44,14 +44,25 @@ func NewRouter(
 	// ── Public routes (no authentication required) ────────────────────────
 	r.Get("/healthz", qh.Health)
 
+	// /auth has both public and protected sub-routes, so it lives in one
+	// r.Route block. The protected sub-routes use an inline r.Group with
+	// Authenticator applied — chi does not allow two r.Route calls on the
+	// same path prefix, so we cannot split public and protected into separate
+	// top-level blocks.
 	r.Route("/auth", func(r chi.Router) {
+		// Public — no token required.
 		r.Post("/register", ah.Register)
 		r.Post("/login", ah.Login)
+
+		// Protected — token required.
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.Authenticator(issuer, log))
+			r.Get("/me", ah.Me)
+			r.Post("/logout", ah.Logout)
+		})
 	})
 
 	// ── Protected routes (valid PASETO token required) ────────────────────
-	// Authenticator validates the token and stores Claims in context.
-	// Any route registered inside this block requires authentication.
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Authenticator(issuer, log))
 

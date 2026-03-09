@@ -15,6 +15,7 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/pkg/domain"
 	"github.com/belLena81/raglibrarian/services/metadata/usecase"
+	querymiddleware "github.com/belLena81/raglibrarian/services/query/middleware"
 )
 
 // ── DTOs ──────────────────────────────────────────────────────────────────────
@@ -40,6 +41,14 @@ type LoginRequest struct {
 type AuthResponse struct {
 	Token string `json:"token"`
 	Role  string `json:"role"`
+}
+
+// MeResponse is returned by GET /auth/me.
+// All fields are sourced from the verified PASETO token claims — no DB call.
+type MeResponse struct {
+	UserID string `json:"user_id"`
+	Email  string `json:"email"`
+	Role   string `json:"role"`
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
@@ -103,6 +112,44 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		Token: token,
 		Role:  string(user.Role()),
 	})
+}
+
+// Me handles GET /auth/me.
+// Returns the identity encoded in the caller's PASETO token.
+// No database call is needed — all fields come from the verified Claims that
+// Authenticator already stored in context. This makes /me fast and DB-free.
+func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
+	claims, ok := querymiddleware.ClaimsFromContext(r.Context())
+	if !ok {
+		// Authenticator must be applied to this route — absence is a wiring bug.
+		writeAuthError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	writeAuthJSON(w, http.StatusOK, MeResponse{
+		UserID: claims.UserID,
+		Email:  claims.Email,
+		Role:   string(claims.Role),
+	})
+}
+
+// Logout handles POST /auth/logout.
+//
+// PASETO v4 local tokens are self-contained and cannot be revoked without a
+// server-side blocklist. That blocklist belongs in the metadata service and
+// will be implemented in Iteration 4 (token revocation).
+//
+// For now this endpoint returns 200 so clients can call it safely and clear
+// their stored token — the token remains technically valid until it expires,
+// but an honest client will discard it after a successful logout response.
+//
+// TODO(iteration-4): implement revocation by adding the token's jti to a
+// short-lived Redis set keyed by expiry time. The Authenticator middleware
+// should check the blocklist after signature verification.
+func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	type logoutResponse struct {
+		Message string `json:"message"`
+	}
+	writeAuthJSON(w, http.StatusOK, logoutResponse{Message: "logged out"})
 }
 
 // Login handles POST /auth/login.
