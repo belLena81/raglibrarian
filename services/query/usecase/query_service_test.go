@@ -14,8 +14,7 @@ import (
 
 // ── Fake Repository ──────────────────────────────────────────────────────────
 // A minimal in-process fake satisfying QueryRepository.
-// It does NOT use testify/mock — a plain struct is simpler, faster, and shows
-// intent more clearly for a single-method interface.
+// Plain struct instead of testify/mock — simpler and shows intent clearly.
 
 type fakeQueryRepository struct {
 	results []domain.SearchResult
@@ -28,6 +27,8 @@ func (f *fakeQueryRepository) Search(_ context.Context, _ domain.Query) ([]domai
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+// makeSearchResult builds a realistic SearchResult for use in tests.
+// queryId is a placeholder — the service creates its own domain.Query internally.
 func makeSearchResult(t *testing.T, queryId string) domain.SearchResult {
 	t.Helper()
 	book, err := domain.NewBook("The Go Programming Language", "Donovan & Kernighan", 2015)
@@ -47,19 +48,8 @@ func makeSearchResult(t *testing.T, queryId string) domain.SearchResult {
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 func TestQueryService_Answer_ReturnsResults(t *testing.T) {
-	// We build the result with a placeholder query id; the service creates its
-	// own domain.Query internally, so we just verify the slice comes back.
-	book, _ := domain.NewBook("The Go Programming Language", "Donovan & Kernighan", 2015)
-	placeholder, _ := domain.NewSearchResult(
-		"placeholder-id",
-		book,
-		"Chapter 9",
-		"Some passage",
-		[]int{1},
-		0.9,
-	)
-
-	repo := &fakeQueryRepository{results: []domain.SearchResult{placeholder}}
+	result := makeSearchResult(t, "placeholder-id")
+	repo := &fakeQueryRepository{results: []domain.SearchResult{result}}
 	svc := usecase.NewQueryService(repo)
 
 	results, err := svc.Answer(context.Background(), "user-123", "What is a goroutine?")
@@ -131,11 +121,11 @@ func TestQueryService_Answer_EmptyResults_ReturnsEmptySlice(t *testing.T) {
 }
 
 func TestQueryService_Answer_MultipleResults_PreservesOrder(t *testing.T) {
-	book1, _ := domain.NewBook("Book One", "Author A", 2020)
-	book2, _ := domain.NewBook("Book Two", "Author B", 2021)
-
-	r1, _ := domain.NewSearchResult("qid", book1, "Ch1", "passage one", []int{1}, 0.95)
-	r2, _ := domain.NewSearchResult("qid", book2, "Ch2", "passage two", []int{2}, 0.80)
+	r1 := makeSearchResult(t, "qid")
+	book2, err := domain.NewBook("Book Two", "Author B", 2021)
+	require.NoError(t, err)
+	r2, err := domain.NewSearchResult("qid", book2, "Ch2", "passage two", []int{2}, 0.80)
+	require.NoError(t, err)
 
 	repo := &fakeQueryRepository{results: []domain.SearchResult{r1, r2}}
 	svc := usecase.NewQueryService(repo)
@@ -144,8 +134,10 @@ func TestQueryService_Answer_MultipleResults_PreservesOrder(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, results, 2)
-	assert.Equal(t, "Book One", results[0].Book().Title())
-	assert.Equal(t, "Book Two", results[1].Book().Title())
+	gotBook1 := results[0].Book()
+	gotBook2 := results[1].Book()
+	assert.Equal(t, "The Go Programming Language", gotBook1.Title())
+	assert.Equal(t, "Book Two", gotBook2.Title())
 }
 
 func TestNewQueryService_NilRepository_Panics(t *testing.T) {

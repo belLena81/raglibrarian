@@ -40,6 +40,8 @@ func NewChunk(bookId, content string, pageStart, pageEnd int) (Chunk, error) {
 	}, nil
 }
 
+// NewChunkFromDB reconstructs a Chunk from persisted data without re-validation.
+// Only repository implementations should call this.
 func NewChunkFromDB(id, bookID, content string, pageStart, pageEnd int, createdAt time.Time) Chunk {
 	return Chunk{
 		id:        id,
@@ -51,9 +53,20 @@ func NewChunkFromDB(id, bookID, content string, pageStart, pageEnd int, createdA
 	}
 }
 
-func (c Chunk) Id() string           { return c.id }
-func (c Chunk) BookId() string       { return c.bookId }
-func (c Chunk) Content() string      { return c.content }
-func (c Chunk) PageStart() int       { return c.pageStart }
-func (c Chunk) PageEnd() int         { return c.pageEnd }
+// Id returns the chunk's unique identifier.
+func (c Chunk) Id() string { return c.id }
+
+// BookId returns the identifier of the book this chunk belongs to.
+func (c Chunk) BookId() string { return c.bookId }
+
+// Content returns the raw text of this chunk.
+func (c Chunk) Content() string { return c.content }
+
+// PageStart returns the first page number covered by this chunk.
+func (c Chunk) PageStart() int { return c.pageStart }
+
+// PageEnd returns the last page number covered by this chunk.
+func (c Chunk) PageEnd() int { return c.pageEnd }
+
+// CreatedAt returns when this chunk was indexed.
 func (c Chunk) CreatedAt() time.Time { return c.createdAt }

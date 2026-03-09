@@ -12,10 +12,12 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-// RequestLogger returns a chi-compatible middleware that emits one structured
-// zap log line per request, after the response is written.
+// RequestLogger returns a chi-compatible middleware that:
+//   - Echoes the request ID from context into the X-Request-Id response header,
+//     so clients can correlate their requests with server log lines.
+//   - Emits one structured zap log line per request after the response is written.
 //
-// Every line carries:
+// Every log line carries:
 //
 //	request_id  — from chi's RequestID middleware (must be applied first)
 //	method      — HTTP verb
@@ -25,14 +27,19 @@ import (
 //	bytes       — response body size in bytes
 //
 // 5xx responses are logged at Error level; 4xx at Warn; everything else at Info.
-// This single log-level policy means operators can silence noise without losing
-// any error signal.
 func RequestLogger(log *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 
-			// chi's WrapResponseWriter captures the status code and bytes written
+			// Echo the request ID into the response so clients can correlate
+			// their request with server log lines without parsing log output.
+			// Must be set before the handler writes the status line.
+			if reqID := middleware.GetReqID(r.Context()); reqID != "" {
+				w.Header().Set("X-Request-Id", reqID)
+			}
+
+			// chi's WrapResponseWriter captures status code and bytes written
 			// without buffering the body.
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 

@@ -2,184 +2,146 @@ package usecase_test
 
 import (
 	"context"
+	"errors"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/pkg/domain"
-	metarepo "github.com/belLena81/raglibrarian/services/metadata/repository"
-	"github.com/belLena81/raglibrarian/services/metadata/usecase"
+	"github.com/belLena81/raglibrarian/services/query/usecase"
 )
 
-// ── Fake repository ───────────────────────────────────────────────────────────
+// ── Fake Repository ──────────────────────────────────────────────────────────
+// A minimal in-process fake satisfying QueryRepository.
+// Plain struct instead of testify/mock — simpler and shows intent clearly.
 
-type fakeUserRepo struct {
-	users   map[string]domain.User // keyed by email
-	saveErr error
+type fakeQueryRepository struct {
+	results []domain.SearchResult
+	err     error
 }
 
-func newFakeUserRepo() *fakeUserRepo {
-	return &fakeUserRepo{users: make(map[string]domain.User)}
+func (f *fakeQueryRepository) Search(_ context.Context, _ domain.Query) ([]domain.SearchResult, error) {
+	return f.results, f.err
 }
 
-func (f *fakeUserRepo) Save(_ context.Context, u domain.User) error {
-	if f.saveErr != nil {
-		return f.saveErr
-	}
-	if _, exists := f.users[u.Email()]; exists {
-		return domain.ErrEmailTaken
-	}
-	f.users[u.Email()] = u
-	return nil
-}
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
-func (f *fakeUserRepo) FindByEmail(_ context.Context, email string) (domain.User, error) {
-	u, ok := f.users[email]
-	if !ok {
-		return domain.User{}, domain.ErrUserNotFound
-	}
-	return u, nil
-}
-
-func (f *fakeUserRepo) FindByID(_ context.Context, id string) (domain.User, error) {
-	for _, u := range f.users {
-		if u.ID() == id {
-			return u, nil
-		}
-	}
-	return domain.User{}, domain.ErrUserNotFound
-}
-
-// Ensure the fake satisfies the interface at compile time.
-var _ metarepo.UserRepository = (*fakeUserRepo)(nil)
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-func newTestIssuer(t *testing.T) *auth.Issuer {
+// makeSearchResult builds a realistic SearchResult for use in tests.
+// queryId is a placeholder — the service creates its own domain.Query internally.
+func makeSearchResult(t *testing.T, queryId string) domain.SearchResult {
 	t.Helper()
-	issuer, err := auth.NewIssuer(make([]byte, 32), time.Hour)
+	book, err := domain.NewBook("The Go Programming Language", "Donovan & Kernighan", 2015)
 	require.NoError(t, err)
-	return issuer
+	result, err := domain.NewSearchResult(
+		queryId,
+		book,
+		"Chapter 9 — Concurrency",
+		"Goroutines are multiplexed onto OS threads...",
+		[]int{217, 218},
+		0.94,
+	)
+	require.NoError(t, err)
+	return result
 }
 
-func newService(t *testing.T, repo *fakeUserRepo) *usecase.AuthService {
-	t.Helper()
-	return usecase.NewAuthService(repo, newTestIssuer(t))
-}
+// ── Tests ────────────────────────────────────────────────────────────────────
 
-// ── Register tests ────────────────────────────────────────────────────────────
+func TestQueryService_Answer_ReturnsResults(t *testing.T) {
+	result := makeSearchResult(t, "placeholder-id")
+	repo := &fakeQueryRepository{results: []domain.SearchResult{result}}
+	svc := usecase.NewQueryService(repo)
 
-func TestRegister_ValidInput_CreatesUser(t *testing.T) {
-	svc := newService(t, newFakeUserRepo())
-
-	user, err := svc.Register(context.Background(), "alice@example.com", "password123", domain.RoleReader)
+	results, err := svc.Answer(context.Background(), "user-123", "What is a goroutine?")
 
 	require.NoError(t, err)
-	assert.NotEmpty(t, user.ID())
-	assert.Equal(t, "alice@example.com", user.Email())
-	assert.Equal(t, domain.RoleReader, user.Role())
-	// Password must never be stored as plaintext.
-	assert.NotEqual(t, "password123", user.PasswordHash())
+	assert.Len(t, results, 1)
 }
 
-func TestRegister_AdminRole_Allowed(t *testing.T) {
-	svc := newService(t, newFakeUserRepo())
+func TestQueryService_Answer_EmptyQuestion_ReturnsDomainError(t *testing.T) {
+	repo := &fakeQueryRepository{}
+	svc := usecase.NewQueryService(repo)
 
-	user, err := svc.Register(context.Background(), "admin@example.com", "pw", domain.RoleAdmin)
-
-	require.NoError(t, err)
-	assert.Equal(t, domain.RoleAdmin, user.Role())
-}
-
-func TestRegister_DuplicateEmail_ReturnsEmailTakenError(t *testing.T) {
-	svc := newService(t, newFakeUserRepo())
-	_, err := svc.Register(context.Background(), "dup@example.com", "pw1", domain.RoleReader)
-	require.NoError(t, err)
-
-	_, err = svc.Register(context.Background(), "dup@example.com", "pw2", domain.RoleReader)
+	_, err := svc.Answer(context.Background(), "user-123", "")
 
 	require.Error(t, err)
-	assert.ErrorIs(t, err, domain.ErrEmailTaken)
+	assert.ErrorIs(t, err, domain.ErrEmptyQuestion)
 }
 
-func TestRegister_InvalidEmail_ReturnsDomainError(t *testing.T) {
-	svc := newService(t, newFakeUserRepo())
+func TestQueryService_Answer_WhitespaceQuestion_ReturnsDomainError(t *testing.T) {
+	repo := &fakeQueryRepository{}
+	svc := usecase.NewQueryService(repo)
 
-	_, err := svc.Register(context.Background(), "not-an-email", "pw", domain.RoleReader)
+	_, err := svc.Answer(context.Background(), "user-123", "   ")
 
 	require.Error(t, err)
-	assert.ErrorIs(t, err, domain.ErrInvalidEmail)
+	assert.ErrorIs(t, err, domain.ErrEmptyQuestion)
 }
 
-func TestRegister_InvalidRole_ReturnsDomainError(t *testing.T) {
-	svc := newService(t, newFakeUserRepo())
+func TestQueryService_Answer_EmptyUserId_ReturnsDomainError(t *testing.T) {
+	repo := &fakeQueryRepository{}
+	svc := usecase.NewQueryService(repo)
 
-	_, err := svc.Register(context.Background(), "a@b.com", "pw", domain.Role("god"))
+	_, err := svc.Answer(context.Background(), "", "Valid question?")
 
 	require.Error(t, err)
-	assert.ErrorIs(t, err, domain.ErrInvalidRole)
+	assert.ErrorIs(t, err, domain.ErrEmptyUserId)
 }
 
-// ── Login tests ───────────────────────────────────────────────────────────────
+func TestQueryService_Answer_WhitespaceUserId_ReturnsDomainError(t *testing.T) {
+	repo := &fakeQueryRepository{}
+	svc := usecase.NewQueryService(repo)
 
-func TestLogin_ValidCredentials_ReturnsToken(t *testing.T) {
-	svc := newService(t, newFakeUserRepo())
-	_, err := svc.Register(context.Background(), "bob@example.com", "correct-pw", domain.RoleReader)
-	require.NoError(t, err)
-
-	token, err := svc.Login(context.Background(), "bob@example.com", "correct-pw")
-
-	require.NoError(t, err)
-	assert.NotEmpty(t, token)
-}
-
-func TestLogin_WrongPassword_ReturnsInvalidCredentials(t *testing.T) {
-	svc := newService(t, newFakeUserRepo())
-	_, _ = svc.Register(context.Background(), "bob@example.com", "correct-pw", domain.RoleReader)
-
-	_, err := svc.Login(context.Background(), "bob@example.com", "wrong-pw")
+	_, err := svc.Answer(context.Background(), "   ", "Valid question?")
 
 	require.Error(t, err)
-	assert.ErrorIs(t, err, auth.ErrInvalidCredentials)
+	assert.ErrorIs(t, err, domain.ErrEmptyUserId)
 }
 
-func TestLogin_UnknownEmail_ReturnsInvalidCredentials(t *testing.T) {
-	// CRITICAL: must return the same error as wrong password.
-	// Different errors would allow user enumeration attacks.
-	svc := newService(t, newFakeUserRepo())
+func TestQueryService_Answer_RepositoryError_Propagates(t *testing.T) {
+	repoErr := errors.New("qdrant: connection refused")
+	repo := &fakeQueryRepository{err: repoErr}
+	svc := usecase.NewQueryService(repo)
 
-	_, err := svc.Login(context.Background(), "nobody@example.com", "any-pw")
+	_, err := svc.Answer(context.Background(), "user-123", "Valid question?")
 
 	require.Error(t, err)
-	assert.ErrorIs(t, err, auth.ErrInvalidCredentials,
-		"unknown email must return ErrInvalidCredentials, not ErrUserNotFound")
+	assert.ErrorIs(t, err, repoErr)
 }
 
-func TestLogin_TokenContainsCorrectClaims(t *testing.T) {
-	issuer := newTestIssuer(t)
-	svc := usecase.NewAuthService(newFakeUserRepo(), issuer)
-	_, _ = svc.Register(context.Background(), "carol@example.com", "pw", domain.RoleAdmin)
+func TestQueryService_Answer_EmptyResults_ReturnsEmptySlice(t *testing.T) {
+	repo := &fakeQueryRepository{results: []domain.SearchResult{}}
+	svc := usecase.NewQueryService(repo)
 
-	token, err := svc.Login(context.Background(), "carol@example.com", "pw")
-	require.NoError(t, err)
+	results, err := svc.Answer(context.Background(), "user-123", "What is a goroutine?")
 
-	claims, err := issuer.Validate(token)
 	require.NoError(t, err)
-	assert.Equal(t, "carol@example.com", claims.Email)
-	assert.Equal(t, domain.RoleAdmin, claims.Role)
+	assert.Empty(t, results)
+	assert.NotNil(t, results) // must be empty slice, not nil
 }
 
-func TestNewAuthService_NilRepo_Panics(t *testing.T) {
+func TestQueryService_Answer_MultipleResults_PreservesOrder(t *testing.T) {
+	r1 := makeSearchResult(t, "qid")
+	book2, err := domain.NewBook("Book Two", "Author B", 2021)
+	require.NoError(t, err)
+	r2, err := domain.NewSearchResult("qid", book2, "Ch2", "passage two", []int{2}, 0.80)
+	require.NoError(t, err)
+
+	repo := &fakeQueryRepository{results: []domain.SearchResult{r1, r2}}
+	svc := usecase.NewQueryService(repo)
+
+	results, err := svc.Answer(context.Background(), "user-123", "Valid question?")
+
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	gotBook1 := results[0].Book()
+	gotBook2 := results[1].Book()
+	assert.Equal(t, "The Go Programming Language", gotBook1.Title())
+	assert.Equal(t, "Book Two", gotBook2.Title())
+}
+
+func TestNewQueryService_NilRepository_Panics(t *testing.T) {
 	assert.Panics(t, func() {
-		usecase.NewAuthService(nil, newTestIssuer(t))
-	})
-}
-
-func TestNewAuthService_NilIssuer_Panics(t *testing.T) {
-	assert.Panics(t, func() {
-		usecase.NewAuthService(newFakeUserRepo(), nil)
+		usecase.NewQueryService(nil)
 	})
 }

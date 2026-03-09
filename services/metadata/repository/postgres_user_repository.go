@@ -47,7 +47,8 @@ func (r *PostgresUserRepository) Save(ctx context.Context, user domain.User) err
 		user.CreatedAt(),
 	)
 	if err != nil {
-		if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == pgUniqueViolation {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation {
 			return domain.ErrEmailTaken
 		}
 		return fmt.Errorf("repository: save user: %w", err)

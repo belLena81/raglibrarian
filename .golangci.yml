@@ -1,0 +1,64 @@
+# golangci-lint v2 configuration
+# Run with: make lint  (sets GOWORK=off, runs from repo root against single go.mod)
+
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  default: none
+  enable:
+    - errcheck      # every returned error must be handled
+    - staticcheck   # comprehensive static analysis (absorbs gosimple + stylecheck)
+    - ineffassign   # assignments whose result is never used
+    - unused        # report unused code
+    - gosec         # common security issues
+    - govet         # go vet checks
+    - revive        # configurable linter (replaces golint)
+    - misspell      # spelling mistakes in comments/strings
+
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Closer).Close
+
+    gosec:
+      excludes:
+        - G404    # math/rand — only in tests, never for crypto
+        # G117: "matches secret pattern" fires on request DTO fields named
+        # "Password" that carry user input, not stored secrets. These are
+        # correctly named per Go convention; suppressing the false positive.
+        - G117
+
+    govet:
+      enable:
+        - shadow
+
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - "checkPrivateReceivers"
+            - "sayRepetitiveInsteadOfStutters"
+
+  exclusions:
+    rules:
+      # Test files: hardcoded keys and unchecked errors are intentional.
+      - path: "_test\\.go"
+        linters:
+          - gosec
+          - errcheck
+
+      # zap Sync() returns ENOTTY on Linux stderr — ignoring in defer is correct.
+      - text: "Error return value of `.*\\.Sync\\(\\)` is not checked"
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

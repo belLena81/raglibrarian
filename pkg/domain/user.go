@@ -7,10 +7,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// Role is a value object. It is immutable after construction and validated at
-// the boundary — the rest of the system never passes raw strings for roles.
+// Role is a value object representing a user's permission level.
+// It is immutable after construction and validated at the boundary —
+// the rest of the system never passes raw strings for roles.
 type Role string
 
+// Role constants define all valid permission levels in the system.
 const (
 	RoleAdmin  Role = "admin"
 	RoleReader Role = "reader"
@@ -72,8 +74,17 @@ func NewUserFromDB(id, email, passwordHash string, role Role, createdAt time.Tim
 	}
 }
 
-func (u User) ID() string           { return u.id }
-func (u User) Email() string        { return u.email }
+// ID returns the user's unique identifier.
+func (u User) ID() string { return u.id }
+
+// Email returns the user's email address.
+func (u User) Email() string { return u.email }
+
+// PasswordHash returns the bcrypt hash of the user's password.
 func (u User) PasswordHash() string { return u.passwordHash }
-func (u User) Role() Role           { return u.role }
+
+// Role returns the user's permission level.
+func (u User) Role() Role { return u.role }
+
+// CreatedAt returns when the user account was created.
 func (u User) CreatedAt() time.Time { return u.createdAt }

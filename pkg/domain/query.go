@@ -32,6 +32,8 @@ func NewQuery(userId, question string) (Query, error) {
 	}, nil
 }
 
+// NewQueryFromDb reconstructs a Query from persisted data without re-validation.
+// Only repository implementations should call this.
 func NewQueryFromDb(id, userId, question string, createdAt time.Time) Query {
 	return Query{
 		id:        id,
@@ -41,7 +43,14 @@ func NewQueryFromDb(id, userId, question string, createdAt time.Time) Query {
 	}
 }
 
-func (q Query) Id() string           { return q.id }
-func (q Query) UserId() string       { return q.userId }
-func (q Query) Question() string     { return q.question }
+// Id returns the query's unique identifier.
+func (q Query) Id() string { return q.id }
+
+// UserId returns the identifier of the user who submitted the query.
+func (q Query) UserId() string { return q.userId }
+
+// Question returns the natural language question text.
+func (q Query) Question() string { return q.question }
+
+// CreatedAt returns when this query was submitted.
 func (q Query) CreatedAt() time.Time { return q.createdAt }

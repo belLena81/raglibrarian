@@ -45,6 +45,8 @@ func NewSearchResult(queryId string, book Book, chapter, passage string, pages [
 	}, nil
 }
 
+// NewSearchResultFromDb reconstructs a SearchResult from persisted data without re-validation.
+// Only repository implementations should call this.
 func NewSearchResultFromDb(id, queryId string, book Book, chapter, passage string, pages []int, score float64) SearchResult {
 	return SearchResult{
 		id:      id,
@@ -57,10 +59,23 @@ func NewSearchResultFromDb(id, queryId string, book Book, chapter, passage strin
 	}
 }
 
-func (s SearchResult) Id() string      { return s.id }
+// Id returns the search result's unique identifier.
+func (s SearchResult) Id() string { return s.id }
+
+// QueryId returns the identifier of the query this result belongs to.
 func (s SearchResult) QueryId() string { return s.queryId }
-func (s SearchResult) Book() Book      { return s.book }
+
+// Book returns the book that contains this result's passage.
+func (s SearchResult) Book() Book { return s.book }
+
+// Chapter returns the chapter name or heading for this passage.
 func (s SearchResult) Chapter() string { return s.chapter }
-func (s SearchResult) Pages() []int    { return s.pages }
+
+// Pages returns the page numbers covered by this passage.
+func (s SearchResult) Pages() []int { return s.pages }
+
+// Passage returns the text excerpt relevant to the query.
 func (s SearchResult) Passage() string { return s.passage }
-func (s SearchResult) Score() float64  { return s.score }
+
+// Score returns the relevance score in [0, 1], higher is more relevant.
+func (s SearchResult) Score() float64 { return s.score }
