@@ -8,25 +8,30 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	"go.uber.org/zap"
 
 	"github.com/belLena81/raglibrarian/services/query/handler"
+	"github.com/belLena81/raglibrarian/services/query/middleware"
 )
 
 // NewRouter builds and returns the chi router for the query service.
 // Keeping routing separate from main() lets integration tests create the
 // router directly without listening on a port.
-func NewRouter(qh *handler.QueryHandler) http.Handler {
+//
+// Middleware order matters:
+//  1. RealIP    — fix r.RemoteAddr before anything logs it
+//  2. RequestID — inject correlation ID before the logger reads it
+//  3. RequestLogger — log after ID is set, before the handler runs
+//  4. Recoverer — innermost so it catches handler panics and logs them
+func NewRouter(qh *handler.QueryHandler, log *zap.Logger) http.Handler {
 	r := chi.NewRouter()
 
-	// ── Middleware stack ────────────────────────────────────────────────────
-	// RealIP + RequestID are chi stdlib middlewares — zero external deps.
-	// Recoverer turns a panic into a 500 instead of crashing the process.
-	r.Use(middleware.RealIP)
-	r.Use(middleware.RequestID)
-	r.Use(middleware.Recoverer)
+	r.Use(chimiddleware.RealIP)
+	r.Use(chimiddleware.RequestID)
+	r.Use(middleware.RequestLogger(log))
+	r.Use(chimiddleware.Recoverer)
 
-	// ── Routes ──────────────────────────────────────────────────────────────
 	r.Get("/healthz", qh.Health)
 
 	r.Route("/query", func(r chi.Router) {

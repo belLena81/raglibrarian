@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap/zaptest"
 
 	"github.com/belLena81/raglibrarian/pkg/domain"
 	"github.com/belLena81/raglibrarian/services/query/handler"
@@ -72,7 +73,7 @@ func makeResult(t *testing.T) domain.SearchResult {
 func TestQueryHandler_Query_Returns200_WithResults(t *testing.T) {
 	result := makeResult(t)
 	uc := &fakeQueryUseCase{results: []domain.SearchResult{result}}
-	h := handler.NewQueryHandler(uc)
+	h := handler.NewQueryHandler(uc, zaptest.NewLogger(t))
 
 	rr := doPost(t, h, map[string]string{
 		"question": "What is a goroutine?",
@@ -95,7 +96,7 @@ func TestQueryHandler_Query_Returns200_WithResults(t *testing.T) {
 
 func TestQueryHandler_Query_Returns200_EmptyResults(t *testing.T) {
 	uc := &fakeQueryUseCase{results: []domain.SearchResult{}}
-	h := handler.NewQueryHandler(uc)
+	h := handler.NewQueryHandler(uc, zaptest.NewLogger(t))
 
 	rr := doPost(t, h, map[string]string{
 		"question": "Something obscure?",
@@ -134,7 +135,7 @@ func TestQueryHandler_Query_Returns422_OnDomainValidationError(t *testing.T) {
 			if tt.body["user_id"] == "" {
 				uc.err = fmt.Errorf("invalid query: %w", domain.ErrEmptyUserId)
 			}
-			h := handler.NewQueryHandler(uc)
+			h := handler.NewQueryHandler(uc, zaptest.NewLogger(t))
 
 			rr := doPost(t, h, tt.body)
 			assert.Equal(t, http.StatusUnprocessableEntity, rr.Code)
@@ -144,7 +145,7 @@ func TestQueryHandler_Query_Returns422_OnDomainValidationError(t *testing.T) {
 
 func TestQueryHandler_Query_Returns500_OnInternalError(t *testing.T) {
 	uc := &fakeQueryUseCase{err: errors.New("qdrant: connection refused")}
-	h := handler.NewQueryHandler(uc)
+	h := handler.NewQueryHandler(uc, zaptest.NewLogger(t))
 
 	rr := doPost(t, h, map[string]string{
 		"question": "What is a goroutine?",
@@ -156,7 +157,7 @@ func TestQueryHandler_Query_Returns500_OnInternalError(t *testing.T) {
 
 func TestQueryHandler_Query_Returns400_OnInvalidJSON(t *testing.T) {
 	uc := &fakeQueryUseCase{}
-	h := handler.NewQueryHandler(uc)
+	h := handler.NewQueryHandler(uc, zaptest.NewLogger(t))
 
 	req := httptest.NewRequest(http.MethodPost, "/query", bytes.NewBufferString("{invalid json"))
 	req.Header.Set("Content-Type", "application/json")
@@ -169,7 +170,7 @@ func TestQueryHandler_Query_Returns400_OnInvalidJSON(t *testing.T) {
 
 func TestQueryHandler_Query_ResponseHasJSONContentType(t *testing.T) {
 	uc := &fakeQueryUseCase{results: []domain.SearchResult{}}
-	h := handler.NewQueryHandler(uc)
+	h := handler.NewQueryHandler(uc, zaptest.NewLogger(t))
 
 	rr := doPost(t, h, map[string]string{"question": "test?", "user_id": "u"})
 
@@ -183,7 +184,7 @@ func TestQueryHandler_Query_MultipleResults_PreservesOrder(t *testing.T) {
 	r2, _ := domain.NewSearchResult("qid", book2, "Ch2", "second passage", []int{2}, 0.80)
 
 	uc := &fakeQueryUseCase{results: []domain.SearchResult{r1, r2}}
-	h := handler.NewQueryHandler(uc)
+	h := handler.NewQueryHandler(uc, zaptest.NewLogger(t))
 
 	rr := doPost(t, h, map[string]string{"question": "test?", "user_id": "u"})
 
@@ -197,7 +198,7 @@ func TestQueryHandler_Query_MultipleResults_PreservesOrder(t *testing.T) {
 
 func TestQueryHandler_Health_Returns200(t *testing.T) {
 	uc := &fakeQueryUseCase{}
-	h := handler.NewQueryHandler(uc)
+	h := handler.NewQueryHandler(uc, zaptest.NewLogger(t))
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
@@ -208,7 +209,7 @@ func TestQueryHandler_Health_Returns200(t *testing.T) {
 
 func TestQueryHandler_Health_ResponseBody(t *testing.T) {
 	uc := &fakeQueryUseCase{}
-	h := handler.NewQueryHandler(uc)
+	h := handler.NewQueryHandler(uc, zaptest.NewLogger(t))
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
@@ -223,6 +224,13 @@ func TestQueryHandler_Health_ResponseBody(t *testing.T) {
 
 func TestNewQueryHandler_NilUseCase_Panics(t *testing.T) {
 	assert.Panics(t, func() {
-		handler.NewQueryHandler(nil)
+		handler.NewQueryHandler(nil, zaptest.NewLogger(t))
+	})
+}
+
+func TestNewQueryHandler_NilLogger_Panics(t *testing.T) {
+	uc := &fakeQueryUseCase{}
+	assert.Panics(t, func() {
+		handler.NewQueryHandler(uc, nil)
 	})
 }

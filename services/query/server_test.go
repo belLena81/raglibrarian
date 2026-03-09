@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap/zaptest"
 
 	"github.com/belLena81/raglibrarian/pkg/domain"
 	"github.com/belLena81/raglibrarian/services/query"
@@ -28,9 +29,10 @@ func (f *fakeUseCase) Answer(_ context.Context, _, _ string) ([]domain.SearchRes
 
 func newTestRouter(t *testing.T) http.Handler {
 	t.Helper()
+	log := zaptest.NewLogger(t)
 	uc := &fakeUseCase{results: []domain.SearchResult{}}
-	qh := handler.NewQueryHandler(uc)
-	return query.NewRouter(qh)
+	qh := handler.NewQueryHandler(uc, log)
+	return query.NewRouter(qh, log)
 }
 
 func TestRouter_POST_Query_Returns200(t *testing.T) {
@@ -104,9 +106,10 @@ func TestRouter_RequestID_IsInjected(t *testing.T) {
 
 func TestRouter_Panic_Returns500(t *testing.T) {
 	// Wire a use case that panics to verify Recoverer middleware works
+	log := zaptest.NewLogger(t)
 	panicUC := &panicUseCase{}
-	qh := handler.NewQueryHandler(panicUC)
-	router := query.NewRouter(qh)
+	qh := handler.NewQueryHandler(panicUC, log)
+	router := query.NewRouter(qh, log)
 
 	body, _ := json.Marshal(map[string]string{
 		"question": "trigger panic",

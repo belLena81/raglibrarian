@@ -8,6 +8,9 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/go-chi/chi/v5/middleware"
+	"go.uber.org/zap"
+
 	"github.com/belLena81/raglibrarian/pkg/domain"
 	"github.com/belLena81/raglibrarian/services/query/usecase"
 )
@@ -19,7 +22,7 @@ import (
 // QueryRequest is the JSON body accepted by POST /query.
 type QueryRequest struct {
 	Question string `json:"question"`
-	UserID   string `json:"user_id"`
+	UserId   string `json:"user_id"`
 }
 
 // BookDTO is the nested book representation in a query response.
@@ -55,29 +58,54 @@ type errorResponse struct {
 
 // QueryHandler handles HTTP requests for the query service.
 type QueryHandler struct {
-	uc usecase.QueryUseCase
+	uc  usecase.QueryUseCase
+	log *zap.Logger
 }
 
-// NewQueryHandler constructs a QueryHandler with the given use case.
-func NewQueryHandler(uc usecase.QueryUseCase) *QueryHandler {
+// NewQueryHandler constructs a QueryHandler with the given use case and logger.
+// The logger should already be named/with-fielded by the caller — the handler
+// only adds request-scoped fields at call time.
+func NewQueryHandler(uc usecase.QueryUseCase, log *zap.Logger) *QueryHandler {
 	if uc == nil {
 		panic("handler: QueryUseCase must not be nil")
 	}
-	return &QueryHandler{uc: uc}
+	if log == nil {
+		panic("handler: Logger must not be nil")
+	}
+	return &QueryHandler{uc: uc, log: log}
 }
 
 // Query handles POST /query.
 // It decodes the request, delegates to the use case, then encodes the response.
 func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
+	// Attach the request-id to every log line emitted from this handler
+	// invocation — no other context is needed here because per-request timing
+	// and status code are already captured by the RequestLogger middleware.
+	reqLog := h.log.With(zap.String("request_id", middleware.GetReqID(r.Context())))
+
 	var req QueryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		reqLog.Warn("failed to decode request body", zap.Error(err))
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
-	results, err := h.uc.Answer(r.Context(), req.UserID, req.Question)
+	results, err := h.uc.Answer(r.Context(), req.UserId, req.Question)
 	if err != nil {
 		status := domainErrToStatus(err)
+		if status >= http.StatusInternalServerError {
+			// Unexpected error — log at Error so it pages on-call.
+			reqLog.Error("query use case returned unexpected error",
+				zap.Error(err),
+				zap.String("user_id", req.UserId),
+			)
+		} else {
+			// Client error — log at Debug; it's not actionable for operators.
+			reqLog.Debug("query rejected due to invalid input",
+				zap.Error(err),
+				zap.String("user_id", req.UserId),
+			)
+		}
 		writeError(w, status, err.Error())
 		return
 	}
