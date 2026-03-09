@@ -1,12 +1,9 @@
 # 📚 raglibrarian
 
-> A production-grade Retrieval-Augmented Generation (RAG) system for technical books — built in Go with microservices, event-driven ingestion via RabbitMQ, gRPC inter-service communication, and Qdrant vector search.
+> A production-grade Retrieval-Augmented Generation (RAG) system for technical books — built in Go with a microservices architecture, gRPC inter-service communication, and Qdrant vector search.
 
 [![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://golang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Architecture](https://img.shields.io/badge/architecture-microservices-orange)](docs/architecture.md)
-[![Vector DB](https://img.shields.io/badge/vector--db-Qdrant-red)](https://qdrant.tech)
-[![Message Broker](https://img.shields.io/badge/broker-RabbitMQ-FF6600?logo=rabbitmq)](https://rabbitmq.com)
 
 ---
 
@@ -18,11 +15,34 @@
 - *"On which pages is BDD compared with TDD? Give me the book and chapter."*
 - *"List all sections across my library where concurrency patterns are discussed."*
 
-Every answer returns a structured response: 📘 book title · 📑 chapter · 📄 page numbers · ✂️ extracted passage.
+Every answer will return a structured response: 📘 book title · 📑 chapter · 📄 page numbers · ✂️ extracted passage.
 
 ---
 
-## Architecture Overview
+## Current State
+
+The project is being built iteratively. This is what exists today:
+
+**Iteration 2 complete** — authentication layer is live and all e2e tests pass.
+
+| Layer | Status | Notes |
+|---|---|---|
+| Domain model | ✅ | `User`, `Book`, `Chunk`, `Query`, `SearchResult` value objects |
+| Auth tokens | ✅ | PASETO v4 local (symmetric, XChaCha20-Poly1305 + BLAKE2b) |
+| Password hashing | ✅ | bcrypt |
+| HTTP API | ✅ | chi router, graceful shutdown, structured logging |
+| Auth endpoints | ✅ | register, login, `/me`, logout |
+| Query endpoint | ✅ | stub — returns no results yet |
+| DB migrations | ✅ | `users` table |
+| e2e test suite | ✅ | 18 tests, all passing |
+| gRPC metadata service | 🔜 Iteration 3 | metadata service split |
+| Vector search | 🔜 Iteration 4 | Qdrant integration |
+| PDF ingestion | 🔜 Iteration 5 | chunking + embedding pipeline |
+| Token revocation | 🔜 Iteration 4 | Redis blocklist in metadata service |
+
+---
+
+## Architecture (Target)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -35,29 +55,16 @@ Every answer returns a structured response: 📘 book title · 📑 chapter · �
                     └──┬─────────────────┬──┘
                gRPC    │                 │   gRPC
         ┌──────────────▼──┐         ┌────▼────────────────┐
-        │Retrieval Service │         │  Metadata Service    │  Go / long-running
+        │Retrieval Service │         │  Metadata Service    │
         │ Qdrant gRPC SDK  │         │  pgx + Postgres      │
         └──────────────────┘         └─────────────────────┘
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━ RabbitMQ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━ Async ingestion pipeline (future) ━━━━━━━
 
-  Exchange: pdf.ingestion        Exchange: pdf.indexing
-  ┌──────────────┐               ┌──────────────┐        ┌────────────┐
-  │ pdf.uploaded │               │chunks.ready  │        │index.done  │
-  └──────┬───────┘               └──────┬───────┘        └─────┬──────┘
-         │                              │                       │
-  ┌──────▼───────┐               ┌──────▼───────┐       ┌──────▼──────┐
-  │ PDF Ingest λ │               │  Embedder λ   │       │ Metadata    │
-  │  pdfcpu      │               │  tiktoken +   │       │ Updater λ   │
-  │  chunker     │               │  Anthropic    │       │ gRPC call   │
-  └──────────────┘               └───────────────┘       └─────────────┘
+  pdf.uploaded → ingest → embed → index → metadata update
 ```
 
-The system is split into two planes:
-
-**Synchronous (gRPC)** — the query path. User queries hit the Query Service, which fans out over gRPC to the Retrieval Service (Qdrant vector search) and Metadata Service (Postgres enrichment), then synthesises an LLM answer in-process.
-
-**Asynchronous (RabbitMQ + Lambda)** — the ingestion pipeline. Book uploads trigger an event chain: PDF parsing → chunking → embedding → vector indexing → metadata update. Each stage is an independent Lambda consuming from a durable RabbitMQ queue.
+**Today:** a single `query` service handles HTTP, auth, and a stub query handler. The `metadata` package (user repository + auth use case) is wired directly into the query service binary. The gRPC split happens in Iteration 3.
 
 ---
 
@@ -66,140 +73,97 @@ The system is split into two planes:
 ```
 raglibrarian/
 │
-├── services/
-│   ├── query/              # REST API + RAG orchestration (chi + gRPC client)
-│   ├── retrieval/          # Vector search service (Qdrant gRPC)
-│   └── metadata/           # Book/chapter/page CRUD (Postgres + gRPC server)
-│
-├── lambda/
-│   ├── ingest/             # PDF parse + chunk (pdfcpu)
-│   ├── embedder/           # Embed chunks → write to Qdrant (Anthropic SDK)
-│   ├── metadata-updater/   # Update index status via gRPC → Metadata Service
-│   └── reindex-scheduler/  # Cron: find stale books, re-emit ingestion events
+├── go.work                  # Go workspace — no go.mod at root
 │
 ├── pkg/
-│   ├── chunker/            # Exportable recursive text splitter
-│   ├── proto/              # Shared protobuf definitions + generated Go stubs
-│   └── events/             # RabbitMQ message types and publisher/consumer helpers
+│   ├── domain/              # Value objects: User, Book, Chunk, Query, SearchResult
+│   ├── auth/                # PASETO v4 tokens, bcrypt password hashing
+│   │   └── cmd/keygen/      # Operator CLI: print a new AUTH_SECRET_KEY
+│   ├── config/              # Env-var loading, fail-fast validation
+│   └── logger/              # Zap constructor
 │
-├── migrations/             # golang-migrate SQL migrations
-├── deployments/
-│   ├── terraform/          # Lambda + API Gateway + IAM
-│   └── k8s/                # Manifests for long-running services
+├── services/
+│   ├── query/               # HTTP API — the only running service today
+│   │   ├── cmd/main.go      # Entry point, wiring, graceful shutdown
+│   │   ├── server.go        # chi router and route registration
+│   │   ├── handler/         # auth_handler, query_handler
+│   │   ├── middleware/       # Authenticator (PASETO), RequestLogger
+│   │   ├── usecase/         # QueryService (stub)
+│   │   ├── repository/      # StubQueryRepository
+│   │   └── Dockerfile       # Multi-stage build → distroless/static
+│   │
+│   └── metadata/            # Auth domain logic (wired into query for now)
+│       ├── usecase/         # AuthService: Register, Login
+│       └── repository/      # PostgresUserRepository
 │
-├── ui/                     # Git submodule → raglibrarian-ui
-├── docker-compose.yml      # Local: Postgres + Qdrant + RabbitMQ + services
+├── migrations/
+│   └── 001_create_users.*   # users table
+│
+├── tests/
+│   └── e2e/                 # Black-box HTTP tests (go:build e2e)
+│
+├── docker-compose.yml       # Postgres for local dev
 ├── Makefile
-└── docs/
-    ├── architecture.md
-    ├── adr/                # Architecture Decision Records
-    └── api/                # OpenAPI spec (swag generated)
+├── .env.example
+└── CONTRIBUTING.md
 ```
-
-> **`ui/`** is a Git submodule pointing to [`raglibrarian-ui`](https://github.com/yourname/raglibrarian-ui). See [UI Setup](#ui-setup) below.
 
 ---
 
-## Services
+## API Endpoints
 
-| Service | Type | Port | Responsibility |
+| Method | Path | Auth | Description |
 |---|---|---|---|
-| `query` | Long-running | 8080 (HTTP), 9090 (gRPC) | User-facing REST API, RAG orchestration, LLM synthesis |
-| `retrieval` | Long-running | 9091 (gRPC) | Semantic vector search against Qdrant with payload filtering |
-| `metadata` | Long-running | 9092 (gRPC) | Book/chapter/page CRUD, index status, metadata filtering |
-| `ingest` λ | Lambda | — | PDF parse, text extraction, recursive chunking |
-| `embedder` λ | Lambda | — | Tokenise chunks, generate embeddings, write to Qdrant |
-| `metadata-updater` λ | Lambda | — | Consume `index.done`, update book status via gRPC |
-| `reindex-scheduler` λ | Lambda (cron) | — | Find stale books, re-emit `pdf.uploaded` events |
+| `GET` | `/healthz` | — | Health check |
+| `POST` | `/auth/register` | — | Create account, returns token |
+| `POST` | `/auth/login` | — | Returns token |
+| `GET` | `/auth/me` | ✅ Bearer | Returns identity from token |
+| `POST` | `/auth/logout` | ✅ Bearer | Client-side logout (returns 200) |
+| `POST` | `/query/` | ✅ Bearer | Semantic query — stub, returns empty results |
 
----
+### Register
 
-## Tech Stack
-
-| Concern | Technology |
-|---|---|
-| Language | Go 1.22 |
-| REST framework | `go-chi/chi` |
-| Service transport | gRPC + protobuf |
-| Message broker | RabbitMQ (`amqp091-go`) |
-| Vector database | Qdrant (gRPC SDK) |
-| Metadata database | PostgreSQL (`pgx/v5`) |
-| DB migrations | `golang-migrate` |
-| PDF parsing | `pdfcpu` + `ledongthuc/pdf` |
-| Text chunking | `langchaingo/textsplitter` |
-| Tokeniser | `tiktoken-go` |
-| LLM | Anthropic Claude (`anthropic-sdk-go`) |
-| Async jobs | `riverqueue/river` (local dev) |
-| Lambda runtime | `aws-lambda-go` |
-| Infrastructure | Terraform (Lambda) + Docker Compose (local) |
-| Observability | OpenTelemetry + Zap + Prometheus |
-| Testing | testify + testcontainers-go + httpmock |
-| API docs | swaggo/swag |
-
----
-
-## RabbitMQ Exchange Design
-
+```bash
+curl -X POST http://localhost:8080/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email": "alice@example.com", "password": "secret", "role": "reader"}'
 ```
-Exchange: pdf.ingestion  (topic, durable)
-  pdf.uploaded    → ingest Lambda queue
-  pdf.removed     → cleanup Lambda queue (delete vectors + metadata)
-
-Exchange: pdf.indexing   (topic, durable)
-  chunks.ready    → embedder Lambda queue
-  index.done      → metadata-updater Lambda queue
-  index.failed    → dead letter exchange → alerting
-```
-
-Each queue is durable with a DLQ and configurable retry TTL.
-
----
-
-## gRPC Contracts
-
-```protobuf
-// pkg/proto/retrieval.proto
-service RetrievalService {
-  rpc Search(SearchRequest) returns (stream SearchResult);
-  rpc FilteredSearch(FilteredSearchRequest) returns (stream SearchResult);
-}
-
-// pkg/proto/metadata.proto
-service MetadataService {
-  rpc GetBook(BookRequest) returns (Book);
-  rpc ListBooks(ListBooksRequest) returns (stream Book);
-  rpc UpdateIndexStatus(IndexStatusRequest) returns (StatusResponse);
-  rpc FilterBooks(FilterRequest) returns (stream Book);
-}
-```
-
-Regenerate stubs: `make proto`
-
----
-
-## Query Response Format
-
-Every query returns a structured payload:
 
 ```json
-{
-  "query": "Where is memory management in Go described in depth?",
-  "results": [
-    {
-      "book": {
-        "title": "The Go Programming Language",
-        "author": "Donovan & Kernighan",
-        "year": 2015,
-        "tags": ["go", "systems", "memory"]
-      },
-      "chapter": "Chapter 12 — Reflection",
-      "pages": [231, 232, 233],
-      "passage": "Go's garbage collector tracks...",
-      "score": 0.94
-    }
-  ]
-}
+{"token": "v4.local...", "role": "reader"}
 ```
+
+`role` is `reader` (default) or `admin`.
+
+### Login
+
+```bash
+curl -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "alice@example.com", "password": "secret"}'
+```
+
+### Me
+
+```bash
+curl http://localhost:8080/auth/me \
+  -H "Authorization: Bearer <token>"
+```
+
+```json
+{"user_id": "...", "email": "alice@example.com", "role": "reader"}
+```
+
+Token claims are read directly — no database call on this endpoint.
+
+### Logout
+
+```bash
+curl -X POST http://localhost:8080/auth/logout \
+  -H "Authorization: Bearer <token>"
+```
+
+Returns `{"message": "logged out"}`. The token remains technically valid until it expires — the client must discard it. Server-side revocation is planned for Iteration 4.
 
 ---
 
@@ -207,143 +171,134 @@ Every query returns a structured payload:
 
 ### Prerequisites
 
-- Go 1.22+
+- Go 1.26+
 - Docker + Docker Compose
-- `protoc` + `protoc-gen-go` + `protoc-gen-go-grpc`
-- AWS CLI (for Lambda deployments)
+- `psql` (for `make migrate-up`)
 
 ### Local Development
 
 ```bash
-# Clone with UI submodule
-git clone --recurse-submodules https://github.com/yourname/raglibrarian
+git clone https://github.com/belLena81/raglibrarian
 cd raglibrarian
 
-# Copy environment config
+# Copy and fill in env config
 cp .env.example .env
 
-# Start infrastructure (Postgres, Qdrant, RabbitMQ) + services
-docker-compose up -d
+# Generate the secret key and add it to .env
+make keygen >> .env
 
-# Run database migrations
+# Start Postgres
+make infra-up
+
+# Apply DB migrations
 make migrate-up
 
-# Start all long-running services
-make run-all
+# Start the service (loads .env automatically)
+make dev
 ```
 
-Services will be available at:
-- Query API: `http://localhost:8080`
-- Swagger UI: `http://localhost:8080/swagger`
-- RabbitMQ Management: `http://localhost:15672`
-- Qdrant Dashboard: `http://localhost:6333/dashboard`
-- Prometheus metrics: `http://localhost:9090/metrics`
+The service starts on `:8080` by default.
 
-### Add a Book
+### Run with Docker Compose
+
+Requires `AUTH_SECRET_KEY` in your environment (or a `.env` file):
 
 ```bash
-curl -X POST http://localhost:8080/books \
-  -F "file=@/path/to/book.pdf" \
-  -F "title=The Go Programming Language" \
-  -F "author=Donovan & Kernighan" \
-  -F "year=2015" \
-  -F 'tags=["go","systems","concurrency"]'
-```
-
-### Query the Library
-
-```bash
-curl -X POST http://localhost:8080/query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "Which book explains goroutine scheduling in depth?",
-    "filters": { "tags": ["go"] }
-  }'
-```
-
----
-
-## UI Setup
-
-The `ui/` directory is a Git submodule:
-
-```bash
-# If you cloned without --recurse-submodules
-git submodule update --init --remote
-
-# Start the UI dev server
-cd ui && npm install && npm run dev
-```
-
-The UI runs on `http://localhost:5173` and proxies API calls to `:8080`.
-
-To update the UI submodule to latest:
-
-```bash
-git submodule update --remote ui
-git add ui && git commit -m "chore: update ui submodule"
-```
-
----
-
-## Makefile Commands
-
-```bash
-make run-all        # Start all long-running services
-make proto          # Regenerate gRPC stubs from .proto files
-make migrate-up     # Apply pending DB migrations
-make migrate-down   # Roll back last migration
-make test           # Run unit + integration tests
-make test-e2e       # Run end-to-end tests (requires Docker)
-make lint           # golangci-lint
-make build-lambda   # Build all Lambda binaries (linux/amd64)
-make deploy-lambda  # Deploy Lambdas via Terraform
-make swagger        # Regenerate OpenAPI docs
+export AUTH_SECRET_KEY=$(make keygen | cut -d= -f2)
+docker-compose up
 ```
 
 ---
 
 ## Environment Variables
 
-| Variable | Description | Default |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key for embeddings + LLM | required |
-| `POSTGRES_DSN` | Postgres connection string | `postgres://...` |
-| `QDRANT_HOST` | Qdrant gRPC host | `localhost:6334` |
-| `RABBITMQ_URL` | RabbitMQ AMQP URL | `amqp://guest:guest@localhost:5672/` |
-| `S3_BUCKET` | Object storage bucket for PDFs + chunks | required |
-| `LOG_LEVEL` | Zap log level | `info` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry collector endpoint | optional |
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `AUTH_SECRET_KEY` | ✅ | — | 32-byte key, hex-encoded. Generate with `make keygen` |
+| `POSTGRES_DSN` | ✅ | — | `postgres://user:pass@host:port/db?sslmode=disable` |
+| `QUERY_ADDR` | no | `:8080` | HTTP listen address |
+| `TOKEN_TTL` | no | `24h` | PASETO token lifetime |
+| `LOG_ENV` | no | `development` | `development` or `production` |
+| `LOG_LEVEL` | no | `debug` | `debug`, `info`, `warn`, `error` |
 
 ---
 
-## Architecture Decisions
+## Makefile Commands
 
-Key decisions are documented as ADRs in [`docs/adr/`](docs/adr/):
+```bash
+make dev           # Load .env and start the query service
+make build         # Compile binary to bin/query
+make test          # Unit tests across all modules
+make test-race     # Unit tests with -race
+make lint          # golangci-lint per module (GOWORK=off)
+make fmt           # goimports (falls back to gofmt)
+make tidy          # go mod tidy + go work sync
+make e2e           # End-to-end tests (requires service running on :8080)
+make migrate-up    # Apply migrations from migrations/*.up.sql
+make migrate-down  # Revert migrations in reverse order
+make infra-up      # docker-compose up -d postgres
+make infra-down    # docker-compose down
+make keygen        # Print a new AUTH_SECRET_KEY= line ready for .env
+```
 
-| # | Decision |
-|---|---|
-| ADR-001 | Qdrant over pgvector — native payload filtering maps directly to metadata filter queries |
-| ADR-002 | RabbitMQ over SQS — runs locally in Docker, richer routing, no vendor lock-in |
-| ADR-003 | Lambda only for ingestion — bursty workload, async acceptable; gRPC services stay warm for query path |
-| ADR-004 | gRPC between long-running services — typed contracts, streaming support, binary efficiency |
-| ADR-005 | Monorepo with UI submodule — shared proto/pkg without multi-repo coordination overhead |
+All targets must be run from the **repo root** (where `go.work` lives).
 
 ---
 
-## Project Roadmap
+## Auth Design Notes
 
-- [x] PDF ingestion pipeline (parse → chunk → embed → index)
-- [x] gRPC retrieval + metadata services
-- [x] RabbitMQ event-driven ingestion
-- [x] REST query API with structured responses
-- [x] Metadata filtering (author, year, tags)
-- [ ] Re-index scheduler Lambda
-- [ ] Book removal + vector cleanup
-- [ ] Web UI (submodule)
-- [ ] Multi-model embedding support (local Ollama fallback)
-- [ ] Streaming LLM responses (SSE)
-- [ ] OpenTelemetry distributed tracing across Lambda + services
+**Tokens** — PASETO v4 local (symmetric). The payload is encrypted with XChaCha20-Poly1305 and authenticated with BLAKE2b. Clients cannot read or tamper with their own token claims. No algorithm negotiation — the algorithm is fixed by the `v4.local.` prefix, so the JWT `alg:none` class of attacks cannot exist.
+
+**Passwords** — bcrypt. Cost factor is Go's `bcrypt.DefaultCost` (10).
+
+**`/auth/me` is DB-free** — identity (user ID, email, role) is embedded in the token. Validating the token is sufficient to serve the endpoint.
+
+**Logout** — currently client-side only. The server returns 200 and the client discards the token. A server-side blocklist (Redis set keyed by token expiry) is planned for Iteration 4 when the metadata service has its own infrastructure.
+
+---
+
+## Testing
+
+```bash
+# Unit + middleware tests (no infrastructure required)
+make test
+
+# End-to-end tests (Postgres + running service required)
+make infra-up && make migrate-up
+make dev &          # in background, or separate terminal
+make e2e
+```
+
+The e2e suite (`tests/e2e/`) is tagged `//go:build e2e` so it is never included in `make test`. It runs 18 tests covering all auth and query paths including error cases.
+
+WARNs in the service logs during `make e2e` are expected — the request logger emits WARN on every 4xx response, and roughly half the e2e tests deliberately send bad requests to verify rejections.
+
+---
+
+## Development Guide
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for:
+- Go workspace layout and the reason there is no `go.mod` at the root
+- How to add a dependency to a specific module
+- How to add a new module to the workspace
+- Why `make lint` uses `GOWORK=off` and how to lint a single module
+
+---
+
+## Roadmap
+
+- [x] Domain model (User, Book, Chunk, Query, SearchResult)
+- [x] PASETO v4 auth (register, login, `/me`, logout)
+- [x] chi HTTP server with structured logging and graceful shutdown
+- [x] Postgres user repository
+- [x] e2e test suite
+- [x] Dockerfile (multi-stage, distroless runtime)
+- [ ] **Iteration 3** — gRPC metadata service split; query service calls metadata over gRPC
+- [ ] **Iteration 4** — short-lived access tokens, refresh tokens, server-side revocation
+- [ ] **Iteration 5** — Qdrant vector search integration
+- [ ] **Iteration 6** — PDF ingestion pipeline (parse → chunk → embed → index)
+- [ ] **Iteration 7** — Event-driven ingestion via RabbitMQ
+- [ ] **Iteration 8** — OpenTelemetry distributed tracing
 
 ---
 
