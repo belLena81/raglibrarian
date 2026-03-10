@@ -1,7 +1,3 @@
-// Package repository contains adapters that satisfy the QueryRepository port.
-// StubQueryRepository is the Iteration 1 implementation — it returns
-// hard-coded, realistic results so the API contract can be verified and
-// consumed by the UI before any real infrastructure exists.
 package repository
 
 import (
@@ -10,8 +6,8 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/domain"
 )
 
-// StubQueryRepository satisfies QueryRepository with deterministic fake data.
-// It lives in the infra/stub layer; no domain logic lives here.
+// StubQueryRepository satisfies QueryRepository with hard-coded results.
+// Used in Iteration 1 before real infrastructure is wired.
 type StubQueryRepository struct{}
 
 // NewStubQueryRepository constructs a StubQueryRepository.
@@ -19,8 +15,7 @@ func NewStubQueryRepository() *StubQueryRepository {
 	return &StubQueryRepository{}
 }
 
-// Search returns two hard-coded SearchResults regardless of the question,
-// proving the response shape before any vector search is wired.
+// Search returns two deterministic SearchResults regardless of the question.
 func (r *StubQueryRepository) Search(_ context.Context, q domain.Query) ([]domain.SearchResult, error) {
 	goBook, _ := domain.NewBook("The Go Programming Language", "Donovan & Kernighan", 2015)
 	cleanBook, _ := domain.NewBook("Clean Code", "Robert C. Martin", 2008)

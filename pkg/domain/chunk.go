@@ -7,8 +7,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Chunk represents a single text excerpt extracted from a Book page.
-// It is the unit that gets embedded and stored in the vector database.
+// Chunk is a text excerpt from a Book page, used as the vector embedding unit.
 type Chunk struct {
 	id        string
 	bookId    string
@@ -18,7 +17,7 @@ type Chunk struct {
 	createdAt time.Time
 }
 
-// NewChunk creates a Chunk, returning an error if any field is invalid.
+// NewChunk constructs a validated Chunk.
 func NewChunk(bookId, content string, pageStart, pageEnd int) (Chunk, error) {
 	if strings.TrimSpace(bookId) == "" {
 		return Chunk{}, ErrEmptyBookId
@@ -40,7 +39,7 @@ func NewChunk(bookId, content string, pageStart, pageEnd int) (Chunk, error) {
 	}, nil
 }
 
-// NewChunkFromDB reconstructs a Chunk from persisted data without re-validation.
+// NewChunkFromDB reconstructs a Chunk from persisted data, skipping validation.
 // Only repository implementations should call this.
 func NewChunkFromDB(id, bookID, content string, pageStart, pageEnd int, createdAt time.Time) Chunk {
 	return Chunk{
@@ -56,7 +55,7 @@ func NewChunkFromDB(id, bookID, content string, pageStart, pageEnd int, createdA
 // Id returns the chunk's unique identifier.
 func (c Chunk) Id() string { return c.id }
 
-// BookId returns the identifier of the book this chunk belongs to.
+// BookId returns the ID of the book this chunk belongs to.
 func (c Chunk) BookId() string { return c.bookId }
 
 // Content returns the raw text of this chunk.

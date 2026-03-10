@@ -1,6 +1,4 @@
-// Package repository defines the port (interface) that the auth use case
-// depends on for user persistence. Concrete adapters implement this interface;
-// the domain and application layers never import them.
+// Package repository defines the persistence port for the auth use case.
 package repository
 
 import (
@@ -10,17 +8,15 @@ import (
 )
 
 // UserRepository is the persistence port for the User aggregate.
-// Implementations live in the infra layer and are injected at startup.
 type UserRepository interface {
-	// Save persists a new User. Returns domain.ErrEmailTaken if the email
-	// is already registered.
+	// Save persists a new User. Returns domain.ErrEmailTaken on duplicate email.
 	Save(ctx context.Context, user domain.User) error
 
 	// FindByEmail returns the User with the given email.
-	// Returns domain.ErrUserNotFound if no such user exists.
+	// Returns domain.ErrUserNotFound if absent.
 	FindByEmail(ctx context.Context, email string) (domain.User, error)
 
 	// FindByID returns the User with the given ID.
-	// Returns domain.ErrUserNotFound if no such user exists.
+	// Returns domain.ErrUserNotFound if absent.
 	FindByID(ctx context.Context, id string) (domain.User, error)
 }

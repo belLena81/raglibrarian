@@ -7,12 +7,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// Role is a value object representing a user's permission level.
-// It is immutable after construction and validated at the boundary —
-// the rest of the system never passes raw strings for roles.
+// Role represents a user's permission level.
 type Role string
 
-// Role constants define all valid permission levels in the system.
+// Valid role values.
 const (
 	RoleAdmin  Role = "admin"
 	RoleReader Role = "reader"
@@ -24,13 +22,10 @@ func (r Role) IsValid() bool {
 }
 
 // CanWrite reports whether this role may create or modify resources.
-// Centralising the policy here means handler/usecase code never contains
-// role-string comparisons.
 func (r Role) CanWrite() bool { return r == RoleAdmin }
 
 // User is the aggregate root for authentication and authorisation.
-// PasswordHash is stored; the plaintext password never lives on this struct.
-// All fields are private — use NewUser or NewUserFromDB to construct.
+// Stores a bcrypt password hash; the plaintext is never retained.
 type User struct {
 	id           string
 	email        string
@@ -40,8 +35,6 @@ type User struct {
 }
 
 // NewUser constructs a User with a pre-hashed password.
-// The caller is responsible for hashing — this keeps the domain free of
-// the bcrypt dependency.
 func NewUser(email, passwordHash string, role Role) (User, error) {
 	if err := validateEmail(email); err != nil {
 		return User{}, err
@@ -62,8 +55,8 @@ func NewUser(email, passwordHash string, role Role) (User, error) {
 	}, nil
 }
 
-// NewUserFromDB reconstructs a User from persisted data without re-validation.
-// Only infrastructure (repository implementations) should call this.
+// NewUserFromDB reconstructs a User from persisted data, skipping validation.
+// Only repository implementations should call this.
 func NewUserFromDB(id, email, passwordHash string, role Role, createdAt time.Time) User {
 	return User{
 		id:           id,

@@ -11,22 +11,13 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/domain"
 )
 
-// contextKey is an unexported type for context keys in this package.
-// Using a named type prevents collisions with keys from other packages
-// that also use plain strings.
+// contextKey is an unexported type for context keys to avoid collisions.
 type contextKey string
 
 const claimsKey contextKey = "auth_claims"
 
-// Authenticator returns a chi middleware that:
-//  1. Reads the Authorization: Bearer <token> header
-//  2. Validates the PASETO token using the provided Issuer
-//  3. Stores the verified Claims in the request context
-//  4. Rejects with 401 if the header is absent or the token is invalid
-//
-// Routes that require authentication must be registered under a router
-// that has this middleware applied. Public routes (/healthz, /auth/*) must
-// be outside that sub-router.
+// Authenticator validates the Authorization: Bearer token and stores Claims in context.
+// Rejects with 401 if the header is absent or the token is invalid.
 func Authenticator(issuer *auth.Issuer, log *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +29,6 @@ func Authenticator(issuer *auth.Issuer, log *zap.Logger) func(http.Handler) http
 
 			claims, err := issuer.Validate(tokenStr)
 			if err != nil {
-				// Log at Debug — failed auth is not operator-actionable noise.
 				log.Debug("token validation failed", zap.Error(err))
 				writeUnauthorized(w, "invalid or expired token")
 				return
@@ -50,15 +40,13 @@ func Authenticator(issuer *auth.Issuer, log *zap.Logger) func(http.Handler) http
 	}
 }
 
-// RequireRole returns a middleware that enforces a minimum role.
-// Must be applied after Authenticator — panics if claims are absent,
-// which indicates incorrect middleware ordering.
+// RequireRole enforces a minimum role. Must be applied after Authenticator.
+// Panics if claims are absent, indicating incorrect middleware ordering.
 func RequireRole(required domain.Role) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			claims, ok := ClaimsFromContext(r.Context())
 			if !ok {
-				// Authenticator was not applied — this is a programmer error.
 				panic("middleware: RequireRole called without Authenticator in chain")
 			}
 
@@ -73,7 +61,7 @@ func RequireRole(required domain.Role) func(http.Handler) http.Handler {
 }
 
 // ClaimsFromContext retrieves the verified Claims stored by Authenticator.
-// Returns (Claims{}, false) if no claims are present — i.e. the route is public.
+// Returns (Claims{}, false) if the route is public.
 func ClaimsFromContext(ctx context.Context) (auth.Claims, bool) {
 	claims, ok := ctx.Value(claimsKey).(auth.Claims)
 	return claims, ok
@@ -81,8 +69,6 @@ func ClaimsFromContext(ctx context.Context) (auth.Claims, bool) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// bearerToken extracts the token string from an "Authorization: Bearer <token>"
-// header. Returns ("", false) if the header is absent or malformed.
 func bearerToken(r *http.Request) (string, bool) {
 	header := r.Header.Get("Authorization")
 	if header == "" {

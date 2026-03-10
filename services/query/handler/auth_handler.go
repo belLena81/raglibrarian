@@ -1,7 +1,4 @@
-// Package handler — auth_handler.go
-// Handles POST /auth/register and POST /auth/login.
-// Auth lives in the query service for Iteration 2. It moves to the metadata
-// gRPC service in Iteration 3 when the service split is introduced.
+// Package handler contains HTTP handlers for the query service.
 package handler
 
 import (
@@ -24,10 +21,7 @@ import (
 type RegisterRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
-	// Role defaults to "reader" when absent. Explicit "admin" is accepted here
-	// for bootstrapping; a production hardening pass would gate this on a
-	// separate admin-only endpoint.
-	Role string `json:"role"`
+	Role     string `json:"role"` // defaults to "reader" when absent
 }
 
 // LoginRequest is the JSON body for POST /auth/login.
@@ -36,15 +30,13 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
-// AuthResponse is returned by both /register and /login on success.
-// Returning the role saves the client an extra round-trip to /me.
+// AuthResponse is returned by /register and /login on success.
 type AuthResponse struct {
 	Token string `json:"token"`
 	Role  string `json:"role"`
 }
 
 // MeResponse is returned by GET /auth/me.
-// All fields are sourced from the verified PASETO token claims — no DB call.
 type MeResponse struct {
 	UserID string `json:"user_id"`
 	Email  string `json:"email"`
@@ -71,7 +63,7 @@ func NewAuthHandler(uc usecase.AuthUseCase, log *zap.Logger) *AuthHandler {
 }
 
 // Register handles POST /auth/register.
-// Creates an account and immediately issues a token — no separate login needed.
+// Creates an account and issues a token in one request.
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	reqID := middleware.GetReqID(r.Context())
 
@@ -96,8 +88,6 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Issue a token immediately so the client can start querying without a
-	// separate login round-trip.
 	token, err := h.uc.Login(r.Context(), req.Email, req.Password)
 	if err != nil {
 		h.log.Error("failed to issue token after successful registration",
@@ -115,13 +105,10 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 }
 
 // Me handles GET /auth/me.
-// Returns the identity encoded in the caller's PASETO token.
-// No database call is needed — all fields come from the verified Claims that
-// Authenticator already stored in context. This makes /me fast and DB-free.
+// Returns identity from the caller's PASETO token claims — no DB call.
 func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	claims, ok := querymiddleware.ClaimsFromContext(r.Context())
 	if !ok {
-		// Authenticator must be applied to this route — absence is a wiring bug.
 		writeAuthError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
@@ -133,18 +120,8 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 }
 
 // Logout handles POST /auth/logout.
-//
-// PASETO v4 local tokens are self-contained and cannot be revoked without a
-// server-side blocklist. That blocklist belongs in the metadata service and
-// will be implemented in Iteration 4 (token revocation).
-//
-// For now this endpoint returns 200 so clients can call it safely and clear
-// their stored token — the token remains technically valid until it expires,
-// but an honest client will discard it after a successful logout response.
-//
-// TODO(iteration-4): implement revocation by adding the token's jti to a
-// short-lived Redis set keyed by expiry time. The Authenticator middleware
-// should check the blocklist after signature verification.
+// Returns 200 so clients can discard their token; no server-side revocation yet.
+// TODO(iteration-4): add token revocation via a short-lived Redis blocklist.
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	type logoutResponse struct {
 		Message string `json:"message"`
@@ -152,8 +129,7 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	writeAuthJSON(w, http.StatusOK, logoutResponse{Message: "logged out"})
 }
 
-// Login handles POST /auth/login.
-// Returns a PASETO token on success; a uniform 401 on any failure.
+// Login handles POST /auth/login. Returns a PASETO token on success.
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -163,7 +139,6 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	token, err := h.uc.Login(r.Context(), req.Email, req.Password)
 	if err != nil {
-		// Do NOT log the email — avoid leaking PII into log aggregators.
 		h.log.Debug("login failed", zap.String("request_id", middleware.GetReqID(r.Context())))
 		writeAuthError(w, http.StatusUnauthorized, "invalid credentials")
 		return
@@ -189,8 +164,6 @@ func authErrToStatus(err error) int {
 	}
 }
 
-// sanitiseAuthError returns a safe, user-facing message.
-// Internal errors are never surfaced — only domain validation messages are.
 func sanitiseAuthError(err error) string {
 	switch {
 	case errors.Is(err, domain.ErrEmailTaken):

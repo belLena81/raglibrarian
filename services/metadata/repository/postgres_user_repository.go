@@ -13,20 +13,16 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/domain"
 )
 
-// pgUniqueViolation is the Postgres SQLSTATE code for a unique constraint breach.
-// Using the code rather than the error message makes this robust across locales
-// and Postgres versions.
+// pgUniqueViolation is the Postgres SQLSTATE code for unique constraint violations.
 const pgUniqueViolation = "23505"
 
 // PostgresUserRepository is the pgx/v5 implementation of UserRepository.
-// It holds a *pgxpool.Pool so connections are reused across requests —
-// there is no per-request connection overhead.
 type PostgresUserRepository struct {
 	pool *pgxpool.Pool
 }
 
-// NewPostgresUserRepository constructs the repository backed by the given pool.
-// Panics if pool is nil — misconfigured wiring must be caught at startup.
+// NewPostgresUserRepository constructs the repository with the given pool.
+// Panics if pool is nil.
 func NewPostgresUserRepository(pool *pgxpool.Pool) *PostgresUserRepository {
 	if pool == nil {
 		panic("repository: pgxpool must not be nil")
@@ -34,8 +30,7 @@ func NewPostgresUserRepository(pool *pgxpool.Pool) *PostgresUserRepository {
 	return &PostgresUserRepository{pool: pool}
 }
 
-// Save inserts a new user row. Maps Postgres unique-email violations to
-// domain.ErrEmailTaken so callers never need to import the pgx package.
+// Save inserts a new user row. Maps unique-email violations to domain.ErrEmailTaken.
 func (r *PostgresUserRepository) Save(ctx context.Context, user domain.User) error {
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO users (id, email, password_hash, role, created_at)
@@ -56,8 +51,7 @@ func (r *PostgresUserRepository) Save(ctx context.Context, user domain.User) err
 	return nil
 }
 
-// FindByEmail looks up a user by email address.
-// Returns domain.ErrUserNotFound when no row matches.
+// FindByEmail looks up a user by email. Returns domain.ErrUserNotFound when absent.
 func (r *PostgresUserRepository) FindByEmail(ctx context.Context, email string) (domain.User, error) {
 	row := r.pool.QueryRow(ctx,
 		`SELECT id, email, password_hash, role, created_at
@@ -67,8 +61,7 @@ func (r *PostgresUserRepository) FindByEmail(ctx context.Context, email string) 
 	return scanUser(row)
 }
 
-// FindByID looks up a user by UUID.
-// Returns domain.ErrUserNotFound when no row matches.
+// FindByID looks up a user by UUID. Returns domain.ErrUserNotFound when absent.
 func (r *PostgresUserRepository) FindByID(ctx context.Context, id string) (domain.User, error) {
 	row := r.pool.QueryRow(ctx,
 		`SELECT id, email, password_hash, role, created_at
@@ -78,8 +71,6 @@ func (r *PostgresUserRepository) FindByID(ctx context.Context, id string) (domai
 	return scanUser(row)
 }
 
-// scanUser reads one users row into a domain.User using NewUserFromDB,
-// which bypasses validation — data is assumed valid as it passed validation at write time.
 func scanUser(row pgx.Row) (domain.User, error) {
 	var (
 		id        string

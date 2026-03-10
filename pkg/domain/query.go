@@ -15,7 +15,7 @@ type Query struct {
 	createdAt time.Time
 }
 
-// NewQuery creates a Query, returning an error if any field is invalid.
+// NewQuery constructs a validated Query.
 func NewQuery(userId, question string) (Query, error) {
 	if strings.TrimSpace(userId) == "" {
 		return Query{}, ErrEmptyUserId
@@ -32,7 +32,7 @@ func NewQuery(userId, question string) (Query, error) {
 	}, nil
 }
 
-// NewQueryFromDb reconstructs a Query from persisted data without re-validation.
+// NewQueryFromDb reconstructs a Query from persisted data, skipping validation.
 // Only repository implementations should call this.
 func NewQueryFromDb(id, userId, question string, createdAt time.Time) Query {
 	return Query{
@@ -46,7 +46,7 @@ func NewQueryFromDb(id, userId, question string, createdAt time.Time) Query {
 // Id returns the query's unique identifier.
 func (q Query) Id() string { return q.id }
 
-// UserId returns the identifier of the user who submitted the query.
+// UserId returns the ID of the user who submitted the query.
 func (q Query) UserId() string { return q.userId }
 
 // Question returns the natural language question text.

@@ -4,8 +4,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// SearchResult represents a single ranked answer returned for a Query.
-// It ties a Chunk back to its Book with a relevance score.
+// SearchResult is a ranked answer returned for a Query, tying a passage to its Book.
 type SearchResult struct {
 	id      string
 	queryId string
@@ -16,7 +15,7 @@ type SearchResult struct {
 	score   float64
 }
 
-// NewSearchResult creates a SearchResult, returning an error if any field is invalid.
+// NewSearchResult constructs a validated SearchResult.
 func NewSearchResult(queryId string, book Book, chapter, passage string, pages []int, score float64) (SearchResult, error) {
 	if err := validateQueryID(queryId); err != nil {
 		return SearchResult{}, err
@@ -45,7 +44,7 @@ func NewSearchResult(queryId string, book Book, chapter, passage string, pages [
 	}, nil
 }
 
-// NewSearchResultFromDb reconstructs a SearchResult from persisted data without re-validation.
+// NewSearchResultFromDb reconstructs a SearchResult from persisted data, skipping validation.
 // Only repository implementations should call this.
 func NewSearchResultFromDb(id, queryId string, book Book, chapter, passage string, pages []int, score float64) SearchResult {
 	return SearchResult{
@@ -62,10 +61,10 @@ func NewSearchResultFromDb(id, queryId string, book Book, chapter, passage strin
 // Id returns the search result's unique identifier.
 func (s SearchResult) Id() string { return s.id }
 
-// QueryId returns the identifier of the query this result belongs to.
+// QueryId returns the ID of the query this result belongs to.
 func (s SearchResult) QueryId() string { return s.queryId }
 
-// Book returns the book that contains this result's passage.
+// Book returns the book containing this result's passage.
 func (s SearchResult) Book() Book { return s.book }
 
 // Chapter returns the chapter name or heading for this passage.
@@ -77,5 +76,5 @@ func (s SearchResult) Pages() []int { return s.pages }
 // Passage returns the text excerpt relevant to the query.
 func (s SearchResult) Passage() string { return s.passage }
 
-// Score returns the relevance score in [0, 1], higher is more relevant.
+// Score returns the relevance score in [0, 1].
 func (s SearchResult) Score() float64 { return s.score }

@@ -1,3 +1,4 @@
+// Package domain contains the core business entities and rules for raglibrarian.
 package domain
 
 import (
@@ -7,7 +8,6 @@ import (
 )
 
 // Book represents an indexed technical book in the library.
-// All fields are private — use NewBook to construct a valid instance.
 type Book struct {
 	id        string
 	title     string
@@ -17,7 +17,7 @@ type Book struct {
 	updatedAt time.Time
 }
 
-// NewBook creates a Book, returning an error if any field is invalid.
+// NewBook constructs a validated Book.
 func NewBook(title, author string, year int) (Book, error) {
 	if err := validateTitle(title); err != nil {
 		return Book{}, err
@@ -41,7 +41,7 @@ func NewBook(title, author string, year int) (Book, error) {
 	}, nil
 }
 
-// NewBookFromDb reconstructs a Book from persisted data without re-validation.
+// NewBookFromDb reconstructs a Book from persisted data, skipping validation.
 // Only repository implementations should call this.
 func NewBookFromDb(id, title, author string, year int, createdAt, updatedAt time.Time) Book {
 	return Book{
@@ -72,7 +72,7 @@ func (b *Book) CreatedAt() time.Time { return b.createdAt }
 // UpdatedAt returns when the book record was last modified.
 func (b *Book) UpdatedAt() time.Time { return b.updatedAt }
 
-// SetTitle updates the title, returning an error if the new value is invalid.
+// SetTitle updates the title, returning an error if invalid.
 func (b *Book) SetTitle(title string) error {
 	if err := validateTitle(title); err != nil {
 		return err
@@ -82,7 +82,7 @@ func (b *Book) SetTitle(title string) error {
 	return nil
 }
 
-// SetAuthor updates the author, returning an error if the new value is invalid.
+// SetAuthor updates the author, returning an error if invalid.
 func (b *Book) SetAuthor(author string) error {
 	if err := validateAuthor(author); err != nil {
 		return err
@@ -92,7 +92,7 @@ func (b *Book) SetAuthor(author string) error {
 	return nil
 }
 
-// SetYear updates the publication year, returning an error if the new value is invalid.
+// SetYear updates the publication year, returning an error if invalid.
 func (b *Book) SetYear(year int) error {
 	if err := validateYear(year); err != nil {
 		return err
