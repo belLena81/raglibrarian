@@ -15,6 +15,19 @@ import (
 
 // pgUniqueViolation is the Postgres SQLSTATE code for unique constraint violations.
 const pgUniqueViolation = "23505"
+const (
+	insertUserQuery = `
+	INSERT INTO users (id, email, password_hash, role, created_at)
+	VALUES ($1, $2, $3, $4, $5)`
+
+	findUserByEmailQuery = `
+	SELECT id, email, password_hash, role, created_at
+	FROM users WHERE email=$1`
+
+	findUserByIDQuery = `
+	SELECT id, email, password_hash, role, created_at
+	FROM users WHERE id=$1`
+)
 
 // PostgresUserRepository is the pgx/v5 implementation of UserRepository.
 type PostgresUserRepository struct {
@@ -33,8 +46,7 @@ func NewPostgresUserRepository(pool *pgxpool.Pool) *PostgresUserRepository {
 // Save inserts a new user row. Maps unique-email violations to domain.ErrEmailTaken.
 func (r *PostgresUserRepository) Save(ctx context.Context, user domain.User) error {
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO users (id, email, password_hash, role, created_at)
-		 VALUES ($1, $2, $3, $4, $5)`,
+		insertUserQuery,
 		user.ID(),
 		user.Email(),
 		user.PasswordHash(),
@@ -42,8 +54,7 @@ func (r *PostgresUserRepository) Save(ctx context.Context, user domain.User) err
 		user.CreatedAt(),
 	)
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation {
+		if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == pgUniqueViolation {
 			return domain.ErrEmailTaken
 		}
 		return fmt.Errorf("repository: save user: %w", err)
@@ -54,8 +65,7 @@ func (r *PostgresUserRepository) Save(ctx context.Context, user domain.User) err
 // FindByEmail looks up a user by email. Returns domain.ErrUserNotFound when absent.
 func (r *PostgresUserRepository) FindByEmail(ctx context.Context, email string) (domain.User, error) {
 	row := r.pool.QueryRow(ctx,
-		`SELECT id, email, password_hash, role, created_at
-		 FROM users WHERE email = $1`,
+		findUserByEmailQuery,
 		email,
 	)
 	return scanUser(row)
@@ -64,8 +74,7 @@ func (r *PostgresUserRepository) FindByEmail(ctx context.Context, email string) 
 // FindByID looks up a user by UUID. Returns domain.ErrUserNotFound when absent.
 func (r *PostgresUserRepository) FindByID(ctx context.Context, id string) (domain.User, error) {
 	row := r.pool.QueryRow(ctx,
-		`SELECT id, email, password_hash, role, created_at
-		 FROM users WHERE id = $1`,
+		findUserByIDQuery,
 		id,
 	)
 	return scanUser(row)
