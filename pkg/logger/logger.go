@@ -33,6 +33,10 @@ func New(service string) (*zap.Logger, error) {
 	}
 
 	base, err := cfg.Build(zap.AddCallerSkip(0))
+	base = base.With(
+		zap.String("service", service),
+		zap.String("env", os.Getenv("LOG_ENV")),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("logger: build failed: %w", err)
 	}

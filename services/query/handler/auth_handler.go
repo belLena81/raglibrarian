@@ -9,7 +9,6 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
 
-	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/pkg/domain"
 	"github.com/belLena81/raglibrarian/services/metadata/usecase"
 	querymiddleware "github.com/belLena81/raglibrarian/services/query/middleware"
@@ -147,7 +146,7 @@ func authErrToStatus(err error) int {
 		errors.Is(err, domain.ErrEmptyEmail),
 		errors.Is(err, domain.ErrInvalidRole):
 		return http.StatusUnprocessableEntity
-	case errors.Is(err, auth.ErrInvalidCredentials):
+	case errors.Is(err, domain.ErrInvalidCredentials):
 		return http.StatusUnauthorized
 	default:
 		return http.StatusInternalServerError
@@ -162,7 +161,7 @@ func sanitiseAuthError(err error) string {
 		return "email format is invalid"
 	case errors.Is(err, domain.ErrInvalidRole):
 		return "role must be admin or reader"
-	case errors.Is(err, auth.ErrInvalidCredentials):
+	case errors.Is(err, domain.ErrInvalidCredentials):
 		return "invalid credentials"
 	default:
 		return "internal server error"

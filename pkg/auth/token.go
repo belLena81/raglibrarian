@@ -2,7 +2,6 @@
 package auth
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
@@ -75,27 +74,27 @@ func (is *Issuer) Validate(tokenStr string) (Claims, error) {
 
 	token, err := parser.ParseV4Local(is.key, tokenStr, nil)
 	if err != nil {
-		return Claims{}, ErrInvalidToken
+		return Claims{}, domain.ErrInvalidToken
 	}
 
 	userID, err := token.GetSubject()
 	if err != nil {
-		return Claims{}, ErrInvalidToken
+		return Claims{}, domain.ErrInvalidToken
 	}
 
 	email, err := token.GetString("email")
 	if err != nil {
-		return Claims{}, ErrInvalidToken
+		return Claims{}, domain.ErrInvalidToken
 	}
 
 	roleStr, err := token.GetString("role")
 	if err != nil {
-		return Claims{}, ErrInvalidToken
+		return Claims{}, domain.ErrInvalidToken
 	}
 
 	role := domain.Role(roleStr)
 	if !role.IsValid() {
-		return Claims{}, ErrInvalidToken
+		return Claims{}, domain.ErrInvalidToken
 	}
 
 	return Claims{
@@ -104,6 +103,3 @@ func (is *Issuer) Validate(tokenStr string) (Claims, error) {
 		Role:   role,
 	}, nil
 }
-
-// ErrInvalidToken is returned by Validate for any untrustworthy token.
-var ErrInvalidToken = errors.New("auth: token is invalid or expired")

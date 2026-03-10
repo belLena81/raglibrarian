@@ -7,6 +7,18 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/belLena81/raglibrarian/pkg/domain"
+)
+
+// Environment variable names read by Load.
+const (
+	EnvAuthSecretKey = "AUTH_SECRET_KEY" //nolint:gosec
+	EnvPostgresDSN   = "POSTGRES_DSN"
+	EnvTokenTTL      = "TOKEN_TTL"
+	EnvQueryAddr     = "QUERY_ADDR"
+	EnvLogEnv        = "LOG_ENV"
+	EnvLogLevel      = "LOG_LEVEL"
 )
 
 // Config holds all runtime configuration for the query service.
@@ -28,41 +40,39 @@ type Config struct {
 
 // Load reads and validates all required and optional environment variables.
 func Load() (Config, error) {
-	keyHex, err := requireEnv("AUTH_SECRET_KEY")
+	keyHex, err := requireEnv(EnvAuthSecretKey)
 	if err != nil {
 		return Config{}, err
 	}
 	key, err := hex.DecodeString(keyHex)
-	if err != nil || len(key) != 32 {
-		return Config{}, fmt.Errorf(
-			"config: AUTH_SECRET_KEY must be exactly 64 hex characters (got %d chars)", len(keyHex),
-		)
+	if err != nil || len(keyHex) != 64 || len(key) != 32 {
+		return Config{}, fmt.Errorf("%w: %s must be 64 hex chars", domain.ErrInvalidSecretKey, EnvAuthSecretKey)
 	}
 
-	dsn, err := requireEnv("POSTGRES_DSN")
+	dsn, err := requireEnv(EnvPostgresDSN)
 	if err != nil {
 		return Config{}, err
 	}
 
-	ttl, err := parseDuration(optionalEnv("TOKEN_TTL", "24h"))
+	ttl, err := parseDuration(optionalEnv(EnvTokenTTL, "24h"))
 	if err != nil {
-		return Config{}, fmt.Errorf("config: invalid TOKEN_TTL: %w", err)
+		return Config{}, fmt.Errorf("%w: %s: %v", domain.ErrInvalidTokenTTL, EnvTokenTTL, err)
 	}
 
 	return Config{
-		Addr:          optionalEnv("QUERY_ADDR", ":8080"),
+		Addr:          optionalEnv(EnvQueryAddr, ":8080"),
 		AuthSecretKey: key,
 		TokenTTL:      ttl,
 		PostgresDSN:   dsn,
-		LogEnv:        optionalEnv("LOG_ENV", ""),
-		LogLevel:      optionalEnv("LOG_LEVEL", ""),
+		LogEnv:        optionalEnv(EnvLogEnv, ""),
+		LogLevel:      optionalEnv(EnvLogLevel, ""),
 	}, nil
 }
 
 func requireEnv(key string) (string, error) {
 	v := os.Getenv(key)
 	if v == "" {
-		return "", fmt.Errorf("config: required environment variable %q is not set", key)
+		return v, fmt.Errorf("%w: %s", domain.ErrMissingEnvVar, key)
 	}
 	return v, nil
 }
@@ -80,7 +90,7 @@ func parseDuration(s string) (time.Duration, error) {
 	}
 	secs, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("cannot parse %q as duration or seconds", s)
+		return 0, fmt.Errorf("%w: %q", domain.ErrInvalidDuration, s)
 	}
 	return time.Duration(secs) * time.Second, nil
 }

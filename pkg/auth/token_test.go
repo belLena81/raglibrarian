@@ -129,19 +129,19 @@ func TestIssuer_Validate_TamperedToken_ReturnsErrInvalidToken(t *testing.T) {
 	}
 
 	_, err = issuer.Validate(tampered)
-	assert.ErrorIs(t, err, auth.ErrInvalidToken)
+	assert.ErrorIs(t, err, domain.ErrInvalidToken)
 }
 
 func TestIssuer_Validate_GarbageString_ReturnsErrInvalidToken(t *testing.T) {
 	issuer := newTestIssuer(t)
 	_, err := issuer.Validate("not.a.paseto.token")
-	assert.ErrorIs(t, err, auth.ErrInvalidToken)
+	assert.ErrorIs(t, err, domain.ErrInvalidToken)
 }
 
 func TestIssuer_Validate_EmptyString_ReturnsErrInvalidToken(t *testing.T) {
 	issuer := newTestIssuer(t)
 	_, err := issuer.Validate("")
-	assert.ErrorIs(t, err, auth.ErrInvalidToken)
+	assert.ErrorIs(t, err, domain.ErrInvalidToken)
 }
 
 func TestIssuer_Validate_ExpiredToken_ReturnsErrInvalidToken(t *testing.T) {
@@ -156,7 +156,7 @@ func TestIssuer_Validate_ExpiredToken_ReturnsErrInvalidToken(t *testing.T) {
 	time.Sleep(time.Millisecond)
 
 	_, err = issuer.Validate(token)
-	assert.ErrorIs(t, err, auth.ErrInvalidToken)
+	assert.ErrorIs(t, err, domain.ErrInvalidToken)
 }
 
 func TestIssuer_Validate_WrongKey_ReturnsErrInvalidToken(t *testing.T) {
@@ -172,7 +172,7 @@ func TestIssuer_Validate_WrongKey_ReturnsErrInvalidToken(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = issuerB.Validate(token)
-	assert.ErrorIs(t, err, auth.ErrInvalidToken)
+	assert.ErrorIs(t, err, domain.ErrInvalidToken)
 }
 
 func TestIssuer_Validate_WrongIssuer_ReturnsErrInvalidToken(t *testing.T) {
@@ -197,5 +197,5 @@ func TestIssuer_Validate_WrongIssuer_ReturnsErrInvalidToken(t *testing.T) {
 	tokenStr := spoofed.V4Encrypt(key, nil)
 
 	_, err = issuer.Validate(tokenStr)
-	assert.ErrorIs(t, err, auth.ErrInvalidToken)
+	assert.ErrorIs(t, err, domain.ErrInvalidToken)
 }

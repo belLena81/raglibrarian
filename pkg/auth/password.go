@@ -1,8 +1,10 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 
+	"github.com/belLena81/raglibrarian/pkg/domain"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -20,13 +22,14 @@ func HashPassword(plaintext string) (string, error) {
 
 // CheckPassword reports whether plaintext matches the stored bcrypt hash.
 // Returns ErrInvalidCredentials on any mismatch or malformed hash.
+// Returns ErrHashTooShort on other bcrypt errors.
 func CheckPassword(hash, plaintext string) error {
 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(plaintext))
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidCredentials, err)
+		if errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
+			return domain.ErrInvalidCredentials
+		}
+		return err
 	}
 	return nil
 }
-
-// ErrInvalidCredentials is returned when a password does not match its hash.
-var ErrInvalidCredentials = fmt.Errorf("auth: invalid credentials")

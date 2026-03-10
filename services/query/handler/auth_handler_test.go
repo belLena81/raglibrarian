@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 
-	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/pkg/domain"
 	"github.com/belLena81/raglibrarian/services/query/handler"
 )
@@ -153,7 +152,7 @@ func TestAuthHandler_Login_ValidCredentials_Returns200WithToken(t *testing.T) {
 }
 
 func TestAuthHandler_Login_InvalidCredentials_Returns401(t *testing.T) {
-	uc := &fakeAuthUseCase{loginErr: auth.ErrInvalidCredentials}
+	uc := &fakeAuthUseCase{loginErr: domain.ErrInvalidCredentials}
 	h := newAuthHandler(t, uc)
 
 	body, _ := json.Marshal(handler.LoginRequest{Email: "a@b.com", Password: "wrong"})

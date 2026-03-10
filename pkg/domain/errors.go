@@ -1,6 +1,8 @@
 package domain
 
-import "errors"
+import (
+	"errors"
+)
 
 // Book errors
 var (
@@ -40,4 +42,16 @@ var (
 	ErrEmailTaken        = errors.New("user: email is already registered")
 	ErrUserNotFound      = errors.New("user: not found")
 	ErrInvalidPassword   = errors.New("user: password is incorrect")
+	// ErrInvalidCredentials is returned when a password does not match its hash.
+	ErrInvalidCredentials = errors.New("auth: invalid credentials")
+	// ErrInvalidToken is returned by Validate for any untrustworthy token.
+	ErrInvalidToken = errors.New("auth: token is invalid or expired")
+)
+
+// Config errors
+var (
+	ErrMissingEnvVar    = errors.New("missing environment variable")
+	ErrInvalidTokenTTL  = errors.New("invalid token TTL")
+	ErrInvalidSecretKey = errors.New("invalid auth secret key")
+	ErrInvalidDuration  = errors.New("invalid duration")
 )

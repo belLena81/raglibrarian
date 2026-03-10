@@ -15,8 +15,8 @@ var validKeyHex = hex.EncodeToString(make([]byte, 32))
 
 func setMinimalEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv("AUTH_SECRET_KEY", validKeyHex)
-	t.Setenv("POSTGRES_DSN", "postgres://user:pass@localhost/raglibrarian")
+	t.Setenv(config.EnvAuthSecretKey, validKeyHex)
+	t.Setenv(config.EnvPostgresDSN, "postgres://user:pass@localhost/raglibrarian")
 }
 
 func TestLoad_ValidConfig_Succeeds(t *testing.T) {
@@ -32,28 +32,28 @@ func TestLoad_ValidConfig_Succeeds(t *testing.T) {
 }
 
 func TestLoad_MissingAuthSecretKey_ReturnsError(t *testing.T) {
-	t.Setenv("POSTGRES_DSN", "postgres://x")
-	t.Setenv("AUTH_SECRET_KEY", "")
+	t.Setenv(config.EnvPostgresDSN, "postgres://x")
+	t.Setenv(config.EnvAuthSecretKey, "")
 
 	_, err := config.Load()
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "AUTH_SECRET_KEY")
+	assert.Contains(t, err.Error(), config.EnvAuthSecretKey)
 }
 
 func TestLoad_InvalidAuthSecretKey_TooShort(t *testing.T) {
-	t.Setenv("AUTH_SECRET_KEY", "deadbeef") // only 4 bytes
-	t.Setenv("POSTGRES_DSN", "postgres://x")
+	t.Setenv(config.EnvAuthSecretKey, "deadbeef") // only 4 bytes
+	t.Setenv(config.EnvPostgresDSN, "postgres://x")
 
 	_, err := config.Load()
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "AUTH_SECRET_KEY")
+	assert.Contains(t, err.Error(), config.EnvAuthSecretKey)
 }
 
 func TestLoad_InvalidAuthSecretKey_NotHex(t *testing.T) {
-	t.Setenv("AUTH_SECRET_KEY", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
-	t.Setenv("POSTGRES_DSN", "postgres://x")
+	t.Setenv(config.EnvAuthSecretKey, "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
+	t.Setenv(config.EnvPostgresDSN, "postgres://x")
 
 	_, err := config.Load()
 
@@ -61,18 +61,18 @@ func TestLoad_InvalidAuthSecretKey_NotHex(t *testing.T) {
 }
 
 func TestLoad_MissingPostgresDSN_ReturnsError(t *testing.T) {
-	t.Setenv("AUTH_SECRET_KEY", validKeyHex)
-	t.Setenv("POSTGRES_DSN", "")
+	t.Setenv(config.EnvAuthSecretKey, validKeyHex)
+	t.Setenv(config.EnvPostgresDSN, "")
 
 	_, err := config.Load()
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "POSTGRES_DSN")
+	assert.Contains(t, err.Error(), config.EnvPostgresDSN)
 }
 
 func TestLoad_CustomAddr(t *testing.T) {
 	setMinimalEnv(t)
-	t.Setenv("QUERY_ADDR", ":9090")
+	t.Setenv(config.EnvQueryAddr, ":9090")
 
 	cfg, err := config.Load()
 
@@ -82,7 +82,7 @@ func TestLoad_CustomAddr(t *testing.T) {
 
 func TestLoad_CustomTokenTTL_GoDuration(t *testing.T) {
 	setMinimalEnv(t)
-	t.Setenv("TOKEN_TTL", "1h30m")
+	t.Setenv(config.EnvTokenTTL, "1h30m")
 
 	cfg, err := config.Load()
 
@@ -92,10 +92,10 @@ func TestLoad_CustomTokenTTL_GoDuration(t *testing.T) {
 
 func TestLoad_InvalidTokenTTL_ReturnsError(t *testing.T) {
 	setMinimalEnv(t)
-	t.Setenv("TOKEN_TTL", "not-a-duration")
+	t.Setenv(config.EnvTokenTTL, "not-a-duration")
 
 	_, err := config.Load()
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "TOKEN_TTL")
+	assert.Contains(t, err.Error(), config.EnvTokenTTL)
 }

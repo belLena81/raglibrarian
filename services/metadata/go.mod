@@ -9,7 +9,6 @@ go 1.26.0
 require (
 	github.com/belLena81/raglibrarian/pkg/auth v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/pkg/domain v0.0.0-20260309122639-6b9c9a70dd75
-	github.com/belLena81/raglibrarian/services/query v0.0.0-00010101000000-000000000000
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/stretchr/testify v1.11.1
 )

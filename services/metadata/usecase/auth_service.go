@@ -64,11 +64,11 @@ func (s *AuthService) Register(ctx context.Context, email, password string, role
 func (s *AuthService) Login(ctx context.Context, email, password string) (string, error) {
 	user, err := s.users.FindByEmail(ctx, email)
 	if err != nil {
-		return "", auth.ErrInvalidCredentials
+		return "", domain.ErrInvalidCredentials
 	}
 
 	if err = auth.CheckPassword(user.PasswordHash(), password); err != nil {
-		return "", auth.ErrInvalidCredentials
+		return "", domain.ErrInvalidCredentials
 	}
 
 	token, err := s.issuer.Issue(user)

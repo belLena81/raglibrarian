@@ -3,6 +3,7 @@ package auth_test
 import (
 	"testing"
 
+	"github.com/belLena81/raglibrarian/pkg/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -34,7 +35,7 @@ func TestCheckPassword_WrongPassword_ReturnsError(t *testing.T) {
 	hash, _ := auth.HashPassword("correct")
 
 	err := auth.CheckPassword(hash, "incorrect")
-	assert.ErrorIs(t, err, auth.ErrInvalidCredentials)
+	assert.ErrorIs(t, err, domain.ErrInvalidCredentials)
 }
 
 func TestCheckPassword_EmptyPlaintext_ReturnsError(t *testing.T) {
