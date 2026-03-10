@@ -29,8 +29,9 @@ func (f *fakeQueryUC) Answer(_ context.Context, _, _ string) ([]domain.SearchRes
 
 type fakeAuthUC struct{}
 
-func (f *fakeAuthUC) Register(_ context.Context, email, password string, role domain.Role) (domain.User, error) {
-	return domain.NewUser(email, "hashed", role)
+func (f *fakeAuthUC) Register(_ context.Context, email, _ string, role domain.Role) (string, domain.User, error) {
+	u, err := domain.NewUser(email, "hashed", role)
+	return "fake-token", u, err
 }
 func (f *fakeAuthUC) Login(_ context.Context, _, _ string) (string, error) {
 	return "fake-token", nil

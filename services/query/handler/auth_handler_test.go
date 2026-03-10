@@ -20,17 +20,18 @@ import (
 // ── Fake auth use case ────────────────────────────────────────────────────────
 
 type fakeAuthUseCase struct {
-	registerUser domain.User
-	registerErr  error
-	loginToken   string
-	loginErr     error
+	registerToken string
+	registerUser  domain.User
+	registerErr   error
+	loginToken    string
+	loginErr      error
 }
 
-func (f *fakeAuthUseCase) Register(_ context.Context, email, _ string, role domain.Role) (domain.User, error) {
+func (f *fakeAuthUseCase) Register(_ context.Context, _ string, _ string, _ domain.Role) (string, domain.User, error) {
 	if f.registerErr != nil {
-		return domain.User{}, f.registerErr
+		return "", domain.User{}, f.registerErr
 	}
-	return f.registerUser, nil
+	return f.registerToken, f.registerUser, nil
 }
 
 func (f *fakeAuthUseCase) Login(_ context.Context, _, _ string) (string, error) {
@@ -53,8 +54,8 @@ func newAuthHandler(t *testing.T, uc *fakeAuthUseCase) *handler.AuthHandler {
 
 func TestAuthHandler_Register_Returns201_WithToken(t *testing.T) {
 	uc := &fakeAuthUseCase{
-		registerUser: newRegisteredUser(t),
-		loginToken:   "v2.local.token",
+		registerToken: "v2.local.token",
+		registerUser:  newRegisteredUser(t),
 	}
 	h := newAuthHandler(t, uc)
 
@@ -114,7 +115,7 @@ func TestAuthHandler_Register_InvalidJSON_Returns400(t *testing.T) {
 
 func TestAuthHandler_Register_DefaultsRoleToReader(t *testing.T) {
 	var capturedRole domain.Role
-	uc := &fakeAuthUseCase{loginToken: "tok"}
+	uc := &fakeAuthUseCase{registerToken: "tok"}
 	uc.registerUser, _ = domain.NewUser("r@e.com", "h", domain.RoleReader)
 	// We capture the role via the fake's Register call in the real test below.
 	_ = capturedRole

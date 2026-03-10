@@ -78,23 +78,13 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		role = domain.RoleReader
 	}
 
-	user, err := h.uc.Register(r.Context(), req.Email, req.Password, role)
+	token, user, err := h.uc.Register(r.Context(), req.Email, req.Password, role)
 	if err != nil {
 		h.log.Debug("register failed",
 			zap.String("request_id", reqID),
 			zap.Error(err),
 		)
 		writeAuthError(w, authErrToStatus(err), sanitiseAuthError(err))
-		return
-	}
-
-	token, err := h.uc.Login(r.Context(), req.Email, req.Password)
-	if err != nil {
-		h.log.Error("failed to issue token after successful registration",
-			zap.String("request_id", reqID),
-			zap.Error(err),
-		)
-		writeAuthError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 

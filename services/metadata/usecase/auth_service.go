@@ -12,7 +12,8 @@ import (
 
 // AuthUseCase is the application-layer contract for registration and login.
 type AuthUseCase interface {
-	Register(ctx context.Context, email, password string, role domain.Role) (domain.User, error)
+	// Register creates a user and returns a ready-to-use token — no separate login needed.
+	Register(ctx context.Context, email, password string, role domain.Role) (string, domain.User, error)
 	Login(ctx context.Context, email, password string) (string, error)
 }
 
@@ -33,23 +34,28 @@ func NewAuthService(users repository.UserRepository, issuer *auth.Issuer) *AuthS
 	return &AuthService{users: users, issuer: issuer}
 }
 
-// Register hashes the password, creates a User, and persists it.
-func (s *AuthService) Register(ctx context.Context, email, password string, role domain.Role) (domain.User, error) {
+// Register hashes the password once, persists the user, and issues a token.
+func (s *AuthService) Register(ctx context.Context, email, password string, role domain.Role) (string, domain.User, error) {
 	hash, err := auth.HashPassword(password)
 	if err != nil {
-		return domain.User{}, fmt.Errorf("register: hash password: %w", err)
+		return "", domain.User{}, fmt.Errorf("register: hash password: %w", err)
 	}
 
 	user, err := domain.NewUser(email, hash, role)
 	if err != nil {
-		return domain.User{}, fmt.Errorf("register: invalid user: %w", err)
+		return "", domain.User{}, fmt.Errorf("register: invalid user: %w", err)
 	}
 
-	if err := s.users.Save(ctx, user); err != nil {
-		return domain.User{}, fmt.Errorf("register: save user: %w", err)
+	if err = s.users.Save(ctx, user); err != nil {
+		return "", domain.User{}, fmt.Errorf("register: save user: %w", err)
 	}
 
-	return user, nil
+	token, err := s.issuer.Issue(user)
+	if err != nil {
+		return "", domain.User{}, fmt.Errorf("register: issue token: %w", err)
+	}
+
+	return token, user, nil
 }
 
 // Login authenticates by email and password, returning a PASETO token on success.
