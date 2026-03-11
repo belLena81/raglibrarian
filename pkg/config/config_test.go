@@ -118,3 +118,22 @@ func TestLoad_InvalidTokenTTL_ReturnsError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), config.EnvTokenTTL)
 }
+
+func TestLoad_DefaultAMQPUrl(t *testing.T) {
+	setMinimalEnv(t)
+
+	cfg, err := config.Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, "amqp://guest:guest@localhost:5672/", cfg.AMQPUrl)
+}
+
+func TestLoad_CustomAMQPUrl(t *testing.T) {
+	setMinimalEnv(t)
+	t.Setenv(config.EnvAMQPUrl, "amqp://rabbit:secret@broker:5672/prod")
+
+	cfg, err := config.Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, "amqp://rabbit:secret@broker:5672/prod", cfg.AMQPUrl)
+}

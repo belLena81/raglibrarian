@@ -1,6 +1,17 @@
 version: "3.9"
 
+# ── Local development stack ────────────────────────────────────────────────────
+# Start everything:   make infra-up
+# Start infra only:   docker-compose up -d postgres rabbitmq
+# Tear down:          make infra-down         (keeps volumes)
+#                     docker-compose down -v  (removes volumes too)
+#
+# Required env vars (put in .env, copy from .env.example):
+#   AUTH_SECRET_KEY   — 64 hex chars (run: make keygen)
+
 services:
+
+  # ── Postgres ────────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     environment:
@@ -17,6 +28,54 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── RabbitMQ ────────────────────────────────────────────────────────────────
+  # Management UI: http://localhost:15672  (guest / guest)
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5672:5672"    # AMQP — used by metadata service and make dev
+      - "15672:15672"  # Management UI — local debugging only, never exposed in prod
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      # rabbitmq-diagnostics ping is the lightweight liveness probe recommended
+      # by the RabbitMQ team; it does not require the management plugin.
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s  # broker needs longer than postgres to initialise
+
+  # ── Metadata gRPC service ───────────────────────────────────────────────────
+  # Internal service: gRPC on :9090.
+  # Port is published for grpcurl/debugging from the host; in prod it would be
+  # internal-only behind a service mesh.
+  metadata:
+    build:
+      context: .
+      dockerfile: services/metadata/Dockerfile
+    ports:
+      - "9090:9090"
+    environment:
+      GRPC_ADDR: ":9090"
+      POSTGRES_DSN: "postgres://raglibrarian:raglibrarian@postgres:5432/raglibrarian?sslmode=disable"
+      AMQP_URL: "amqp://guest:guest@rabbitmq:5672/"
+      # AUTH_SECRET_KEY is required by config.Load() even though metadata does
+      # not issue tokens — the loader validates the key format unconditionally.
+      # Share the same key as the query service.
+      AUTH_SECRET_KEY: "${AUTH_SECRET_KEY}"
+      LOG_ENV: "production"
+      LOG_LEVEL: "info"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # ── Query HTTP service ───────────────────────────────────────────────────────
   query:
     build:
       context: .
@@ -26,14 +85,17 @@ services:
     environment:
       QUERY_ADDR: ":8080"
       POSTGRES_DSN: "postgres://raglibrarian:raglibrarian@postgres:5432/raglibrarian?sslmode=disable"
-      # Generate with: openssl rand -hex 32
       AUTH_SECRET_KEY: "${AUTH_SECRET_KEY}"
       TOKEN_TTL: "24h"
+      AMQP_URL: "amqp://guest:guest@rabbitmq:5672/"
       LOG_ENV: "production"
       LOG_LEVEL: "info"
     depends_on:
       postgres:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
 volumes:
   postgres_data:
+  rabbitmq_data:

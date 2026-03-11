@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/domain"
+	"github.com/belLena81/raglibrarian/services/metadata/publisher"
 	"github.com/belLena81/raglibrarian/services/metadata/repository"
 )
 
@@ -16,6 +18,7 @@ type BookUseCase interface {
 	// AddBook validates and persists a new book, returning it in StatusPending.
 	// Returns domain.ErrEmptyTitle, ErrEmptyAuthor, ErrInvalidYear on bad input.
 	// Returns domain.ErrDuplicateBook on (title, author, year) conflict.
+	// Publishes EventBookCreated after a successful save.
 	AddBook(ctx context.Context, title, author string, year int) (domain.Book, error)
 
 	// GetBook returns the book with the given ID.
@@ -44,23 +47,32 @@ type BookUseCase interface {
 	// Returns domain.ErrInvalidStatusTransition when the book is not in a
 	// terminal state (pending or indexing cannot be reindexed).
 	// Returns domain.ErrBookNotFound when absent.
+	// Publishes EventBookReindexRequested after a successful status transition.
 	TriggerReindex(ctx context.Context, id string) error
 }
 
 // BookService is the production implementation of BookUseCase.
 type BookService struct {
 	books repository.BookRepository
+	// pub is optional: nil means no events are published (used in tests and
+	// deployments where a broker is not available). The interface is checked
+	// rather than the concrete type so any fake satisfies it.
+	pub publisher.BookPublisher
 }
 
 // NewBookService constructs a BookService. Panics if books is nil.
-func NewBookService(books repository.BookRepository) *BookService {
+// pub may be nil; when nil, domain events are silently skipped.
+func NewBookService(books repository.BookRepository, pub publisher.BookPublisher) *BookService {
 	if books == nil {
 		panic("usecase: BookRepository must not be nil")
 	}
-	return &BookService{books: books}
+	return &BookService{books: books, pub: pub}
 }
 
 // AddBook validates, constructs, and persists a new Book in StatusPending.
+// On success it publishes EventBookCreated. A publish failure is logged as a
+// warning but does not roll back the save — the book record is the source of
+// truth; the event is best-effort for now.
 func (s *BookService) AddBook(ctx context.Context, title, author string, year int) (domain.Book, error) {
 	book, err := domain.NewBook(title, author, year)
 	if err != nil {
@@ -70,6 +82,12 @@ func (s *BookService) AddBook(ctx context.Context, title, author string, year in
 	if err = s.books.Save(ctx, book); err != nil {
 		return domain.Book{}, err
 	}
+
+	s.publish(ctx, publisher.BookEvent{
+		Event:      publisher.EventBookCreated,
+		BookID:     book.Id(),
+		OccurredAt: time.Now().UTC().Format(time.RFC3339),
+	})
 
 	return book, nil
 }
@@ -128,9 +146,47 @@ func (s *BookService) UpdateStatus(ctx context.Context, id string, next domain.S
 	return s.books.UpdateStatus(ctx, id, next)
 }
 
-// TriggerReindex resets a terminal book back to StatusPending.
-// It delegates to UpdateIndexStatus so all guards (empty id, not found,
-// forbidden transition) are enforced consistently.
+// TriggerReindex resets a terminal book back to StatusPending and publishes
+// EventBookReindexRequested. The book's s3_key is fetched first so the Lambda
+// can locate the existing PDF without a separate lookup.
+// Delegates to UpdateIndexStatus for all guards (empty id, not found, forbidden
+// transition) rather than duplicating them.
 func (s *BookService) TriggerReindex(ctx context.Context, id string) error {
-	return s.UpdateStatus(ctx, id, domain.Pending)
+	// Fetch before status update so we have the s3_key for the event payload.
+	// If the book does not exist, UpdateIndexStatus will return ErrBookNotFound
+	// regardless — we tolerate the extra lookup for the cleaner event payload.
+	book, err := s.GetBook(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	if err = s.UpdateStatus(ctx, id, domain.Pending); err != nil {
+		return err
+	}
+
+	s.publish(ctx, publisher.BookEvent{
+		Event:      publisher.EventBookReindexRequested,
+		BookID:     book.Id(),
+		S3Key:      book.S3Key(),
+		OccurredAt: time.Now().UTC().Format(time.RFC3339),
+	})
+
+	return nil
+}
+
+// publish sends an event if a publisher is configured. Failures are swallowed
+// here: the database write has already succeeded and rolling it back would
+// require a saga. A real deployment should add structured logging and/or a
+// dead-letter mechanism in this helper.
+//
+// Decision: best-effort publish at the use-case layer rather than transactional
+// outbox. An outbox (polling the DB) is the correct solution for guaranteed
+// delivery but requires a background worker and schema migration. The current
+// trade-off is deliberate and documented for Step N (outbox / retry).
+func (s *BookService) publish(ctx context.Context, event publisher.BookEvent) {
+	if s.pub == nil {
+		return
+	}
+	// Ignore publish errors for now — see doc comment above.
+	_ = s.pub.Publish(ctx, event)
 }

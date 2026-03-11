@@ -18,16 +18,18 @@ const (
 	EnvTokenTTL      = "TOKEN_TTL"
 	EnvQueryAddr     = "QUERY_ADDR"
 	EnvGRPCAddr      = "GRPC_ADDR"
+	EnvAMQPUrl       = "AMQP_URL"
 	EnvLogEnv        = "LOG_ENV"
 	EnvLogLevel      = "LOG_LEVEL"
 )
 
-// Config holds all runtime configuration for the query service.
+// Config holds all runtime configuration.
+// Fields used only by certain services are documented per-field.
 type Config struct {
-	// HTTP
+	// HTTP — query service
 	Addr string // e.g. ":8080"
 
-	// gRPC — used by the metadata service; ignored by query service
+	// gRPC — metadata service
 	GRPCAddr string // e.g. ":9090"
 
 	// Auth
@@ -36,6 +38,9 @@ type Config struct {
 
 	// Postgres
 	PostgresDSN string
+
+	// RabbitMQ — metadata service; optional for query service
+	AMQPUrl string // e.g. "amqp://guest:guest@localhost:5672/"
 
 	// Logging
 	LogEnv   string // "production" | "" (development)
@@ -69,6 +74,7 @@ func Load() (Config, error) {
 		AuthSecretKey: key,
 		TokenTTL:      ttl,
 		PostgresDSN:   dsn,
+		AMQPUrl:       optionalEnv(EnvAMQPUrl, "amqp://guest:guest@localhost:5672/"),
 		LogEnv:        optionalEnv(EnvLogEnv, ""),
 		LogLevel:      optionalEnv(EnvLogLevel, ""),
 	}, nil

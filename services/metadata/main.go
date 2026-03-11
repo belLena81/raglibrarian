@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/belLena81/raglibrarian/pkg/proto/metadatapb"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -18,7 +17,9 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/config"
 	"github.com/belLena81/raglibrarian/pkg/logger"
+	"github.com/belLena81/raglibrarian/pkg/proto/metadatapb"
 	metaGRPC "github.com/belLena81/raglibrarian/services/metadata/grpc"
+	metapublisher "github.com/belLena81/raglibrarian/services/metadata/publisher"
 	metarepo "github.com/belLena81/raglibrarian/services/metadata/repository"
 	metausecase "github.com/belLena81/raglibrarian/services/metadata/usecase"
 )
@@ -53,10 +54,21 @@ func run(log *zap.Logger) error {
 	}
 	log.Info("database connected")
 
+	// ── Messaging ─────────────────────────────────────────────────────────
+	// Dial the broker at startup so misconfiguration fails fast. The publisher
+	// is closed after the gRPC server drains to avoid dropping in-flight events
+	// during graceful shutdown.
+	pub, err := metapublisher.NewAMQPBookPublisher(cfg.AMQPUrl)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = pub.Close() }()
+	log.Info("message broker connected")
+
 	// ── Wiring ────────────────────────────────────────────────────────────
-	// Infrastructure → Repository → UseCase → gRPC server.
+	// Infrastructure (pool, pub) → Repository → UseCase → gRPC server.
 	bookRepo := metarepo.NewPostgresBookRepository(pool)
-	bookSvc := metausecase.NewBookService(bookRepo)
+	bookSvc := metausecase.NewBookService(bookRepo, pub)
 	metaSrv := metaGRPC.NewMetadataServer(bookSvc)
 
 	// ── gRPC server ───────────────────────────────────────────────────────

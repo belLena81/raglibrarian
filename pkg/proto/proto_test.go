@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/belLena81/raglibrarian/pkg/proto/metadatapb"
-	"github.com/belLena81/raglibrarian/pkg/proto/retrievalpb"
+	retrievalpb "github.com/belLena81/raglibrarian/pkg/proto/retrivalpb"
 )
 
 // ── retrievalpb ───────────────────────────────────────────────────────────────
