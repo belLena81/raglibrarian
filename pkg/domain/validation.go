@@ -33,6 +33,21 @@ func validateYear(year int) error {
 	return nil
 }
 
+// validateTags ensures every element is non-blank and that no duplicates exist.
+func validateTags(tags []string) error {
+	seen := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		if strings.TrimSpace(tag) == "" {
+			return ErrInvalidTag
+		}
+		if _, exists := seen[tag]; exists {
+			return ErrInvalidTag
+		}
+		seen[tag] = struct{}{}
+	}
+	return nil
+}
+
 // ── Chunk ─────────────────────────────────────────────────────────────────────
 
 func validateContent(content string) error {
