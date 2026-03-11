@@ -32,5 +32,4 @@ require (
 replace (
 	github.com/belLena81/raglibrarian/pkg/auth => ../../pkg/auth
 	github.com/belLena81/raglibrarian/pkg/domain => ../../pkg/domain
-	github.com/belLena81/raglibrarian/services/query => ../query
 )

@@ -9,6 +9,7 @@ var (
 	ErrEmptyTitle              = errors.New("book: title must not be empty")
 	ErrEmptyAuthor             = errors.New("book: author must not be empty")
 	ErrInvalidYear             = errors.New("book: year must be between 1900 and the current year")
+	ErrEmptyBookID             = errors.New("book: id must not be empty")
 	ErrBookNotFound            = errors.New("book: not found")
 	ErrDuplicateBook           = errors.New("book: a book with this title, author, and year already exists")
 	ErrInvalidStatus           = errors.New("book: unrecognised index status")
