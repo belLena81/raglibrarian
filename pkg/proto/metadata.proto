@@ -1,0 +1,72 @@
+// Book lifecycle RPCs exposed by MetadataService.
+// Callers: ingest Lambda (status updates), re-index scheduler (trigger),
+// and future admin tooling.
+//
+// Design decisions:
+//   - UpdateBookStatus is a narrow write: the Lambda only needs to advance the
+//     state machine, not patch arbitrary fields. Keeping it focused prevents the
+//     RPC from becoming a general-purpose PATCH endpoint.
+//   - GetBook is included so Lambda can verify a book exists and read its s3_key
+//     without going through the REST API, keeping Lambda ↔ metadata on one channel.
+//   - tags is repeated string rather than a dedicated Tag message: tags are
+//     opaque labels with no nested fields, so a message wrapper would add
+//     framing bytes with zero semantic value.
+//   - Timestamps are int64 Unix seconds rather than google.protobuf.Timestamp to
+//     avoid the well-known-types dependency in callers that don't need sub-second
+//     precision. Revisit if millisecond accuracy is needed.
+
+syntax = "proto3";
+
+package raglibrarian.metadata.v1;
+
+option go_package = "github.com/belLena81/raglibrarian/pkg/proto/metadatapb";
+
+// UpdateBookStatusRequest asks the metadata service to advance a book's
+// index pipeline state.
+message UpdateBookStatusRequest {
+  string book_id = 1;
+  string status  = 2; // one of: pending, indexing, indexed, failed
+}
+
+// UpdateBookStatusResponse confirms the new state after a successful transition.
+message UpdateBookStatusResponse {
+  string book_id = 1;
+  string status  = 2;
+}
+
+// GetBookRequest fetches a single book by its UUID.
+message GetBookRequest {
+  string book_id = 1;
+}
+
+// BookProto is the wire representation of a book.
+// Named BookProto to avoid a name collision with any domain.Book import in the
+// same compilation unit.
+message BookProto {
+  string          book_id    = 1;
+  string          title      = 2;
+  string          author     = 3;
+  int32           year       = 4;
+  string          status     = 5;
+  repeated string tags       = 6;
+  string          s3_key     = 7;
+  int64           created_at = 8; // Unix seconds UTC
+  int64           updated_at = 9; // Unix seconds UTC
+}
+
+// GetBookResponse wraps a single BookProto.
+message GetBookResponse {
+  BookProto book = 1;
+}
+
+// MetadataService manages the book catalogue for internal callers.
+service MetadataService {
+  // UpdateBookStatus advances the index pipeline state machine.
+  // Returns NOT_FOUND if the book does not exist.
+  // Returns FAILED_PRECONDITION if the transition is forbidden by the state machine.
+  rpc UpdateBookStatus(UpdateBookStatusRequest) returns (UpdateBookStatusResponse);
+
+  // GetBook returns a book by ID.
+  // Returns NOT_FOUND if the book does not exist.
+  rpc GetBook(GetBookRequest) returns (GetBookResponse);
+}

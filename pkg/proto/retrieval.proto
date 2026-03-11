@@ -1,0 +1,47 @@
+// Semantic search RPC between QueryService (client) and RetrievalService (server).
+//
+// Design decisions:
+//   - top_k is caller-controlled so the query layer can tune result count without
+//     a code change in the retrieval service.
+//   - pages is repeated int32 rather than a range pair because a chunk can span
+//     non-contiguous pages after OCR re-flow.
+//   - score is float rather than double: 32-bit precision is sufficient for a
+//     normalised [0,1] cosine similarity and halves the wire size for large result sets.
+//   - No pagination: top_k is expected to be small (≤20). If that changes, add
+//     a cursor field here rather than a separate streaming RPC.
+
+syntax = "proto3";
+
+package raglibrarian.retrieval.v1;
+
+option go_package = "github.com/belLena81/raglibrarian/pkg/proto/retrievalpb";
+
+// SearchRequest carries a natural-language question to the vector index.
+message SearchRequest {
+  string query_id = 1; // UUID of the domain Query — used for distributed tracing
+  string question  = 2;
+  int32  top_k     = 3; // maximum number of results to return; server may return fewer
+}
+
+// SearchResultItem is one ranked passage returned from the vector index.
+message SearchResultItem {
+  string  book_id  = 1;
+  string  title    = 2;
+  string  author   = 3;
+  int32   year     = 4;
+  string  chapter  = 5;
+  repeated int32 pages = 6;
+  string  passage  = 7;
+  float   score    = 8; // cosine similarity in [0, 1]
+}
+
+// SearchResponse wraps the ranked result list.
+message SearchResponse {
+  repeated SearchResultItem results = 1;
+}
+
+// RetrievalService answers semantic search queries.
+service RetrievalService {
+  // Search performs a vector similarity search and returns ranked passages.
+  rpc Search(SearchRequest) returns (SearchResponse);
+}

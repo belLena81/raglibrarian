@@ -89,6 +89,22 @@ dev: _require_root
 	@set -a && . ./.env && set +a && \
 		cd services/query && go run ./cmd/main.go
 
+PROTO_DIR := pkg/proto
+
+.PHONY: proto
+proto: ## Regenerate Go code from .proto sources
+	@which protoc        > /dev/null || (echo "protoc not found — install protobuf-compiler"; exit 1)
+	@which protoc-gen-go > /dev/null || (echo "protoc-gen-go not found — run: go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.5"; exit 1)
+	@which protoc-gen-go-grpc > /dev/null || (echo "protoc-gen-go-grpc not found — run: go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.70.0"; exit 1)
+	protoc \
+		--proto_path=$(PROTO_DIR) \
+		--go_out=$(PROTO_DIR) \
+		--go_opt=paths=source_relative \
+		--go-grpc_out=$(PROTO_DIR) \
+		--go-grpc_opt=paths=source_relative \
+		$(PROTO_DIR)/retrieval.proto \
+		$(PROTO_DIR)/metadata.proto
+
 # ── Tidy ──────────────────────────────────────────────────────────────────────
 tidy: _require_root
 	@for mod in $(MODULES) tests/e2e; do \
