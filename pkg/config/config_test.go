@@ -80,6 +80,25 @@ func TestLoad_CustomAddr(t *testing.T) {
 	assert.Equal(t, ":9090", cfg.Addr)
 }
 
+func TestLoad_DefaultGRPCAddr(t *testing.T) {
+	setMinimalEnv(t)
+
+	cfg, err := config.Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, ":9090", cfg.GRPCAddr)
+}
+
+func TestLoad_CustomGRPCAddr(t *testing.T) {
+	setMinimalEnv(t)
+	t.Setenv(config.EnvGRPCAddr, ":50051")
+
+	cfg, err := config.Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, ":50051", cfg.GRPCAddr)
+}
+
 func TestLoad_CustomTokenTTL_GoDuration(t *testing.T) {
 	setMinimalEnv(t)
 	t.Setenv(config.EnvTokenTTL, "1h30m")

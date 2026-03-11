@@ -17,6 +17,7 @@ const (
 	EnvPostgresDSN   = "POSTGRES_DSN"
 	EnvTokenTTL      = "TOKEN_TTL"
 	EnvQueryAddr     = "QUERY_ADDR"
+	EnvGRPCAddr      = "GRPC_ADDR"
 	EnvLogEnv        = "LOG_ENV"
 	EnvLogLevel      = "LOG_LEVEL"
 )
@@ -25,6 +26,9 @@ const (
 type Config struct {
 	// HTTP
 	Addr string // e.g. ":8080"
+
+	// gRPC — used by the metadata service; ignored by query service
+	GRPCAddr string // e.g. ":9090"
 
 	// Auth
 	AuthSecretKey []byte        // 32-byte symmetric key for PASETO
@@ -61,6 +65,7 @@ func Load() (Config, error) {
 
 	return Config{
 		Addr:          optionalEnv(EnvQueryAddr, ":8080"),
+		GRPCAddr:      optionalEnv(EnvGRPCAddr, ":9090"),
 		AuthSecretKey: key,
 		TokenTTL:      ttl,
 		PostgresDSN:   dsn,
