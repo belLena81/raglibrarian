@@ -50,8 +50,32 @@ func RequireRole(required domain.Role) func(http.Handler) http.Handler {
 				panic("middleware: RequireRole called without Authenticator in chain")
 			}
 
-			if required == domain.RoleAdmin && !claims.Role.CanWrite() {
-				writeForbidden(w, "admin role required")
+			if claims.Role != required && claims.Role != domain.RoleAdmin {
+				writeForbidden(w, string(required)+" role required")
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// RequireMinRole enforces the privilege tier ordering: reader < librarian < admin.
+// Any authenticated user whose role rank is >= the minimum rank is allowed through.
+// Must be applied after Authenticator — panics on missing claims context.
+//
+// Use this instead of RequireRole whenever a route should be accessible to
+// multiple roles (e.g. both librarian and admin can manage books).
+func RequireMinRole(min domain.Role) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			claims, ok := ClaimsFromContext(r.Context())
+			if !ok {
+				panic("middleware: RequireMinRole called without Authenticator in chain")
+			}
+
+			if !claims.Role.AtLeast(min) {
+				writeForbidden(w, "insufficient role: "+string(min)+" or above required")
 				return
 			}
 

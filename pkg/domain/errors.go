@@ -38,7 +38,7 @@ var (
 	ErrEmptyEmail        = errors.New("user: email must not be empty")
 	ErrInvalidEmail      = errors.New("user: email format is invalid")
 	ErrEmptyPasswordHash = errors.New("user: password hash must not be empty")
-	ErrInvalidRole       = errors.New("user: role must be admin or reader")
+	ErrInvalidRole       = errors.New("user: role must be admin, librarian, or reader")
 	ErrEmailTaken        = errors.New("user: email is already registered")
 	ErrUserNotFound      = errors.New("user: not found")
 	ErrInvalidPassword   = errors.New("user: password is incorrect")

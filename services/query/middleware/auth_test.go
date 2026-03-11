@@ -140,6 +140,8 @@ func TestAuthenticator_Sets_WWWAuthenticate_Header(t *testing.T) {
 }
 
 // ── RequireRole ───────────────────────────────────────────────────────────────
+// RequireRole is the exact-match variant: the caller's role must equal the
+// required role, or they must be admin (which always passes everything).
 
 func TestRequireRole_Admin_AllowsAdmin(t *testing.T) {
 	issuer := newIssuer(t)
@@ -169,6 +171,20 @@ func TestRequireRole_Admin_BlocksReader(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, rr.Code)
 }
 
+func TestRequireRole_Admin_BlocksLibrarian(t *testing.T) {
+	issuer := newIssuer(t)
+	authMW := qmiddleware.Authenticator(issuer, zaptest.NewLogger(t))
+	roleMW := qmiddleware.RequireRole(domain.RoleAdmin)
+	handler := authMW(roleMW(okHandler()))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+validToken(t, issuer, domain.RoleLibrarian))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+}
+
 func TestRequireRole_Reader_AllowsReader(t *testing.T) {
 	issuer := newIssuer(t)
 	authMW := qmiddleware.Authenticator(issuer, zaptest.NewLogger(t))
@@ -181,6 +197,165 @@ func TestRequireRole_Reader_AllowsReader(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
+func TestRequireRole_WithoutAuthenticator_Panics(t *testing.T) {
+	// RequireRole must panic when it is placed in the chain without
+	// Authenticator running first, so misconfigured routers are caught
+	// immediately at development time — not silently in production.
+	roleMW := qmiddleware.RequireRole(domain.RoleAdmin)
+	handler := roleMW(okHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+
+	assert.Panics(t, func() { handler.ServeHTTP(rr, req) })
+}
+
+// ── RequireMinRole ────────────────────────────────────────────────────────────
+// RequireMinRole enforces reader < librarian < admin ordering.
+// Any role that meets or exceeds the minimum is allowed through.
+
+func TestRequireMinRole_MinAdmin_AllowsAdmin(t *testing.T) {
+	issuer := newIssuer(t)
+	handler := qmiddleware.Authenticator(issuer, zaptest.NewLogger(t))(
+		qmiddleware.RequireMinRole(domain.RoleAdmin)(okHandler()),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+validToken(t, issuer, domain.RoleAdmin))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
+func TestRequireMinRole_MinAdmin_BlocksLibrarian(t *testing.T) {
+	issuer := newIssuer(t)
+	handler := qmiddleware.Authenticator(issuer, zaptest.NewLogger(t))(
+		qmiddleware.RequireMinRole(domain.RoleAdmin)(okHandler()),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+validToken(t, issuer, domain.RoleLibrarian))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+}
+
+func TestRequireMinRole_MinAdmin_BlocksReader(t *testing.T) {
+	issuer := newIssuer(t)
+	handler := qmiddleware.Authenticator(issuer, zaptest.NewLogger(t))(
+		qmiddleware.RequireMinRole(domain.RoleAdmin)(okHandler()),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+validToken(t, issuer, domain.RoleReader))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+}
+
+func TestRequireMinRole_MinLibrarian_AllowsAdmin(t *testing.T) {
+	issuer := newIssuer(t)
+	handler := qmiddleware.Authenticator(issuer, zaptest.NewLogger(t))(
+		qmiddleware.RequireMinRole(domain.RoleLibrarian)(okHandler()),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+validToken(t, issuer, domain.RoleAdmin))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
+func TestRequireMinRole_MinLibrarian_AllowsLibrarian(t *testing.T) {
+	issuer := newIssuer(t)
+	handler := qmiddleware.Authenticator(issuer, zaptest.NewLogger(t))(
+		qmiddleware.RequireMinRole(domain.RoleLibrarian)(okHandler()),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+validToken(t, issuer, domain.RoleLibrarian))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
+func TestRequireMinRole_MinLibrarian_BlocksReader(t *testing.T) {
+	issuer := newIssuer(t)
+	handler := qmiddleware.Authenticator(issuer, zaptest.NewLogger(t))(
+		qmiddleware.RequireMinRole(domain.RoleLibrarian)(okHandler()),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+validToken(t, issuer, domain.RoleReader))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+}
+
+func TestRequireMinRole_MinReader_AllowsAll(t *testing.T) {
+	issuer := newIssuer(t)
+	mw := qmiddleware.RequireMinRole(domain.RoleReader)
+
+	for _, role := range []domain.Role{domain.RoleReader, domain.RoleLibrarian, domain.RoleAdmin} {
+		t.Run(string(role), func(t *testing.T) {
+			handler := qmiddleware.Authenticator(issuer, zaptest.NewLogger(t))(
+				mw(okHandler()),
+			)
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Authorization", "Bearer "+validToken(t, issuer, role))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+			assert.Equal(t, http.StatusOK, rr.Code)
+		})
+	}
+}
+
+func TestRequireMinRole_ForbiddenResponse_HasJSONContentType(t *testing.T) {
+	// Clients that parse error bodies require a consistent Content-Type.
+	issuer := newIssuer(t)
+	handler := qmiddleware.Authenticator(issuer, zaptest.NewLogger(t))(
+		qmiddleware.RequireMinRole(domain.RoleAdmin)(okHandler()),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+validToken(t, issuer, domain.RoleReader))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+	assert.Contains(t, rr.Header().Get("Content-Type"), "application/json")
+}
+
+func TestRequireMinRole_ForbiddenResponse_BodyContainsErrorKey(t *testing.T) {
+	issuer := newIssuer(t)
+	handler := qmiddleware.Authenticator(issuer, zaptest.NewLogger(t))(
+		qmiddleware.RequireMinRole(domain.RoleLibrarian)(okHandler()),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+validToken(t, issuer, domain.RoleReader))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Contains(t, rr.Body.String(), `"error"`)
+}
+
+func TestRequireMinRole_WithoutAuthenticator_Panics(t *testing.T) {
+	// Same safety contract as RequireRole: panic fast on middleware misorder.
+	handler := qmiddleware.RequireMinRole(domain.RoleReader)(okHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+
+	assert.Panics(t, func() { handler.ServeHTTP(rr, req) })
 }
 
 // ── ClaimsFromContext ─────────────────────────────────────────────────────────

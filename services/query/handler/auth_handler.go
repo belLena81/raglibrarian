@@ -160,7 +160,7 @@ func sanitiseAuthError(err error) string {
 	case errors.Is(err, domain.ErrInvalidEmail):
 		return "email format is invalid"
 	case errors.Is(err, domain.ErrInvalidRole):
-		return "role must be admin or reader"
+		return "role must be admin, librarian, or reader"
 	case errors.Is(err, domain.ErrInvalidCredentials):
 		return "invalid credentials"
 	default:

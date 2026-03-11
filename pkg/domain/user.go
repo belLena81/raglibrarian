@@ -12,17 +12,47 @@ type Role string
 
 // Valid role values.
 const (
-	RoleAdmin  Role = "admin"
-	RoleReader Role = "reader"
+	RoleReader    Role = "reader"
+	RoleLibrarian Role = "librarian"
+	RoleAdmin     Role = "admin"
 )
+
+// roleRanks maps every valid role to its privilege tier.
+// Reader < Librarian < Admin. Unknown roles get rank -1.
+var roleRanks = map[Role]int{
+	RoleReader:    0,
+	RoleLibrarian: 1,
+	RoleAdmin:     2,
+}
 
 // IsValid reports whether r is a recognised role.
 func (r Role) IsValid() bool {
-	return r == RoleAdmin || r == RoleReader
+	_, ok := roleRanks[r]
+	return ok
 }
 
-// CanWrite reports whether this role may create or modify resources.
-func (r Role) CanWrite() bool { return r == RoleAdmin }
+// Rank returns the privilege tier of r.
+// Returns -1 for any unrecognised role so that unknown roles always fail
+// privilege checks — they can never accidentally satisfy a minimum.
+func (r Role) Rank() int {
+	if rank, ok := roleRanks[r]; ok {
+		return rank
+	}
+	return -1
+}
+
+// AtLeast reports whether r has at least the same privilege level as min.
+// Used by RequireMinRole middleware; keeps the decision logic in the domain
+// rather than spreading it across HTTP handlers.
+func (r Role) AtLeast(min Role) bool {
+	return r.Rank() >= min.Rank() && r.Rank() >= 0
+}
+
+// CanWrite reports whether this role may create or modify book resources.
+// Both Librarian and Admin have write access; Reader is read-only.
+func (r Role) CanWrite() bool {
+	return r == RoleAdmin || r == RoleLibrarian
+}
 
 // User is the aggregate root for authentication and authorisation.
 // Stores a bcrypt password hash; the plaintext is never retained.
