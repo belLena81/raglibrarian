@@ -6,7 +6,6 @@ module github.com/belLena81/raglibrarian/services/query
 
 go 1.26.0
 
-// ── HTTP layer ──────────────────────────────────────────────────────────
 require (
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/stretchr/testify v1.11.1
@@ -15,9 +14,9 @@ require (
 
 require (
 	github.com/belLena81/raglibrarian/pkg/auth v0.0.0-00010101000000-000000000000
-	github.com/belLena81/raglibrarian/pkg/config v0.0.0-20260310180455-6bbc0a814559
+	github.com/belLena81/raglibrarian/pkg/config v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/pkg/domain v0.0.0-20260310060144-d8455ee5d7b2
-	github.com/belLena81/raglibrarian/pkg/logger v0.0.0-20260310180455-6bbc0a814559
+	github.com/belLena81/raglibrarian/pkg/logger v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/services/metadata v0.0.0-00010101000000-000000000000
 	github.com/jackc/pgx/v5 v5.8.0
 )
@@ -44,5 +43,6 @@ replace (
 	github.com/belLena81/raglibrarian/pkg/auth => ../../pkg/auth
 	github.com/belLena81/raglibrarian/pkg/config => ../../pkg/config
 	github.com/belLena81/raglibrarian/pkg/domain => ../../pkg/domain
+	github.com/belLena81/raglibrarian/pkg/logger => ../../pkg/logger
 	github.com/belLena81/raglibrarian/services/metadata => ../metadata
 )

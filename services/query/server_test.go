@@ -15,6 +15,7 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/pkg/domain"
+	metarepo "github.com/belLena81/raglibrarian/services/metadata/repository"
 	"github.com/belLena81/raglibrarian/services/query"
 	"github.com/belLena81/raglibrarian/services/query/handler"
 )
@@ -37,6 +38,20 @@ func (f *fakeAuthUC) Login(_ context.Context, _, _ string) (string, error) {
 	return "fake-token", nil
 }
 
+type fakeBookUC struct{}
+
+func (f *fakeBookUC) AddBook(_ context.Context, title, author string, year int) (domain.Book, error) {
+	return domain.NewBook(title, author, year)
+}
+func (f *fakeBookUC) GetBook(_ context.Context, _ string) (domain.Book, error) {
+	return domain.Book{}, domain.ErrBookNotFound
+}
+func (f *fakeBookUC) ListBooks(_ context.Context, _ metarepo.ListFilter) ([]domain.Book, error) {
+	return []domain.Book{}, nil
+}
+func (f *fakeBookUC) RemoveBook(_ context.Context, _ string) error     { return nil }
+func (f *fakeBookUC) TriggerReindex(_ context.Context, _ string) error { return nil }
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func newTestIssuer(t *testing.T) *auth.Issuer {
@@ -46,9 +61,9 @@ func newTestIssuer(t *testing.T) *auth.Issuer {
 	return issuer
 }
 
-func validAuthToken(t *testing.T, issuer *auth.Issuer) string {
+func tokenForRole(t *testing.T, issuer *auth.Issuer, role domain.Role) string {
 	t.Helper()
-	u, err := domain.NewUser("test@example.com", "hash", domain.RoleReader)
+	u, err := domain.NewUser("test@example.com", "hash", role)
 	require.NoError(t, err)
 	token, err := issuer.Issue(u)
 	require.NoError(t, err)
@@ -61,10 +76,11 @@ func newTestRouter(t *testing.T) (http.Handler, *auth.Issuer) {
 	issuer := newTestIssuer(t)
 	qh := handler.NewQueryHandler(&fakeQueryUC{}, log)
 	ah := handler.NewAuthHandler(&fakeAuthUC{}, log)
-	return query.NewRouter(qh, ah, issuer, log), issuer
+	bh := handler.NewBookHandler(&fakeBookUC{}, log)
+	return query.NewRouter(qh, ah, bh, issuer, log), issuer
 }
 
-// ── Route tests ───────────────────────────────────────────────────────────────
+// ── Existing route tests ───────────────────────────────────────────────────────
 
 func TestRouter_GET_Healthz_Returns200_NoAuth(t *testing.T) {
 	router, _ := newTestRouter(t)
@@ -76,9 +92,7 @@ func TestRouter_GET_Healthz_Returns200_NoAuth(t *testing.T) {
 
 func TestRouter_POST_Auth_Register_Returns201(t *testing.T) {
 	router, _ := newTestRouter(t)
-	body, _ := json.Marshal(map[string]string{
-		"email": "user@example.com", "password": "pw",
-	})
+	body, _ := json.Marshal(map[string]string{"email": "user@example.com", "password": "pw"})
 	req := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -98,12 +112,10 @@ func TestRouter_POST_Auth_Login_Returns200(t *testing.T) {
 
 func TestRouter_POST_Query_WithValidToken_Returns200(t *testing.T) {
 	router, issuer := newTestRouter(t)
-	body, _ := json.Marshal(map[string]string{
-		"question": "What is a goroutine?", "user_id": "user-1",
-	})
+	body, _ := json.Marshal(map[string]string{"question": "What is a goroutine?", "user_id": "user-1"})
 	req := httptest.NewRequest(http.MethodPost, "/query/", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+validAuthToken(t, issuer))
+	req.Header.Set("Authorization", "Bearer "+tokenForRole(t, issuer, domain.RoleReader))
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusOK, rr.Code)
@@ -133,12 +145,11 @@ func TestRouter_POST_Query_WithInvalidToken_Returns401(t *testing.T) {
 func TestRouter_GET_AuthMe_WithValidToken_Returns200WithIdentity(t *testing.T) {
 	router, issuer := newTestRouter(t)
 	req := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
-	req.Header.Set("Authorization", "Bearer "+validAuthToken(t, issuer))
+	req.Header.Set("Authorization", "Bearer "+tokenForRole(t, issuer, domain.RoleReader))
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
-
 	var body map[string]string
 	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 	assert.Equal(t, "test@example.com", body["email"])
@@ -157,12 +168,11 @@ func TestRouter_GET_AuthMe_WithoutToken_Returns401(t *testing.T) {
 func TestRouter_POST_AuthLogout_WithValidToken_Returns200(t *testing.T) {
 	router, issuer := newTestRouter(t)
 	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
-	req.Header.Set("Authorization", "Bearer "+validAuthToken(t, issuer))
+	req.Header.Set("Authorization", "Bearer "+tokenForRole(t, issuer, domain.RoleReader))
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
-
 	var body map[string]string
 	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 	assert.Equal(t, "logged out", body["message"])
@@ -190,4 +200,73 @@ func TestRouter_RequestID_IsInjected(t *testing.T) {
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 	assert.NotEmpty(t, rr.Header().Get("X-Request-Id"))
+}
+
+// ── Admin book route tests ─────────────────────────────────────────────────────
+
+func TestRouter_AdminBooks_WithoutToken_Returns401(t *testing.T) {
+	router, _ := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/admin/books", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	// 401 — not 403 — because no token was provided at all.
+	// The existence of the route must not be revealed to unauthenticated callers.
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+}
+
+func TestRouter_AdminBooks_ReaderToken_Returns403(t *testing.T) {
+	router, issuer := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/admin/books", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenForRole(t, issuer, domain.RoleReader))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+}
+
+func TestRouter_AdminBooks_LibrarianToken_Returns200(t *testing.T) {
+	router, issuer := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/admin/books", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenForRole(t, issuer, domain.RoleLibrarian))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
+func TestRouter_AdminBooks_AdminToken_Returns200(t *testing.T) {
+	router, issuer := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/admin/books", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenForRole(t, issuer, domain.RoleAdmin))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
+func TestRouter_AdminBooksPost_LibrarianToken_Returns201(t *testing.T) {
+	router, issuer := newTestRouter(t)
+	body, _ := json.Marshal(handler.AddBookRequest{Title: "DDIA", Author: "Kleppmann", Year: 2017})
+	req := httptest.NewRequest(http.MethodPost, "/admin/books", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tokenForRole(t, issuer, domain.RoleLibrarian))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusCreated, rr.Code)
+}
+
+func TestRouter_AdminBookDelete_LibrarianToken_Returns404ForUnknown(t *testing.T) {
+	router, issuer := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodDelete, "/admin/books/ghost-id", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenForRole(t, issuer, domain.RoleLibrarian))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	// fakeBookUC.RemoveBook returns nil (success) — only GetBook returns ErrBookNotFound
+	assert.Equal(t, http.StatusNoContent, rr.Code)
+}
+
+func TestRouter_AdminBookReindex_ReaderToken_Returns403(t *testing.T) {
+	router, issuer := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodPost, "/admin/books/b-1/reindex", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenForRole(t, issuer, domain.RoleReader))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusForbidden, rr.Code)
 }

@@ -21,7 +21,7 @@ require (
 
 require (
 	// integration test only
-	github.com/testcontainers/testcontainers-go v0.35.0 // indirect
+	github.com/testcontainers/testcontainers-go v0.35.0
 	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.35.0
 )
 
