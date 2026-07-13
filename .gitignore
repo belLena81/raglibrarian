@@ -28,3 +28,9 @@ go.work.sum
 .idea/
 *.iml
 /bin/
+
+# Local architecture and agent-planning notes (not committed yet)
+/AGENTS.md
+/docs/
+/services/query/AGENTS.md
+/services/query/AGENTIC_DEVELOPMENT.md
