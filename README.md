@@ -2,6 +2,11 @@
 
 > A production-grade Retrieval-Augmented Generation (RAG) system for technical books — built in Go with a microservices architecture, gRPC inter-service communication, and Qdrant vector search.
 
+The target architecture is additive: service boundaries are deployed before
+their business capability grows, and new features are added as services or
+event consumers rather than extracted later from the API process. See
+[docs/architecture-decision-record.md](docs/architecture-decision-record.md).
+
 [![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://golang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -35,7 +40,7 @@ The project is being built iteratively. This is what exists today:
 | Query endpoint | ✅              | stub — returns no results yet |
 | DB migrations | ✅              | `users` table |
 | e2e test suite | ✅              | 18 tests, all passing |
-| gRPC metadata service | 🔜 Iteration 3 | metadata service split |
+| Service boundaries | 🔜 Next iteration | edge API, identity service, and catalog service run independently before book features |
 | Vector search | 🔜 Iteration 5 | Qdrant integration |
 | PDF ingestion | 🔜 Iteration 6 | chunking + embedding pipeline |
 | Token revocation | 🔜 Iteration 4 | Redis blocklist in metadata service |
@@ -64,7 +69,7 @@ The project is being built iteratively. This is what exists today:
   pdf.uploaded → ingest → embed → index → metadata update
 ```
 
-**Today:** a single `query` service handles HTTP, auth, and a stub query handler. The `metadata` package (user repository + auth use case) is wired directly into the query service binary. The gRPC split happens in Iteration 3.
+**Today:** a single `query` service handles HTTP, auth, and a stub query handler. This is the early baseline, not the intended shape for new features. Before book, ingestion, or retrieval work, `query` becomes the edge API and identity/catalog run as independent services over versioned gRPC. No later feature should repeat an in-process-then-extract transition.
 
 ---
 
@@ -293,7 +298,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 - [x] Postgres user repository
 - [x] e2e test suite
 - [x] Dockerfile (multi-stage, distroless runtime)
-- [ ] **Iteration 3** — gRPC metadata service split; query service calls metadata over gRPC
+- [ ] **Iteration 3** — establish edge API, identity service, and catalog service as independent gRPC-connected processes
 - [ ] **Iteration 4** — short-lived access tokens, refresh tokens, server-side revocation
 - [ ] **Iteration 5** — Qdrant vector search integration
 - [ ] **Iteration 6** — PDF ingestion pipeline (parse → chunk → embed → index)
