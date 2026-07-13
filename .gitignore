@@ -31,6 +31,7 @@ go.work.sum
 
 # Local architecture and agent-planning notes (not committed yet)
 /AGENTS.md
+/AGENTIC_*.md
 /docs/
-/services/query/AGENTS.md
-/services/query/AGENTIC_DEVELOPMENT.md
+**/AGENTS.md
+**/AGENTIC_*.md

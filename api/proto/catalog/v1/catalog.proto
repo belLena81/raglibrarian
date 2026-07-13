@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package catalog.v1;
+
+option go_package = "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1;catalogv1";
+
+service CatalogService {
+  rpc Check(CheckRequest) returns (CheckResponse);
+}
+
+message CheckRequest {}
+
+message CheckResponse {
+  string status = 1;
+}

@@ -46,9 +46,9 @@ cp .env.example .env
 make keygen
 
 make infra-up       # start Postgres
-make migrate-up     # create tables
+make migrate-identity-up # create Identity tables
 make test           # run all tests
-make run-query      # start the HTTP service
+make run-edge-api   # start the public HTTP edge
 ```
 
 ## Linting
@@ -73,7 +73,7 @@ cd pkg/auth && GOWORK=off golangci-lint run ./...
 ## Adding a dependency to a module
 
 ```bash
-cd services/query        # go into the specific module
+cd services/edge-api     # go into the specific module
 go get github.com/some/pkg@latest
 go mod tidy
 cd ../..

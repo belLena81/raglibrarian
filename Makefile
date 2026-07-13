@@ -4,7 +4,7 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt build run-query dev tidy e2e migrate-up migrate-down infra-up infra-down keygen
+.PHONY: test test-race lint fmt build run-edge-api run-identity run-catalog dev tidy e2e migrate-identity-up infra-up infra-down keygen proto
 
 # Service/library modules — looped over by test, lint, tidy, fmt.
 MODULES := \
@@ -12,8 +12,10 @@ MODULES := \
 	pkg/auth \
 	pkg/logger \
 	pkg/config \
-	services/metadata \
-	services/query
+	pkg/proto \
+	services/identity-service \
+	services/catalog-service \
+	services/edge-api
 
 # Guard: abort if not run from the workspace root.
 _require_root:
@@ -68,13 +70,21 @@ fmt: _require_root
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 build: _require_root
-	cd services/query && go build -o ../../bin/query ./cmd/main.go
+	cd services/edge-api && go build -o ../../bin/edge-api ./cmd/main.go
+	cd services/identity-service && go build -o ../../bin/identity-service ./cmd/main.go
+	cd services/catalog-service && go build -o ../../bin/catalog-service ./cmd/main.go
 
 # ── Run ───────────────────────────────────────────────────────────────────────
-# run-query: requires AUTH_SECRET_KEY and POSTGRES_DSN already exported.
+# run-edge-api: requires AUTH_SECRET_KEY, POSTGRES_DSN, and IDENTITY_GRPC_ADDR.
 # Use `make dev` to load .env automatically.
-run-query: _require_root
-	cd services/query && go run ./cmd/main.go
+run-edge-api: _require_root
+	cd services/edge-api && go run ./cmd/main.go
+
+run-identity: _require_root
+	cd services/identity-service && go run ./cmd/main.go
+
+run-catalog: _require_root
+	cd services/catalog-service && go run ./cmd/main.go
 
 # dev: loads .env then starts the service — the everyday local workflow.
 # Usage: make dev
@@ -87,7 +97,7 @@ dev: _require_root
 		exit 1; \
 	}
 	@set -a && . ./.env && set +a && \
-		cd services/query && go run ./cmd/main.go
+		cd services/edge-api && go run ./cmd/main.go
 
 # ── Tidy ──────────────────────────────────────────────────────────────────────
 tidy: _require_root
@@ -98,9 +108,8 @@ tidy: _require_root
 	go work sync
 
 # ── E2e ───────────────────────────────────────────────────────────────────────
-# Requires a running service. Start with:
-#   make dev                            (in a separate terminal)
-#   make infra-up && make migrate-up    (once)
+# Requires the local service stack. Start with:
+#   make infra-up && make migrate-identity-up
 #
 # Override target URL:
 #   E2E_BASE_URL=http://staging:8080 make e2e
@@ -109,12 +118,12 @@ e2e: _require_root
 
 # ── Database ──────────────────────────────────────────────────────────────────
 # Uses psql directly — no migrate CLI dependency.
-# Files are applied in lexicographic order (001_, 002_, ...).
-migrate-up: _require_root
+# Identity migrations are applied in lexicographic order (001_, 002_, ...).
+migrate-identity-up: _require_root
 	@set -a && . ./.env && set +a && \
-		for f in $(CURDIR)/migrations/*.up.sql; do \
+		for f in $(CURDIR)/services/identity-service/migrations/*.up.sql; do \
 			echo "Applying $$f..."; \
-			psql "$$POSTGRES_DSN" -f "$$f" || exit 1; \
+			psql "$$IDENTITY_POSTGRES_DSN" -f "$$f" || exit 1; \
 		done
 
 migrate-down: _require_root
@@ -126,7 +135,7 @@ migrate-down: _require_root
 
 # ── Infrastructure ────────────────────────────────────────────────────────────
 infra-up:
-	docker-compose up -d postgres
+	docker-compose up -d postgres identity-service catalog-service edge-api
 
 infra-down:
 	docker-compose down
@@ -135,3 +144,7 @@ infra-down:
 # Prints a new AUTH_SECRET_KEY line ready to paste into .env.
 keygen: _require_root
 	cd pkg/auth && go run ./cmd/keygen/
+
+proto: _require_root
+	XDG_CACHE_HOME=/tmp/raglibrarian-cache buf lint api/proto
+	PATH="$$HOME/go/bin:$$PATH" protoc -I api/proto --go_out=paths=source_relative:pkg/proto --go-grpc_out=paths=source_relative:pkg/proto api/proto/identity/v1/identity.proto api/proto/catalog/v1/catalog.proto

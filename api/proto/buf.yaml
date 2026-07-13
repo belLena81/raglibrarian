@@ -1,0 +1,8 @@
+version: v1
+name: buf.build/bellena81/raglibrarian
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE

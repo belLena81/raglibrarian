@@ -8,7 +8,7 @@
 //
 // Run manually:
 //
-//	make infra-up && make migrate-up && make run-query   # terminal 1
+//	make infra-up && make migrate-identity-up             # terminal 1
 //	make e2e                                             # terminal 2
 //
 // Override the target:
