@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc/codes"
+	grpc_health_v1 "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 
 	"github.com/belLena81/raglibrarian/pkg/auth"
@@ -21,17 +22,37 @@ var ErrUnavailable = errors.New("identity service unavailable")
 
 // Client adapts the versioned Identity gRPC API to the edge handler contract.
 type Client struct {
-	rpc identityv1.IdentityServiceClient
+	rpc    identityv1.IdentityServiceClient
+	health grpc_health_v1.HealthClient
 }
 
 // New constructs a client adapter over the generated Identity client.
-func New(rpc identityv1.IdentityServiceClient) *Client {
-	return &Client{rpc: rpc}
+func New(rpc identityv1.IdentityServiceClient, health ...grpc_health_v1.HealthClient) *Client {
+	client := &Client{rpc: rpc}
+	if len(health) > 0 {
+		client.health = health[0]
+	}
+	return client
+}
+
+// CheckReady verifies Identity's standard gRPC health service. It never
+// returns the underlying transport error to an HTTP caller.
+func (c *Client) CheckReady(ctx context.Context) error {
+	if c.health == nil {
+		return ErrUnavailable
+	}
+	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	response, err := c.health.Check(ctx, &grpc_health_v1.HealthCheckRequest{})
+	if err != nil || response.GetStatus() != grpc_health_v1.HealthCheckResponse_SERVING {
+		return ErrUnavailable
+	}
+	return nil
 }
 
 // Register delegates reader registration to Identity.
-func (c *Client) Register(ctx context.Context, email, password string, role domain.Role) (auth.SessionTokens, domain.User, error) {
-	response, err := c.register(ctx, email, password, role)
+func (c *Client) Register(ctx context.Context, email, password string) (auth.SessionTokens, domain.User, error) {
+	response, err := c.register(ctx, email, password)
 	if err != nil {
 		return auth.SessionTokens{}, domain.User{}, mapError(err)
 	}
@@ -77,10 +98,10 @@ func (c *Client) Logout(ctx context.Context, sessionID string) error {
 	return mapError(err)
 }
 
-func (c *Client) register(ctx context.Context, email, password string, role domain.Role) (*identityv1.RegisterResponse, error) {
+func (c *Client) register(ctx context.Context, email, password string) (*identityv1.RegisterResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	return c.rpc.Register(ctx, &identityv1.RegisterRequest{Email: email, Password: password, Role: string(role)})
+	return c.rpc.Register(ctx, &identityv1.RegisterRequest{Email: email, Password: password})
 }
 
 func mapError(err error) error {

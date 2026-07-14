@@ -22,6 +22,8 @@ var (
 var (
 	ErrEmptyUserID   = errors.New("query: user id must not be empty")
 	ErrEmptyQuestion = errors.New("query: question must not be empty")
+	// ErrRetrievalUnavailable indicates no retrieval backend is configured.
+	ErrRetrievalUnavailable = errors.New("query: retrieval is unavailable")
 )
 
 // SearchResult errors
@@ -51,7 +53,5 @@ var (
 // Config errors
 var (
 	ErrMissingEnvVar    = errors.New("missing environment variable")
-	ErrInvalidTokenTTL  = errors.New("invalid token TTL")
 	ErrInvalidSecretKey = errors.New("invalid auth secret key")
-	ErrInvalidDuration  = errors.New("invalid duration")
 )

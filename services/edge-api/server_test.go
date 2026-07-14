@@ -29,9 +29,9 @@ func (f *fakeQueryUC) Answer(_ context.Context, _, _ string) ([]domain.SearchRes
 
 type fakeAuthUC struct{}
 
-func (f *fakeAuthUC) Register(_ context.Context, email, _ string, role domain.Role) (auth.SessionTokens, domain.User, error) {
-	u, err := domain.NewUser(email, "hashed", role)
-	return auth.SessionTokens{AccessToken: "fake-token", RefreshToken: "refresh", Role: string(role)}, u, err
+func (f *fakeAuthUC) Register(_ context.Context, email, _ string) (auth.SessionTokens, domain.User, error) {
+	u, err := domain.NewUser(email, "hashed", domain.RoleReader)
+	return auth.SessionTokens{AccessToken: "fake-token", RefreshToken: "refresh", Role: string(domain.RoleReader)}, u, err
 }
 func (f *fakeAuthUC) Login(_ context.Context, _, _ string) (auth.SessionTokens, error) {
 	return auth.SessionTokens{AccessToken: "fake-token", RefreshToken: "refresh", Role: "reader"}, nil
@@ -73,6 +73,14 @@ func newTestRouter(t *testing.T) (http.Handler, *auth.Issuer) {
 func TestRouter_GET_Healthz_Returns200_NoAuth(t *testing.T) {
 	router, _ := newTestRouter(t)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
+func TestRouter_GET_Readyz_Returns200_NoAuth(t *testing.T) {
+	router, _ := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusOK, rr.Code)

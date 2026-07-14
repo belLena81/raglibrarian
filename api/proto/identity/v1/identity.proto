@@ -15,7 +15,6 @@ service IdentityService {
 message RegisterRequest {
   string email = 1;
   string password = 2;
-  string role = 3 [deprecated = true];
 }
 
 message LoginRequest {

@@ -85,6 +85,18 @@ func TestRequestLogger_5xx_LoggedAtErrorLevel(t *testing.T) {
 	assert.Equal(t, zapcore.ErrorLevel, logs.All()[0].Level)
 }
 
+func TestRequestLogger_501_LoggedAtWarnLevel(t *testing.T) {
+	log, logs := newObservedLogger()
+	mw := qmiddleware.RequestLogger(log)
+	handler := wrapWithRequestID(mw(makeHandler(http.StatusNotImplemented)))
+
+	req := httptest.NewRequest(http.MethodPost, "/query/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, zapcore.WarnLevel, logs.All()[0].Level)
+}
+
 func TestRequestLogger_ContainsMandatoryFields(t *testing.T) {
 	log, logs := newObservedLogger()
 	mw := qmiddleware.RequestLogger(log)

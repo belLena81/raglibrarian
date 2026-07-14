@@ -36,13 +36,13 @@ client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
 
 | Capability | State | Notes |
 |---|---|---|
-| Edge, Identity, Catalog processes | Implemented | Compose builds and starts all three services. |
+| Edge, Identity, Catalog processes | Implemented | Compose migrates Identity, then starts all three services. |
 | Public auth API | Implemented | Register, login, refresh, `/me`, and server-side logout. Public registration creates readers only. |
 | Access tokens | Implemented | PASETO v4 public, Ed25519 signed by Identity and verified by Edge; 15-minute lifetime and `edge-api` audience. |
 | Password storage | Implemented | bcrypt at cost 12; plaintext is never persisted. |
 | Identity persistence | Implemented | Identity-owned users migration and Postgres repository. |
 | HTTP hardening | Implemented | Strict, bounded JSON, request/header timeouts, security headers, sanitized errors, and request IDs. |
-| Real query/retrieval | Not implemented | `/query/` is authenticated but uses a deterministic stub. |
+| Real query/retrieval | Not implemented | `/query` is authenticated and returns `501`; it never fabricates citations. |
 | Sessions, refresh tokens, revocation | Implemented | Refresh tokens rotate in an `HttpOnly`, `SameSite=Strict` cookie; logout/replay invalidates the server-side session family. |
 | Rate limiting / Redis | Not implemented | Required before an Internet-facing deployment. |
 | File upload, ingestion, vectors, LLM | Not implemented | Future additive services. |
@@ -64,12 +64,13 @@ book content. The signing key must never be present in Edge configuration.
 | Method | Path | Authentication | Current behaviour |
 |---|---|---|---|
 | `GET` | `/healthz` | None | Edge process health. |
+| `GET` | `/readyz` | None | Edge readiness; returns `503` until Identity gRPC health is serving. |
 | `POST` | `/auth/register` | None | Creates a `reader`, returns a short-lived access token, and sets a refresh cookie. |
 | `POST` | `/auth/login` | None | Validates credentials, returns a short-lived access token, and sets a refresh cookie. |
 | `POST` | `/auth/refresh` | Refresh cookie | Rotates the refresh token and returns a replacement access token. |
 | `GET` | `/auth/me` | Bearer token | Returns verified claims after validating the Identity session. |
 | `POST` | `/auth/logout` | Bearer token | Revokes the Identity session and clears the refresh cookie. |
-| `POST` | `/query` | Bearer token | Validates the session and returns deterministic M1 stub results. `/query/` remains compatible. |
+| `POST` | `/query` | Bearer token | Validates the session, then returns `501` until retrieval exists. `/query/` remains compatible. |
 
 Request JSON is strict. Client-supplied `role` and `user_id` fields are
 rejected; identity comes only from verified token claims.
@@ -95,20 +96,28 @@ tests/e2e/           Black-box HTTP tests
 
 ## Local development
 
-Prerequisites: Go 1.26+, Docker Compose, `psql`, OpenSSL, and `protoc` for
-contract generation.
+Prerequisites: Go 1.26+, Docker Compose, `psql`, OpenSSL, `protoc`, and the
+Go protobuf generators for contract generation. Install the generators once:
+
+```bash
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+```
+
+Generated Go bindings under `pkg/proto/` are intentionally not committed.
+Every Go build/test target generates them automatically; run `make proto` to
+lint and generate them explicitly after changing a `.proto` contract.
 
 ```bash
 cp .env.example .env
 make keygen >> .env
 make dev-certs
-make infra-up
-make migrate-identity-up
-make dev
+make stack-up
+make e2e
 ```
 
-`make dev` starts Edge on `:8080`. For the Compose stack, ensure `.env`
-contains both generated key values before `docker compose up`.
+`make stack-up` starts the full Compose stack on `:8080` and applies Identity
+migrations before starting Identity. `make dev` is an alias for this workflow.
 
 ## Quality commands
 

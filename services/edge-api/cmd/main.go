@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	grpc_health_v1 "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/pkg/config"
@@ -57,9 +58,16 @@ func run(log *zap.Logger) error {
 		return err
 	}
 	defer func() { _ = conn.Close() }()
-	identityClient := identityclient.New(identityv1.NewIdentityServiceClient(conn))
+	identityClient := identityclient.New(
+		identityv1.NewIdentityServiceClient(conn),
+		grpc_health_v1.NewHealthClient(conn),
+	)
 	authHandler := handler.NewAuthHandler(identityClient, log, os.Getenv("EDGE_INSECURE_REFRESH_COOKIE") != "true")
-	queryHandler := handler.NewQueryHandler(usecase.NewQueryService(queryrepo.NewStubQueryRepository()), log)
+	queryHandler := handler.NewQueryHandler(
+		usecase.NewQueryService(queryrepo.NewStubQueryRepository()),
+		log,
+		identityClient,
+	)
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           edgeapi.NewRouter(queryHandler, authHandler, verifier, log, identityClient),

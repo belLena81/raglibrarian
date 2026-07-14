@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -51,19 +52,30 @@ type errorResponse struct {
 
 // QueryHandler handles HTTP requests for the query service.
 type QueryHandler struct {
-	uc  usecase.QueryUseCase
-	log *zap.Logger
+	uc      usecase.QueryUseCase
+	log     *zap.Logger
+	readier ReadinessChecker
+}
+
+// ReadinessChecker verifies that an essential Edge dependency can serve
+// requests. Implementations must apply their own bounded deadline.
+type ReadinessChecker interface {
+	CheckReady(context.Context) error
 }
 
 // NewQueryHandler constructs a QueryHandler. Panics on nil deps.
-func NewQueryHandler(uc usecase.QueryUseCase, log *zap.Logger) *QueryHandler {
+func NewQueryHandler(uc usecase.QueryUseCase, log *zap.Logger, readiness ...ReadinessChecker) *QueryHandler {
 	if uc == nil {
 		panic("handler: QueryUseCase must not be nil")
 	}
 	if log == nil {
 		panic("handler: Logger must not be nil")
 	}
-	return &QueryHandler{uc: uc, log: log}
+	h := &QueryHandler{uc: uc, log: log}
+	if len(readiness) > 0 {
+		h.readier = readiness[0]
+	}
+	return h
 }
 
 // Query handles POST /query.
@@ -85,7 +97,7 @@ func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
 	results, err := h.uc.Answer(r.Context(), claims.UserID, req.Question)
 	if err != nil {
 		status := domainErrToStatus(err)
-		if status >= http.StatusInternalServerError {
+		if status >= http.StatusInternalServerError && status != http.StatusNotImplemented {
 			reqLog.Error("query use case returned unexpected error",
 				zap.Error(err),
 				zap.String("user_id", claims.UserID),
@@ -97,7 +109,10 @@ func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 		message := "invalid query"
-		if status >= http.StatusInternalServerError {
+		if status == http.StatusNotImplemented {
+			message = "retrieval is unavailable in milestone 1"
+		}
+		if status >= http.StatusInternalServerError && status != http.StatusNotImplemented {
 			message = "internal server error"
 		}
 		writeError(w, status, message)
@@ -117,6 +132,16 @@ func (h *QueryHandler) Health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// Ready handles GET /readyz. It is deliberately separate from liveness so a
+// process that cannot authenticate requests is not advertised as ready.
+func (h *QueryHandler) Ready(w http.ResponseWriter, r *http.Request) {
+	if h.readier != nil && h.readier.CheckReady(r.Context()) != nil {
+		writeError(w, http.StatusServiceUnavailable, "service unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func domainErrToStatus(err error) int {
@@ -124,6 +149,8 @@ func domainErrToStatus(err error) int {
 	case errors.Is(err, domain.ErrEmptyQuestion),
 		errors.Is(err, domain.ErrEmptyUserID):
 		return http.StatusUnprocessableEntity
+	case errors.Is(err, domain.ErrRetrievalUnavailable):
+		return http.StatusNotImplemented
 	default:
 		return http.StatusInternalServerError
 	}
