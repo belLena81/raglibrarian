@@ -69,7 +69,7 @@ func NewAuthHandler(uc AuthUseCase, log *zap.Logger, secureCookie ...bool) *Auth
 // AuthUseCase is the edge-facing identity contract. Its production adapter is
 // a generated gRPC client; tests use a local fake.
 type AuthUseCase interface {
-	Register(context.Context, string, string, domain.Role) (auth.SessionTokens, domain.User, error)
+	Register(context.Context, string, string) (auth.SessionTokens, domain.User, error)
 	Login(context.Context, string, string) (auth.SessionTokens, error)
 	Refresh(context.Context, string) (auth.SessionTokens, error)
 	Logout(context.Context, string) error
@@ -86,9 +86,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Public registration can only create readers. Role elevation is an
-	// administrative workflow and must never be client-controlled.
-	tokens, user, err := h.uc.Register(r.Context(), req.Email, req.Password, domain.RoleReader)
+	tokens, user, err := h.uc.Register(r.Context(), req.Email, req.Password)
 	if err != nil {
 		h.log.Debug("register failed",
 			zap.String("request_id", reqID),

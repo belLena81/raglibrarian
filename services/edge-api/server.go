@@ -38,6 +38,7 @@ func NewRouter(
 	r.Use(chimiddleware.Recoverer)
 
 	r.Get("/healthz", qh.Health)
+	r.Get("/readyz", qh.Ready)
 
 	r.Route("/auth", func(r chi.Router) {
 		r.Post("/register", ah.Register)

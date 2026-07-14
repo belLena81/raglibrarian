@@ -4,7 +4,7 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln proto-check build run-edge-api run-identity run-catalog dev tidy e2e migrate-identity-up migrate-identity-down infra-up infra-down keygen proto dev-certs
+.PHONY: test test-race lint fmt fmt-check vet vuln proto-check proto-generate build run-edge-api run-identity run-catalog dev tidy e2e migrate-identity-up migrate-identity-down infra-up infra-down stack-up keygen proto dev-certs
 
 # Service/library modules — looped over by test, lint, tidy, fmt.
 MODULES := \
@@ -16,6 +16,11 @@ MODULES := \
 	services/identity-service \
 	services/catalog-service \
 	services/edge-api
+
+# Go packages import generated protobuf bindings. Generate them before any
+# target that compiles or analyzes those packages.
+GO_PROTO_TARGETS := test test-race lint fmt fmt-check vet vuln build run-edge-api run-identity run-catalog tidy
+$(GO_PROTO_TARGETS): proto-generate
 
 # Guard: abort if not run from the workspace root.
 _require_root:
@@ -96,18 +101,18 @@ run-identity: _require_root
 run-catalog: _require_root
 	cd services/catalog-service && go run ./cmd/main.go
 
-# dev: loads .env then starts the service — the everyday local workflow.
-# Usage: make dev
-# Prerequisites: .env file exists (copy from .env.example, fill in values).
-dev: _require_root
+# stack-up starts the complete local stack, including the migration job.
+stack-up: _require_root
 	@test -f .env || { \
 		echo ""; \
 		echo "  !! .env not found. Run: cp .env.example .env && make keygen >> .env !!"; \
 		echo ""; \
 		exit 1; \
 	}
-	@set -a && . ./.env && set +a && \
-		cd services/edge-api && go run ./cmd/main.go
+	@docker compose up -d --build
+
+# dev is retained as a convenient alias for the full Compose workflow.
+dev: stack-up
 
 # ── Tidy ──────────────────────────────────────────────────────────────────────
 tidy: _require_root
@@ -144,8 +149,7 @@ migrate-identity-down: _require_root
 		done
 
 # ── Infrastructure ────────────────────────────────────────────────────────────
-infra-up:
-	docker-compose up -d postgres identity-service catalog-service edge-api
+infra-up: stack-up
 
 infra-down:
 	docker-compose down
@@ -156,11 +160,14 @@ keygen: _require_root
 	cd pkg/auth && go run ./cmd/keygen/
 
 proto: _require_root
-	XDG_CACHE_HOME=/tmp/raglibrarian-cache buf lint api/proto
+	$(MAKE) proto-check
+	$(MAKE) proto-generate
+
+proto-generate: _require_root
 	PATH="$$HOME/go/bin:$$PATH" protoc -I api/proto --go_out=paths=source_relative:pkg/proto --go-grpc_out=paths=source_relative:pkg/proto api/proto/identity/v1/identity.proto api/proto/catalog/v1/catalog.proto
 
 proto-check: _require_root
 	XDG_CACHE_HOME=/tmp/raglibrarian-cache buf lint api/proto
 
 dev-certs: _require_root
-	./scripts/generate-dev-certs.sh
+	bash ./scripts/generate-dev-certs.sh

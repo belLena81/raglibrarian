@@ -5,8 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"strconv"
-	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/domain"
 )
@@ -14,11 +12,6 @@ import (
 // Environment variable names read by Load.
 const (
 	EnvEdgeVerifyKey = "EDGE_VERIFY_KEY"
-	// EnvAuthSecretKey is retained for source compatibility; it now refers to
-	// the public verification key and never to a signing secret.
-	EnvAuthSecretKey = EnvEdgeVerifyKey
-	EnvPostgresDSN   = "POSTGRES_DSN"
-	EnvTokenTTL      = "TOKEN_TTL"
 	EnvQueryAddr     = "QUERY_ADDR"
 	EnvLogEnv        = "LOG_ENV"
 	EnvLogLevel      = "LOG_LEVEL"
@@ -30,10 +23,7 @@ type Config struct {
 	Addr string // e.g. ":8080"
 
 	// Auth
-	VerifyKey     []byte        // 32-byte Ed25519 public key for PASETO verification
-	AuthSecretKey []byte        // Deprecated alias for VerifyKey.
-	TokenTTL      time.Duration // Deprecated; token lifetime belongs to Identity.
-	PostgresDSN   string        // Deprecated; Edge does not use a database.
+	VerifyKey []byte // 32-byte Ed25519 public key for PASETO verification
 
 	// Logging
 	LogEnv   string // "production" | "" (development)
@@ -52,11 +42,10 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		Addr:          optionalEnv(EnvQueryAddr, ":8080"),
-		VerifyKey:     key,
-		AuthSecretKey: key,
-		LogEnv:        optionalEnv(EnvLogEnv, ""),
-		LogLevel:      optionalEnv(EnvLogLevel, ""),
+		Addr:      optionalEnv(EnvQueryAddr, ":8080"),
+		VerifyKey: key,
+		LogEnv:    optionalEnv(EnvLogEnv, ""),
+		LogLevel:  optionalEnv(EnvLogLevel, ""),
 	}, nil
 }
 
@@ -73,15 +62,4 @@ func optionalEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-func parseDuration(s string) (time.Duration, error) {
-	if d, err := time.ParseDuration(s); err == nil {
-		return d, nil
-	}
-	secs, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("%w: %q", domain.ErrInvalidDuration, s)
-	}
-	return time.Duration(secs) * time.Second, nil
 }

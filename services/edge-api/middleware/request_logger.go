@@ -12,7 +12,8 @@ import (
 
 // RequestLogger emits one structured log line per request and echoes the
 // request ID into the X-Request-ID response header.
-// Logs 5xx at Error, 4xx at Warn, everything else at Info.
+// Logs unexpected 5xx at Error, client errors and the expected M1 501 at Warn,
+// and everything else at Info.
 func RequestLogger(log *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -40,7 +41,7 @@ func RequestLogger(log *zap.Logger) func(http.Handler) http.Handler {
 			}
 
 			switch {
-			case status >= http.StatusInternalServerError:
+			case status >= http.StatusInternalServerError && status != http.StatusNotImplemented:
 				log.Error("request completed", fields...)
 			case status >= http.StatusBadRequest:
 				log.Warn("request completed", fields...)

@@ -2,14 +2,14 @@
 
 // Package e2e contains end-to-end tests that run against a live service.
 //
-// Prerequisites (all managed by `make e2e`):
-//   - Postgres running and migrated
-//   - Query service running on E2E_BASE_URL (default: http://localhost:8080)
+// Prerequisites:
+//   - the Compose stack is running (`make stack-up`)
+//   - Edge is ready on E2E_BASE_URL (default: http://localhost:8080)
 //
 // Run manually:
 //
-//	make infra-up && make migrate-identity-up             # terminal 1
-//	make e2e                                             # terminal 2
+//	make stack-up
+//	make e2e
 //
 // Override the target:
 //
@@ -28,6 +28,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+const validPassword = "correct-horse-123"
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -102,11 +104,18 @@ func TestHealthz_ReturnsRequestIDHeader(t *testing.T) {
 	assert.NotEmpty(t, resp.Header.Get("X-Request-ID"))
 }
 
+func TestReadyz(t *testing.T) {
+	resp, err := http.Get(baseURL() + "/readyz")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
 func TestRegister_ValidReader_Returns201WithToken(t *testing.T) {
 	resp := postJSON(t, "/auth/register", map[string]string{
 		"email":    uniqueEmail("reader"),
-		"password": "s3cr3t123",
-		"role":     "reader",
+		"password": validPassword,
 	}, "")
 
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
@@ -115,25 +124,23 @@ func TestRegister_ValidReader_Returns201WithToken(t *testing.T) {
 	decodeJSON(t, resp, &body)
 	assert.NotEmpty(t, body["token"])
 	assert.Equal(t, "reader", body["role"])
+	assert.Len(t, resp.Cookies(), 1)
 }
 
-func TestRegister_ValidAdmin_Returns201WithAdminRole(t *testing.T) {
+func TestRegister_RejectsClientControlledRole(t *testing.T) {
 	resp := postJSON(t, "/auth/register", map[string]string{
-		"email":    uniqueEmail("admin"),
-		"password": "s3cr3t123",
+		"email":    uniqueEmail("role"),
+		"password": validPassword,
 		"role":     "admin",
 	}, "")
+	defer resp.Body.Close()
 
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
-
-	var body map[string]string
-	decodeJSON(t, resp, &body)
-	assert.Equal(t, "admin", body["role"])
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
 func TestRegister_DuplicateEmail_Returns409(t *testing.T) {
 	email := uniqueEmail("dup")
-	payload := map[string]string{"email": email, "password": "pw", "role": "reader"}
+	payload := map[string]string{"email": email, "password": validPassword}
 
 	resp := postJSON(t, "/auth/register", payload, "")
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
@@ -148,32 +155,31 @@ func TestRegister_DuplicateEmail_Returns409(t *testing.T) {
 func TestRegister_InvalidEmail_Returns422(t *testing.T) {
 	resp := postJSON(t, "/auth/register", map[string]string{
 		"email":    "not-an-email",
-		"password": "pw",
-		"role":     "reader",
+		"password": validPassword,
 	}, "")
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 }
 
-func TestRegister_InvalidRole_Returns422(t *testing.T) {
+func TestRegister_RejectsUnknownField(t *testing.T) {
 	resp := postJSON(t, "/auth/register", map[string]string{
-		"email":    uniqueEmail("badrole"),
-		"password": "pw",
-		"role":     "superuser",
+		"email":    uniqueEmail("unknown"),
+		"password": validPassword,
+		"user_id":  "client-controlled",
 	}, "")
 	defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
 func TestLogin_ValidCredentials_Returns200WithToken(t *testing.T) {
 	email := uniqueEmail("login")
-	password := "loginpass"
+	password := validPassword
 
 	// Register first.
 	resp := postJSON(t, "/auth/register", map[string]string{
-		"email": email, "password": password, "role": "reader",
+		"email": email, "password": password,
 	}, "")
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	resp.Body.Close()
@@ -193,7 +199,7 @@ func TestLogin_WrongPassword_Returns401(t *testing.T) {
 	email := uniqueEmail("wrongpw")
 
 	resp := postJSON(t, "/auth/register", map[string]string{
-		"email": email, "password": "correct", "role": "reader",
+		"email": email, "password": validPassword,
 	}, "")
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	resp.Body.Close()
@@ -219,7 +225,7 @@ func TestLogin_UnknownEmail_Returns401(t *testing.T) {
 func TestMe_WithValidToken_Returns200WithIdentity(t *testing.T) {
 	email := uniqueEmail("me")
 	resp := postJSON(t, "/auth/register", map[string]string{
-		"email": email, "password": "mepass", "role": "reader",
+		"email": email, "password": validPassword,
 	}, "")
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 
@@ -254,7 +260,7 @@ func TestMe_WithoutToken_Returns401(t *testing.T) {
 func TestLogout_WithValidToken_Returns200(t *testing.T) {
 	email := uniqueEmail("logout")
 	resp := postJSON(t, "/auth/register", map[string]string{
-		"email": email, "password": "logoutpass", "role": "reader",
+		"email": email, "password": validPassword,
 	}, "")
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 
@@ -276,12 +282,12 @@ func TestLogout_WithoutToken_Returns401(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
-func TestQuery_WithValidToken_Returns200(t *testing.T) {
+func TestQuery_WithValidToken_Returns501WithoutFabricatedEvidence(t *testing.T) {
 	email := uniqueEmail("query")
-	password := "querypass"
+	password := validPassword
 
 	resp := postJSON(t, "/auth/register", map[string]string{
-		"email": email, "password": password, "role": "reader",
+		"email": email, "password": password,
 	}, "")
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 
@@ -292,16 +298,15 @@ func TestQuery_WithValidToken_Returns200(t *testing.T) {
 
 	resp = postJSON(t, "/query/", map[string]string{
 		"question": "What is a goroutine?",
-		"user_id":  "e2e-user",
 	}, token)
 	defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
 }
 
 func TestQuery_WithoutToken_Returns401(t *testing.T) {
 	resp := postJSON(t, "/query/", map[string]string{
-		"question": "test?", "user_id": "u",
+		"question": "test?",
 	}, "")
 	defer resp.Body.Close()
 
@@ -310,11 +315,45 @@ func TestQuery_WithoutToken_Returns401(t *testing.T) {
 
 func TestQuery_WithInvalidToken_Returns401(t *testing.T) {
 	resp := postJSON(t, "/query/", map[string]string{
-		"question": "test?", "user_id": "u",
+		"question": "test?",
 	}, "v4.local.totallyinvalid")
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestRefreshReuseRevokesSessionFamily(t *testing.T) {
+	resp := postJSON(t, "/auth/register", map[string]string{
+		"email": uniqueEmail("refresh"), "password": validPassword,
+	}, "")
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	cookies := resp.Cookies()
+	require.Len(t, cookies, 1)
+	refreshCookie := cookies[0]
+	resp.Body.Close()
+
+	refreshReq, err := http.NewRequest(http.MethodPost, baseURL()+"/auth/refresh", nil)
+	require.NoError(t, err)
+	refreshReq.AddCookie(refreshCookie)
+	refreshed, err := http.DefaultClient.Do(refreshReq)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, refreshed.StatusCode)
+	var refreshedBody map[string]string
+	decodeJSON(t, refreshed, &refreshedBody)
+	refreshedAccessToken := refreshedBody["token"]
+	require.NotEmpty(t, refreshedAccessToken)
+
+	reusedReq, err := http.NewRequest(http.MethodPost, baseURL()+"/auth/refresh", nil)
+	require.NoError(t, err)
+	reusedReq.AddCookie(refreshCookie)
+	reused, err := http.DefaultClient.Do(reusedReq)
+	require.NoError(t, err)
+	defer reused.Body.Close()
+	assert.Equal(t, http.StatusUnauthorized, reused.StatusCode)
+
+	queryResp := postJSON(t, "/query", map[string]string{"question": "test?"}, refreshedAccessToken)
+	defer queryResp.Body.Close()
+	assert.Equal(t, http.StatusUnauthorized, queryResp.StatusCode)
 }
 
 func TestUnknownRoute_Returns404(t *testing.T) {

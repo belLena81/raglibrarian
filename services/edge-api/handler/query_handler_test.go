@@ -151,6 +151,16 @@ func TestQueryHandler_Query_Returns500_OnInternalError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
 }
 
+func TestQueryHandler_Query_Returns501_WhenRetrievalIsUnavailable(t *testing.T) {
+	uc := &fakeQueryUseCase{err: domain.ErrRetrievalUnavailable}
+	h := handler.NewQueryHandler(uc, zaptest.NewLogger(t))
+
+	rr := doPost(t, h, map[string]string{"question": "What is a goroutine?"})
+
+	assert.Equal(t, http.StatusNotImplemented, rr.Code)
+	assert.JSONEq(t, `{"error":"retrieval is unavailable in milestone 1"}`, rr.Body.String())
+}
+
 func TestQueryHandler_Query_Returns400_OnInvalidJSON(t *testing.T) {
 	uc := &fakeQueryUseCase{}
 	h := handler.NewQueryHandler(uc, zaptest.NewLogger(t))
@@ -214,6 +224,34 @@ func TestQueryHandler_Health_ResponseBody(t *testing.T) {
 	var body map[string]string
 	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 	assert.Equal(t, "ok", body["status"])
+}
+
+type fakeReadinessChecker struct{ err error }
+
+func (f fakeReadinessChecker) CheckReady(context.Context) error { return f.err }
+
+func TestQueryHandler_Ready_Returns200_WhenDependencyIsReady(t *testing.T) {
+	h := handler.NewQueryHandler(&fakeQueryUseCase{}, zaptest.NewLogger(t), fakeReadinessChecker{})
+	rr := httptest.NewRecorder()
+
+	h.Ready(rr, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.JSONEq(t, `{"status":"ready"}`, rr.Body.String())
+}
+
+func TestQueryHandler_Ready_Returns503_WhenDependencyIsUnavailable(t *testing.T) {
+	h := handler.NewQueryHandler(
+		&fakeQueryUseCase{},
+		zaptest.NewLogger(t),
+		fakeReadinessChecker{err: errors.New("identity unavailable")},
+	)
+	rr := httptest.NewRecorder()
+
+	h.Ready(rr, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+	assert.JSONEq(t, `{"error":"service unavailable"}`, rr.Body.String())
 }
 
 // ── Wiring guards ─────────────────────────────────────────────────────────────

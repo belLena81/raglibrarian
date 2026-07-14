@@ -15,7 +15,7 @@ var validKeyHex = hex.EncodeToString(make([]byte, 32))
 
 func setMinimalEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv(config.EnvAuthSecretKey, validKeyHex)
+	t.Setenv(config.EnvEdgeVerifyKey, validKeyHex)
 }
 
 func TestLoad_ValidConfig_Succeeds(t *testing.T) {
@@ -24,46 +24,34 @@ func TestLoad_ValidConfig_Succeeds(t *testing.T) {
 	cfg, err := config.Load()
 
 	require.NoError(t, err)
-	assert.Len(t, cfg.AuthSecretKey, 32)
+	assert.Len(t, cfg.VerifyKey, 32)
 	assert.Equal(t, ":8080", cfg.Addr)
-	assert.Empty(t, cfg.PostgresDSN)
-	assert.Zero(t, cfg.TokenTTL)
 }
 
-func TestLoad_MissingAuthSecretKey_ReturnsError(t *testing.T) {
-	t.Setenv(config.EnvAuthSecretKey, "")
+func TestLoad_MissingVerifyKey_ReturnsError(t *testing.T) {
+	t.Setenv(config.EnvEdgeVerifyKey, "")
 
 	_, err := config.Load()
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), config.EnvAuthSecretKey)
+	assert.Contains(t, err.Error(), config.EnvEdgeVerifyKey)
 }
 
-func TestLoad_InvalidAuthSecretKey_TooShort(t *testing.T) {
-	t.Setenv(config.EnvAuthSecretKey, "deadbeef") // only 4 bytes
+func TestLoad_InvalidVerifyKey_TooShort(t *testing.T) {
+	t.Setenv(config.EnvEdgeVerifyKey, "deadbeef") // only 4 bytes
 
 	_, err := config.Load()
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), config.EnvAuthSecretKey)
+	assert.Contains(t, err.Error(), config.EnvEdgeVerifyKey)
 }
 
-func TestLoad_InvalidAuthSecretKey_NotHex(t *testing.T) {
-	t.Setenv(config.EnvAuthSecretKey, "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
+func TestLoad_InvalidVerifyKey_NotHex(t *testing.T) {
+	t.Setenv(config.EnvEdgeVerifyKey, "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
 
 	_, err := config.Load()
 
 	require.Error(t, err)
-}
-
-func TestLoad_MissingPostgresDSN_IsAllowedForEdge(t *testing.T) {
-	t.Setenv(config.EnvAuthSecretKey, validKeyHex)
-	t.Setenv(config.EnvPostgresDSN, "")
-
-	cfg, err := config.Load()
-
-	require.NoError(t, err)
-	assert.Empty(t, cfg.PostgresDSN)
 }
 
 func TestLoad_CustomAddr(t *testing.T) {
@@ -74,23 +62,4 @@ func TestLoad_CustomAddr(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, ":9090", cfg.Addr)
-}
-
-func TestLoad_TokenTTLIsIgnoredByEdge(t *testing.T) {
-	setMinimalEnv(t)
-	t.Setenv(config.EnvTokenTTL, "1h30m")
-
-	cfg, err := config.Load()
-
-	require.NoError(t, err)
-	assert.Zero(t, cfg.TokenTTL)
-}
-
-func TestLoad_InvalidTokenTTLIsIgnoredByEdge(t *testing.T) {
-	setMinimalEnv(t)
-	t.Setenv(config.EnvTokenTTL, "not-a-duration")
-
-	_, err := config.Load()
-
-	require.NoError(t, err)
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -56,7 +57,7 @@ func (r *PostgresSessionRepository) Rotate(ctx context.Context, tokenHash, succe
 
 	var session Session
 	var tokenID string
-	var consumedAt *time.Time
+	var consumedAt pgtype.Timestamptz
 	err = tx.QueryRow(ctx, `SELECT s.id,s.user_id,s.family_id,s.expires_at,t.id,t.consumed_at FROM identity.refresh_tokens t JOIN identity.sessions s ON s.id=t.session_id WHERE t.token_hash=$1 FOR UPDATE OF t,s`, tokenHash).Scan(&session.ID, &session.UserID, &session.FamilyID, &session.ExpiresAt, &tokenID, &consumedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrRefreshTokenInvalid
@@ -64,7 +65,7 @@ func (r *PostgresSessionRepository) Rotate(ctx context.Context, tokenHash, succe
 	if err != nil {
 		return Session{}, fmt.Errorf("session: lock refresh token: %w", err)
 	}
-	if consumedAt != nil {
+	if consumedAt.Valid {
 		_, err = tx.Exec(ctx, `UPDATE identity.sessions SET revoked_at=$1 WHERE family_id=$2 AND revoked_at IS NULL`, now, session.FamilyID)
 		if err != nil {
 			return Session{}, fmt.Errorf("session: revoke reused family: %w", err)
@@ -78,23 +79,23 @@ func (r *PostgresSessionRepository) Rotate(ctx context.Context, tokenHash, succe
 		return Session{}, ErrRefreshTokenInvalid
 	}
 
-	var revokedAt *time.Time
+	var revokedAt pgtype.Timestamptz
 	err = tx.QueryRow(ctx, `SELECT revoked_at FROM identity.sessions WHERE id=$1`, session.ID).Scan(&revokedAt)
 	if err != nil {
 		return Session{}, fmt.Errorf("session: check revocation: %w", err)
 	}
-	if revokedAt != nil {
+	if revokedAt.Valid {
 		return Session{}, ErrRefreshTokenInvalid
 	}
 
 	successorID := uuid.NewString()
-	_, err = tx.Exec(ctx, `UPDATE identity.refresh_tokens SET consumed_at=$1,replaced_by_id=$2 WHERE id=$3`, now, successorID, tokenID)
-	if err != nil {
-		return Session{}, fmt.Errorf("session: consume refresh token: %w", err)
-	}
 	_, err = tx.Exec(ctx, `INSERT INTO identity.refresh_tokens (id,session_id,token_hash,expires_at,created_at) VALUES ($1,$2,$3,$4,$5)`, successorID, session.ID, successorHash, session.ExpiresAt, now)
 	if err != nil {
 		return Session{}, fmt.Errorf("session: insert successor: %w", err)
+	}
+	_, err = tx.Exec(ctx, `UPDATE identity.refresh_tokens SET consumed_at=$1,replaced_by_id=$2 WHERE id=$3`, now, successorID, tokenID)
+	if err != nil {
+		return Session{}, fmt.Errorf("session: consume refresh token: %w", err)
 	}
 	_, err = tx.Exec(ctx, `UPDATE identity.sessions SET last_used_at=$1 WHERE id=$2`, now, session.ID)
 	if err != nil {

@@ -30,11 +30,9 @@ type fakeAuthUseCase struct {
 	refreshTokens        auth.SessionTokens
 	refreshErr           error
 	logoutSessionID      string
-	registerRole         domain.Role
 }
 
-func (f *fakeAuthUseCase) Register(_ context.Context, _ string, _ string, role domain.Role) (auth.SessionTokens, domain.User, error) {
-	f.registerRole = role
+func (f *fakeAuthUseCase) Register(_ context.Context, _ string, _ string) (auth.SessionTokens, domain.User, error) {
 	if f.registerErr != nil {
 		return auth.SessionTokens{}, domain.User{}, f.registerErr
 	}
@@ -140,7 +138,6 @@ func TestAuthHandler_Register_RejectsClientControlledRole(t *testing.T) {
 	h.Register(rr, req)
 
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
-	assert.Empty(t, uc.registerRole)
 }
 
 // ── POST /auth/login ──────────────────────────────────────────────────────────
