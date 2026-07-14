@@ -32,7 +32,8 @@ func RequestLogger(log *zap.Logger) func(http.Handler) http.Handler {
 			fields := []zapcore.Field{
 				zap.String("request_id", middleware.GetReqID(r.Context())),
 				zap.String("method", r.Method),
-				zap.String("path", r.RequestURI),
+				// URL query parameters can contain credentials or sensitive search text.
+				zap.String("path", r.URL.Path),
 				zap.Int("status", status),
 				zap.Int64("latency_ms", latency.Milliseconds()),
 				zap.Int("bytes", ww.BytesWritten()),

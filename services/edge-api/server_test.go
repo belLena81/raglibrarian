@@ -29,13 +29,17 @@ func (f *fakeQueryUC) Answer(_ context.Context, _, _ string) ([]domain.SearchRes
 
 type fakeAuthUC struct{}
 
-func (f *fakeAuthUC) Register(_ context.Context, email, _ string, role domain.Role) (string, domain.User, error) {
+func (f *fakeAuthUC) Register(_ context.Context, email, _ string, role domain.Role) (auth.SessionTokens, domain.User, error) {
 	u, err := domain.NewUser(email, "hashed", role)
-	return "fake-token", u, err
+	return auth.SessionTokens{AccessToken: "fake-token", RefreshToken: "refresh", Role: string(role)}, u, err
 }
-func (f *fakeAuthUC) Login(_ context.Context, _, _ string) (string, error) {
-	return "fake-token", nil
+func (f *fakeAuthUC) Login(_ context.Context, _, _ string) (auth.SessionTokens, error) {
+	return auth.SessionTokens{AccessToken: "fake-token", RefreshToken: "refresh", Role: "reader"}, nil
 }
+func (f *fakeAuthUC) Refresh(_ context.Context, _ string) (auth.SessionTokens, error) {
+	return auth.SessionTokens{}, domain.ErrInvalidCredentials
+}
+func (f *fakeAuthUC) Logout(_ context.Context, _ string) error { return nil }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -50,7 +54,7 @@ func validAuthToken(t *testing.T, issuer *auth.Issuer) string {
 	t.Helper()
 	u, err := domain.NewUser("test@example.com", "hash", domain.RoleReader)
 	require.NoError(t, err)
-	token, err := issuer.Issue(u)
+	token, err := issuer.Issue(u, "session-test")
 	require.NoError(t, err)
 	return token
 }

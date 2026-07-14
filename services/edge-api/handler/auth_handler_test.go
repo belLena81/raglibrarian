@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 
+	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/pkg/domain"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
 )
@@ -19,24 +20,38 @@ import (
 // ── Fake auth use case ────────────────────────────────────────────────────────
 
 type fakeAuthUseCase struct {
-	registerToken string
-	registerUser  domain.User
-	registerErr   error
-	loginToken    string
-	loginErr      error
-	registerRole  domain.Role
+	registerToken        string
+	registerRefreshToken string
+	registerUser         domain.User
+	registerErr          error
+	loginToken           string
+	loginRefreshToken    string
+	loginErr             error
+	refreshTokens        auth.SessionTokens
+	refreshErr           error
+	logoutSessionID      string
+	registerRole         domain.Role
 }
 
-func (f *fakeAuthUseCase) Register(_ context.Context, _ string, _ string, role domain.Role) (string, domain.User, error) {
+func (f *fakeAuthUseCase) Register(_ context.Context, _ string, _ string, role domain.Role) (auth.SessionTokens, domain.User, error) {
 	f.registerRole = role
 	if f.registerErr != nil {
-		return "", domain.User{}, f.registerErr
+		return auth.SessionTokens{}, domain.User{}, f.registerErr
 	}
-	return f.registerToken, f.registerUser, nil
+	return auth.SessionTokens{AccessToken: f.registerToken, RefreshToken: f.registerRefreshToken, Role: string(f.registerUser.Role())}, f.registerUser, nil
 }
 
-func (f *fakeAuthUseCase) Login(_ context.Context, _, _ string) (string, error) {
-	return f.loginToken, f.loginErr
+func (f *fakeAuthUseCase) Login(_ context.Context, _, _ string) (auth.SessionTokens, error) {
+	return auth.SessionTokens{AccessToken: f.loginToken, RefreshToken: f.loginRefreshToken, Role: "reader"}, f.loginErr
+}
+
+func (f *fakeAuthUseCase) Refresh(_ context.Context, _ string) (auth.SessionTokens, error) {
+	return f.refreshTokens, f.refreshErr
+}
+
+func (f *fakeAuthUseCase) Logout(_ context.Context, sessionID string) error {
+	f.logoutSessionID = sessionID
+	return nil
 }
 
 func newRegisteredUser(t *testing.T) domain.User {
@@ -131,7 +146,7 @@ func TestAuthHandler_Register_RejectsClientControlledRole(t *testing.T) {
 // ── POST /auth/login ──────────────────────────────────────────────────────────
 
 func TestAuthHandler_Login_ValidCredentials_Returns200WithToken(t *testing.T) {
-	uc := &fakeAuthUseCase{loginToken: "v2.local.token"}
+	uc := &fakeAuthUseCase{loginToken: "v2.public.token", loginRefreshToken: "rotating-refresh"}
 	h := newAuthHandler(t, uc)
 
 	body, _ := json.Marshal(handler.LoginRequest{Email: "a@b.com", Password: "pw"})
@@ -144,7 +159,38 @@ func TestAuthHandler_Login_ValidCredentials_Returns200WithToken(t *testing.T) {
 
 	var resp handler.AuthResponse
 	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
-	assert.Equal(t, "v2.local.token", resp.Token)
+	assert.Equal(t, "v2.public.token", resp.Token)
+	cookies := rr.Result().Cookies()
+	require.Len(t, cookies, 1)
+	assert.Equal(t, "refresh_token", cookies[0].Name)
+	assert.True(t, cookies[0].HttpOnly)
+	assert.True(t, cookies[0].Secure)
+	assert.Equal(t, http.SameSiteStrictMode, cookies[0].SameSite)
+}
+
+func TestAuthHandler_Refresh_RotatesCookieWithoutExposingRefreshToken(t *testing.T) {
+	uc := &fakeAuthUseCase{refreshTokens: auth.SessionTokens{AccessToken: "new-access", RefreshToken: "new-refresh", Role: "reader"}}
+	h := newAuthHandler(t, uc)
+	req := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
+	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: "old-refresh"})
+	rr := httptest.NewRecorder()
+	h.Refresh(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Contains(t, rr.Header().Get("Set-Cookie"), "refresh_token=new-refresh")
+	assert.NotContains(t, rr.Body.String(), "new-refresh")
+}
+
+func TestAuthHandler_Refresh_InvalidToken_ClearsCookie(t *testing.T) {
+	uc := &fakeAuthUseCase{refreshErr: domain.ErrInvalidCredentials}
+	h := newAuthHandler(t, uc)
+	req := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
+	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: "reused"})
+	rr := httptest.NewRecorder()
+	h.Refresh(rr, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Contains(t, rr.Header().Get("Set-Cookie"), "Max-Age=0")
 }
 
 func TestAuthHandler_Login_InvalidCredentials_Returns401(t *testing.T) {

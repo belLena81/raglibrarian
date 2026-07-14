@@ -25,6 +25,7 @@ func NewRouter(
 	ah *handler.AuthHandler,
 	verifier tokenVerifier,
 	log *zap.Logger,
+	validators ...middleware.SessionValidator,
 ) http.Handler {
 	r := chi.NewRouter()
 
@@ -41,16 +42,18 @@ func NewRouter(
 	r.Route("/auth", func(r chi.Router) {
 		r.Post("/register", ah.Register)
 		r.Post("/login", ah.Login)
+		r.Post("/refresh", ah.Refresh)
 
 		r.Group(func(r chi.Router) {
-			r.Use(middleware.Authenticator(verifier, log))
+			r.Use(middleware.Authenticator(verifier, log, validators...))
 			r.Get("/me", ah.Me)
 			r.Post("/logout", ah.Logout)
 		})
 	})
 
 	r.Group(func(r chi.Router) {
-		r.Use(middleware.Authenticator(verifier, log))
+		r.Use(middleware.Authenticator(verifier, log, validators...))
+		r.Post("/query", qh.Query)
 
 		r.Route("/query", func(r chi.Router) {
 			r.Post("/", qh.Query)

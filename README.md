@@ -37,13 +37,13 @@ client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
 | Capability | State | Notes |
 |---|---|---|
 | Edge, Identity, Catalog processes | Implemented | Compose builds and starts all three services. |
-| Public auth API | Implemented | Register, login, `/me`, and client-side logout. Public registration creates readers only. |
+| Public auth API | Implemented | Register, login, refresh, `/me`, and server-side logout. Public registration creates readers only. |
 | Access tokens | Implemented | PASETO v4 public, Ed25519 signed by Identity and verified by Edge; 15-minute lifetime and `edge-api` audience. |
 | Password storage | Implemented | bcrypt at cost 12; plaintext is never persisted. |
 | Identity persistence | Implemented | Identity-owned users migration and Postgres repository. |
 | HTTP hardening | Implemented | Strict, bounded JSON, request/header timeouts, security headers, sanitized errors, and request IDs. |
 | Real query/retrieval | Not implemented | `/query/` is authenticated but uses a deterministic stub. |
-| Sessions, refresh tokens, revocation | Not implemented | Logout instructs the client to discard the access token; a valid token remains usable until expiry. |
+| Sessions, refresh tokens, revocation | Implemented | Refresh tokens rotate in an `HttpOnly`, `SameSite=Strict` cookie; logout/replay invalidates the server-side session family. |
 | Rate limiting / Redis | Not implemented | Required before an Internet-facing deployment. |
 | File upload, ingestion, vectors, LLM | Not implemented | Future additive services. |
 
@@ -64,14 +64,19 @@ book content. The signing key must never be present in Edge configuration.
 | Method | Path | Authentication | Current behaviour |
 |---|---|---|---|
 | `GET` | `/healthz` | None | Edge process health. |
-| `POST` | `/auth/register` | None | Creates a `reader` and returns an access token. |
-| `POST` | `/auth/login` | None | Validates credentials and returns an access token. |
-| `GET` | `/auth/me` | Bearer token | Returns verified token claims without a database call. |
-| `POST` | `/auth/logout` | Bearer token | Client-side logout; token revocation is future work. |
-| `POST` | `/query/` | Bearer token | Validates the request and returns stub results. |
+| `POST` | `/auth/register` | None | Creates a `reader`, returns a short-lived access token, and sets a refresh cookie. |
+| `POST` | `/auth/login` | None | Validates credentials, returns a short-lived access token, and sets a refresh cookie. |
+| `POST` | `/auth/refresh` | Refresh cookie | Rotates the refresh token and returns a replacement access token. |
+| `GET` | `/auth/me` | Bearer token | Returns verified claims after validating the Identity session. |
+| `POST` | `/auth/logout` | Bearer token | Revokes the Identity session and clears the refresh cookie. |
+| `POST` | `/query` | Bearer token | Validates the session and returns deterministic M1 stub results. `/query/` remains compatible. |
 
 Request JSON is strict. Client-supplied `role` and `user_id` fields are
 rejected; identity comes only from verified token claims.
+
+Refresh credentials are browser-only and never appear in JSON. The cookie is
+`Secure` by default; set `EDGE_INSECURE_REFRESH_COOKIE=true` only while using
+plain HTTP for local development. This is not a production setting.
 
 ## Repository layout
 

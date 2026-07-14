@@ -1,6 +1,8 @@
 package middleware_test
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,6 +16,10 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/domain"
 	qmiddleware "github.com/belLena81/raglibrarian/services/edge-api/middleware"
 )
+
+type fakeSessionValidator struct{ err error }
+
+func (f fakeSessionValidator) ValidateSession(context.Context, string, string) error { return f.err }
 
 func newIssuer(t *testing.T) *auth.Issuer {
 	t.Helper()
@@ -137,6 +143,44 @@ func TestAuthenticator_Sets_WWWAuthenticate_Header(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 
 	assert.Equal(t, "Bearer", rr.Header().Get("WWW-Authenticate"))
+}
+
+func TestAuthenticator_RevokedSession_Returns401(t *testing.T) {
+	issuer := newIssuer(t)
+	mw := qmiddleware.Authenticator(issuer, zaptest.NewLogger(t), fakeSessionValidator{err: domain.ErrInvalidCredentials})
+	u, err := domain.NewUser("test@example.com", "hash", domain.RoleReader)
+	require.NoError(t, err)
+	token, err := issuer.Issue(u, "revoked-session")
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	mw(okHandler()).ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+}
+
+func TestAuthenticator_IdentityUnavailable_Returns503(t *testing.T) {
+	issuer := newIssuer(t)
+	mw := qmiddleware.Authenticator(issuer, zaptest.NewLogger(t), fakeSessionValidator{err: errors.New("transport failure")})
+	u, err := domain.NewUser("test@example.com", "hash", domain.RoleReader)
+	require.NoError(t, err)
+	token, err := issuer.Issue(u, "active-session")
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	mw(okHandler()).ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+}
+
+func TestAuthenticator_MissingSessionClaim_Returns401WhenSessionValidationEnabled(t *testing.T) {
+	issuer := newIssuer(t)
+	mw := qmiddleware.Authenticator(issuer, zaptest.NewLogger(t), fakeSessionValidator{})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+validToken(t, issuer, domain.RoleReader))
+	rr := httptest.NewRecorder()
+	mw(okHandler()).ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 }
 
 // ── RequireRole ───────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -22,8 +23,14 @@ type tokenVerifier interface {
 	Validate(string) (auth.Claims, error)
 }
 
+// SessionValidator is the narrow Identity contract required after local token
+// verification. Identity is authoritative for revocation.
+type SessionValidator interface {
+	ValidateSession(context.Context, string, string) error
+}
+
 // Authenticator validates a bearer token and stores verified claims in context.
-func Authenticator(verifier tokenVerifier, log *zap.Logger) func(http.Handler) http.Handler {
+func Authenticator(verifier tokenVerifier, log *zap.Logger, validators ...SessionValidator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenStr, ok := bearerToken(r)
@@ -38,11 +45,31 @@ func Authenticator(verifier tokenVerifier, log *zap.Logger) func(http.Handler) h
 				writeUnauthorized(w, "invalid or expired token")
 				return
 			}
+			if len(validators) > 0 {
+				if claims.SessionID == "" {
+					writeUnauthorized(w, "invalid or expired token")
+					return
+				}
+				if err := validators[0].ValidateSession(r.Context(), claims.UserID, claims.SessionID); err != nil {
+					if errors.Is(err, domain.ErrInvalidCredentials) {
+						writeUnauthorized(w, "invalid or expired token")
+						return
+					}
+					writeUnavailable(w)
+					return
+				}
+			}
 
 			ctx := context.WithValue(r.Context(), claimsKey, claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+func writeUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte(`{"error":"authentication service unavailable"}`))
 }
 
 // RequireRole enforces a minimum role. Must be applied after Authenticator.

@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
 
+	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/pkg/domain"
 	querymiddleware "github.com/belLena81/raglibrarian/services/edge-api/middleware"
 )
@@ -45,26 +46,33 @@ type MeResponse struct {
 
 // AuthHandler handles the /auth/* routes.
 type AuthHandler struct {
-	uc  AuthUseCase
-	log *zap.Logger
+	uc           AuthUseCase
+	log          *zap.Logger
+	secureCookie bool
 }
 
 // NewAuthHandler constructs an AuthHandler. Panics on nil deps.
-func NewAuthHandler(uc AuthUseCase, log *zap.Logger) *AuthHandler {
+func NewAuthHandler(uc AuthUseCase, log *zap.Logger, secureCookie ...bool) *AuthHandler {
 	if uc == nil {
 		panic("handler: AuthUseCase must not be nil")
 	}
 	if log == nil {
 		panic("handler: Logger must not be nil")
 	}
-	return &AuthHandler{uc: uc, log: log}
+	secure := true
+	if len(secureCookie) > 0 {
+		secure = secureCookie[0]
+	}
+	return &AuthHandler{uc: uc, log: log, secureCookie: secure}
 }
 
 // AuthUseCase is the edge-facing identity contract. Its production adapter is
 // a generated gRPC client; tests use a local fake.
 type AuthUseCase interface {
-	Register(context.Context, string, string, domain.Role) (string, domain.User, error)
-	Login(context.Context, string, string) (string, error)
+	Register(context.Context, string, string, domain.Role) (auth.SessionTokens, domain.User, error)
+	Login(context.Context, string, string) (auth.SessionTokens, error)
+	Refresh(context.Context, string) (auth.SessionTokens, error)
+	Logout(context.Context, string) error
 }
 
 // Register handles POST /auth/register.
@@ -80,7 +88,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 	// Public registration can only create readers. Role elevation is an
 	// administrative workflow and must never be client-controlled.
-	token, user, err := h.uc.Register(r.Context(), req.Email, req.Password, domain.RoleReader)
+	tokens, user, err := h.uc.Register(r.Context(), req.Email, req.Password, domain.RoleReader)
 	if err != nil {
 		h.log.Debug("register failed",
 			zap.String("request_id", reqID),
@@ -90,8 +98,9 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.setRefreshCookie(w, tokens.RefreshToken)
 	writeAuthJSON(w, http.StatusCreated, AuthResponse{
-		Token: token,
+		Token: tokens.AccessToken,
 		Role:  string(user.Role()),
 	})
 }
@@ -111,10 +120,18 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Logout handles POST /auth/logout.
-// Returns 200 so clients can discard their token; no server-side revocation yet.
-// TODO(iteration-4): add token revocation via a short-lived Redis blocklist.
+// Logout handles POST /auth/logout by revoking the verified Identity session.
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	claims, ok := querymiddleware.ClaimsFromContext(r.Context())
+	if !ok || claims.SessionID == "" {
+		writeAuthError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	if err := h.uc.Logout(r.Context(), claims.SessionID); err != nil && !errors.Is(err, domain.ErrInvalidCredentials) {
+		writeAuthError(w, http.StatusServiceUnavailable, "authentication service unavailable")
+		return
+	}
+	h.clearRefreshCookie(w)
 	type logoutResponse struct {
 		Message string `json:"message"`
 	}
@@ -129,14 +146,45 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.uc.Login(r.Context(), req.Email, req.Password)
+	tokens, err := h.uc.Login(r.Context(), req.Email, req.Password)
 	if err != nil {
 		h.log.Debug("login failed", zap.String("request_id", middleware.GetReqID(r.Context())))
 		writeAuthError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 
-	writeAuthJSON(w, http.StatusOK, AuthResponse{Token: token})
+	h.setRefreshCookie(w, tokens.RefreshToken)
+	writeAuthJSON(w, http.StatusOK, AuthResponse{Token: tokens.AccessToken, Role: tokens.Role})
+}
+
+// Refresh rotates the cookie-held refresh token without exposing it to script.
+func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("refresh_token")
+	if err != nil || cookie.Value == "" {
+		h.clearRefreshCookie(w)
+		writeAuthError(w, http.StatusUnauthorized, "invalid refresh session")
+		return
+	}
+	tokens, err := h.uc.Refresh(r.Context(), cookie.Value)
+	if err != nil {
+		h.clearRefreshCookie(w)
+		if errors.Is(err, domain.ErrInvalidCredentials) {
+			writeAuthError(w, http.StatusUnauthorized, "invalid refresh session")
+			return
+		}
+		writeAuthError(w, http.StatusServiceUnavailable, "authentication service unavailable")
+		return
+	}
+	h.setRefreshCookie(w, tokens.RefreshToken)
+	writeAuthJSON(w, http.StatusOK, AuthResponse{Token: tokens.AccessToken, Role: tokens.Role})
+}
+
+func (h *AuthHandler) setRefreshCookie(w http.ResponseWriter, value string) {
+	http.SetCookie(w, &http.Cookie{Name: "refresh_token", Value: value, Path: "/auth", HttpOnly: true, Secure: h.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: 60 * 60 * 24 * 30})
+}
+
+func (h *AuthHandler) clearRefreshCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: "refresh_token", Value: "", Path: "/auth", HttpOnly: true, Secure: h.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 }
 
 // ── Error mapping ─────────────────────────────────────────────────────────────

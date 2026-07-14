@@ -57,11 +57,12 @@ func run(log *zap.Logger) error {
 		return err
 	}
 	defer func() { _ = conn.Close() }()
-	authHandler := handler.NewAuthHandler(identityclient.New(identityv1.NewIdentityServiceClient(conn)), log)
+	identityClient := identityclient.New(identityv1.NewIdentityServiceClient(conn))
+	authHandler := handler.NewAuthHandler(identityClient, log, os.Getenv("EDGE_INSECURE_REFRESH_COOKIE") != "true")
 	queryHandler := handler.NewQueryHandler(usecase.NewQueryService(queryrepo.NewStubQueryRepository()), log)
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           edgeapi.NewRouter(queryHandler, authHandler, verifier, log),
+		Handler:           edgeapi.NewRouter(queryHandler, authHandler, verifier, log, identityClient),
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,

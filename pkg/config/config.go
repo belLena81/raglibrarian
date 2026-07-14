@@ -51,22 +51,10 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("%w: %s must be 64 hex chars", domain.ErrInvalidSecretKey, EnvEdgeVerifyKey)
 	}
 
-	dsn, err := requireEnv(EnvPostgresDSN)
-	if err != nil {
-		return Config{}, err
-	}
-
-	ttl, err := parseDuration(optionalEnv(EnvTokenTTL, "24h"))
-	if err != nil {
-		return Config{}, fmt.Errorf("%w: %s: %v", domain.ErrInvalidTokenTTL, EnvTokenTTL, err)
-	}
-
 	return Config{
 		Addr:          optionalEnv(EnvQueryAddr, ":8080"),
 		VerifyKey:     key,
 		AuthSecretKey: key,
-		TokenTTL:      ttl,
-		PostgresDSN:   dsn,
 		LogEnv:        optionalEnv(EnvLogEnv, ""),
 		LogLevel:      optionalEnv(EnvLogLevel, ""),
 	}, nil

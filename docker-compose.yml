@@ -4,9 +4,9 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: raglibrarian
-      POSTGRES_PASSWORD: raglibrarian
-      POSTGRES_DB: raglibrarian
+      POSTGRES_USER: "${POSTGRES_USER:?POSTGRES_USER is required}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+      POSTGRES_DB: "${POSTGRES_DB:?POSTGRES_DB is required}"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
@@ -20,7 +20,7 @@ services:
     build: { context: ., args: { SERVICE: identity-service } }
     environment:
       IDENTITY_GRPC_ADDR: ":50051"
-      IDENTITY_POSTGRES_DSN: "postgres://identity_role:identity_local@postgres:5432/raglibrarian?search_path=identity&sslmode=disable"
+      IDENTITY_POSTGRES_DSN: "${IDENTITY_POSTGRES_DSN:?IDENTITY_POSTGRES_DSN is required}"
       IDENTITY_SIGNING_KEY: "${IDENTITY_SIGNING_KEY:?IDENTITY_SIGNING_KEY is required}"
       INTERNAL_TLS_CA_FILE: /certs/ca.crt
       IDENTITY_TLS_CERT_FILE: /certs/identity-service.crt
@@ -44,11 +44,10 @@ services:
       QUERY_ADDR: ":8080"
       IDENTITY_GRPC_ADDR: "identity-service:50051"
       EDGE_VERIFY_KEY: "${EDGE_VERIFY_KEY:?EDGE_VERIFY_KEY is required}"
-      POSTGRES_DSN: "unused-by-edge-api"
       INTERNAL_TLS_CA_FILE: /certs/ca.crt
       EDGE_TLS_CERT_FILE: /certs/edge-api.crt
       EDGE_TLS_KEY_FILE: /certs/edge-api.key
-      TOKEN_TTL: "24h"
+      EDGE_INSECURE_REFRESH_COOKIE: "${EDGE_INSECURE_REFRESH_COOKIE:-false}"
       LOG_ENV: "production"
       LOG_LEVEL: "info"
     volumes: ["./.dev/certs:/certs:ro"]

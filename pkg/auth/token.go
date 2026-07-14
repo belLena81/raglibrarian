@@ -19,6 +19,16 @@ type Claims struct {
 	SessionID string
 }
 
+// SessionTokens is a transport-neutral result of an Identity session action.
+// It intentionally has no JSON tags: refresh tokens must never be serialized
+// in a public response.
+type SessionTokens struct {
+	AccessToken  string
+	RefreshToken string
+	SessionID    string
+	Role         string
+}
+
 // Signer creates PASETO v4 public tokens. Only identity-service receives its
 // private key.
 type Signer struct {
