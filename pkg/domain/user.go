@@ -22,7 +22,9 @@ func (r Role) IsValid() bool {
 }
 
 // CanWrite reports whether this role may create or modify resources.
-func (r Role) CanWrite() bool { return r == RoleAdmin }
+func (r Role) CanWrite() bool {
+	return r == RoleAdmin
+}
 
 // User is the aggregate root for authentication and authorisation.
 // Stores a bcrypt password hash; the plaintext is never retained.
@@ -68,16 +70,26 @@ func NewUserFromDB(id, email, passwordHash string, role Role, createdAt time.Tim
 }
 
 // ID returns the user's unique identifier.
-func (u User) ID() string { return u.id }
+func (u User) ID() string {
+	return u.id
+}
 
 // Email returns the user's email address.
-func (u User) Email() string { return u.email }
+func (u User) Email() string {
+	return u.email
+}
 
 // PasswordHash returns the bcrypt hash of the user's password.
-func (u User) PasswordHash() string { return u.passwordHash }
+func (u User) PasswordHash() string {
+	return u.passwordHash
+}
 
 // Role returns the user's permission level.
-func (u User) Role() Role { return u.role }
+func (u User) Role() Role {
+	return u.role
+}
 
 // CreatedAt returns when the user account was created.
-func (u User) CreatedAt() time.Time { return u.createdAt }
+func (u User) CreatedAt() time.Time {
+	return u.createdAt
+}

@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/belLena81/raglibrarian/pkg/domain"
+	querymiddleware "github.com/belLena81/raglibrarian/services/edge-api/middleware"
 	"github.com/belLena81/raglibrarian/services/edge-api/usecase"
 )
 
@@ -17,7 +18,6 @@ import (
 // QueryRequest is the JSON body for POST /query.
 type QueryRequest struct {
 	Question string `json:"question"`
-	UserID   string `json:"user_id"`
 }
 
 // BookDTO is the nested book representation in a query response.
@@ -77,21 +77,30 @@ func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := h.uc.Answer(r.Context(), req.UserID, req.Question)
+	claims, ok := querymiddleware.ClaimsFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	results, err := h.uc.Answer(r.Context(), claims.UserID, req.Question)
 	if err != nil {
 		status := domainErrToStatus(err)
 		if status >= http.StatusInternalServerError {
 			reqLog.Error("query use case returned unexpected error",
 				zap.Error(err),
-				zap.String("user_id", req.UserID),
+				zap.String("user_id", claims.UserID),
 			)
 		} else {
 			reqLog.Debug("query rejected due to invalid input",
 				zap.Error(err),
-				zap.String("user_id", req.UserID),
+				zap.String("user_id", claims.UserID),
 			)
 		}
-		writeError(w, status, err.Error())
+		message := "invalid query"
+		if status >= http.StatusInternalServerError {
+			message = "internal server error"
+		}
+		writeError(w, status, message)
 		return
 	}
 
@@ -113,7 +122,7 @@ func (h *QueryHandler) Health(w http.ResponseWriter, r *http.Request) {
 func domainErrToStatus(err error) int {
 	switch {
 	case errors.Is(err, domain.ErrEmptyQuestion),
-		errors.Is(err, domain.ErrEmptyUserId):
+		errors.Is(err, domain.ErrEmptyUserID):
 		return http.StatusUnprocessableEntity
 	default:
 		return http.StatusInternalServerError

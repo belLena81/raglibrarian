@@ -28,13 +28,13 @@ func (f *fakeQueryRepository) Search(_ context.Context, _ domain.Query) ([]domai
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 // makeSearchResult builds a realistic SearchResult for use in tests.
-// queryId is a placeholder — the service creates its own domain.Query internally.
-func makeSearchResult(t *testing.T, queryId string) domain.SearchResult {
+// queryID is a placeholder — the service creates its own domain.Query internally.
+func makeSearchResult(t *testing.T, queryID string) domain.SearchResult {
 	t.Helper()
 	book, err := domain.NewBook("The Go Programming Language", "Donovan & Kernighan", 2015)
 	require.NoError(t, err)
 	result, err := domain.NewSearchResult(
-		queryId,
+		queryID,
 		book,
 		"Chapter 9 — Concurrency",
 		"Goroutines are multiplexed onto OS threads...",
@@ -78,24 +78,24 @@ func TestQueryService_Answer_WhitespaceQuestion_ReturnsDomainError(t *testing.T)
 	assert.ErrorIs(t, err, domain.ErrEmptyQuestion)
 }
 
-func TestQueryService_Answer_EmptyUserId_ReturnsDomainError(t *testing.T) {
+func TestQueryService_Answer_EmptyUserID_ReturnsDomainError(t *testing.T) {
 	repo := &fakeQueryRepository{}
 	svc := usecase.NewQueryService(repo)
 
 	_, err := svc.Answer(context.Background(), "", "Valid question?")
 
 	require.Error(t, err)
-	assert.ErrorIs(t, err, domain.ErrEmptyUserId)
+	assert.ErrorIs(t, err, domain.ErrEmptyUserID)
 }
 
-func TestQueryService_Answer_WhitespaceUserId_ReturnsDomainError(t *testing.T) {
+func TestQueryService_Answer_WhitespaceUserID_ReturnsDomainError(t *testing.T) {
 	repo := &fakeQueryRepository{}
 	svc := usecase.NewQueryService(repo)
 
 	_, err := svc.Answer(context.Background(), "   ", "Valid question?")
 
 	require.Error(t, err)
-	assert.ErrorIs(t, err, domain.ErrEmptyUserId)
+	assert.ErrorIs(t, err, domain.ErrEmptyUserID)
 }
 
 func TestQueryService_Answer_RepositoryError_Propagates(t *testing.T) {

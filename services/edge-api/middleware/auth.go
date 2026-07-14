@@ -67,6 +67,13 @@ func ClaimsFromContext(ctx context.Context) (auth.Claims, bool) {
 	return claims, ok
 }
 
+// WithClaims attaches already-validated claims. It is useful for trusted
+// internal adapters and focused handler tests; public requests must use
+// Authenticator.
+func WithClaims(ctx context.Context, claims auth.Claims) context.Context {
+	return context.WithValue(ctx, claimsKey, claims)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func bearerToken(r *http.Request) (string, bool) {

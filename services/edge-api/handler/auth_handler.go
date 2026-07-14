@@ -20,7 +20,6 @@ import (
 type RegisterRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
-	Role     string `json:"role"` // defaults to "reader" when absent
 }
 
 // LoginRequest is the JSON body for POST /auth/login.
@@ -79,12 +78,9 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	role := domain.Role(req.Role)
-	if role == "" {
-		role = domain.RoleReader
-	}
-
-	token, user, err := h.uc.Register(r.Context(), req.Email, req.Password, role)
+	// Public registration can only create readers. Role elevation is an
+	// administrative workflow and must never be client-controlled.
+	token, user, err := h.uc.Register(r.Context(), req.Email, req.Password, domain.RoleReader)
 	if err != nil {
 		h.log.Debug("register failed",
 			zap.String("request_id", reqID),

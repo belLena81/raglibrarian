@@ -24,9 +24,11 @@ type fakeAuthUseCase struct {
 	registerErr   error
 	loginToken    string
 	loginErr      error
+	registerRole  domain.Role
 }
 
-func (f *fakeAuthUseCase) Register(_ context.Context, _ string, _ string, _ domain.Role) (string, domain.User, error) {
+func (f *fakeAuthUseCase) Register(_ context.Context, _ string, _ string, role domain.Role) (string, domain.User, error) {
+	f.registerRole = role
 	if f.registerErr != nil {
 		return "", domain.User{}, f.registerErr
 	}
@@ -113,14 +115,10 @@ func TestAuthHandler_Register_InvalidJSON_Returns400(t *testing.T) {
 }
 
 func TestAuthHandler_Register_DefaultsRoleToReader(t *testing.T) {
-	var capturedRole domain.Role
 	uc := &fakeAuthUseCase{registerToken: "tok"}
 	uc.registerUser, _ = domain.NewUser("r@e.com", "h", domain.RoleReader)
-	// We capture the role via the fake's Register call in the real test below.
-	_ = capturedRole
-
 	h := newAuthHandler(t, uc)
-	body, _ := json.Marshal(map[string]string{"email": "r@e.com", "password": "pw"})
+	body, _ := json.Marshal(map[string]string{"email": "r@e.com", "password": "pw", "role": "admin"})
 	req := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -130,6 +128,7 @@ func TestAuthHandler_Register_DefaultsRoleToReader(t *testing.T) {
 	var resp handler.AuthResponse
 	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
 	assert.Equal(t, "reader", resp.Role)
+	assert.Equal(t, domain.RoleReader, uc.registerRole)
 }
 
 // ── POST /auth/login ──────────────────────────────────────────────────────────

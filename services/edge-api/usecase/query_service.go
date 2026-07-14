@@ -12,7 +12,7 @@ import (
 // QueryUseCase is the application-layer contract for answering user questions.
 type QueryUseCase interface {
 	// Answer executes a semantic search for the given natural-language question.
-	Answer(ctx context.Context, userId, question string) ([]domain.SearchResult, error)
+	Answer(ctx context.Context, userID, question string) ([]domain.SearchResult, error)
 }
 
 // QueryService is the production implementation of QueryUseCase.
@@ -29,8 +29,8 @@ func NewQueryService(repo repository.QueryRepository) *QueryService {
 }
 
 // Answer validates inputs via domain.NewQuery, then delegates to the repository.
-func (s *QueryService) Answer(ctx context.Context, userId, question string) ([]domain.SearchResult, error) {
-	q, err := domain.NewQuery(userId, question)
+func (s *QueryService) Answer(ctx context.Context, userID, question string) ([]domain.SearchResult, error) {
+	q, err := domain.NewQuery(userID, question)
 	if err != nil {
 		return nil, fmt.Errorf("invalid query: %w", err)
 	}

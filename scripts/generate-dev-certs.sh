@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
+
+command -v openssl >/dev/null || { echo "openssl is required" >&2; exit 1; }
 
 dir="${1:-.dev/certs}"
 mkdir -p "$dir"
+if compgen -G "$dir/*.key" >/dev/null; then
+  echo "refusing to overwrite existing development keys in $dir" >&2
+  exit 1
+fi
 
 openssl genrsa -out "$dir/ca.key" 4096
 openssl req -x509 -new -nodes -key "$dir/ca.key" -sha256 -days 30 \

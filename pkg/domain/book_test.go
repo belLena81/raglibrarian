@@ -14,7 +14,7 @@ func TestNewBook_Valid(t *testing.T) {
 	book, err := domain.NewBook("The Go Programming Language", "Donovan & Kernighan", 2015)
 
 	require.NoError(t, err)
-	assert.NotEmpty(t, book.Id())
+	assert.NotEmpty(t, book.ID())
 	assert.Equal(t, "The Go Programming Language", book.Title())
 	assert.Equal(t, "Donovan & Kernighan", book.Author())
 	assert.Equal(t, 2015, book.Year())
@@ -29,7 +29,7 @@ func TestNewBook_UniqueIDs(t *testing.T) {
 	b, err := domain.NewBook("Clean Code", "Robert Martin", 2008)
 	require.NoError(t, err)
 
-	assert.NotEqual(t, a.Id(), b.Id())
+	assert.NotEqual(t, a.ID(), b.ID())
 }
 
 func TestNewBook_InvalidTitle(t *testing.T) {

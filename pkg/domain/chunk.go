@@ -10,7 +10,7 @@ import (
 // Chunk is a text excerpt from a Book page, used as the vector embedding unit.
 type Chunk struct {
 	id        string
-	bookId    string
+	bookID    string
 	content   string
 	pageStart int
 	pageEnd   int
@@ -18,9 +18,9 @@ type Chunk struct {
 }
 
 // NewChunk constructs a validated Chunk.
-func NewChunk(bookId, content string, pageStart, pageEnd int) (Chunk, error) {
-	if strings.TrimSpace(bookId) == "" {
-		return Chunk{}, ErrEmptyBookId
+func NewChunk(bookID, content string, pageStart, pageEnd int) (Chunk, error) {
+	if strings.TrimSpace(bookID) == "" {
+		return Chunk{}, ErrEmptyBookID
 	}
 	if err := validateContent(content); err != nil {
 		return Chunk{}, err
@@ -31,7 +31,7 @@ func NewChunk(bookId, content string, pageStart, pageEnd int) (Chunk, error) {
 
 	return Chunk{
 		id:        uuid.NewString(),
-		bookId:    bookId,
+		bookID:    bookID,
 		content:   content,
 		pageStart: pageStart,
 		pageEnd:   pageEnd,
@@ -44,7 +44,7 @@ func NewChunk(bookId, content string, pageStart, pageEnd int) (Chunk, error) {
 func NewChunkFromDB(id, bookID, content string, pageStart, pageEnd int, createdAt time.Time) Chunk {
 	return Chunk{
 		id:        id,
-		bookId:    bookID,
+		bookID:    bookID,
 		content:   content,
 		pageStart: pageStart,
 		pageEnd:   pageEnd,
@@ -52,20 +52,32 @@ func NewChunkFromDB(id, bookID, content string, pageStart, pageEnd int, createdA
 	}
 }
 
-// Id returns the chunk's unique identifier.
-func (c Chunk) Id() string { return c.id }
+// ID returns the chunk's unique identifier.
+func (c Chunk) ID() string {
+	return c.id
+}
 
-// BookId returns the ID of the book this chunk belongs to.
-func (c Chunk) BookId() string { return c.bookId }
+// BookID returns the ID of the book this chunk belongs to.
+func (c Chunk) BookID() string {
+	return c.bookID
+}
 
 // Content returns the raw text of this chunk.
-func (c Chunk) Content() string { return c.content }
+func (c Chunk) Content() string {
+	return c.content
+}
 
 // PageStart returns the first page number covered by this chunk.
-func (c Chunk) PageStart() int { return c.pageStart }
+func (c Chunk) PageStart() int {
+	return c.pageStart
+}
 
 // PageEnd returns the last page number covered by this chunk.
-func (c Chunk) PageEnd() int { return c.pageEnd }
+func (c Chunk) PageEnd() int {
+	return c.pageEnd
+}
 
 // CreatedAt returns when this chunk was indexed.
-func (c Chunk) CreatedAt() time.Time { return c.createdAt }
+func (c Chunk) CreatedAt() time.Time {
+	return c.createdAt
+}

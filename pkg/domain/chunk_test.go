@@ -14,8 +14,8 @@ func TestNewChunk_Valid(t *testing.T) {
 	chunk, err := domain.NewChunk("book-id-123", "Goroutines are lightweight threads...", 10, 12)
 
 	require.NoError(t, err)
-	assert.NotEmpty(t, chunk.Id())
-	assert.Equal(t, "book-id-123", chunk.BookId())
+	assert.NotEmpty(t, chunk.ID())
+	assert.Equal(t, "book-id-123", chunk.BookID())
 	assert.Equal(t, "Goroutines are lightweight threads...", chunk.Content())
 	assert.Equal(t, 10, chunk.PageStart())
 	assert.Equal(t, 12, chunk.PageEnd())
@@ -29,7 +29,7 @@ func TestNewChunk_UniqueIDs(t *testing.T) {
 	b, err := domain.NewChunk("book-id-123", "Some content", 1, 1)
 	require.NoError(t, err)
 
-	assert.NotEqual(t, a.Id(), b.Id())
+	assert.NotEqual(t, a.ID(), b.ID())
 }
 
 func TestNewChunk_InvalidBookID(t *testing.T) {
@@ -44,7 +44,7 @@ func TestNewChunk_InvalidBookID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := domain.NewChunk(tt.bookID, "Some content", 1, 1)
-			assert.ErrorIs(t, err, domain.ErrEmptyBookId)
+			assert.ErrorIs(t, err, domain.ErrEmptyBookID)
 		})
 	}
 }

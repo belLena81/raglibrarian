@@ -14,8 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 
+	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/pkg/domain"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
+	qmiddleware "github.com/belLena81/raglibrarian/services/edge-api/middleware"
 )
 
 // ── Fake Use Case ─────────────────────────────────────────────────────────────
@@ -24,9 +26,11 @@ import (
 type fakeQueryUseCase struct {
 	results []domain.SearchResult
 	err     error
+	userID  string
 }
 
-func (f *fakeQueryUseCase) Answer(_ context.Context, _, _ string) ([]domain.SearchResult, error) {
+func (f *fakeQueryUseCase) Answer(_ context.Context, userID, _ string) ([]domain.SearchResult, error) {
+	f.userID = userID
 	return f.results, f.err
 }
 
@@ -39,6 +43,7 @@ func doPost(t *testing.T, h *handler.QueryHandler, body any) *httptest.ResponseR
 
 	req := httptest.NewRequest(http.MethodPost, "/query", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(qmiddleware.WithClaims(req.Context(), auth.Claims{UserID: "token-user", Email: "reader@example.com", Role: domain.RoleReader}))
 
 	rr := httptest.NewRecorder()
 	h.Query(rr, req)
@@ -92,6 +97,7 @@ func TestQueryHandler_Query_Returns200_WithResults(t *testing.T) {
 	assert.Equal(t, []int{217, 218}, resp.Results[0].Pages)
 	assert.Equal(t, "Goroutines are multiplexed onto OS threads.", resp.Results[0].Passage)
 	assert.InDelta(t, 0.94, resp.Results[0].Score, 0.0001)
+	assert.Equal(t, "token-user", uc.userID)
 }
 
 func TestQueryHandler_Query_Returns200_EmptyResults(t *testing.T) {
@@ -133,7 +139,7 @@ func TestQueryHandler_Query_Returns422_OnDomainValidationError(t *testing.T) {
 			// Use case returns a domain error (simulating what QueryService would return)
 			uc := &fakeQueryUseCase{err: fmt.Errorf("invalid query: %w", domain.ErrEmptyQuestion)}
 			if tt.body["user_id"] == "" {
-				uc.err = fmt.Errorf("invalid query: %w", domain.ErrEmptyUserId)
+				uc.err = fmt.Errorf("invalid query: %w", domain.ErrEmptyUserID)
 			}
 			h := handler.NewQueryHandler(uc, zaptest.NewLogger(t))
 

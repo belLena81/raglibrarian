@@ -14,20 +14,20 @@ func TestNewQuery_Valid(t *testing.T) {
 	query, err := domain.NewQuery("user-id-456", "Which book explains goroutine scheduling?")
 
 	require.NoError(t, err)
-	assert.NotEmpty(t, query.Id())
-	assert.Equal(t, "user-id-456", query.UserId())
+	assert.NotEmpty(t, query.ID())
+	assert.Equal(t, "user-id-456", query.UserID())
 	assert.Equal(t, "Which book explains goroutine scheduling?", query.Question())
 	assert.WithinDuration(t, time.Now().UTC(), query.CreatedAt(), time.Second)
 }
 
-func TestNewQuery_UniqueIds(t *testing.T) {
+func TestNewQuery_UniqueIDs(t *testing.T) {
 	a, err := domain.NewQuery("user-id-456", "Same question?")
 	require.NoError(t, err)
 
 	b, err := domain.NewQuery("user-id-456", "Same question?")
 	require.NoError(t, err)
 
-	assert.NotEqual(t, a.Id(), b.Id())
+	assert.NotEqual(t, a.ID(), b.ID())
 }
 
 func TestNewQuery_InvalidUserID(t *testing.T) {
@@ -42,7 +42,7 @@ func TestNewQuery_InvalidUserID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := domain.NewQuery(tt.userID, "Valid question?")
-			assert.ErrorIs(t, err, domain.ErrEmptyUserId)
+			assert.ErrorIs(t, err, domain.ErrEmptyUserID)
 		})
 	}
 }

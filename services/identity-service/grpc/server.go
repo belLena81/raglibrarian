@@ -5,6 +5,8 @@ import (
 	"errors"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"github.com/belLena81/raglibrarian/pkg/domain"
@@ -12,23 +14,58 @@ import (
 	"github.com/belLena81/raglibrarian/services/identity-service/usecase"
 )
 
-type Server struct { identityv1.UnimplementedIdentityServiceServer; usecase usecase.AuthUseCase }
-func NewServer(uc usecase.AuthUseCase) *Server { return &Server{usecase: uc} }
+type Server struct {
+	identityv1.UnimplementedIdentityServiceServer
+	useCase usecase.AuthUseCase
+}
+
+func NewServer(uc usecase.AuthUseCase) *Server {
+	return &Server{useCase: uc}
+}
 
 func (s *Server) Register(ctx context.Context, req *identityv1.RegisterRequest) (*identityv1.RegisterResponse, error) {
-	role := domain.Role(req.Role); if role == "" { role = domain.RoleReader }
-	token, user, err := s.usecase.Register(ctx, req.Email, req.Password, role)
-	if err != nil { return nil, toStatus(err) }
+	if err := requireEdgeCaller(ctx); err != nil {
+		return nil, err
+	}
+	token, user, err := s.useCase.Register(ctx, req.Email, req.Password, domain.RoleReader)
+	if err != nil {
+		return nil, toStatus(err)
+	}
 	return &identityv1.RegisterResponse{AccessToken: token, Role: string(user.Role())}, nil
 }
 func (s *Server) Login(ctx context.Context, req *identityv1.LoginRequest) (*identityv1.LoginResponse, error) {
-	token, err := s.usecase.Login(ctx, req.Email, req.Password)
-	if err != nil { return nil, toStatus(err) }
+	if err := requireEdgeCaller(ctx); err != nil {
+		return nil, err
+	}
+	token, err := s.useCase.Login(ctx, req.Email, req.Password)
+	if err != nil {
+		return nil, toStatus(err)
+	}
 	return &identityv1.LoginResponse{AccessToken: token}, nil
 }
+func requireEdgeCaller(ctx context.Context) error {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "missing peer identity")
+	}
+	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok || len(tlsInfo.State.PeerCertificates) == 0 {
+		return status.Error(codes.Unauthenticated, "missing peer certificate")
+	}
+	if tlsInfo.State.PeerCertificates[0].Subject.CommonName != "edge-api" {
+		return status.Error(codes.PermissionDenied, "caller is not authorized")
+	}
+	return nil
+}
 func toStatus(err error) error {
-	switch { case errors.Is(err, domain.ErrEmailTaken): return status.Error(codes.AlreadyExists, "email already registered")
-	case errors.Is(err, domain.ErrInvalidEmail), errors.Is(err, domain.ErrInvalidRole): return status.Error(codes.InvalidArgument, "invalid registration")
-	case errors.Is(err, domain.ErrInvalidCredentials): return status.Error(codes.Unauthenticated, "invalid credentials")
-	default: return status.Error(codes.Internal, "identity service failure") }
+	switch {
+	case errors.Is(err, domain.ErrEmailTaken):
+		return status.Error(codes.AlreadyExists, "email already registered")
+	case errors.Is(err, domain.ErrInvalidEmail), errors.Is(err, domain.ErrInvalidRole):
+		return status.Error(codes.InvalidArgument, "invalid registration")
+	case errors.Is(err, domain.ErrInvalidCredentials):
+		return status.Error(codes.Unauthenticated, "invalid credentials")
+	default:
+		return status.Error(codes.Internal, "identity service failure")
+	}
 }

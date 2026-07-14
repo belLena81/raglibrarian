@@ -79,7 +79,7 @@ func validateEmail(email string) error {
 
 func validateQueryID(queryID string) error {
 	if strings.TrimSpace(queryID) == "" {
-		return ErrEmptyQueryId
+		return ErrEmptyQueryID
 	}
 	return nil
 }

@@ -189,5 +189,5 @@ func TestRouter_RequestID_IsInjected(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
-	assert.NotEmpty(t, rr.Header().Get("X-Request-Id"))
+	assert.NotEmpty(t, rr.Header().Get("X-Request-ID"))
 }

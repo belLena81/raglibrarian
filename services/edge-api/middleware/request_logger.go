@@ -11,7 +11,7 @@ import (
 )
 
 // RequestLogger emits one structured log line per request and echoes the
-// request ID into the X-Request-Id response header.
+// request ID into the X-Request-ID response header.
 // Logs 5xx at Error, 4xx at Warn, everything else at Info.
 func RequestLogger(log *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -19,7 +19,7 @@ func RequestLogger(log *zap.Logger) func(http.Handler) http.Handler {
 			start := time.Now()
 
 			if reqID := middleware.GetReqID(r.Context()); reqID != "" {
-				w.Header().Set("X-Request-Id", reqID)
+				w.Header().Set("X-Request-ID", reqID)
 			}
 
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)

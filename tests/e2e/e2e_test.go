@@ -99,7 +99,7 @@ func TestHealthz_ReturnsRequestIDHeader(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	assert.NotEmpty(t, resp.Header.Get("X-Request-Id"))
+	assert.NotEmpty(t, resp.Header.Get("X-Request-ID"))
 }
 
 func TestRegister_ValidReader_Returns201WithToken(t *testing.T) {

@@ -21,7 +21,7 @@ func (r *StubQueryRepository) Search(_ context.Context, q domain.Query) ([]domai
 	cleanBook, _ := domain.NewBook("Clean Code", "Robert C. Martin", 2008)
 
 	first, _ := domain.NewSearchResult(
-		q.Id(),
+		q.ID(),
 		goBook,
 		"Chapter 9 — Concurrency",
 		"Goroutines are multiplexed onto a small number of OS threads "+
@@ -31,7 +31,7 @@ func (r *StubQueryRepository) Search(_ context.Context, q domain.Query) ([]domai
 	)
 
 	second, _ := domain.NewSearchResult(
-		q.Id(),
+		q.ID(),
 		cleanBook,
 		"Chapter 13 — Concurrency",
 		"Keep the concurrency-related code separate from other code. "+

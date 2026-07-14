@@ -41,9 +41,9 @@ func NewBook(title, author string, year int) (Book, error) {
 	}, nil
 }
 
-// NewBookFromDb reconstructs a Book from persisted data, skipping validation.
+// NewBookFromDB reconstructs a Book from persisted data, skipping validation.
 // Only repository implementations should call this.
-func NewBookFromDb(id, title, author string, year int, createdAt, updatedAt time.Time) Book {
+func NewBookFromDB(id, title, author string, year int, createdAt, updatedAt time.Time) Book {
 	return Book{
 		id:        id,
 		title:     title,
@@ -54,23 +54,35 @@ func NewBookFromDb(id, title, author string, year int, createdAt, updatedAt time
 	}
 }
 
-// Id returns the book's unique identifier.
-func (b *Book) Id() string { return b.id }
+// ID returns the book's unique identifier.
+func (b *Book) ID() string {
+	return b.id
+}
 
 // Title returns the book's title.
-func (b *Book) Title() string { return b.title }
+func (b *Book) Title() string {
+	return b.title
+}
 
 // Author returns the book's author name.
-func (b *Book) Author() string { return b.author }
+func (b *Book) Author() string {
+	return b.author
+}
 
 // Year returns the book's publication year.
-func (b *Book) Year() int { return b.year }
+func (b *Book) Year() int {
+	return b.year
+}
 
 // CreatedAt returns when the book was added to the library.
-func (b *Book) CreatedAt() time.Time { return b.createdAt }
+func (b *Book) CreatedAt() time.Time {
+	return b.createdAt
+}
 
 // UpdatedAt returns when the book record was last modified.
-func (b *Book) UpdatedAt() time.Time { return b.updatedAt }
+func (b *Book) UpdatedAt() time.Time {
+	return b.updatedAt
+}
 
 // SetTitle updates the title, returning an error if invalid.
 func (b *Book) SetTitle(title string) error {
