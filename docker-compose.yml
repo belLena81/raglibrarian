@@ -23,11 +23,20 @@ services:
       IDENTITY_GRPC_ADDR: ":50051"
       IDENTITY_POSTGRES_DSN: "postgres://identity_role:identity_local@postgres:5432/raglibrarian?search_path=identity&sslmode=disable"
       AUTH_SECRET_KEY: "${AUTH_SECRET_KEY}"
+      INTERNAL_TLS_CA_FILE: /certs/ca.crt
+      IDENTITY_TLS_CERT_FILE: /certs/identity-service.crt
+      IDENTITY_TLS_KEY_FILE: /certs/identity-service.key
+    volumes: ["./.dev/certs:/certs:ro"]
     depends_on: { postgres: { condition: service_healthy } }
 
   catalog-service:
     build: { context: ., args: { SERVICE: catalog-service } }
-    environment: { CATALOG_GRPC_ADDR: ":50052" }
+    environment:
+      CATALOG_GRPC_ADDR: ":50052"
+      INTERNAL_TLS_CA_FILE: /certs/ca.crt
+      CATALOG_TLS_CERT_FILE: /certs/catalog-service.crt
+      CATALOG_TLS_KEY_FILE: /certs/catalog-service.key
+    volumes: ["./.dev/certs:/certs:ro"]
 
   edge-api:
     build: { context: ., args: { SERVICE: edge-api } }
@@ -36,10 +45,14 @@ services:
       QUERY_ADDR: ":8080"
       IDENTITY_GRPC_ADDR: "identity-service:50051"
       AUTH_SECRET_KEY: "${AUTH_SECRET_KEY}"
-      POSTGRES_DSN: "postgres://identity_role:identity_local@postgres:5432/raglibrarian?search_path=identity&sslmode=disable"
+      POSTGRES_DSN: "unused-by-edge-api"
+      INTERNAL_TLS_CA_FILE: /certs/ca.crt
+      EDGE_TLS_CERT_FILE: /certs/edge-api.crt
+      EDGE_TLS_KEY_FILE: /certs/edge-api.key
       TOKEN_TTL: "24h"
       LOG_ENV: "production"
       LOG_LEVEL: "info"
+    volumes: ["./.dev/certs:/certs:ro"]
     depends_on: { identity-service: { condition: service_started }, catalog-service: { condition: service_started } }
 
 volumes:

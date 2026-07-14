@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"net"
 	"os"
@@ -9,6 +11,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/health"
+	grpc_health_v1 "google.golang.org/grpc/health/grpc_health_v1"
 	"go.uber.org/zap"
 
 	"github.com/belLena81/raglibrarian/pkg/auth"
@@ -28,7 +33,15 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second); defer cancel(); if err = pool.Ping(ctx); err != nil { log.Fatal("database unavailable", zap.Error(err)) }
 	issuer, err := auth.NewIssuer(key, 24*time.Hour); if err != nil { log.Fatal("invalid auth configuration", zap.Error(err)) }
 	listener, err := net.Listen("tcp", env("IDENTITY_GRPC_ADDR", ":50051")); if err != nil { log.Fatal("listen failed", zap.Error(err)) }
-	server := grpc.NewServer(); identityv1.RegisterIdentityServiceServer(server, identitygrpc.NewServer(usecase.NewAuthService(repository.NewPostgresUserRepository(pool), issuer)))
+	creds, err := serverCredentials("IDENTITY_TLS_CERT_FILE", "IDENTITY_TLS_KEY_FILE"); if err != nil { log.Fatal("invalid mTLS configuration", zap.Error(err)) }
+	server := grpc.NewServer(grpc.Creds(creds)); identityv1.RegisterIdentityServiceServer(server, identitygrpc.NewServer(usecase.NewAuthService(repository.NewPostgresUserRepository(pool), issuer)))
+	healthServer := health.NewServer(); healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING); grpc_health_v1.RegisterHealthServer(server, healthServer)
 	log.Info("identity service starting"); if err = server.Serve(listener); err != nil { log.Fatal("server exited", zap.Error(err)) }
 }
 func env(key, fallback string) string { if value := os.Getenv(key); value != "" { return value }; return fallback }
+func serverCredentials(certFile, keyFile string) (credentials.TransportCredentials, error) {
+	ca, err := os.ReadFile(os.Getenv("INTERNAL_TLS_CA_FILE")); if err != nil { return nil, err }
+	pool := x509.NewCertPool(); if !pool.AppendCertsFromPEM(ca) { return nil, os.ErrInvalid }
+	cert, err := tls.LoadX509KeyPair(os.Getenv(certFile), os.Getenv(keyFile)); if err != nil { return nil, err }
+	return credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool}), nil
+}

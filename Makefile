@@ -4,7 +4,7 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt build run-edge-api run-identity run-catalog dev tidy e2e migrate-identity-up infra-up infra-down keygen proto
+.PHONY: test test-race lint fmt build run-edge-api run-identity run-catalog dev tidy e2e migrate-identity-up migrate-identity-down infra-up infra-down keygen proto dev-certs
 
 # Service/library modules — looped over by test, lint, tidy, fmt.
 MODULES := \
@@ -126,11 +126,11 @@ migrate-identity-up: _require_root
 			psql "$$IDENTITY_POSTGRES_DSN" -f "$$f" || exit 1; \
 		done
 
-migrate-down: _require_root
+migrate-identity-down: _require_root
 	@set -a && . ./.env && set +a && \
-		for f in $$(ls -r $(CURDIR)/migrations/*.down.sql); do \
+		for f in $$(ls -r $(CURDIR)/services/identity-service/migrations/*.down.sql); do \
 			echo "Reverting $$f..."; \
-			psql "$$POSTGRES_DSN" -f "$$f" || exit 1; \
+			psql "$$IDENTITY_POSTGRES_DSN" -f "$$f" || exit 1; \
 		done
 
 # ── Infrastructure ────────────────────────────────────────────────────────────
@@ -148,3 +148,6 @@ keygen: _require_root
 proto: _require_root
 	XDG_CACHE_HOME=/tmp/raglibrarian-cache buf lint api/proto
 	PATH="$$HOME/go/bin:$$PATH" protoc -I api/proto --go_out=paths=source_relative:pkg/proto --go-grpc_out=paths=source_relative:pkg/proto api/proto/identity/v1/identity.proto api/proto/catalog/v1/catalog.proto
+
+dev-certs: _require_root
+	./scripts/generate-dev-certs.sh
