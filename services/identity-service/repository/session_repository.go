@@ -7,9 +7,12 @@ import (
 )
 
 var (
+	// ErrRefreshTokenInvalid indicates an absent, revoked, or expired token.
 	ErrRefreshTokenInvalid = errors.New("session: refresh token is invalid or expired")
-	ErrRefreshTokenReused  = errors.New("session: refresh token has already been used")
-	ErrSessionInvalid      = errors.New("session: session is invalid or expired")
+	// ErrRefreshTokenReused indicates replay of a token already rotated.
+	ErrRefreshTokenReused = errors.New("session: refresh token has already been used")
+	// ErrSessionInvalid indicates an absent, revoked, expired, or mismatched session.
+	ErrSessionInvalid = errors.New("session: session is invalid or expired")
 )
 
 // Session is Identity-owned persisted session state. Refresh token plaintext is
@@ -27,4 +30,5 @@ type SessionRepository interface {
 	Rotate(ctx context.Context, tokenHash, successorHash []byte, now time.Time) (Session, error)
 	Validate(ctx context.Context, userID, sessionID string, now time.Time) error
 	Logout(ctx context.Context, sessionID string, now time.Time) error
+	CleanupExpired(ctx context.Context, now time.Time) (int64, error)
 }

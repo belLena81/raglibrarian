@@ -116,6 +116,17 @@ func TestAuthHandler_Register_InvalidEmail_Returns422(t *testing.T) {
 	assert.Equal(t, http.StatusUnprocessableEntity, rr.Code)
 }
 
+func TestAuthHandler_Register_InvalidPassword_Returns422WithSanitizedMessage(t *testing.T) {
+	uc := &fakeAuthUseCase{registerErr: domain.ErrInvalidPassword}
+	h := newAuthHandler(t, uc)
+	body, _ := json.Marshal(handler.RegisterRequest{Email: "valid@example.com", Password: "short"})
+	req := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	h.Register(rr, req)
+	assert.Equal(t, http.StatusUnprocessableEntity, rr.Code)
+	assert.JSONEq(t, `{"error":"email or password is invalid"}`, rr.Body.String())
+}
+
 func TestAuthHandler_Register_InvalidJSON_Returns400(t *testing.T) {
 	uc := &fakeAuthUseCase{}
 	h := newAuthHandler(t, uc)

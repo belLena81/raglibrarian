@@ -1,6 +1,6 @@
 module github.com/belLena81/raglibrarian/pkg/logger
 
-go 1.26.0
+go 1.26.5
 
 require (
 	github.com/belLena81/raglibrarian/pkg/config v0.0.0-00010101000000-000000000000

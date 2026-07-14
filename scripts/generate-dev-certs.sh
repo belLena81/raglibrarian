@@ -6,8 +6,6 @@ command -v openssl >/dev/null || { echo "openssl is required" >&2; exit 1; }
 
 dir="${1:-.dev/certs}"
 mkdir -p "$dir"
-# The Compose images run as a non-root user and share this development-only
-# read-only mount. These files must therefore be readable inside the containers.
 chmod 755 "$(dirname "$dir")" "$dir"
 if compgen -G "$dir/*.key" >/dev/null; then
   echo "refusing to overwrite existing development keys in $dir" >&2
@@ -27,6 +25,8 @@ for service in edge-api identity-service catalog-service; do
   rm "$dir/$service.csr" "$dir/$service.ext"
 done
 
-chmod 644 "$dir"/*.crt "$dir"/*.key
+# Compose secrets expose service-specific copies inside containers. Keep every
+# host-side credential source owner-readable only, including private keys.
+chmod 600 "$dir"/*.crt "$dir"/*.key
 
 echo "Generated local mTLS certificates in $dir"

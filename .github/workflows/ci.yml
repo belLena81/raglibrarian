@@ -47,19 +47,23 @@ jobs:
           make --silent keygen >> .env
           make dev-certs
       - name: Start the local stack
-        run: docker compose up -d --build
-      - name: Wait for Edge readiness
-        run: |
-          for attempt in $(seq 1 60); do
-            if curl --fail --silent http://localhost:8080/readyz >/dev/null; then
-              exit 0
-            fi
-            sleep 2
-          done
-          docker compose logs
-          exit 1
+        run: docker compose up -d --build --wait --wait-timeout 180
+      - name: Run live mTLS service contracts
+        run: make contract-test
       - name: Run black-box tests
         run: make e2e
+      - name: Verify database-loss readiness behavior
+        run: |
+          docker compose stop postgres
+          for attempt in $(seq 1 30); do
+            ready_status=$(curl --silent --output /dev/null --write-out '%{http_code}' http://localhost:8080/readyz)
+            live_status=$(curl --silent --output /dev/null --write-out '%{http_code}' http://localhost:8080/healthz)
+            if [ "$ready_status" = "503" ] && [ "$live_status" = "200" ]; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
       - name: Collect service logs
         if: failure()
         run: docker compose logs

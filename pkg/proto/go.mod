@@ -3,7 +3,7 @@
 
 module github.com/belLena81/raglibrarian/pkg/proto
 
-go 1.26
+go 1.26.5
 
 require (
 	google.golang.org/grpc v1.79.3
@@ -11,9 +11,9 @@ require (
 )
 
 require (
-	golang.org/x/net v0.49.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/net v0.53.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/text v0.36.0 // indirect
 
 	// googleapis/rpc provides status.proto and common gRPC error types
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect

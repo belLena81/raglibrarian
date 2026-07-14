@@ -5,8 +5,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"net"
 	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -64,23 +68,121 @@ func main() {
 	if err != nil {
 		log.Fatal("invalid mTLS configuration", zap.Error(err))
 	}
+	if err = dropPrivileges(); err != nil {
+		log.Fatal("failed to drop process privileges", zap.Error(err))
+	}
 
 	server := grpc.NewServer(grpc.Creds(creds))
+	sessionRepository := repository.NewPostgresSessionRepository(pool)
+	bcryptConcurrency, err := strconv.Atoi(env("IDENTITY_BCRYPT_CONCURRENCY", "4"))
+	if err != nil || bcryptConcurrency < 1 {
+		log.Fatal("IDENTITY_BCRYPT_CONCURRENCY must be a positive integer")
+	}
 	authService := usecase.NewAuthService(
 		repository.NewPostgresUserRepository(pool),
-		repository.NewPostgresSessionRepository(pool),
+		sessionRepository,
 		signer,
 		30*24*time.Hour,
+		bcryptConcurrency,
 	)
 	identityv1.RegisterIdentityServiceServer(server, identitygrpc.NewServer(authService))
 
 	healthServer := health.NewServer()
-	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 	grpc_health_v1.RegisterHealthServer(server, healthServer)
 
+	backgroundCtx, stopBackground := context.WithCancel(context.Background())
+	defer stopBackground()
+	go monitorDatabaseHealth(backgroundCtx, pool, healthServer)
+	go cleanupExpiredSessions(backgroundCtx, sessionRepository, log)
+
+	errCh := make(chan error, 1)
 	log.Info("identity service starting")
-	if err = server.Serve(listener); err != nil {
-		log.Fatal("server exited", zap.Error(err))
+	go func() {
+		errCh <- server.Serve(listener)
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	select {
+	case err = <-errCh:
+		if !errors.Is(err, grpc.ErrServerStopped) {
+			log.Fatal("server exited", zap.Error(err))
+		}
+	case <-quit:
+		stopBackground()
+		healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
+		stopped := make(chan struct{})
+		go func() {
+			server.GracefulStop()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case <-time.After(10 * time.Second):
+			server.Stop()
+		}
+	}
+}
+
+func dropPrivileges() error {
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	if err := syscall.Setgroups([]int{}); err != nil {
+		return err
+	}
+	if err := syscall.Setgid(65532); err != nil {
+		return err
+	}
+	return syscall.Setuid(65532)
+}
+
+func monitorDatabaseHealth(ctx context.Context, pool *pgxpool.Pool, healthServer *health.Server) {
+	check := func() {
+		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		status := grpc_health_v1.HealthCheckResponse_SERVING
+		if pool.Ping(pingCtx) != nil {
+			status = grpc_health_v1.HealthCheckResponse_NOT_SERVING
+		}
+		healthServer.SetServingStatus("", status)
+	}
+	check()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			check()
+		}
+	}
+}
+
+func cleanupExpiredSessions(ctx context.Context, sessions repository.SessionRepository, log *zap.Logger) {
+	cleanup := func() {
+		cleanupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		deleted, err := sessions.CleanupExpired(cleanupCtx, time.Now().UTC())
+		if err != nil {
+			log.Warn("expired session cleanup failed", zap.Error(err))
+			return
+		}
+		if deleted > 0 {
+			log.Info("expired sessions removed", zap.Int64("count", deleted))
+		}
+	}
+	cleanup()
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cleanup()
+		}
 	}
 }
 

@@ -6,12 +6,14 @@ import (
 	"crypto/x509"
 	"net"
 	"os"
+	"syscall"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	grpc_health_v1 "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
@@ -22,11 +24,29 @@ type server struct {
 }
 
 func (server) Check(ctx context.Context, _ *catalogv1.CheckRequest) (*catalogv1.CheckResponse, error) {
+	if err := requireEdgeCaller(ctx); err != nil {
+		return nil, err
+	}
 	if ctx.Err() != nil {
 		return nil, status.Error(codes.Canceled, "request cancelled")
 	}
 
 	return &catalogv1.CheckResponse{Status: "SERVING"}, nil
+}
+
+func requireEdgeCaller(ctx context.Context) error {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "missing peer identity")
+	}
+	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok || len(tlsInfo.State.PeerCertificates) == 0 {
+		return status.Error(codes.Unauthenticated, "missing peer certificate")
+	}
+	if err := tlsInfo.State.PeerCertificates[0].VerifyHostname("edge-api"); err != nil {
+		return status.Error(codes.PermissionDenied, "caller is not authorized")
+	}
+	return nil
 }
 
 func main() {
@@ -44,6 +64,9 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	if err = dropPrivileges(); err != nil {
+		panic(err)
+	}
 
 	grpcServer := grpc.NewServer(grpc.Creds(creds))
 	catalogv1.RegisterCatalogServiceServer(grpcServer, server{})
@@ -55,6 +78,19 @@ func main() {
 	if err := grpcServer.Serve(listener); err != nil {
 		panic(err)
 	}
+}
+
+func dropPrivileges() error {
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	if err := syscall.Setgroups([]int{}); err != nil {
+		return err
+	}
+	if err := syscall.Setgid(65532); err != nil {
+		return err
+	}
+	return syscall.Setuid(65532)
 }
 
 func serverCredentials() (credentials.TransportCredentials, error) {

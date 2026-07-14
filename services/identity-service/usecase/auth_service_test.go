@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -93,6 +94,18 @@ func (r *memorySessions) Logout(_ context.Context, id string, now time.Time) err
 	r.revoked[id] = true
 	return nil
 }
+func (r *memorySessions) CleanupExpired(_ context.Context, now time.Time) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var deleted int64
+	for id, session := range r.sessions {
+		if !session.ExpiresAt.After(now) {
+			delete(r.sessions, id)
+			deleted++
+		}
+	}
+	return deleted, nil
+}
 
 func newService(t *testing.T) (*AuthService, *auth.Issuer) {
 	t.Helper()
@@ -110,6 +123,13 @@ func TestRegisterCreatesHashOnlySessionAndSessionClaim(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, result.SessionID, claims.SessionID)
 	assert.NotEqual(t, result.RefreshToken, result.SessionID)
+}
+
+func TestRegisterNormalizesEmailBeforePersistence(t *testing.T) {
+	service, _ := newService(t)
+	_, user, err := service.Register(context.Background(), "  USER@Example.COM ", "password-1234", domain.RoleReader)
+	require.NoError(t, err)
+	assert.Equal(t, "user@example.com", user.Email())
 }
 func TestRefreshRotatesAndReuseRevokesSession(t *testing.T) {
 	service, _ := newService(t)
@@ -129,4 +149,45 @@ func TestPasswordAndInvalidCredentialsAreSanitized(t *testing.T) {
 	_, err = service.Login(context.Background(), "none@example.com", "password-1234")
 	assert.ErrorIs(t, err, domain.ErrInvalidCredentials)
 	assert.False(t, errors.Is(err, domain.ErrUserNotFound))
+}
+
+func TestDummyPasswordHashIsAValidBcryptMismatch(t *testing.T) {
+	err := auth.CheckPassword(dummyPasswordHash, "password-1234")
+	assert.ErrorIs(t, err, domain.ErrInvalidCredentials)
+}
+
+func TestConcurrentLoginBoundsBcryptWork(t *testing.T) {
+	issuer, err := auth.NewIssuer(make([]byte, 32), time.Hour)
+	require.NoError(t, err)
+	user, err := domain.NewUser("load@example.com", "test-hash", domain.RoleReader)
+	require.NoError(t, err)
+	service := NewAuthService(&fakeUsers{users: map[string]domain.User{user.Email(): user}}, newMemorySessions(), issuer, time.Hour, 2)
+
+	var active atomic.Int32
+	var maximum atomic.Int32
+	service.check = func(_, _ string) error {
+		current := active.Add(1)
+		defer active.Add(-1)
+		for {
+			observed := maximum.Load()
+			if current <= observed || maximum.CompareAndSwap(observed, current) {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+		return domain.ErrInvalidCredentials
+	}
+
+	const requests = 16
+	var wg sync.WaitGroup
+	wg.Add(requests)
+	for range requests {
+		go func() {
+			defer wg.Done()
+			_, _ = service.Login(context.Background(), user.Email(), "password-1234")
+		}()
+	}
+	wg.Wait()
+	assert.LessOrEqual(t, maximum.Load(), int32(2))
+	assert.Zero(t, active.Load())
 }

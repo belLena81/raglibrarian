@@ -6,6 +6,7 @@ services:
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
       POSTGRES_DB: "${POSTGRES_DB:?POSTGRES_DB is required}"
       IDENTITY_DB_PASSWORD: "${IDENTITY_DB_PASSWORD:?IDENTITY_DB_PASSWORD is required}"
+      CATALOG_DB_PASSWORD: "${CATALOG_DB_PASSWORD:?CATALOG_DB_PASSWORD is required}"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
@@ -38,22 +39,47 @@ services:
       IDENTITY_GRPC_ADDR: ":50051"
       IDENTITY_POSTGRES_DSN: "${IDENTITY_POSTGRES_DSN:?IDENTITY_POSTGRES_DSN is required}"
       IDENTITY_SIGNING_KEY: "${IDENTITY_SIGNING_KEY:?IDENTITY_SIGNING_KEY is required}"
-      INTERNAL_TLS_CA_FILE: /certs/ca.crt
-      IDENTITY_TLS_CERT_FILE: /certs/identity-service.crt
-      IDENTITY_TLS_KEY_FILE: /certs/identity-service.key
-    volumes: ["./.dev/certs:/certs:ro"]
+      IDENTITY_TLS_KEY_FILE: /run/secrets/identity_tls_key
+      IDENTITY_TLS_CERT_FILE: /run/secrets/identity_tls_cert
+      INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
+      HEALTHCHECK_GRPC_TARGET: localhost:50051
+      HEALTHCHECK_TLS_SERVER_NAME: identity-service
+      HEALTHCHECK_TLS_CERT_FILE: /run/secrets/identity_tls_cert
+      HEALTHCHECK_TLS_KEY_FILE: /run/secrets/identity_tls_key
+      IDENTITY_BCRYPT_CONCURRENCY: "${IDENTITY_BCRYPT_CONCURRENCY:-4}"
+    secrets:
+      - internal_ca
+      - identity_tls_cert
+      - identity_tls_key
     depends_on:
       identity-migrate:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
 
   catalog-service:
     build: { context: ., args: { SERVICE: catalog-service } }
     environment:
       CATALOG_GRPC_ADDR: ":50052"
-      INTERNAL_TLS_CA_FILE: /certs/ca.crt
-      CATALOG_TLS_CERT_FILE: /certs/catalog-service.crt
-      CATALOG_TLS_KEY_FILE: /certs/catalog-service.key
-    volumes: ["./.dev/certs:/certs:ro"]
+      INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
+      CATALOG_TLS_CERT_FILE: /run/secrets/catalog_tls_cert
+      CATALOG_TLS_KEY_FILE: /run/secrets/catalog_tls_key
+      HEALTHCHECK_GRPC_TARGET: localhost:50052
+      HEALTHCHECK_TLS_SERVER_NAME: catalog-service
+      HEALTHCHECK_TLS_CERT_FILE: /run/secrets/catalog_tls_cert
+      HEALTHCHECK_TLS_KEY_FILE: /run/secrets/catalog_tls_key
+    secrets:
+      - internal_ca
+      - catalog_tls_cert
+      - catalog_tls_key
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
 
   edge-api:
     build: { context: ., args: { SERVICE: edge-api } }
@@ -62,18 +88,73 @@ services:
       QUERY_ADDR: ":8080"
       IDENTITY_GRPC_ADDR: "identity-service:50051"
       EDGE_VERIFY_KEY: "${EDGE_VERIFY_KEY:?EDGE_VERIFY_KEY is required}"
-      INTERNAL_TLS_CA_FILE: /certs/ca.crt
-      EDGE_TLS_CERT_FILE: /certs/edge-api.crt
-      EDGE_TLS_KEY_FILE: /certs/edge-api.key
+      INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
+      EDGE_TLS_CERT_FILE: /run/secrets/edge_tls_cert
+      EDGE_TLS_KEY_FILE: /run/secrets/edge_tls_key
       EDGE_INSECURE_REFRESH_COOKIE: "${EDGE_INSECURE_REFRESH_COOKIE:-false}"
+      EDGE_TRUSTED_PROXY_CIDRS: "${EDGE_TRUSTED_PROXY_CIDRS:-}"
+      HEALTHCHECK_HTTP_URL: http://localhost:8080/readyz
       LOG_ENV: "production"
       LOG_LEVEL: "info"
-    volumes: ["./.dev/certs:/certs:ro"]
+    secrets:
+      - internal_ca
+      - edge_tls_cert
+      - edge_tls_key
     depends_on:
       identity-service:
-        condition: service_started
+        condition: service_healthy
       catalog-service:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+
+  contract-tests:
+    profiles: ["test"]
+    build:
+      context: .
+      target: contract-tests
+      args: { SERVICE: edge-api }
+    environment:
+      IDENTITY_GRPC_ADDR: identity-service:50051
+      IDENTITY_POSTGRES_DSN: "${IDENTITY_POSTGRES_DSN:?IDENTITY_POSTGRES_DSN is required}"
+      CATALOG_GRPC_ADDR: catalog-service:50052
+      GRPC_CONTRACT_TESTS: "true"
+      EDGE_VERIFY_KEY: "${EDGE_VERIFY_KEY:?EDGE_VERIFY_KEY is required}"
+      INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
+      EDGE_TLS_CERT_FILE: /run/secrets/edge_tls_cert
+      EDGE_TLS_KEY_FILE: /run/secrets/edge_tls_key
+      CATALOG_TLS_CERT_FILE: /run/secrets/catalog_tls_cert
+      CATALOG_TLS_KEY_FILE: /run/secrets/catalog_tls_key
+    secrets:
+      - internal_ca
+      - edge_tls_cert
+      - edge_tls_key
+      - catalog_tls_cert
+      - catalog_tls_key
+    depends_on:
+      identity-service:
+        condition: service_healthy
+      catalog-service:
+        condition: service_healthy
 
 volumes:
   postgres_data:
+
+secrets:
+  internal_ca:
+    file: ./.dev/certs/ca.crt
+  edge_tls_cert:
+    file: ./.dev/certs/edge-api.crt
+  edge_tls_key:
+    file: ./.dev/certs/edge-api.key
+  identity_tls_cert:
+    file: ./.dev/certs/identity-service.crt
+  identity_tls_key:
+    file: ./.dev/certs/identity-service.key
+  catalog_tls_cert:
+    file: ./.dev/certs/catalog-service.crt
+  catalog_tls_key:
+    file: ./.dev/certs/catalog-service.key

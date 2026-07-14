@@ -31,9 +31,11 @@ pkg/proto/**/*.pb.go
 *.iml
 /bin/
 
-# Local architecture and agent-planning notes (not committed yet)
+# Local agent-planning notes and historical planning archives.
 /AGENTS.md
 /AGENTIC_*.md
-/docs/
+/docs/*
+!/docs/README.md
+!/docs/architecture-decision-record.md
 **/AGENTS.md
 **/AGENTIC_*.md

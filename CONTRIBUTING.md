@@ -12,11 +12,12 @@ pkg/
   auth/       go.mod   — PASETO + bcrypt
   logger/     go.mod   — zap constructor
   config/     go.mod   — env-var loading
+  proto/      go.mod   — generated gRPC contracts and health probe
 services/
-  metadata/   go.mod   — user repository + auth use case
-  query/      go.mod   — HTTP API, handlers, middleware
-migrations/            — SQL migration files
-cmd/keygen/            — operator tool: print a new AUTH_SECRET_KEY
+  identity-service/ go.mod — credentials, users, sessions, migrations
+  catalog-service/  go.mod — catalog gRPC boundary
+  edge-api/         go.mod — public HTTP API and middleware
+tests/e2e/           go.mod — HTTP E2E and live mTLS contracts
 ```
 
 The `go.work` file stitches the modules together so cross-module imports
@@ -39,6 +40,9 @@ make tidy
 
 ## First-time setup
 
+Go 1.26.5 or newer is required. The workspace toolchain directive, CI, and
+Docker builder are intentionally kept on the same patched release.
+
 ```bash
 git clone <repo>
 cd raglibrarian
@@ -47,11 +51,10 @@ cp .env.example .env
 # Generate the asymmetric key pair and put each value in the owning service
 # configuration. Never put IDENTITY_SIGNING_KEY in Edge configuration.
 make keygen
-
-make infra-up       # start Postgres
-make migrate-identity-up # create Identity tables
-make test           # run all tests
-make run-edge-api   # start the public HTTP edge
+make dev-certs
+make stack-up       # start and health-check the complete local stack
+make e2e            # run black-box HTTP workflows
+make contract-test  # run live mTLS and database adapter contracts
 ```
 
 ## Linting

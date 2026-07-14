@@ -18,6 +18,7 @@ type PostgresSessionRepository struct {
 	pool *pgxpool.Pool
 }
 
+// NewPostgresSessionRepository constructs the durable session repository.
 func NewPostgresSessionRepository(pool *pgxpool.Pool) *PostgresSessionRepository {
 	if pool == nil {
 		panic("repository: pgxpool must not be nil")
@@ -25,6 +26,7 @@ func NewPostgresSessionRepository(pool *pgxpool.Pool) *PostgresSessionRepository
 	return &PostgresSessionRepository{pool: pool}
 }
 
+// Create persists a new session and its initial refresh-token hash.
 func (r *PostgresSessionRepository) Create(ctx context.Context, userID string, expiresAt time.Time, tokenHash []byte) (Session, error) {
 	now := time.Now().UTC()
 	session := Session{ID: uuid.NewString(), UserID: userID, FamilyID: uuid.NewString(), ExpiresAt: expiresAt.UTC()}
@@ -48,6 +50,7 @@ func (r *PostgresSessionRepository) Create(ctx context.Context, userID string, e
 	return session, nil
 }
 
+// Rotate atomically consumes a refresh token and creates its successor.
 func (r *PostgresSessionRepository) Rotate(ctx context.Context, tokenHash, successorHash []byte, now time.Time) (Session, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -107,6 +110,7 @@ func (r *PostgresSessionRepository) Rotate(ctx context.Context, tokenHash, succe
 	return session, nil
 }
 
+// Validate confirms an active session belongs to the requested user.
 func (r *PostgresSessionRepository) Validate(ctx context.Context, userID, sessionID string, now time.Time) error {
 	var id string
 	err := r.pool.QueryRow(ctx, `SELECT id FROM identity.sessions WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL AND expires_at>$3`, sessionID, userID, now).Scan(&id)
@@ -119,10 +123,21 @@ func (r *PostgresSessionRepository) Validate(ctx context.Context, userID, sessio
 	return nil
 }
 
+// Logout revokes an active session.
 func (r *PostgresSessionRepository) Logout(ctx context.Context, sessionID string, now time.Time) error {
 	_, err := r.pool.Exec(ctx, `UPDATE identity.sessions SET revoked_at=$1 WHERE id=$2 AND revoked_at IS NULL`, now, sessionID)
 	if err != nil {
 		return fmt.Errorf("session: logout: %w", err)
 	}
 	return nil
+}
+
+// CleanupExpired removes expired session families. Refresh tokens are removed
+// by the session foreign key's ON DELETE CASCADE rule.
+func (r *PostgresSessionRepository) CleanupExpired(ctx context.Context, now time.Time) (int64, error) {
+	result, err := r.pool.Exec(ctx, `DELETE FROM identity.sessions WHERE expires_at <= $1`, now)
+	if err != nil {
+		return 0, fmt.Errorf("session: clean expired sessions: %w", err)
+	}
+	return result.RowsAffected(), nil
 }

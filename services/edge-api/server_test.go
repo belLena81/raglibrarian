@@ -96,6 +96,7 @@ func TestRouter_POST_Auth_Register_Returns201(t *testing.T) {
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusCreated, rr.Code)
+	assert.Equal(t, "no-store", rr.Header().Get("Cache-Control"))
 }
 
 func TestRouter_POST_Auth_Login_Returns200(t *testing.T) {
@@ -106,6 +107,7 @@ func TestRouter_POST_Auth_Login_Returns200(t *testing.T) {
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "no-store", rr.Header().Get("Cache-Control"))
 }
 
 func TestRouter_POST_Query_WithValidToken_Returns200(t *testing.T) {
@@ -119,6 +121,7 @@ func TestRouter_POST_Query_WithValidToken_Returns200(t *testing.T) {
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "no-store", rr.Header().Get("Cache-Control"))
 }
 
 func TestRouter_POST_Query_WithoutToken_Returns401(t *testing.T) {
@@ -150,6 +153,7 @@ func TestRouter_GET_AuthMe_WithValidToken_Returns200WithIdentity(t *testing.T) {
 	router.ServeHTTP(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "no-store", rr.Header().Get("Cache-Control"))
 
 	var body map[string]string
 	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))

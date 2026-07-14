@@ -15,7 +15,8 @@ MODULES := \
 	pkg/proto \
 	services/identity-service \
 	services/catalog-service \
-	services/edge-api
+	services/edge-api \
+	tests/e2e
 
 # Go packages import generated protobuf bindings. Generate them before any
 # target that compiles or analyzes those packages.
@@ -116,7 +117,7 @@ dev: stack-up
 
 # ── Tidy ──────────────────────────────────────────────────────────────────────
 tidy: _require_root
-	@for mod in $(MODULES) tests/e2e; do \
+	@for mod in $(MODULES); do \
 		echo "Tidying $$mod..."; \
 		(cd $$mod && go mod tidy); \
 	done
@@ -130,6 +131,10 @@ tidy: _require_root
 #   E2E_BASE_URL=http://staging:8080 make e2e
 e2e: _require_root
 	cd tests/e2e && go test -v -tags e2e ./...
+
+.PHONY: contract-test
+contract-test: _require_root
+	docker compose --profile test run --rm contract-tests
 
 # ── Database ──────────────────────────────────────────────────────────────────
 # Uses psql directly — no migrate CLI dependency.

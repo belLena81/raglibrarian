@@ -18,14 +18,23 @@ const (
 
 // HashPassword hashes plaintext with bcrypt and returns the encoded hash.
 func HashPassword(plaintext string) (string, error) {
-	if len(plaintext) < minPasswordBytes || len(plaintext) > maxPasswordBytes {
-		return "", domain.ErrInvalidPassword
+	if err := ValidatePassword(plaintext); err != nil {
+		return "", err
 	}
 	hashed, err := bcrypt.GenerateFromPassword([]byte(plaintext), bcryptCost)
 	if err != nil {
 		return "", fmt.Errorf("auth: hash password: %w", err)
 	}
 	return string(hashed), nil
+}
+
+// ValidatePassword rejects passwords outside bcrypt's safe input bounds
+// without performing expensive password work.
+func ValidatePassword(plaintext string) error {
+	if len(plaintext) < minPasswordBytes || len(plaintext) > maxPasswordBytes {
+		return domain.ErrInvalidPassword
+	}
+	return nil
 }
 
 // CheckPassword reports whether plaintext matches the stored bcrypt hash.

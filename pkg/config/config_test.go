@@ -63,3 +63,20 @@ func TestLoad_CustomAddr(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ":9090", cfg.Addr)
 }
+
+func TestLoad_ParsesTrustedProxyCIDRs(t *testing.T) {
+	setMinimalEnv(t)
+	t.Setenv(config.EnvTrustedProxyCIDRs, "10.0.0.0/8, 2001:db8::/32")
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	require.Len(t, cfg.TrustedProxyCIDRs, 2)
+	assert.Equal(t, "10.0.0.0/8", cfg.TrustedProxyCIDRs[0].String())
+}
+
+func TestLoad_RejectsInvalidTrustedProxyCIDR(t *testing.T) {
+	setMinimalEnv(t)
+	t.Setenv(config.EnvTrustedProxyCIDRs, "not-a-cidr")
+	_, err := config.Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), config.EnvTrustedProxyCIDRs)
+}

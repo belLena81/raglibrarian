@@ -193,6 +193,7 @@ func authErrToStatus(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrInvalidEmail),
 		errors.Is(err, domain.ErrEmptyEmail),
+		errors.Is(err, domain.ErrInvalidPassword),
 		errors.Is(err, domain.ErrInvalidRole):
 		return http.StatusUnprocessableEntity
 	case errors.Is(err, domain.ErrInvalidCredentials):
@@ -206,8 +207,8 @@ func sanitiseAuthError(err error) string {
 	switch {
 	case errors.Is(err, domain.ErrEmailTaken):
 		return "email is already registered"
-	case errors.Is(err, domain.ErrInvalidEmail):
-		return "email format is invalid"
+	case errors.Is(err, domain.ErrInvalidEmail), errors.Is(err, domain.ErrInvalidPassword):
+		return "email or password is invalid"
 	case errors.Is(err, domain.ErrInvalidRole):
 		return "role must be admin or reader"
 	case errors.Is(err, domain.ErrInvalidCredentials):

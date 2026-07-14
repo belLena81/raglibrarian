@@ -4,7 +4,10 @@
 package edgeapi
 
 import (
+	"net"
 	"net/http"
+	"net/netip"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -27,11 +30,26 @@ func NewRouter(
 	log *zap.Logger,
 	validators ...middleware.SessionValidator,
 ) http.Handler {
+	return NewRouterWithTrustedProxies(qh, ah, verifier, log, nil, validators...)
+}
+
+// NewRouterWithTrustedProxies builds the router and honors forwarded client
+// addresses only when the direct peer matches an explicitly trusted CIDR.
+func NewRouterWithTrustedProxies(
+	qh *handler.QueryHandler,
+	ah *handler.AuthHandler,
+	verifier tokenVerifier,
+	log *zap.Logger,
+	trustedProxies []netip.Prefix,
+	validators ...middleware.SessionValidator,
+) http.Handler {
 	r := chi.NewRouter()
 
 	// Global middleware (outermost to innermost):
-	// RealIP → RequestID → RequestLogger → Recoverer
-	r.Use(chimiddleware.RealIP)
+	// TrustedProxyRealIP → RequestID → RequestLogger → Recoverer
+	if len(trustedProxies) > 0 {
+		r.Use(trustedProxyRealIP(trustedProxies))
+	}
 	r.Use(chimiddleware.RequestID)
 	r.Use(securityHeaders)
 	r.Use(middleware.RequestLogger(log))
@@ -70,9 +88,37 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
-		if r.URL.Path == "/auth/login" || r.URL.Path == "/auth/register" || r.URL.Path == "/auth/logout" {
+		if strings.HasPrefix(r.URL.Path, "/auth/") || r.URL.Path == "/query" || strings.HasPrefix(r.URL.Path, "/query/") {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func trustedProxyRealIP(prefixes []netip.Prefix) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			host, _, err := net.SplitHostPort(r.RemoteAddr)
+			peer, parseErr := netip.ParseAddr(host)
+			if err == nil && parseErr == nil && addressAllowed(peer, prefixes) {
+				forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
+				if forwarded == "" {
+					forwarded = strings.TrimSpace(r.Header.Get("X-Real-IP"))
+				}
+				if client, clientErr := netip.ParseAddr(forwarded); clientErr == nil {
+					r.RemoteAddr = net.JoinHostPort(client.String(), "0")
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func addressAllowed(address netip.Addr, prefixes []netip.Prefix) bool {
+	for _, prefix := range prefixes {
+		if prefix.Contains(address) {
+			return true
+		}
+	}
+	return false
 }

@@ -1,4 +1,6 @@
-go 1.26.0
+go 1.26.5
+
+toolchain go1.26.5
 
 use (
 	./pkg/auth
@@ -6,8 +8,8 @@ use (
 	./pkg/domain
 	./pkg/logger
 	./pkg/proto
+	./services/catalog-service
 	./services/edge-api
 	./services/identity-service
-	./services/catalog-service
 	./tests/e2e
 )

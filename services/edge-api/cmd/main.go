@@ -53,6 +53,9 @@ func run(log *zap.Logger) error {
 	if err != nil {
 		return err
 	}
+	if err = dropPrivileges(); err != nil {
+		return err
+	}
 	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return err
@@ -70,7 +73,7 @@ func run(log *zap.Logger) error {
 	)
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           edgeapi.NewRouter(queryHandler, authHandler, verifier, log, identityClient),
+		Handler:           edgeapi.NewRouterWithTrustedProxies(queryHandler, authHandler, verifier, log, cfg.TrustedProxyCIDRs, identityClient),
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -93,6 +96,19 @@ func run(log *zap.Logger) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return srv.Shutdown(ctx)
+}
+
+func dropPrivileges() error {
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	if err := syscall.Setgroups([]int{}); err != nil {
+		return err
+	}
+	if err := syscall.Setgid(65532); err != nil {
+		return err
+	}
+	return syscall.Setuid(65532)
 }
 
 func clientCredentials() (credentials.TransportCredentials, error) {

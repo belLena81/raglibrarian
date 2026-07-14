@@ -205,7 +205,7 @@ func TestLogin_WrongPassword_Returns401(t *testing.T) {
 	resp.Body.Close()
 
 	resp = postJSON(t, "/auth/login", map[string]string{
-		"email": email, "password": "wrong",
+		"email": email, "password": "wrong-password",
 	}, "")
 	defer resp.Body.Close()
 
@@ -215,7 +215,7 @@ func TestLogin_WrongPassword_Returns401(t *testing.T) {
 func TestLogin_UnknownEmail_Returns401(t *testing.T) {
 	// Must return the same 401 as wrong password — no user enumeration.
 	resp := postJSON(t, "/auth/login", map[string]string{
-		"email": "nobody@nowhere.example.com", "password": "irrelevant",
+		"email": "nobody@nowhere.example.com", "password": "irrelevant-password",
 	}, "")
 	defer resp.Body.Close()
 

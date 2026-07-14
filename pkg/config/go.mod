@@ -1,6 +1,6 @@
 module github.com/belLena81/raglibrarian/pkg/config
 
-go 1.26.0
+go 1.26.5
 
 require (
 	github.com/belLena81/raglibrarian/pkg/domain v0.0.0-20260310060144-d8455ee5d7b2

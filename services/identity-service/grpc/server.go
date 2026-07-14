@@ -17,13 +17,16 @@ import (
 
 const operationTimeout = 5 * time.Second
 
+// Server exposes Identity's versioned internal gRPC contract.
 type Server struct {
 	identityv1.UnimplementedIdentityServiceServer
 	useCase usecase.AuthUseCase
 }
 
+// NewServer constructs an Identity gRPC adapter.
 func NewServer(uc usecase.AuthUseCase) *Server { return &Server{useCase: uc} }
 
+// Register creates a reader account for an authorized Edge caller.
 func (s *Server) Register(ctx context.Context, req *identityv1.RegisterRequest) (*identityv1.RegisterResponse, error) {
 	ctx, cancel, err := authenticatedOperation(ctx)
 	if err != nil {
@@ -40,6 +43,7 @@ func (s *Server) Register(ctx context.Context, req *identityv1.RegisterRequest) 
 	return registerResponse(result), nil
 }
 
+// Login verifies credentials for an authorized Edge caller.
 func (s *Server) Login(ctx context.Context, req *identityv1.LoginRequest) (*identityv1.LoginResponse, error) {
 	ctx, cancel, err := authenticatedOperation(ctx)
 	if err != nil {
@@ -56,6 +60,7 @@ func (s *Server) Login(ctx context.Context, req *identityv1.LoginRequest) (*iden
 	return &identityv1.LoginResponse{AccessToken: result.AccessToken, RefreshToken: result.RefreshToken, SessionId: result.SessionID, Role: string(result.Role)}, nil
 }
 
+// Refresh rotates an Identity refresh token.
 func (s *Server) Refresh(ctx context.Context, req *identityv1.RefreshRequest) (*identityv1.RefreshResponse, error) {
 	ctx, cancel, err := authenticatedOperation(ctx)
 	if err != nil {
@@ -72,6 +77,7 @@ func (s *Server) Refresh(ctx context.Context, req *identityv1.RefreshRequest) (*
 	return &identityv1.RefreshResponse{AccessToken: result.AccessToken, RefreshToken: result.RefreshToken, SessionId: result.SessionID, Role: string(result.Role)}, nil
 }
 
+// ValidateSession confirms server-side session state for verified claims.
 func (s *Server) ValidateSession(ctx context.Context, req *identityv1.ValidateSessionRequest) (*identityv1.ValidateSessionResponse, error) {
 	ctx, cancel, err := authenticatedOperation(ctx)
 	if err != nil {
@@ -87,6 +93,7 @@ func (s *Server) ValidateSession(ctx context.Context, req *identityv1.ValidateSe
 	return &identityv1.ValidateSessionResponse{}, nil
 }
 
+// Logout revokes an Identity session.
 func (s *Server) Logout(ctx context.Context, req *identityv1.LogoutRequest) (*identityv1.LogoutResponse, error) {
 	ctx, cancel, err := authenticatedOperation(ctx)
 	if err != nil {
@@ -126,7 +133,7 @@ func requireEdgeCaller(ctx context.Context) error {
 	if !ok || len(tlsInfo.State.PeerCertificates) == 0 {
 		return status.Error(codes.Unauthenticated, "missing peer certificate")
 	}
-	if tlsInfo.State.PeerCertificates[0].Subject.CommonName != "edge-api" {
+	if err := tlsInfo.State.PeerCertificates[0].VerifyHostname("edge-api"); err != nil {
 		return status.Error(codes.PermissionDenied, "caller is not authorized")
 	}
 	return nil
@@ -136,7 +143,7 @@ func toStatus(err error) error {
 	switch {
 	case errors.Is(err, domain.ErrEmailTaken):
 		return status.Error(codes.AlreadyExists, "email already registered")
-	case errors.Is(err, domain.ErrInvalidEmail), errors.Is(err, domain.ErrInvalidRole), errors.Is(err, domain.ErrInvalidPassword):
+	case errors.Is(err, domain.ErrInvalidEmail), errors.Is(err, domain.ErrEmptyEmail), errors.Is(err, domain.ErrInvalidRole), errors.Is(err, domain.ErrInvalidPassword):
 		return status.Error(codes.InvalidArgument, "invalid registration")
 	case errors.Is(err, domain.ErrInvalidCredentials):
 		return status.Error(codes.Unauthenticated, "invalid credentials")

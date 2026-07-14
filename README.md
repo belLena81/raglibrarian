@@ -96,7 +96,7 @@ tests/e2e/           Black-box HTTP tests
 
 ## Local development
 
-Prerequisites: Go 1.26+, Docker Compose, `psql`, OpenSSL, `protoc`, and the
+Prerequisites: Go 1.26.5+, Docker Compose, `psql`, OpenSSL, `protoc`, and the
 Go protobuf generators for contract generation. Install the generators once:
 
 ```bash
@@ -118,6 +118,14 @@ make e2e
 
 `make stack-up` starts the full Compose stack on `:8080` and applies Identity
 migrations before starting Identity. `make dev` is an alias for this workflow.
+Identity and Catalog expose standard gRPC health services inside the private
+Compose network. `make contract-test` verifies both services over mTLS.
+
+Development certificate sources remain host-only with mode `0600`. Compose
+mounts only the CA certificate and each service's own certificate/key. Service
+processes load those assigned files and drop to the distroless non-root account
+before accepting traffic; the CA private key and peer private keys are never
+mounted into a service container.
 
 ## Quality commands
 
@@ -131,6 +139,11 @@ make vet         # per-module go vet
 make lint        # golangci-lint per module
 make vuln        # govulncheck per module
 make proto-check # Buf contract lint
+make contract-test # live Identity/Catalog mTLS and database contracts
 ```
+
+The workspace declares Go 1.26.5 as its minimum toolchain. CI and service
+images use the same patched release; update all three together when raising
+the minimum.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for workspace and module rules.
