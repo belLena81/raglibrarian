@@ -1,7 +1,8 @@
-// Package auth provides PASETO v4 local token issuance and validation.
+// Package auth provides PASETO v4 public token issuance and validation.
 package auth
 
 import (
+	"crypto/ed25519"
 	"fmt"
 	"time"
 
@@ -17,62 +18,108 @@ type Claims struct {
 	Role   domain.Role
 }
 
-// Issuer creates and validates PASETO v4 local tokens. Safe for concurrent use.
-type Issuer struct {
-	key        gopasseto.V4SymmetricKey
+// Signer creates PASETO v4 public tokens. Only identity-service receives its
+// private key.
+type Signer struct {
+	key        gopasseto.V4AsymmetricSecretKey
 	ttl        time.Duration
 	timeSource func() time.Time // injectable so tests can control "now"
 }
 
-// NewIssuer constructs an Issuer from a 32-byte symmetric key.
-func NewIssuer(rawKey []byte, ttl time.Duration) (*Issuer, error) {
-	if len(rawKey) != 32 {
+// Verifier validates PASETO v4 public tokens. It can never mint a token.
+type Verifier struct {
+	key        gopasseto.V4AsymmetricPublicKey
+	timeSource func() time.Time
+}
+
+// Issuer is retained for focused tests that need one object capable of both
+// issuing and verifying. Production code must use Signer in identity-service
+// and Verifier in edge-api so the private key cannot cross the boundary.
+type Issuer struct {
+	*Signer
+	*Verifier
+}
+
+// NewIssuer derives an asymmetric key pair from a 32-byte test seed. It is a
+// compatibility helper and must not be used for runtime configuration.
+func NewIssuer(seed []byte, ttl time.Duration) (*Issuer, error) {
+	if len(seed) != ed25519.SeedSize {
+		return nil, fmt.Errorf("auth: test seed must be exactly %d bytes, got %d", ed25519.SeedSize, len(seed))
+	}
+	privateKey := ed25519.NewKeyFromSeed(seed)
+	signer, err := NewSigner(privateKey, ttl)
+	if err != nil {
+		return nil, err
+	}
+	verifier, err := NewVerifier(privateKey.Public().(ed25519.PublicKey))
+	if err != nil {
+		return nil, err
+	}
+	return &Issuer{Signer: signer, Verifier: verifier}, nil
+}
+
+// NewSigner constructs a Signer from a 64-byte Ed25519 private key.
+func NewSigner(rawKey []byte, ttl time.Duration) (*Signer, error) {
+	if len(rawKey) != 64 {
 		return nil, fmt.Errorf(
-			"auth: symmetric key must be exactly 32 bytes, got %d", len(rawKey),
+			"auth: signing key must be exactly 64 bytes, got %d", len(rawKey),
 		)
 	}
 
-	key, err := gopasseto.V4SymmetricKeyFromBytes(rawKey)
+	key, err := gopasseto.NewV4AsymmetricSecretKeyFromBytes(rawKey)
 	if err != nil {
-		return nil, fmt.Errorf("auth: load symmetric key: %w", err)
+		return nil, fmt.Errorf("auth: load signing key: %w", err)
 	}
 
-	return &Issuer{
+	return &Signer{
 		key:        key,
 		ttl:        ttl,
 		timeSource: time.Now,
 	}, nil
 }
 
-// Issue mints a PASETO v4 local token for the given user.
-func (is *Issuer) Issue(user domain.User) (string, error) {
-	now := is.timeSource()
+// NewVerifier constructs a Verifier from a 32-byte Ed25519 public key.
+func NewVerifier(rawKey []byte) (*Verifier, error) {
+	if len(rawKey) != 32 {
+		return nil, fmt.Errorf("auth: verification key must be exactly 32 bytes, got %d", len(rawKey))
+	}
+	key, err := gopasseto.NewV4AsymmetricPublicKeyFromBytes(rawKey)
+	if err != nil {
+		return nil, fmt.Errorf("auth: load verification key: %w", err)
+	}
+	return &Verifier{key: key, timeSource: time.Now}, nil
+}
+
+// Issue mints a PASETO v4 public token for the given user.
+func (s *Signer) Issue(user domain.User) (string, error) {
+	now := s.timeSource()
 
 	token := gopasseto.NewToken()
 
 	token.SetIssuedAt(now)
 	token.SetNotBefore(now)
-	token.SetExpiration(now.Add(is.ttl))
+	token.SetExpiration(now.Add(s.ttl))
 	token.SetSubject(user.ID())
 	token.SetIssuer("raglibrarian")
+	token.SetAudience("edge-api")
 
 	token.SetString("email", user.Email())
 	token.SetString("role", string(user.Role()))
 
-	encrypted := token.V4Encrypt(is.key, nil)
-	return encrypted, nil
+	return token.V4Sign(s.key, nil), nil
 }
 
-// Validate decrypts and verifies a PASETO v4 local token string.
-// Returns ErrInvalidToken for any failure — expired, tampered, wrong key, or malformed.
-func (is *Issuer) Validate(tokenStr string) (Claims, error) {
+// Validate verifies a PASETO v4 public token string. Returns ErrInvalidToken
+// for any failure — expired, tampered, wrong key, or malformed.
+func (v *Verifier) Validate(tokenStr string) (Claims, error) {
 	parser := gopasseto.NewParser()
 
 	parser.AddRule(gopasseto.NotExpired())
-	parser.AddRule(gopasseto.ValidAt(is.timeSource()))
+	parser.AddRule(gopasseto.ValidAt(v.timeSource()))
 	parser.AddRule(gopasseto.IssuedBy("raglibrarian"))
+	parser.AddRule(gopasseto.ForAudience("edge-api"))
 
-	token, err := parser.ParseV4Local(is.key, tokenStr, nil)
+	token, err := parser.ParseV4Public(v.key, tokenStr, nil)
 	if err != nil {
 		return Claims{}, domain.ErrInvalidToken
 	}

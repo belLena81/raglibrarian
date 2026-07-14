@@ -4,7 +4,7 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt build run-edge-api run-identity run-catalog dev tidy e2e migrate-identity-up migrate-identity-down infra-up infra-down keygen proto dev-certs
+.PHONY: test test-race lint fmt fmt-check vet vuln proto-check build run-edge-api run-identity run-catalog dev tidy e2e migrate-identity-up migrate-identity-down infra-up infra-down keygen proto dev-certs
 
 # Service/library modules — looped over by test, lint, tidy, fmt.
 MODULES := \
@@ -64,9 +64,19 @@ fmt: _require_root
 	else \
 		echo "goimports not found, falling back to gofmt..."; \
 		for mod in $(MODULES); do \
-			gofmt -w $$mod; \
+			find $$mod -name '*.go' -not -path '*/vendor/*' -print0 | xargs -0 gofmt -w; \
 		done; \
 	fi
+
+fmt-check: _require_root
+	@test -z "$$(find $(MODULES) -name '*.go' -not -path '*/vendor/*' -print0 | xargs -0 gofmt -d)" || { echo "Go files are not gofmt formatted"; exit 1; }
+
+vet: _require_root
+	@fail=0; for mod in $(MODULES); do (cd $$mod && GOWORK=off go vet ./...) || fail=1; done; exit $$fail
+
+vuln: _require_root
+	@command -v govulncheck >/dev/null || { echo "govulncheck is required"; exit 1; }
+	@fail=0; for mod in $(MODULES); do (cd $$mod && GOWORK=off govulncheck ./...) || fail=1; done; exit $$fail
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 build: _require_root
@@ -148,6 +158,9 @@ keygen: _require_root
 proto: _require_root
 	XDG_CACHE_HOME=/tmp/raglibrarian-cache buf lint api/proto
 	PATH="$$HOME/go/bin:$$PATH" protoc -I api/proto --go_out=paths=source_relative:pkg/proto --go-grpc_out=paths=source_relative:pkg/proto api/proto/identity/v1/identity.proto api/proto/catalog/v1/catalog.proto
+
+proto-check: _require_root
+	XDG_CACHE_HOME=/tmp/raglibrarian-cache buf lint api/proto
 
 dev-certs: _require_root
 	./scripts/generate-dev-certs.sh

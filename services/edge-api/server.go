@@ -15,11 +15,15 @@ import (
 	"github.com/belLena81/raglibrarian/services/edge-api/middleware"
 )
 
+type tokenVerifier interface {
+	Validate(string) (auth.Claims, error)
+}
+
 // NewRouter builds and returns the chi router with all routes and middleware wired.
 func NewRouter(
 	qh *handler.QueryHandler,
 	ah *handler.AuthHandler,
-	issuer *auth.Issuer,
+	verifier tokenVerifier,
 	log *zap.Logger,
 ) http.Handler {
 	r := chi.NewRouter()
@@ -28,6 +32,7 @@ func NewRouter(
 	// RealIP → RequestID → RequestLogger → Recoverer
 	r.Use(chimiddleware.RealIP)
 	r.Use(chimiddleware.RequestID)
+	r.Use(securityHeaders)
 	r.Use(middleware.RequestLogger(log))
 	r.Use(chimiddleware.Recoverer)
 
@@ -38,14 +43,14 @@ func NewRouter(
 		r.Post("/login", ah.Login)
 
 		r.Group(func(r chi.Router) {
-			r.Use(middleware.Authenticator(issuer, log))
+			r.Use(middleware.Authenticator(verifier, log))
 			r.Get("/me", ah.Me)
 			r.Post("/logout", ah.Logout)
 		})
 	})
 
 	r.Group(func(r chi.Router) {
-		r.Use(middleware.Authenticator(issuer, log))
+		r.Use(middleware.Authenticator(verifier, log))
 
 		r.Route("/query", func(r chi.Router) {
 			r.Post("/", qh.Query)
@@ -53,4 +58,17 @@ func NewRouter(
 	})
 
 	return r
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		if r.URL.Path == "/auth/login" || r.URL.Path == "/auth/register" || r.URL.Path == "/auth/logout" {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
 }

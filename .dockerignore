@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+!.env.example
+.dev
+bin
+coverage.*
+*.out
+ui/node_modules
+ui/dist
+AGENTS.md
+AGENTIC_*.md
+docs

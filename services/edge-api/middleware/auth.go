@@ -18,7 +18,12 @@ const claimsKey contextKey = "auth_claims"
 
 // Authenticator validates the Authorization: Bearer token and stores Claims in context.
 // Rejects with 401 if the header is absent or the token is invalid.
-func Authenticator(issuer *auth.Issuer, log *zap.Logger) func(http.Handler) http.Handler {
+type tokenVerifier interface {
+	Validate(string) (auth.Claims, error)
+}
+
+// Authenticator validates a bearer token and stores verified claims in context.
+func Authenticator(verifier tokenVerifier, log *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenStr, ok := bearerToken(r)
@@ -27,7 +32,7 @@ func Authenticator(issuer *auth.Issuer, log *zap.Logger) func(http.Handler) http
 				return
 			}
 
-			claims, err := issuer.Validate(tokenStr)
+			claims, err := verifier.Validate(tokenStr)
 			if err != nil {
 				log.Debug("token validation failed", zap.Error(err))
 				writeUnauthorized(w, "invalid or expired token")

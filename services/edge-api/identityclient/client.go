@@ -16,10 +16,12 @@ type Client struct {
 	rpc identityv1.IdentityServiceClient
 }
 
+// New constructs a client adapter over the generated Identity client.
 func New(rpc identityv1.IdentityServiceClient) *Client {
 	return &Client{rpc: rpc}
 }
 
+// Register delegates reader registration to Identity.
 func (c *Client) Register(ctx context.Context, email, password string, role domain.Role) (string, domain.User, error) {
 	response, err := c.rpc.Register(ctx, &identityv1.RegisterRequest{Email: email, Password: password, Role: string(role)})
 	if err != nil {
@@ -28,6 +30,7 @@ func (c *Client) Register(ctx context.Context, email, password string, role doma
 	return response.AccessToken, domain.NewUserFromDB("", email, "", domain.Role(response.Role), time.Time{}), nil
 }
 
+// Login delegates credential verification to Identity.
 func (c *Client) Login(ctx context.Context, email, password string) (string, error) {
 	response, err := c.rpc.Login(ctx, &identityv1.LoginRequest{Email: email, Password: password})
 	if err != nil {

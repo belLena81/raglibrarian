@@ -14,15 +14,18 @@ import (
 	"github.com/belLena81/raglibrarian/services/identity-service/usecase"
 )
 
+// Server adapts the Identity application service to the versioned gRPC API.
 type Server struct {
 	identityv1.UnimplementedIdentityServiceServer
 	useCase usecase.AuthUseCase
 }
 
+// NewServer constructs a gRPC server backed by the supplied application service.
 func NewServer(uc usecase.AuthUseCase) *Server {
 	return &Server{useCase: uc}
 }
 
+// Register creates a reader account for an authenticated Edge caller.
 func (s *Server) Register(ctx context.Context, req *identityv1.RegisterRequest) (*identityv1.RegisterResponse, error) {
 	if err := requireEdgeCaller(ctx); err != nil {
 		return nil, err
@@ -33,6 +36,8 @@ func (s *Server) Register(ctx context.Context, req *identityv1.RegisterRequest) 
 	}
 	return &identityv1.RegisterResponse{AccessToken: token, Role: string(user.Role())}, nil
 }
+
+// Login authenticates a user for an authenticated Edge caller.
 func (s *Server) Login(ctx context.Context, req *identityv1.LoginRequest) (*identityv1.LoginResponse, error) {
 	if err := requireEdgeCaller(ctx); err != nil {
 		return nil, err

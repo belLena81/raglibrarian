@@ -7,7 +7,6 @@ services:
       POSTGRES_USER: raglibrarian
       POSTGRES_PASSWORD: raglibrarian
       POSTGRES_DB: raglibrarian
-    ports: ["5432:5432"]
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
@@ -22,7 +21,7 @@ services:
     environment:
       IDENTITY_GRPC_ADDR: ":50051"
       IDENTITY_POSTGRES_DSN: "postgres://identity_role:identity_local@postgres:5432/raglibrarian?search_path=identity&sslmode=disable"
-      AUTH_SECRET_KEY: "${AUTH_SECRET_KEY}"
+      IDENTITY_SIGNING_KEY: "${IDENTITY_SIGNING_KEY:?IDENTITY_SIGNING_KEY is required}"
       INTERNAL_TLS_CA_FILE: /certs/ca.crt
       IDENTITY_TLS_CERT_FILE: /certs/identity-service.crt
       IDENTITY_TLS_KEY_FILE: /certs/identity-service.key
@@ -44,7 +43,7 @@ services:
     environment:
       QUERY_ADDR: ":8080"
       IDENTITY_GRPC_ADDR: "identity-service:50051"
-      AUTH_SECRET_KEY: "${AUTH_SECRET_KEY}"
+      EDGE_VERIFY_KEY: "${EDGE_VERIFY_KEY:?EDGE_VERIFY_KEY is required}"
       POSTGRES_DSN: "unused-by-edge-api"
       INTERNAL_TLS_CA_FILE: /certs/ca.crt
       EDGE_TLS_CERT_FILE: /certs/edge-api.crt

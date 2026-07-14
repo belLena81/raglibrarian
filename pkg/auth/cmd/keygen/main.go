@@ -1,4 +1,4 @@
-// Command keygen prints a new PASETO v4 symmetric key to stdout.
+// Command keygen prints a new PASETO v4 public signing key pair to stdout.
 package main
 
 import "github.com/belLena81/raglibrarian/pkg/auth"

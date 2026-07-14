@@ -71,7 +71,7 @@ func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
 	reqLog := h.log.With(zap.String("request_id", middleware.GetReqID(r.Context())))
 
 	var req QueryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		reqLog.Warn("failed to decode request body", zap.Error(err))
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return

@@ -17,14 +17,18 @@ type AuthUseCase interface {
 	Login(ctx context.Context, email, password string) (string, error)
 }
 
+type tokenIssuer interface {
+	Issue(domain.User) (string, error)
+}
+
 // AuthService is the production implementation of AuthUseCase.
 type AuthService struct {
 	users  repository.UserRepository
-	issuer *auth.Issuer
+	issuer tokenIssuer
 }
 
 // NewAuthService constructs an AuthService. Panics on nil dependencies.
-func NewAuthService(users repository.UserRepository, issuer *auth.Issuer) *AuthService {
+func NewAuthService(users repository.UserRepository, issuer tokenIssuer) *AuthService {
 	if users == nil {
 		panic("usecase: UserRepository must not be nil")
 	}

@@ -26,16 +26,16 @@ import (
 
 func main() {
 	log := logger.Must("identity-service")
-	defer log.Sync()
+	defer func() { _ = log.Sync() }()
 
-	dsn, keyHex := os.Getenv("IDENTITY_POSTGRES_DSN"), os.Getenv("AUTH_SECRET_KEY")
+	dsn, keyHex := os.Getenv("IDENTITY_POSTGRES_DSN"), os.Getenv("IDENTITY_SIGNING_KEY")
 	if dsn == "" || keyHex == "" {
-		log.Fatal("IDENTITY_POSTGRES_DSN and AUTH_SECRET_KEY are required")
+		log.Fatal("IDENTITY_POSTGRES_DSN and IDENTITY_SIGNING_KEY are required")
 	}
 
 	key, err := hex.DecodeString(keyHex)
 	if err != nil {
-		log.Fatal("invalid AUTH_SECRET_KEY", zap.Error(err))
+		log.Fatal("invalid IDENTITY_SIGNING_KEY", zap.Error(err))
 	}
 
 	pool, err := pgxpool.New(context.Background(), dsn)
@@ -50,7 +50,7 @@ func main() {
 		log.Fatal("database unavailable", zap.Error(err))
 	}
 
-	issuer, err := auth.NewIssuer(key, 24*time.Hour)
+	signer, err := auth.NewSigner(key, 15*time.Minute)
 	if err != nil {
 		log.Fatal("invalid auth configuration", zap.Error(err))
 	}
@@ -68,7 +68,7 @@ func main() {
 	server := grpc.NewServer(grpc.Creds(creds))
 	authService := usecase.NewAuthService(
 		repository.NewPostgresUserRepository(pool),
-		issuer,
+		signer,
 	)
 	identityv1.RegisterIdentityServiceServer(server, identitygrpc.NewServer(authService))
 
@@ -91,7 +91,7 @@ func env(key, fallback string) string {
 }
 
 func serverCredentials(certFile, keyFile string) (credentials.TransportCredentials, error) {
-	ca, err := os.ReadFile(os.Getenv("INTERNAL_TLS_CA_FILE"))
+	ca, err := os.ReadFile(os.Getenv("INTERNAL_TLS_CA_FILE")) // #nosec G703 -- operator-controlled runtime configuration
 	if err != nil {
 		return nil, err
 	}

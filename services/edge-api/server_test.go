@@ -15,7 +15,7 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/pkg/domain"
-	"github.com/belLena81/raglibrarian/services/edge-api"
+	edgeapi "github.com/belLena81/raglibrarian/services/edge-api"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
 )
 
@@ -99,7 +99,7 @@ func TestRouter_POST_Auth_Login_Returns200(t *testing.T) {
 func TestRouter_POST_Query_WithValidToken_Returns200(t *testing.T) {
 	router, issuer := newTestRouter(t)
 	body, _ := json.Marshal(map[string]string{
-		"question": "What is a goroutine?", "user_id": "user-1",
+		"question": "What is a goroutine?",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/query/", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -111,7 +111,7 @@ func TestRouter_POST_Query_WithValidToken_Returns200(t *testing.T) {
 
 func TestRouter_POST_Query_WithoutToken_Returns401(t *testing.T) {
 	router, _ := newTestRouter(t)
-	body, _ := json.Marshal(map[string]string{"question": "test?", "user_id": "u"})
+	body, _ := json.Marshal(map[string]string{"question": "test?"})
 	req := httptest.NewRequest(http.MethodPost, "/query/", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()

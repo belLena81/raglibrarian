@@ -114,7 +114,7 @@ func TestAuthHandler_Register_InvalidJSON_Returns400(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
 }
 
-func TestAuthHandler_Register_DefaultsRoleToReader(t *testing.T) {
+func TestAuthHandler_Register_RejectsClientControlledRole(t *testing.T) {
 	uc := &fakeAuthUseCase{registerToken: "tok"}
 	uc.registerUser, _ = domain.NewUser("r@e.com", "h", domain.RoleReader)
 	h := newAuthHandler(t, uc)
@@ -124,11 +124,8 @@ func TestAuthHandler_Register_DefaultsRoleToReader(t *testing.T) {
 	rr := httptest.NewRecorder()
 	h.Register(rr, req)
 
-	assert.Equal(t, http.StatusCreated, rr.Code)
-	var resp handler.AuthResponse
-	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
-	assert.Equal(t, "reader", resp.Role)
-	assert.Equal(t, domain.RoleReader, uc.registerRole)
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.Empty(t, uc.registerRole)
 }
 
 // ── POST /auth/login ──────────────────────────────────────────────────────────

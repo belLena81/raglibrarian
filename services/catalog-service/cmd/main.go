@@ -58,7 +58,7 @@ func main() {
 }
 
 func serverCredentials() (credentials.TransportCredentials, error) {
-	ca, err := os.ReadFile(os.Getenv("INTERNAL_TLS_CA_FILE"))
+	ca, err := os.ReadFile(os.Getenv("INTERNAL_TLS_CA_FILE")) // #nosec G703 -- operator-controlled runtime configuration
 	if err != nil {
 		return nil, err
 	}

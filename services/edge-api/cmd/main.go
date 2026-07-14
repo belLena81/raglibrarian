@@ -20,7 +20,7 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/config"
 	"github.com/belLena81/raglibrarian/pkg/logger"
 	identityv1 "github.com/belLena81/raglibrarian/pkg/proto/identity/v1"
-	"github.com/belLena81/raglibrarian/services/edge-api"
+	edgeapi "github.com/belLena81/raglibrarian/services/edge-api"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
 	"github.com/belLena81/raglibrarian/services/edge-api/identityclient"
 	queryrepo "github.com/belLena81/raglibrarian/services/edge-api/repository"
@@ -29,7 +29,7 @@ import (
 
 func main() {
 	log := logger.Must("edge-api")
-	defer log.Sync()
+	defer func() { _ = log.Sync() }()
 	if err := run(log); err != nil {
 		log.Fatal("service exited", zap.Error(err))
 	}
@@ -40,7 +40,7 @@ func run(log *zap.Logger) error {
 	if err != nil {
 		return err
 	}
-	issuer, err := auth.NewIssuer(cfg.AuthSecretKey, cfg.TokenTTL)
+	verifier, err := auth.NewVerifier(cfg.VerifyKey)
 	if err != nil {
 		return err
 	}
@@ -56,15 +56,17 @@ func run(log *zap.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	authHandler := handler.NewAuthHandler(identityclient.New(identityv1.NewIdentityServiceClient(conn)), log)
 	queryHandler := handler.NewQueryHandler(usecase.NewQueryService(queryrepo.NewStubQueryRepository()), log)
 	srv := &http.Server{
-		Addr:         cfg.Addr,
-		Handler:      edgeapi.NewRouter(queryHandler, authHandler, issuer, log),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              cfg.Addr,
+		Handler:           edgeapi.NewRouter(queryHandler, authHandler, verifier, log),
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -85,7 +87,7 @@ func run(log *zap.Logger) error {
 }
 
 func clientCredentials() (credentials.TransportCredentials, error) {
-	ca, err := os.ReadFile(os.Getenv("INTERNAL_TLS_CA_FILE"))
+	ca, err := os.ReadFile(os.Getenv("INTERNAL_TLS_CA_FILE")) // #nosec G703 -- operator-controlled runtime configuration
 	if err != nil {
 		return nil, err
 	}

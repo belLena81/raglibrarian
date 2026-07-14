@@ -7,14 +7,17 @@ import (
 	gopasseto "aidanwoods.dev/go-paseto"
 )
 
-// GenerateKeyHex returns a fresh V4 symmetric key as a 64-character hex string.
-func GenerateKeyHex() string {
-	key := gopasseto.NewV4SymmetricKey()
-	return hex.EncodeToString(key.ExportBytes())
+// GenerateKeyPairHex returns a fresh PASETO v4 public signing key pair.
+func GenerateKeyPairHex() (signingKey, verificationKey string) {
+	key := gopasseto.NewV4AsymmetricSecretKey()
+	return hex.EncodeToString(key.ExportBytes()), hex.EncodeToString(key.Public().ExportBytes())
 }
 
-// PrintNewKey prints a freshly generated AUTH_SECRET_KEY line to stdout.
+// PrintNewKey prints fresh private/public key configuration without reusing a
+// signing secret outside identity-service.
 func PrintNewKey() {
-	fmt.Printf("AUTH_SECRET_KEY=%s\n", GenerateKeyHex())
-	fmt.Println("# Store this in your secrets manager. Never commit it to git.")
+	signingKey, verificationKey := GenerateKeyPairHex()
+	fmt.Printf("IDENTITY_SIGNING_KEY=%s\n", signingKey)
+	fmt.Printf("EDGE_VERIFY_KEY=%s\n", verificationKey)
+	fmt.Println("# Store the signing key only in Identity's secret manager.")
 }

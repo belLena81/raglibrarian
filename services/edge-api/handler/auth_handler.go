@@ -73,7 +73,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	reqID := middleware.GetReqID(r.Context())
 
 	var req RegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		writeAuthError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -124,7 +124,7 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 // Login handles POST /auth/login. Returns a PASETO token on success.
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		writeAuthError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}

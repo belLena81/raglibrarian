@@ -31,6 +31,8 @@ cd $(git rev-parse --show-toplevel)
 
 make test
 make lint
+make vet
+make fmt-check
 make build
 make tidy
 ```
@@ -42,7 +44,8 @@ git clone <repo>
 cd raglibrarian
 
 cp .env.example .env
-# Generate the secret key and paste it into .env:
+# Generate the asymmetric key pair and put each value in the owning service
+# configuration. Never put IDENTITY_SIGNING_KEY in Edge configuration.
 make keygen
 
 make infra-up       # start Postgres

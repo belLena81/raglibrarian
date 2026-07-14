@@ -1,312 +1,122 @@
-# 📚 raglibrarian
+# raglibrarian
 
-> A production-grade Retrieval-Augmented Generation (RAG) system for technical books — built in Go with a microservices architecture, gRPC inter-service communication, and Qdrant vector search.
+`raglibrarian` is a Go-based RAG system for a private technical-book library.
+The eventual product will ingest books, retrieve evidence, and return answers
+with traceable book, chapter, page, and passage citations.
 
-The target architecture is additive: service boundaries are deployed before
-their business capability grows, and new features are added as services or
-event consumers rather than extracted later from the API process. See
-[docs/architecture-decision-record.md](docs/architecture-decision-record.md).
+The repository is currently at **Milestone 1**: a secure, runnable service
+foundation. It does not yet ingest files, query Qdrant, call an LLM, or return
+real retrieval results.
 
-[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://golang.org)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+## Architecture decision
 
----
+The architecture is additive: deploy a service boundary before its capability
+grows. New product features are added as a service or event consumer, rather
+than first being placed in the public API and extracted later.
 
-## What is raglibrarian?
-
-`raglibrarian` ingests technical PDF books and answers structured questions about their content using LLM-powered semantic search. Instead of asking "what does this book say?", you can ask:
-
-- *"Which book is better for beginners learning memory management in Go?"*
-- *"On which pages is BDD compared with TDD? Give me the book and chapter."*
-- *"List all sections across my library where concurrency patterns are discussed."*
-
-Every answer will return a structured response: 📘 book title · 📑 chapter · 📄 page numbers · ✂️ extracted passage.
-
----
-
-## Current State
-
-The project is being built iteratively. This is what exists today:
-
-**Iteration 2 complete** — authentication layer is live and all e2e tests pass.
-
-| Layer | Status         | Notes |
-|---|----------------|---|
-| Domain model | ✅              | `User`, `Book`, `Chunk`, `Query`, `SearchResult` value objects |
-| Auth tokens | ✅              | PASETO v4 local (symmetric, XChaCha20-Poly1305 + BLAKE2b) |
-| Password hashing | ✅              | bcrypt |
-| HTTP API | ✅              | chi router, graceful shutdown, structured logging |
-| Auth endpoints | ✅              | register, login, `/me`, logout |
-| Query endpoint | ✅              | stub — returns no results yet |
-| DB migrations | ✅              | `users` table |
-| e2e test suite | ✅              | 18 tests, all passing |
-| Service boundaries | 🔜 Next iteration | edge API, identity service, and catalog service run independently before book features |
-| Vector search | 🔜 Iteration 5 | Qdrant integration |
-| PDF ingestion | 🔜 Iteration 6 | chunking + embedding pipeline |
-| Token revocation | 🔜 Iteration 4 | Redis blocklist in metadata service |
-
----
-
-## Architecture (Target)
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        API Gateway                                   │
-└───────────────────────────────┬─────────────────────────────────────┘
-                                │ REST
-                    ┌───────────▼───────────┐
-                    │     Query Service      │  Go / long-running
-                    │  chi + gRPC client     │
-                    └──┬─────────────────┬──┘
-               gRPC    │                 │   gRPC
-        ┌──────────────▼──┐         ┌────▼────────────────┐
-        │Retrieval Service │         │  Metadata Service    │
-        │ Qdrant gRPC SDK  │         │  pgx + Postgres      │
-        └──────────────────┘         └─────────────────────┘
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━ Async ingestion pipeline (future) ━━━━━━━
-
-  pdf.uploaded → ingest → embed → index → metadata update
+```text
+client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
+                         |
+                         +-- mTLS gRPC --> catalog-service (health scaffold)
 ```
 
-**Today:** a single `query` service handles HTTP, auth, and a stub query handler. This is the early baseline, not the intended shape for new features. Before book, ingestion, or retrieval work, `query` becomes the edge API and identity/catalog run as independent services over versioned gRPC. No later feature should repeat an in-process-then-extract transition.
+- **edge-api** owns public HTTP, request validation, token verification, route
+  composition, and query orchestration. It owns no business database.
+- **identity-service** owns credentials, users, roles, and its `identity`
+  Postgres schema. It is the only service that signs access tokens.
+- **catalog-service** is an independently deployable mTLS gRPC boundary. It
+  currently exposes health only; book metadata is its future responsibility.
+- Internal gRPC ports and Postgres are private in Compose. Service-to-service
+  calls use TLS 1.3 with client certificates.
+- Future ingestion, indexing, retrieval, and answer generation will be added
+  as separate services/consumers. Their contracts will be versioned and
+  additive. See the local architecture decision record in `docs/`.
 
----
+## Current implementation state
 
-## Repository Structure
+| Capability | State | Notes |
+|---|---|---|
+| Edge, Identity, Catalog processes | Implemented | Compose builds and starts all three services. |
+| Public auth API | Implemented | Register, login, `/me`, and client-side logout. Public registration creates readers only. |
+| Access tokens | Implemented | PASETO v4 public, Ed25519 signed by Identity and verified by Edge; 15-minute lifetime and `edge-api` audience. |
+| Password storage | Implemented | bcrypt at cost 12; plaintext is never persisted. |
+| Identity persistence | Implemented | Identity-owned users migration and Postgres repository. |
+| HTTP hardening | Implemented | Strict, bounded JSON, request/header timeouts, security headers, sanitized errors, and request IDs. |
+| Real query/retrieval | Not implemented | `/query/` is authenticated but uses a deterministic stub. |
+| Sessions, refresh tokens, revocation | Not implemented | Logout instructs the client to discard the access token; a valid token remains usable until expiry. |
+| Rate limiting / Redis | Not implemented | Required before an Internet-facing deployment. |
+| File upload, ingestion, vectors, LLM | Not implemented | Future additive services. |
 
-```
-raglibrarian/
-│
-├── go.work                  # Go workspace — no go.mod at root
-│
-├── pkg/
-│   ├── domain/              # Value objects: User, Book, Chunk, Query, SearchResult
-│   ├── auth/                # PASETO v4 tokens, bcrypt password hashing
-│   │   └── cmd/keygen/      # Operator CLI: print a new AUTH_SECRET_KEY
-│   ├── config/              # Env-var loading, fail-fast validation
-│   └── logger/              # Zap constructor
-│
-├── services/
-│   ├── query/               # HTTP API — the only running service today
-│   │   ├── cmd/main.go      # Entry point, wiring, graceful shutdown
-│   │   ├── server.go        # chi router and route registration
-│   │   ├── handler/         # auth_handler, query_handler
-│   │   ├── middleware/       # Authenticator (PASETO), RequestLogger
-│   │   ├── usecase/         # QueryService (stub)
-│   │   ├── repository/      # StubQueryRepository
-│   │   └── Dockerfile       # Multi-stage build → distroless/static
-│   │
-│   └── metadata/            # Auth domain logic (wired into query for now)
-│       ├── usecase/         # AuthService: Register, Login
-│       └── repository/      # PostgresUserRepository
-│
-├── migrations/
-│   └── 001_create_users.*   # users table
-│
-├── tests/
-│   └── e2e/                 # Black-box HTTP tests (go:build e2e)
-│
-├── docker-compose.yml       # Postgres for local dev
-├── Makefile
-├── .env.example
-└── CONTRIBUTING.md
-```
+## Security model
 
----
+Run `make keygen` to produce two values:
 
-## API Endpoints
+- `IDENTITY_SIGNING_KEY`: a private Ed25519 key. Configure it only in
+  `identity-service`.
+- `EDGE_VERIFY_KEY`: the corresponding public key. Configure it only in
+  `edge-api`.
 
-| Method | Path | Auth | Description |
+Never commit either value, local certificates, connection strings, tokens, or
+book content. The signing key must never be present in Edge configuration.
+
+## Public API
+
+| Method | Path | Authentication | Current behaviour |
 |---|---|---|---|
-| `GET` | `/healthz` | — | Health check |
-| `POST` | `/auth/register` | — | Create account, returns token |
-| `POST` | `/auth/login` | — | Returns token |
-| `GET` | `/auth/me` | ✅ Bearer | Returns identity from token |
-| `POST` | `/auth/logout` | ✅ Bearer | Client-side logout (returns 200) |
-| `POST` | `/query/` | ✅ Bearer | Semantic query — stub, returns empty results |
+| `GET` | `/healthz` | None | Edge process health. |
+| `POST` | `/auth/register` | None | Creates a `reader` and returns an access token. |
+| `POST` | `/auth/login` | None | Validates credentials and returns an access token. |
+| `GET` | `/auth/me` | Bearer token | Returns verified token claims without a database call. |
+| `POST` | `/auth/logout` | Bearer token | Client-side logout; token revocation is future work. |
+| `POST` | `/query/` | Bearer token | Validates the request and returns stub results. |
 
-### Register
+Request JSON is strict. Client-supplied `role` and `user_id` fields are
+rejected; identity comes only from verified token claims.
+
+## Repository layout
+
+```text
+pkg/                 Stable platform packages and generated protobuf clients
+services/edge-api/   Public HTTP boundary and query stub
+services/identity-service/
+                     Identity domain, gRPC adapter, Postgres repository, migration
+services/catalog-service/
+                     Independent catalog gRPC scaffold
+api/proto/           Versioned gRPC source contracts
+tests/e2e/           Black-box HTTP tests
+```
+
+`go.work` defines the Go workspace; there is intentionally no root `go.mod`.
+
+## Local development
+
+Prerequisites: Go 1.26+, Docker Compose, `psql`, OpenSSL, and `protoc` for
+contract generation.
 
 ```bash
-curl -X POST http://localhost:8080/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email": "alice@example.com", "password": "secret", "role": "reader"}'
-```
-
-```json
-{"token": "v4.local...", "role": "reader"}
-```
-
-`role` is `reader` (default) or `admin`.
-
-### Login
-
-```bash
-curl -X POST http://localhost:8080/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email": "alice@example.com", "password": "secret"}'
-```
-
-### Me
-
-```bash
-curl http://localhost:8080/auth/me \
-  -H "Authorization: Bearer <token>"
-```
-
-```json
-{"user_id": "...", "email": "alice@example.com", "role": "reader"}
-```
-
-Token claims are read directly — no database call on this endpoint.
-
-### Logout
-
-```bash
-curl -X POST http://localhost:8080/auth/logout \
-  -H "Authorization: Bearer <token>"
-```
-
-Returns `{"message": "logged out"}`. The token remains technically valid until it expires — the client must discard it. Server-side revocation is planned for Iteration 4.
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- Go 1.26+
-- Docker + Docker Compose
-- `psql` (for `make migrate-up`)
-
-### Local Development
-
-```bash
-git clone https://github.com/belLena81/raglibrarian
-cd raglibrarian
-
-# Copy and fill in env config
 cp .env.example .env
-
-# Generate the secret key and add it to .env
 make keygen >> .env
-
-# Start Postgres
+make dev-certs
 make infra-up
-
-# Apply DB migrations
-make migrate-up
-
-# Start the service (loads .env automatically)
+make migrate-identity-up
 make dev
 ```
 
-The service starts on `:8080` by default.
+`make dev` starts Edge on `:8080`. For the Compose stack, ensure `.env`
+contains both generated key values before `docker compose up`.
 
-### Run with Docker Compose
+## Quality commands
 
-Requires `AUTH_SECRET_KEY` in your environment (or a `.env` file):
-
-```bash
-export AUTH_SECRET_KEY=$(make keygen | cut -d= -f2)
-docker-compose up
-```
-
----
-
-## Environment Variables
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `AUTH_SECRET_KEY` | ✅ | — | 32-byte key, hex-encoded. Generate with `make keygen` |
-| `POSTGRES_DSN` | ✅ | — | `postgres://user:pass@host:port/db?sslmode=disable` |
-| `QUERY_ADDR` | no | `:8080` | HTTP listen address |
-| `TOKEN_TTL` | no | `24h` | PASETO token lifetime |
-| `LOG_ENV` | no | `development` | `development` or `production` |
-| `LOG_LEVEL` | no | `debug` | `debug`, `info`, `warn`, `error` |
-
----
-
-## Makefile Commands
+Run commands from the repository root:
 
 ```bash
-make dev           # Load .env and start the query service
-make build         # Compile binary to bin/query
-make test          # Unit tests across all modules
-make test-race     # Unit tests with -race
-make lint          # golangci-lint per module (GOWORK=off)
-make fmt           # goimports (falls back to gofmt)
-make tidy          # go mod tidy + go work sync
-make e2e           # End-to-end tests (requires service running on :8080)
-make migrate-up    # Apply migrations from migrations/*.up.sql
-make migrate-down  # Revert migrations in reverse order
-make infra-up      # docker-compose up -d postgres
-make infra-down    # docker-compose down
-make keygen        # Print a new AUTH_SECRET_KEY= line ready for .env
+make test        # unit tests
+make test-race   # race-detector tests
+make fmt-check   # fail when Go formatting differs
+make vet         # per-module go vet
+make lint        # golangci-lint per module
+make vuln        # govulncheck per module
+make proto-check # Buf contract lint
 ```
 
-All targets must be run from the **repo root** (where `go.work` lives).
-
----
-
-## Auth Design Notes
-
-**Tokens** — PASETO v4 local (symmetric). The payload is encrypted with XChaCha20-Poly1305 and authenticated with BLAKE2b. Clients cannot read or tamper with their own token claims. No algorithm negotiation — the algorithm is fixed by the `v4.local.` prefix, so the JWT `alg:none` class of attacks cannot exist.
-
-**Passwords** — bcrypt. Cost factor is Go's `bcrypt.DefaultCost` (10).
-
-**`/auth/me` is DB-free** — identity (user ID, email, role) is embedded in the token. Validating the token is sufficient to serve the endpoint.
-
-**Logout** — currently client-side only. The server returns 200 and the client discards the token. A server-side blocklist (Redis set keyed by token expiry) is planned for Iteration 4 when the metadata service has its own infrastructure.
-
----
-
-## Testing
-
-```bash
-# Unit + middleware tests (no infrastructure required)
-make test
-
-# End-to-end tests (Postgres + running service required)
-make infra-up && make migrate-up
-make dev &          # in background, or separate terminal
-make e2e
-```
-
-The e2e suite (`tests/e2e/`) is tagged `//go:build e2e` so it is never included in `make test`. It runs 18 tests covering all auth and query paths including error cases.
-
-WARNs in the service logs during `make e2e` are expected — the request logger emits WARN on every 4xx response, and roughly half the e2e tests deliberately send bad requests to verify rejections.
-
----
-
-## Development Guide
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for:
-- Go workspace layout and the reason there is no `go.mod` at the root
-- How to add a dependency to a specific module
-- How to add a new module to the workspace
-- Why `make lint` uses `GOWORK=off` and how to lint a single module
-
----
-
-## Roadmap
-
-- [x] Domain model (User, Book, Chunk, Query, SearchResult)
-- [x] PASETO v4 auth (register, login, `/me`, logout)
-- [x] chi HTTP server with structured logging and graceful shutdown
-- [x] Postgres user repository
-- [x] e2e test suite
-- [x] Dockerfile (multi-stage, distroless runtime)
-- [ ] **Iteration 3** — establish edge API, identity service, and catalog service as independent gRPC-connected processes
-- [ ] **Iteration 4** — short-lived access tokens, refresh tokens, server-side revocation
-- [ ] **Iteration 5** — Qdrant vector search integration
-- [ ] **Iteration 6** — PDF ingestion pipeline (parse → chunk → embed → index)
-- [ ] **Iteration 7** — Event-driven ingestion via RabbitMQ
-- [ ] **Iteration 8** — OpenTelemetry distributed tracing
-
----
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for workspace and module rules.

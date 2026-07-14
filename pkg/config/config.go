@@ -13,7 +13,10 @@ import (
 
 // Environment variable names read by Load.
 const (
-	EnvAuthSecretKey = "AUTH_SECRET_KEY" //nolint:gosec
+	EnvEdgeVerifyKey = "EDGE_VERIFY_KEY"
+	// EnvAuthSecretKey is retained for source compatibility; it now refers to
+	// the public verification key and never to a signing secret.
+	EnvAuthSecretKey = EnvEdgeVerifyKey
 	EnvPostgresDSN   = "POSTGRES_DSN"
 	EnvTokenTTL      = "TOKEN_TTL"
 	EnvQueryAddr     = "QUERY_ADDR"
@@ -27,7 +30,8 @@ type Config struct {
 	Addr string // e.g. ":8080"
 
 	// Auth
-	AuthSecretKey []byte        // 32-byte symmetric key for PASETO
+	VerifyKey     []byte        // 32-byte Ed25519 public key for PASETO verification
+	AuthSecretKey []byte        // Deprecated alias for VerifyKey.
 	TokenTTL      time.Duration // lifetime of issued tokens
 
 	// Postgres
@@ -40,13 +44,13 @@ type Config struct {
 
 // Load reads and validates all required and optional environment variables.
 func Load() (Config, error) {
-	keyHex, err := requireEnv(EnvAuthSecretKey)
+	keyHex, err := requireEnv(EnvEdgeVerifyKey)
 	if err != nil {
 		return Config{}, err
 	}
 	key, err := hex.DecodeString(keyHex)
 	if err != nil || len(keyHex) != 64 || len(key) != 32 {
-		return Config{}, fmt.Errorf("%w: %s must be 64 hex chars", domain.ErrInvalidSecretKey, EnvAuthSecretKey)
+		return Config{}, fmt.Errorf("%w: %s must be 64 hex chars", domain.ErrInvalidSecretKey, EnvEdgeVerifyKey)
 	}
 
 	dsn, err := requireEnv(EnvPostgresDSN)
@@ -61,6 +65,7 @@ func Load() (Config, error) {
 
 	return Config{
 		Addr:          optionalEnv(EnvQueryAddr, ":8080"),
+		VerifyKey:     key,
 		AuthSecretKey: key,
 		TokenTTL:      ttl,
 		PostgresDSN:   dsn,

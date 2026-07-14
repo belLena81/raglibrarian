@@ -82,7 +82,6 @@ func TestQueryHandler_Query_Returns200_WithResults(t *testing.T) {
 
 	rr := doPost(t, h, map[string]string{
 		"question": "What is a goroutine?",
-		"user_id":  "user-123",
 	})
 
 	assert.Equal(t, http.StatusOK, rr.Code)
@@ -106,7 +105,6 @@ func TestQueryHandler_Query_Returns200_EmptyResults(t *testing.T) {
 
 	rr := doPost(t, h, map[string]string{
 		"question": "Something obscure?",
-		"user_id":  "user-123",
 	})
 
 	assert.Equal(t, http.StatusOK, rr.Code)
@@ -122,15 +120,11 @@ func TestQueryHandler_Query_Returns422_OnDomainValidationError(t *testing.T) {
 	}{
 		{
 			name: "empty question",
-			body: map[string]string{"question": "", "user_id": "user-123"},
+			body: map[string]string{"question": ""},
 		},
 		{
 			name: "whitespace question",
-			body: map[string]string{"question": "   ", "user_id": "user-123"},
-		},
-		{
-			name: "empty user id",
-			body: map[string]string{"question": "What is a goroutine?", "user_id": ""},
+			body: map[string]string{"question": "   "},
 		},
 	}
 
@@ -138,9 +132,6 @@ func TestQueryHandler_Query_Returns422_OnDomainValidationError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Use case returns a domain error (simulating what QueryService would return)
 			uc := &fakeQueryUseCase{err: fmt.Errorf("invalid query: %w", domain.ErrEmptyQuestion)}
-			if tt.body["user_id"] == "" {
-				uc.err = fmt.Errorf("invalid query: %w", domain.ErrEmptyUserID)
-			}
 			h := handler.NewQueryHandler(uc, zaptest.NewLogger(t))
 
 			rr := doPost(t, h, tt.body)
@@ -155,7 +146,6 @@ func TestQueryHandler_Query_Returns500_OnInternalError(t *testing.T) {
 
 	rr := doPost(t, h, map[string]string{
 		"question": "What is a goroutine?",
-		"user_id":  "user-123",
 	})
 
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
@@ -178,7 +168,7 @@ func TestQueryHandler_Query_ResponseHasJSONContentType(t *testing.T) {
 	uc := &fakeQueryUseCase{results: []domain.SearchResult{}}
 	h := handler.NewQueryHandler(uc, zaptest.NewLogger(t))
 
-	rr := doPost(t, h, map[string]string{"question": "test?", "user_id": "u"})
+	rr := doPost(t, h, map[string]string{"question": "test?"})
 
 	assert.Contains(t, rr.Header().Get("Content-Type"), "application/json")
 }
@@ -192,7 +182,7 @@ func TestQueryHandler_Query_MultipleResults_PreservesOrder(t *testing.T) {
 	uc := &fakeQueryUseCase{results: []domain.SearchResult{r1, r2}}
 	h := handler.NewQueryHandler(uc, zaptest.NewLogger(t))
 
-	rr := doPost(t, h, map[string]string{"question": "test?", "user_id": "u"})
+	rr := doPost(t, h, map[string]string{"question": "test?"})
 
 	resp := decodeQueryResponse(t, rr)
 	require.Len(t, resp.Results, 2)
