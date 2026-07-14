@@ -13,9 +13,10 @@ import (
 
 // Claims holds the verified token payload stored in request context.
 type Claims struct {
-	UserID string
-	Email  string
-	Role   domain.Role
+	UserID    string
+	Email     string
+	Role      domain.Role
+	SessionID string
 }
 
 // Signer creates PASETO v4 public tokens. Only identity-service receives its
@@ -91,7 +92,7 @@ func NewVerifier(rawKey []byte) (*Verifier, error) {
 }
 
 // Issue mints a PASETO v4 public token for the given user.
-func (s *Signer) Issue(user domain.User) (string, error) {
+func (s *Signer) Issue(user domain.User, sessionIDs ...string) (string, error) {
 	now := s.timeSource()
 
 	token := gopasseto.NewToken()
@@ -105,6 +106,9 @@ func (s *Signer) Issue(user domain.User) (string, error) {
 
 	token.SetString("email", user.Email())
 	token.SetString("role", string(user.Role()))
+	if len(sessionIDs) > 0 && sessionIDs[0] != "" {
+		token.SetString("session_id", sessionIDs[0])
+	}
 
 	return token.V4Sign(s.key, nil), nil
 }
@@ -144,9 +148,16 @@ func (v *Verifier) Validate(tokenStr string) (Claims, error) {
 		return Claims{}, domain.ErrInvalidToken
 	}
 
+	sessionID, err := token.GetString("session_id")
+	if err != nil {
+		// Tokens issued before session support remain valid until they expire.
+		sessionID = ""
+	}
+
 	return Claims{
-		UserID: userID,
-		Email:  email,
-		Role:   role,
+		UserID:    userID,
+		Email:     email,
+		Role:      role,
+		SessionID: sessionID,
 	}, nil
 }

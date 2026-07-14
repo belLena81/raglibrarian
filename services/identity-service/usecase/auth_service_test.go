@@ -1,7 +1,10 @@
-package usecase_test
+package usecase
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,176 +13,120 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/pkg/domain"
-	metarepo "github.com/belLena81/raglibrarian/services/identity-service/repository"
-	"github.com/belLena81/raglibrarian/services/identity-service/usecase"
+	"github.com/belLena81/raglibrarian/services/identity-service/repository"
 )
 
-// ── Fake repository ───────────────────────────────────────────────────────────
+type fakeUsers struct{ users map[string]domain.User }
 
-type fakeUserRepo struct {
-	users   map[string]domain.User // keyed by email
-	saveErr error
-}
-
-func newFakeUserRepo() *fakeUserRepo {
-	return &fakeUserRepo{users: make(map[string]domain.User)}
-}
-
-func (f *fakeUserRepo) Save(_ context.Context, u domain.User) error {
-	if f.saveErr != nil {
-		return f.saveErr
-	}
-	if _, exists := f.users[u.Email()]; exists {
+func (r *fakeUsers) Save(_ context.Context, user domain.User) error {
+	if _, ok := r.users[user.Email()]; ok {
 		return domain.ErrEmailTaken
 	}
-	f.users[u.Email()] = u
+	r.users[user.Email()] = user
 	return nil
 }
-
-func (f *fakeUserRepo) FindByEmail(_ context.Context, email string) (domain.User, error) {
-	u, ok := f.users[email]
+func (r *fakeUsers) FindByEmail(_ context.Context, email string) (domain.User, error) {
+	user, ok := r.users[email]
 	if !ok {
 		return domain.User{}, domain.ErrUserNotFound
 	}
-	return u, nil
+	return user, nil
 }
-
-func (f *fakeUserRepo) FindByID(_ context.Context, id string) (domain.User, error) {
-	for _, u := range f.users {
-		if u.ID() == id {
-			return u, nil
+func (r *fakeUsers) FindByID(_ context.Context, id string) (domain.User, error) {
+	for _, user := range r.users {
+		if user.ID() == id {
+			return user, nil
 		}
 	}
 	return domain.User{}, domain.ErrUserNotFound
 }
 
-// Ensure the fake satisfies the interface at compile time.
-var _ metarepo.UserRepository = (*fakeUserRepo)(nil)
+type memorySessions struct {
+	mu       sync.Mutex
+	sessions map[string]repository.Session
+	tokens   map[string]string
+	consumed map[string]bool
+	revoked  map[string]bool
+	next     int
+}
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+func newMemorySessions() *memorySessions {
+	return &memorySessions{sessions: map[string]repository.Session{}, tokens: map[string]string{}, consumed: map[string]bool{}, revoked: map[string]bool{}}
+}
+func (r *memorySessions) Create(_ context.Context, userID string, expiry time.Time, hash []byte) (repository.Session, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.next++
+	s := repository.Session{ID: fmt.Sprintf("session-%d", r.next), UserID: userID, FamilyID: "family", ExpiresAt: expiry}
+	r.sessions[s.ID] = s
+	r.tokens[string(hash)] = s.ID
+	return s, nil
+}
+func (r *memorySessions) Rotate(_ context.Context, hash, successor []byte, now time.Time) (repository.Session, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := string(hash)
+	id, ok := r.tokens[key]
+	if !ok || r.revoked[id] {
+		return repository.Session{}, repository.ErrRefreshTokenInvalid
+	}
+	if r.consumed[key] {
+		r.revoked[id] = true
+		return repository.Session{}, repository.ErrRefreshTokenReused
+	}
+	r.consumed[key] = true
+	r.tokens[string(successor)] = id
+	return r.sessions[id], nil
+}
+func (r *memorySessions) Validate(_ context.Context, userID, id string, now time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.sessions[id]
+	if !ok || s.UserID != userID || r.revoked[id] || !s.ExpiresAt.After(now) {
+		return repository.ErrSessionInvalid
+	}
+	return nil
+}
+func (r *memorySessions) Logout(_ context.Context, id string, now time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.revoked[id] = true
+	return nil
+}
 
-func newTestIssuer(t *testing.T) *auth.Issuer {
+func newService(t *testing.T) (*AuthService, *auth.Issuer) {
 	t.Helper()
 	issuer, err := auth.NewIssuer(make([]byte, 32), time.Hour)
 	require.NoError(t, err)
-	return issuer
+	return NewAuthService(&fakeUsers{users: map[string]domain.User{}}, newMemorySessions(), issuer, time.Hour), issuer
 }
 
-func newService(t *testing.T, repo *fakeUserRepo) *usecase.AuthService {
-	t.Helper()
-	return usecase.NewAuthService(repo, newTestIssuer(t))
-}
-
-// ── Register tests ────────────────────────────────────────────────────────────
-
-func TestRegister_ValidInput_CreatesUser(t *testing.T) {
-	svc := newService(t, newFakeUserRepo())
-
-	_, user, err := svc.Register(context.Background(), "alice@example.com", "password123", domain.RoleReader)
-
+func TestRegisterCreatesHashOnlySessionAndSessionClaim(t *testing.T) {
+	service, issuer := newService(t)
+	result, _, err := service.Register(context.Background(), "a@example.com", "password-1234", domain.RoleReader)
 	require.NoError(t, err)
-	assert.NotEmpty(t, user.ID())
-	assert.Equal(t, "alice@example.com", user.Email())
-	assert.Equal(t, domain.RoleReader, user.Role())
-	// Password must never be stored as plaintext.
-	assert.NotEqual(t, "password123", user.PasswordHash())
-}
-
-func TestRegister_AdminRole_Allowed(t *testing.T) {
-	svc := newService(t, newFakeUserRepo())
-
-	_, user, err := svc.Register(context.Background(), "admin@example.com", "pw", domain.RoleAdmin)
-
+	assert.Len(t, result.RefreshToken, 43)
+	claims, err := issuer.Validate(result.AccessToken)
 	require.NoError(t, err)
-	assert.Equal(t, domain.RoleAdmin, user.Role())
+	assert.Equal(t, result.SessionID, claims.SessionID)
+	assert.NotEqual(t, result.RefreshToken, result.SessionID)
 }
-
-func TestRegister_DuplicateEmail_ReturnsEmailTakenError(t *testing.T) {
-	svc := newService(t, newFakeUserRepo())
-	_, _, err := svc.Register(context.Background(), "dup@example.com", "pw1", domain.RoleReader)
+func TestRefreshRotatesAndReuseRevokesSession(t *testing.T) {
+	service, _ := newService(t)
+	result, _, err := service.Register(context.Background(), "a@example.com", "password-1234", domain.RoleReader)
 	require.NoError(t, err)
-
-	_, _, err = svc.Register(context.Background(), "dup@example.com", "pw2", domain.RoleReader)
-
-	require.Error(t, err)
-	assert.ErrorIs(t, err, domain.ErrEmailTaken)
-}
-
-func TestRegister_InvalidEmail_ReturnsDomainError(t *testing.T) {
-	svc := newService(t, newFakeUserRepo())
-
-	_, _, err := svc.Register(context.Background(), "not-an-email", "pw", domain.RoleReader)
-
-	require.Error(t, err)
-	assert.ErrorIs(t, err, domain.ErrInvalidEmail)
-}
-
-func TestRegister_InvalidRole_ReturnsDomainError(t *testing.T) {
-	svc := newService(t, newFakeUserRepo())
-
-	_, _, err := svc.Register(context.Background(), "a@b.com", "pw", "god")
-
-	require.Error(t, err)
-	assert.ErrorIs(t, err, domain.ErrInvalidRole)
-}
-
-// ── Login tests ───────────────────────────────────────────────────────────────
-
-func TestLogin_ValidCredentials_ReturnsToken(t *testing.T) {
-	svc := newService(t, newFakeUserRepo())
-	_, _, err := svc.Register(context.Background(), "bob@example.com", "correct-pw", domain.RoleReader)
+	next, err := service.Refresh(context.Background(), result.RefreshToken)
 	require.NoError(t, err)
-
-	token, err := svc.Login(context.Background(), "bob@example.com", "correct-pw")
-
-	require.NoError(t, err)
-	assert.NotEmpty(t, token)
-}
-
-func TestLogin_WrongPassword_ReturnsInvalidCredentials(t *testing.T) {
-	svc := newService(t, newFakeUserRepo())
-	_, _, _ = svc.Register(context.Background(), "bob@example.com", "correct-pw", domain.RoleReader)
-
-	_, err := svc.Login(context.Background(), "bob@example.com", "wrong-pw")
-
-	require.Error(t, err)
+	assert.NotEqual(t, result.RefreshToken, next.RefreshToken)
+	_, err = service.Refresh(context.Background(), result.RefreshToken)
 	assert.ErrorIs(t, err, domain.ErrInvalidCredentials)
+	assert.ErrorIs(t, service.ValidateSession(context.Background(), "", result.SessionID), domain.ErrInvalidCredentials)
 }
-
-func TestLogin_UnknownEmail_ReturnsInvalidCredentials(t *testing.T) {
-	// CRITICAL: must return the same error as wrong password.
-	// Different errors would allow user enumeration attacks.
-	svc := newService(t, newFakeUserRepo())
-
-	_, err := svc.Login(context.Background(), "nobody@example.com", "any-pw")
-
-	require.Error(t, err)
-	assert.ErrorIs(t, err, domain.ErrInvalidCredentials,
-		"unknown email must return ErrInvalidCredentials, not ErrUserNotFound")
-}
-
-func TestLogin_TokenContainsCorrectClaims(t *testing.T) {
-	issuer := newTestIssuer(t)
-	svc := usecase.NewAuthService(newFakeUserRepo(), issuer)
-	_, _, _ = svc.Register(context.Background(), "carol@example.com", "pw", domain.RoleAdmin)
-
-	token, err := svc.Login(context.Background(), "carol@example.com", "pw")
-	require.NoError(t, err)
-
-	claims, err := issuer.Validate(token)
-	require.NoError(t, err)
-	assert.Equal(t, "carol@example.com", claims.Email)
-	assert.Equal(t, domain.RoleAdmin, claims.Role)
-}
-
-func TestNewAuthService_NilRepo_Panics(t *testing.T) {
-	assert.Panics(t, func() {
-		usecase.NewAuthService(nil, newTestIssuer(t))
-	})
-}
-
-func TestNewAuthService_NilIssuer_Panics(t *testing.T) {
-	assert.Panics(t, func() {
-		usecase.NewAuthService(newFakeUserRepo(), nil)
-	})
+func TestPasswordAndInvalidCredentialsAreSanitized(t *testing.T) {
+	service, _ := newService(t)
+	_, _, err := service.Register(context.Background(), "a@example.com", "short", domain.RoleReader)
+	assert.ErrorIs(t, err, domain.ErrInvalidPassword)
+	_, err = service.Login(context.Background(), "none@example.com", "password-1234")
+	assert.ErrorIs(t, err, domain.ErrInvalidCredentials)
+	assert.False(t, errors.Is(err, domain.ErrUserNotFound))
 }

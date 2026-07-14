@@ -11,15 +11,15 @@ import (
 )
 
 func TestHashPassword_ProducesNonEmptyHash(t *testing.T) {
-	hash, err := auth.HashPassword("s3cr3t!")
+	hash, err := auth.HashPassword("s3cr3t-password")
 	require.NoError(t, err)
 	assert.NotEmpty(t, hash)
 }
 
 func TestHashPassword_TwoCallsDifferentHashes(t *testing.T) {
 	// bcrypt generates a random salt — same input must never produce the same output.
-	a, _ := auth.HashPassword("same-password")
-	b, _ := auth.HashPassword("same-password")
+	a, _ := auth.HashPassword("same-password-1")
+	b, _ := auth.HashPassword("same-password-1")
 	assert.NotEqual(t, a, b)
 }
 
@@ -32,14 +32,14 @@ func TestCheckPassword_CorrectPassword_NoError(t *testing.T) {
 }
 
 func TestCheckPassword_WrongPassword_ReturnsError(t *testing.T) {
-	hash, _ := auth.HashPassword("correct")
+	hash, _ := auth.HashPassword("correct-password")
 
-	err := auth.CheckPassword(hash, "incorrect")
+	err := auth.CheckPassword(hash, "incorrect-pass")
 	assert.ErrorIs(t, err, domain.ErrInvalidCredentials)
 }
 
 func TestCheckPassword_EmptyPlaintext_ReturnsError(t *testing.T) {
-	hash, _ := auth.HashPassword("nonempty")
+	hash, _ := auth.HashPassword("nonempty-password")
 
 	err := auth.CheckPassword(hash, "")
 	assert.Error(t, err)

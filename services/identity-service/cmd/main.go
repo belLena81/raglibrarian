@@ -68,7 +68,9 @@ func main() {
 	server := grpc.NewServer(grpc.Creds(creds))
 	authService := usecase.NewAuthService(
 		repository.NewPostgresUserRepository(pool),
+		repository.NewPostgresSessionRepository(pool),
 		signer,
+		30*24*time.Hour,
 	)
 	identityv1.RegisterIdentityServiceServer(server, identitygrpc.NewServer(authService))
 

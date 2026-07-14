@@ -42,7 +42,7 @@ func TestSignerAndVerifier_RoundTrip(t *testing.T) {
 	verifier, err := auth.NewVerifier(publicKey)
 	require.NoError(t, err)
 
-	token, err := signer.Issue(testUser(t))
+	token, err := signer.Issue(testUser(t), "session-1")
 	require.NoError(t, err)
 	assert.Contains(t, token, "v4.public.")
 
@@ -50,6 +50,7 @@ func TestSignerAndVerifier_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "alice@example.com", claims.Email)
 	assert.Equal(t, domain.RoleAdmin, claims.Role)
+	assert.Equal(t, "session-1", claims.SessionID)
 }
 
 func TestVerifier_RejectsWrongPublicKey(t *testing.T) {

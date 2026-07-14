@@ -11,8 +11,16 @@ import (
 // bcryptCost is the bcrypt work factor. 12 balances offline-attack resistance and login latency.
 const bcryptCost = 12
 
+const (
+	minPasswordBytes = 12
+	maxPasswordBytes = 72
+)
+
 // HashPassword hashes plaintext with bcrypt and returns the encoded hash.
 func HashPassword(plaintext string) (string, error) {
+	if len(plaintext) < minPasswordBytes || len(plaintext) > maxPasswordBytes {
+		return "", domain.ErrInvalidPassword
+	}
 	hashed, err := bcrypt.GenerateFromPassword([]byte(plaintext), bcryptCost)
 	if err != nil {
 		return "", fmt.Errorf("auth: hash password: %w", err)
@@ -24,6 +32,9 @@ func HashPassword(plaintext string) (string, error) {
 // Returns ErrInvalidCredentials on any mismatch or malformed hash.
 // Returns ErrHashTooShort on other bcrypt errors.
 func CheckPassword(hash, plaintext string) error {
+	if len(plaintext) < minPasswordBytes || len(plaintext) > maxPasswordBytes {
+		return domain.ErrInvalidCredentials
+	}
 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(plaintext))
 	if err != nil {
 		if errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {

@@ -32,10 +32,8 @@ type Config struct {
 	// Auth
 	VerifyKey     []byte        // 32-byte Ed25519 public key for PASETO verification
 	AuthSecretKey []byte        // Deprecated alias for VerifyKey.
-	TokenTTL      time.Duration // lifetime of issued tokens
-
-	// Postgres
-	PostgresDSN string
+	TokenTTL      time.Duration // Deprecated; token lifetime belongs to Identity.
+	PostgresDSN   string        // Deprecated; Edge does not use a database.
 
 	// Logging
 	LogEnv   string // "production" | "" (development)

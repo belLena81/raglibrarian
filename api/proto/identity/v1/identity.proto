@@ -7,12 +7,15 @@ option go_package = "github.com/belLena81/raglibrarian/pkg/proto/identity/v1;ide
 service IdentityService {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   rpc Login(LoginRequest) returns (LoginResponse);
+  rpc Refresh(RefreshRequest) returns (RefreshResponse);
+  rpc ValidateSession(ValidateSessionRequest) returns (ValidateSessionResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
 }
 
 message RegisterRequest {
   string email = 1;
   string password = 2;
-  string role = 3;
+  string role = 3 [deprecated = true];
 }
 
 message LoginRequest {
@@ -23,9 +26,31 @@ message LoginRequest {
 message RegisterResponse {
   string access_token = 1;
   string role = 2;
+  string refresh_token = 3;
+  string session_id = 4;
 }
 
 message LoginResponse {
   string access_token = 1;
   string role = 2;
+  string refresh_token = 3;
+  string session_id = 4;
 }
+
+message RefreshRequest { string refresh_token = 1; }
+
+message RefreshResponse {
+  string access_token = 1;
+  string role = 2;
+  string refresh_token = 3;
+  string session_id = 4;
+}
+
+message ValidateSessionRequest {
+  string user_id = 1;
+  string session_id = 2;
+}
+message ValidateSessionResponse {}
+
+message LogoutRequest { string session_id = 1; }
+message LogoutResponse {}
