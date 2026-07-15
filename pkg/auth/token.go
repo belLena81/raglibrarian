@@ -3,30 +3,47 @@ package auth
 
 import (
 	"crypto/ed25519"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	gopasseto "aidanwoods.dev/go-paseto"
-
-	"github.com/belLena81/raglibrarian/pkg/domain"
 )
+
+var (
+	// ErrInvalidToken is returned for every untrustworthy token failure.
+	ErrInvalidToken = errors.New("auth: token is invalid or expired")
+	// ErrInvalidSubject prevents Identity from minting incomplete access tokens.
+	ErrInvalidSubject = errors.New("auth: token subject is invalid")
+)
+
+// Role is the stable access-token role claim shared by issuer and verifier.
+type Role string
+
+// Supported access-token role claims.
+const (
+	RoleAdmin  Role = "admin"
+	RoleReader Role = "reader"
+)
+
+// IsValid reports whether the role is safe for authorization decisions.
+func (r Role) IsValid() bool { return r == RoleAdmin || r == RoleReader }
 
 // Claims holds the verified token payload stored in request context.
 type Claims struct {
 	UserID    string
 	Email     string
-	Role      domain.Role
+	Role      Role
 	SessionID string
 }
 
-// SessionTokens is a transport-neutral result of an Identity session action.
-// It intentionally has no JSON tags: refresh tokens must never be serialized
-// in a public response.
-type SessionTokens struct {
-	AccessToken  string
-	RefreshToken string
-	SessionID    string
-	Role         string
+// Subject is the primitive token input; it deliberately contains no service aggregate.
+type Subject struct {
+	UserID    string
+	Email     string
+	SessionID string
+	Role      Role
 }
 
 // Signer creates PASETO v4 public tokens. Only identity-service receives its
@@ -102,7 +119,13 @@ func NewVerifier(rawKey []byte) (*Verifier, error) {
 }
 
 // Issue mints a PASETO v4 public token for the given user.
-func (s *Signer) Issue(user domain.User, sessionIDs ...string) (string, error) {
+func (s *Signer) Issue(subject Subject) (string, error) {
+	if strings.TrimSpace(subject.UserID) == "" ||
+		strings.TrimSpace(subject.Email) == "" ||
+		strings.TrimSpace(subject.SessionID) == "" ||
+		!subject.Role.IsValid() {
+		return "", ErrInvalidSubject
+	}
 	now := s.timeSource()
 
 	token := gopasseto.NewToken()
@@ -110,15 +133,13 @@ func (s *Signer) Issue(user domain.User, sessionIDs ...string) (string, error) {
 	token.SetIssuedAt(now)
 	token.SetNotBefore(now)
 	token.SetExpiration(now.Add(s.ttl))
-	token.SetSubject(user.ID())
+	token.SetSubject(subject.UserID)
 	token.SetIssuer("raglibrarian")
 	token.SetAudience("edge-api")
 
-	token.SetString("email", user.Email())
-	token.SetString("role", string(user.Role()))
-	if len(sessionIDs) > 0 && sessionIDs[0] != "" {
-		token.SetString("session_id", sessionIDs[0])
-	}
+	token.SetString("email", subject.Email)
+	token.SetString("role", string(subject.Role))
+	token.SetString("session_id", subject.SessionID)
 
 	return token.V4Sign(s.key, nil), nil
 }
@@ -135,27 +156,27 @@ func (v *Verifier) Validate(tokenStr string) (Claims, error) {
 
 	token, err := parser.ParseV4Public(v.key, tokenStr, nil)
 	if err != nil {
-		return Claims{}, domain.ErrInvalidToken
+		return Claims{}, ErrInvalidToken
 	}
 
 	userID, err := token.GetSubject()
 	if err != nil {
-		return Claims{}, domain.ErrInvalidToken
+		return Claims{}, ErrInvalidToken
 	}
 
 	email, err := token.GetString("email")
 	if err != nil {
-		return Claims{}, domain.ErrInvalidToken
+		return Claims{}, ErrInvalidToken
 	}
 
 	roleStr, err := token.GetString("role")
 	if err != nil {
-		return Claims{}, domain.ErrInvalidToken
+		return Claims{}, ErrInvalidToken
 	}
 
-	role := domain.Role(roleStr)
+	role := Role(roleStr)
 	if !role.IsValid() {
-		return Claims{}, domain.ErrInvalidToken
+		return Claims{}, ErrInvalidToken
 	}
 
 	sessionID, err := token.GetString("session_id")

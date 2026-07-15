@@ -9,7 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/belLena81/raglibrarian/pkg/auth"
-	"github.com/belLena81/raglibrarian/pkg/domain"
+	"github.com/belLena81/raglibrarian/services/edge-api/authflow"
 )
 
 // contextKey is an unexported type for context keys to avoid collisions.
@@ -30,7 +30,10 @@ type SessionValidator interface {
 }
 
 // Authenticator validates a bearer token and stores verified claims in context.
-func Authenticator(verifier tokenVerifier, log *zap.Logger, validators ...SessionValidator) func(http.Handler) http.Handler {
+func Authenticator(verifier tokenVerifier, sessions SessionValidator, log *zap.Logger) func(http.Handler) http.Handler {
+	if verifier == nil || sessions == nil || log == nil {
+		panic("middleware: authentication dependencies are required")
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenStr, ok := bearerToken(r)
@@ -45,19 +48,17 @@ func Authenticator(verifier tokenVerifier, log *zap.Logger, validators ...Sessio
 				writeUnauthorized(w, "invalid or expired token")
 				return
 			}
-			if len(validators) > 0 {
-				if claims.SessionID == "" {
+			if claims.SessionID == "" {
+				writeUnauthorized(w, "invalid or expired token")
+				return
+			}
+			if err := sessions.ValidateSession(r.Context(), claims.UserID, claims.SessionID); err != nil {
+				if errors.Is(err, authflow.ErrInvalidCredentials) {
 					writeUnauthorized(w, "invalid or expired token")
 					return
 				}
-				if err := validators[0].ValidateSession(r.Context(), claims.UserID, claims.SessionID); err != nil {
-					if errors.Is(err, domain.ErrInvalidCredentials) {
-						writeUnauthorized(w, "invalid or expired token")
-						return
-					}
-					writeUnavailable(w)
-					return
-				}
+				writeUnavailable(w)
+				return
 			}
 
 			ctx := context.WithValue(r.Context(), claimsKey, claims)
@@ -74,7 +75,7 @@ func writeUnavailable(w http.ResponseWriter) {
 
 // RequireRole enforces a minimum role. Must be applied after Authenticator.
 // Panics if claims are absent, indicating incorrect middleware ordering.
-func RequireRole(required domain.Role) func(http.Handler) http.Handler {
+func RequireRole(required auth.Role) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			claims, ok := ClaimsFromContext(r.Context())
@@ -82,7 +83,7 @@ func RequireRole(required domain.Role) func(http.Handler) http.Handler {
 				panic("middleware: RequireRole called without Authenticator in chain")
 			}
 
-			if required == domain.RoleAdmin && !claims.Role.CanWrite() {
+			if required == auth.RoleAdmin && claims.Role != auth.RoleAdmin {
 				writeForbidden(w, "admin role required")
 				return
 			}

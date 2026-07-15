@@ -6,12 +6,10 @@ import (
 	"time"
 
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
-	"github.com/belLena81/raglibrarian/pkg/domain"
 	identityv1 "github.com/belLena81/raglibrarian/pkg/proto/identity/v1"
+	"github.com/belLena81/raglibrarian/services/identity-service/domain"
 	"github.com/belLena81/raglibrarian/services/identity-service/usecase"
 )
 
@@ -36,7 +34,7 @@ func (s *Server) Register(ctx context.Context, req *identityv1.RegisterRequest) 
 	if req == nil || req.Email == "" || req.Password == "" {
 		return nil, status.Error(codes.InvalidArgument, "invalid registration")
 	}
-	result, _, err := s.useCase.Register(ctx, req.Email, req.Password, domain.RoleReader)
+	result, err := s.useCase.Register(ctx, req.Email, req.Password, domain.RoleReader)
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -114,29 +112,11 @@ func registerResponse(result usecase.AuthResult) *identityv1.RegisterResponse {
 }
 
 func authenticatedOperation(ctx context.Context) (context.Context, context.CancelFunc, error) {
-	if err := requireEdgeCaller(ctx); err != nil {
-		return nil, func() {}, err
-	}
 	if _, ok := ctx.Deadline(); ok {
 		return ctx, func() {}, nil
 	}
 	deadlineCtx, cancel := context.WithTimeout(ctx, operationTimeout)
 	return deadlineCtx, cancel, nil
-}
-
-func requireEdgeCaller(ctx context.Context) error {
-	p, ok := peer.FromContext(ctx)
-	if !ok {
-		return status.Error(codes.Unauthenticated, "missing peer identity")
-	}
-	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
-	if !ok || len(tlsInfo.State.PeerCertificates) == 0 {
-		return status.Error(codes.Unauthenticated, "missing peer certificate")
-	}
-	if err := tlsInfo.State.PeerCertificates[0].VerifyHostname("edge-api"); err != nil {
-		return status.Error(codes.PermissionDenied, "caller is not authorized")
-	}
-	return nil
 }
 
 func toStatus(err error) error {

@@ -1,6 +1,5 @@
 // User-facing REST API + RAG orchestration service.
-// Responsibilities: auth middleware, role enforcement, query pipeline,
-// LLM synthesis, admin dashboard endpoints.
+// Responsibilities: perimeter authentication, public HTTP, and routing.
 
 module github.com/belLena81/raglibrarian/services/edge-api
 
@@ -15,9 +14,9 @@ require (
 
 require (
 	github.com/belLena81/raglibrarian/pkg/auth v0.0.0-00010101000000-000000000000
-	github.com/belLena81/raglibrarian/pkg/config v0.0.0-00010101000000-000000000000
-	github.com/belLena81/raglibrarian/pkg/domain v0.0.0-20260310060144-d8455ee5d7b2
+	github.com/belLena81/raglibrarian/pkg/internaltls v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/pkg/logger v0.0.0-20260309122639-6b9c9a70dd75
+	github.com/belLena81/raglibrarian/pkg/process v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/pkg/proto v0.0.0-00010101000000-000000000000
 	google.golang.org/grpc v1.79.3
 )
@@ -26,7 +25,6 @@ require (
 	aidanwoods.dev/go-paseto v1.6.0 // indirect
 	aidanwoods.dev/go-result v0.3.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/crypto v0.50.0 // indirect
@@ -40,7 +38,7 @@ require (
 
 replace (
 	github.com/belLena81/raglibrarian/pkg/auth => ../../pkg/auth
-	github.com/belLena81/raglibrarian/pkg/config => ../../pkg/config
-	github.com/belLena81/raglibrarian/pkg/domain => ../../pkg/domain
+	github.com/belLena81/raglibrarian/pkg/internaltls => ../../pkg/internaltls
+	github.com/belLena81/raglibrarian/pkg/process => ../../pkg/process
 	github.com/belLena81/raglibrarian/pkg/proto => ../../pkg/proto
 )

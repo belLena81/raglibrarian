@@ -3,14 +3,16 @@ updates:
   - package-ecosystem: gomod
     directories:
       - "/pkg/auth"
-      - "/pkg/config"
-      - "/pkg/domain"
+      - "/pkg/grpcauth"
+      - "/pkg/internaltls"
       - "/pkg/logger"
+      - "/pkg/process"
       - "/pkg/proto"
       - "/services/catalog-service"
       - "/services/edge-api"
       - "/services/identity-service"
       - "/tests/e2e"
+      - "/tools/healthcheck"
     schedule: { interval: weekly }
   - package-ecosystem: npm
     directory: "/ui"

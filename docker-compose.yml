@@ -47,6 +47,8 @@ services:
       HEALTHCHECK_TLS_CERT_FILE: /run/secrets/identity_tls_cert
       HEALTHCHECK_TLS_KEY_FILE: /run/secrets/identity_tls_key
       IDENTITY_BCRYPT_CONCURRENCY: "${IDENTITY_BCRYPT_CONCURRENCY:-4}"
+      RUN_AS_UID: "${RUN_AS_UID:-65532}"
+      RUN_AS_GID: "${RUN_AS_GID:-65532}"
     secrets:
       - internal_ca
       - identity_tls_cert
@@ -71,6 +73,8 @@ services:
       HEALTHCHECK_TLS_SERVER_NAME: catalog-service
       HEALTHCHECK_TLS_CERT_FILE: /run/secrets/catalog_tls_cert
       HEALTHCHECK_TLS_KEY_FILE: /run/secrets/catalog_tls_key
+      RUN_AS_UID: "${RUN_AS_UID:-65532}"
+      RUN_AS_GID: "${RUN_AS_GID:-65532}"
     secrets:
       - internal_ca
       - catalog_tls_cert
@@ -96,6 +100,8 @@ services:
       HEALTHCHECK_HTTP_URL: http://localhost:8080/readyz
       LOG_ENV: "production"
       LOG_LEVEL: "info"
+      RUN_AS_UID: "${RUN_AS_UID:-65532}"
+      RUN_AS_GID: "${RUN_AS_GID:-65532}"
     secrets:
       - internal_ca
       - edge_tls_cert
@@ -128,12 +134,16 @@ services:
       EDGE_TLS_KEY_FILE: /run/secrets/edge_tls_key
       CATALOG_TLS_CERT_FILE: /run/secrets/catalog_tls_cert
       CATALOG_TLS_KEY_FILE: /run/secrets/catalog_tls_key
+      UNKNOWN_TLS_CERT_FILE: /run/secrets/unknown_tls_cert
+      UNKNOWN_TLS_KEY_FILE: /run/secrets/unknown_tls_key
     secrets:
       - internal_ca
       - edge_tls_cert
       - edge_tls_key
       - catalog_tls_cert
       - catalog_tls_key
+      - unknown_tls_cert
+      - unknown_tls_key
     depends_on:
       identity-service:
         condition: service_healthy
@@ -145,16 +155,20 @@ volumes:
 
 secrets:
   internal_ca:
-    file: ./.dev/certs/ca.crt
+    file: ${CERT_DIR:-./.dev/certs}/ca.crt
   edge_tls_cert:
-    file: ./.dev/certs/edge-api.crt
+    file: ${CERT_DIR:-./.dev/certs}/edge-api.crt
   edge_tls_key:
-    file: ./.dev/certs/edge-api.key
+    file: ${CERT_DIR:-./.dev/certs}/edge-api.key
   identity_tls_cert:
-    file: ./.dev/certs/identity-service.crt
+    file: ${CERT_DIR:-./.dev/certs}/identity-service.crt
   identity_tls_key:
-    file: ./.dev/certs/identity-service.key
+    file: ${CERT_DIR:-./.dev/certs}/identity-service.key
   catalog_tls_cert:
-    file: ./.dev/certs/catalog-service.crt
+    file: ${CERT_DIR:-./.dev/certs}/catalog-service.crt
   catalog_tls_key:
-    file: ./.dev/certs/catalog-service.key
+    file: ${CERT_DIR:-./.dev/certs}/catalog-service.key
+  unknown_tls_cert:
+    file: ${CERT_DIR:-./.dev/certs}/unknown-client.crt
+  unknown_tls_key:
+    file: ${CERT_DIR:-./.dev/certs}/unknown-client.key

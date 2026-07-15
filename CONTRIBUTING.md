@@ -8,20 +8,22 @@ its own `go.mod`:
 ```
 go.work
 pkg/
-  domain/     go.mod   — domain model, no dependencies
-  auth/       go.mod   — PASETO + bcrypt
+  auth/       go.mod   — PASETO access-token contract
+  grpcauth/   go.mod   — verified peer-SAN authorization
+  internaltls/go.mod   — TLS 1.3 mTLS credential loading
   logger/     go.mod   — zap constructor
-  config/     go.mod   — env-var loading
-  proto/      go.mod   — generated gRPC contracts and health probe
+  process/    go.mod   — privilege-drop primitive
+  proto/      go.mod   — generated gRPC contracts only
 services/
   identity-service/ go.mod — credentials, users, sessions, migrations
   catalog-service/  go.mod — catalog gRPC boundary
   edge-api/         go.mod — public HTTP API and middleware
 tests/e2e/           go.mod — HTTP E2E and live mTLS contracts
+tools/healthcheck/   go.mod — operational HTTP/gRPC probe
 ```
 
 The `go.work` file stitches the modules together so cross-module imports
-(`pkg/auth` → `pkg/domain`, etc.) resolve to local disk instead of fetching
+(`services/edge-api` → `pkg/auth`, etc.) resolve to local disk instead of fetching
 stale published versions from the module proxy.
 
 ## ⚠️  Always run make from the workspace root
@@ -65,7 +67,6 @@ around this by running golangci-lint **per module** with `GOWORK=off`:
 ```bash
 make lint
 # equivalent to:
-# cd pkg/domain    && GOWORK=off golangci-lint run ./...
 # cd pkg/auth      && GOWORK=off golangci-lint run ./...
 # ... and so on for every module
 ```

@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/belLena81/raglibrarian/pkg/domain"
+	"github.com/belLena81/raglibrarian/services/identity-service/domain"
 )
 
 // pgUniqueViolation is the Postgres SQLSTATE code for unique constraint violations.

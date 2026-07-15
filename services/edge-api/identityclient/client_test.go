@@ -7,58 +7,50 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	grpc_health_v1 "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
+
+	identityv1 "github.com/belLena81/raglibrarian/pkg/proto/identity/v1"
+	"github.com/belLena81/raglibrarian/services/edge-api/authflow"
 )
 
-type fakeHealthClient struct {
+type fakeRPC struct {
+	identityv1.IdentityServiceClient
+}
+type fakeHealth struct {
 	response *grpc_health_v1.HealthCheckResponse
 	err      error
 }
 
-func (f fakeHealthClient) Check(context.Context, *grpc_health_v1.HealthCheckRequest, ...grpc.CallOption) (*grpc_health_v1.HealthCheckResponse, error) {
+func (f fakeHealth) Check(context.Context, *grpc_health_v1.HealthCheckRequest, ...grpc.CallOption) (*grpc_health_v1.HealthCheckResponse, error) {
 	return f.response, f.err
 }
-
-func (f fakeHealthClient) List(context.Context, *grpc_health_v1.HealthListRequest, ...grpc.CallOption) (*grpc_health_v1.HealthListResponse, error) {
+func (f fakeHealth) List(context.Context, *grpc_health_v1.HealthListRequest, ...grpc.CallOption) (*grpc_health_v1.HealthListResponse, error) {
+	return nil, errors.New("not implemented")
+}
+func (f fakeHealth) Watch(context.Context, *grpc_health_v1.HealthCheckRequest, ...grpc.CallOption) (grpc_health_v1.Health_WatchClient, error) {
 	return nil, errors.New("not implemented")
 }
 
-func (f fakeHealthClient) Watch(context.Context, *grpc_health_v1.HealthCheckRequest, ...grpc.CallOption) (grpc_health_v1.Health_WatchClient, error) {
-	return nil, errors.New("not implemented")
+func TestRegisterErrorMapping(t *testing.T) {
+	assert.ErrorIs(t, mapRegisterError(status.Error(codes.AlreadyExists, "")), authflow.ErrEmailTaken)
+	assert.ErrorIs(t, mapRegisterError(status.Error(codes.InvalidArgument, "")), authflow.ErrInvalidRegistration)
+	assert.ErrorIs(t, mapRegisterError(status.Error(codes.Unavailable, "")), authflow.ErrUnavailable)
 }
 
-func TestClient_CheckReady_ReturnsNilForServingIdentity(t *testing.T) {
-	client := New(nil, fakeHealthClient{response: &grpc_health_v1.HealthCheckResponse{
-		Status: grpc_health_v1.HealthCheckResponse_SERVING,
-	}})
-
-	err := client.CheckReady(context.Background())
-
-	assert.NoError(t, err)
+func TestCredentialErrorMapping(t *testing.T) {
+	assert.ErrorIs(t, mapCredentialError(status.Error(codes.Unauthenticated, "")), authflow.ErrInvalidCredentials)
+	assert.ErrorIs(t, mapCredentialError(status.Error(codes.DeadlineExceeded, "")), authflow.ErrUnavailable)
 }
 
-func TestClient_CheckReady_ReturnsUnavailableWhenHealthIsNotServing(t *testing.T) {
-	client := New(nil, fakeHealthClient{response: &grpc_health_v1.HealthCheckResponse{
-		Status: grpc_health_v1.HealthCheckResponse_NOT_SERVING,
-	}})
-
-	err := client.CheckReady(context.Background())
-
-	assert.ErrorIs(t, err, ErrUnavailable)
+func TestReadinessRequiresServingHealth(t *testing.T) {
+	client := New(&fakeRPC{}, fakeHealth{response: &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_SERVING}})
+	assert.NoError(t, client.CheckReady(context.Background()))
+	client = New(&fakeRPC{}, fakeHealth{err: errors.New("down")})
+	assert.ErrorIs(t, client.CheckReady(context.Background()), authflow.ErrUnavailable)
 }
 
-func TestClient_CheckReady_ReturnsUnavailableWhenHealthCheckFails(t *testing.T) {
-	client := New(nil, fakeHealthClient{err: errors.New("connection refused")})
-
-	err := client.CheckReady(context.Background())
-
-	assert.ErrorIs(t, err, ErrUnavailable)
-}
-
-func TestClient_CheckReady_ReturnsUnavailableWithoutHealthClient(t *testing.T) {
-	client := New(nil)
-
-	err := client.CheckReady(context.Background())
-
-	assert.ErrorIs(t, err, ErrUnavailable)
+func TestConstructorRequiresBothClients(t *testing.T) {
+	assert.Panics(t, func() { New(nil, fakeHealth{}) })
 }

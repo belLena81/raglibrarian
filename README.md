@@ -17,15 +17,15 @@ than first being placed in the public API and extracted later.
 ```text
 client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
                          |
-                         +-- mTLS gRPC --> catalog-service (health scaffold)
+                         +-- mTLS gRPC --> catalog-service (health + Check scaffold)
 ```
 
-- **edge-api** owns public HTTP, request validation, token verification, route
-  composition, and query orchestration. It owns no business database.
+- **edge-api** owns public HTTP, request validation, token verification, and
+  route composition. It owns no business database or evolving aggregate.
 - **identity-service** owns credentials, users, roles, and its `identity`
   Postgres schema. It is the only service that signs access tokens.
 - **catalog-service** is an independently deployable mTLS gRPC boundary. It
-  currently exposes health only; book metadata is its future responsibility.
+  exposes standard health and `Catalog.Check`; book metadata is its future responsibility.
 - Internal gRPC ports and Postgres are private in Compose. Service-to-service
   calls use TLS 1.3 with client certificates.
 - Future ingestion, indexing, retrieval, and answer generation will be added
@@ -82,12 +82,13 @@ plain HTTP for local development. This is not a production setting.
 ## Repository layout
 
 ```text
-pkg/                 Stable platform packages and generated protobuf clients
+pkg/                 Focused auth/TLS/gRPC/process libraries and protobuf clients
 services/edge-api/   Public HTTP boundary and query stub
 services/identity-service/
                      Identity domain, gRPC adapter, Postgres repository, migration
 services/catalog-service/
                      Independent catalog gRPC scaffold
+tools/healthcheck/   Operational HTTP/gRPC probe binary
 api/proto/           Versioned gRPC source contracts
 tests/e2e/           Black-box HTTP tests
 ```

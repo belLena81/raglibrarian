@@ -240,7 +240,7 @@ Services:
 
 -   Edge API / Gateway
 -   Identity Service
--   Catalog Service (health-only stub is acceptable)
+-   Catalog Service (standard health plus a minimal contract check is acceptable)
 
 Deliverable:
 

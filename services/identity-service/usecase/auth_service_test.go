@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,8 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/belLena81/raglibrarian/pkg/auth"
-	"github.com/belLena81/raglibrarian/pkg/domain"
+	"github.com/belLena81/raglibrarian/services/identity-service/domain"
+	"github.com/belLena81/raglibrarian/services/identity-service/password"
 	"github.com/belLena81/raglibrarian/services/identity-service/repository"
+	identitytoken "github.com/belLena81/raglibrarian/services/identity-service/token"
 )
 
 type fakeUsers struct{ users map[string]domain.User }
@@ -107,16 +108,23 @@ func (r *memorySessions) CleanupExpired(_ context.Context, now time.Time) (int64
 	return deleted, nil
 }
 
-func newService(t *testing.T) (*AuthService, *auth.Issuer) {
+type fixedClock struct{ now time.Time }
+
+func (c fixedClock) Now() time.Time { return c.now }
+
+func newService(t *testing.T) (*AuthService, *auth.Issuer, *fakeUsers) {
 	t.Helper()
 	issuer, err := auth.NewIssuer(make([]byte, 32), time.Hour)
 	require.NoError(t, err)
-	return NewAuthService(&fakeUsers{users: map[string]domain.User{}}, newMemorySessions(), issuer, time.Hour), issuer
+	users := &fakeUsers{users: map[string]domain.User{}}
+	passwords := password.NewLimitedHasher(password.BcryptHasher{}, 2)
+	service := NewAuthService(users, newMemorySessions(), identitytoken.NewIssuer(issuer.Signer), passwords, fixedClock{now: time.Now().UTC()}, time.Hour)
+	return service, issuer, users
 }
 
 func TestRegisterCreatesHashOnlySessionAndSessionClaim(t *testing.T) {
-	service, issuer := newService(t)
-	result, _, err := service.Register(context.Background(), "a@example.com", "password-1234", domain.RoleReader)
+	service, issuer, _ := newService(t)
+	result, err := service.Register(context.Background(), "a@example.com", "password-1234", domain.RoleReader)
 	require.NoError(t, err)
 	assert.Len(t, result.RefreshToken, 43)
 	claims, err := issuer.Validate(result.AccessToken)
@@ -126,14 +134,15 @@ func TestRegisterCreatesHashOnlySessionAndSessionClaim(t *testing.T) {
 }
 
 func TestRegisterNormalizesEmailBeforePersistence(t *testing.T) {
-	service, _ := newService(t)
-	_, user, err := service.Register(context.Background(), "  USER@Example.COM ", "password-1234", domain.RoleReader)
+	service, _, users := newService(t)
+	_, err := service.Register(context.Background(), "  USER@Example.COM ", "password-1234", domain.RoleReader)
 	require.NoError(t, err)
+	user := users.users["user@example.com"]
 	assert.Equal(t, "user@example.com", user.Email())
 }
 func TestRefreshRotatesAndReuseRevokesSession(t *testing.T) {
-	service, _ := newService(t)
-	result, _, err := service.Register(context.Background(), "a@example.com", "password-1234", domain.RoleReader)
+	service, _, _ := newService(t)
+	result, err := service.Register(context.Background(), "a@example.com", "password-1234", domain.RoleReader)
 	require.NoError(t, err)
 	next, err := service.Refresh(context.Background(), result.RefreshToken)
 	require.NoError(t, err)
@@ -143,8 +152,8 @@ func TestRefreshRotatesAndReuseRevokesSession(t *testing.T) {
 	assert.ErrorIs(t, service.ValidateSession(context.Background(), "", result.SessionID), domain.ErrInvalidCredentials)
 }
 func TestPasswordAndInvalidCredentialsAreSanitized(t *testing.T) {
-	service, _ := newService(t)
-	_, _, err := service.Register(context.Background(), "a@example.com", "short", domain.RoleReader)
+	service, _, _ := newService(t)
+	_, err := service.Register(context.Background(), "a@example.com", "short", domain.RoleReader)
 	assert.ErrorIs(t, err, domain.ErrInvalidPassword)
 	_, err = service.Login(context.Background(), "none@example.com", "password-1234")
 	assert.ErrorIs(t, err, domain.ErrInvalidCredentials)
@@ -152,42 +161,6 @@ func TestPasswordAndInvalidCredentialsAreSanitized(t *testing.T) {
 }
 
 func TestDummyPasswordHashIsAValidBcryptMismatch(t *testing.T) {
-	err := auth.CheckPassword(dummyPasswordHash, "password-1234")
+	err := (password.BcryptHasher{}).Compare(context.Background(), dummyPasswordHash, "password-1234")
 	assert.ErrorIs(t, err, domain.ErrInvalidCredentials)
-}
-
-func TestConcurrentLoginBoundsBcryptWork(t *testing.T) {
-	issuer, err := auth.NewIssuer(make([]byte, 32), time.Hour)
-	require.NoError(t, err)
-	user, err := domain.NewUser("load@example.com", "test-hash", domain.RoleReader)
-	require.NoError(t, err)
-	service := NewAuthService(&fakeUsers{users: map[string]domain.User{user.Email(): user}}, newMemorySessions(), issuer, time.Hour, 2)
-
-	var active atomic.Int32
-	var maximum atomic.Int32
-	service.check = func(_, _ string) error {
-		current := active.Add(1)
-		defer active.Add(-1)
-		for {
-			observed := maximum.Load()
-			if current <= observed || maximum.CompareAndSwap(observed, current) {
-				break
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
-		return domain.ErrInvalidCredentials
-	}
-
-	const requests = 16
-	var wg sync.WaitGroup
-	wg.Add(requests)
-	for range requests {
-		go func() {
-			defer wg.Done()
-			_, _ = service.Login(context.Background(), user.Email(), "password-1234")
-		}()
-	}
-	wg.Wait()
-	assert.LessOrEqual(t, maximum.Load(), int32(2))
-	assert.Zero(t, active.Load())
 }

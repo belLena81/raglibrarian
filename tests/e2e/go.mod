@@ -12,9 +12,8 @@ require (
 require (
 	aidanwoods.dev/go-paseto v1.6.0 // indirect
 	aidanwoods.dev/go-result v0.3.1 // indirect
-	github.com/belLena81/raglibrarian/pkg/domain v0.0.0-20260309122639-6b9c9a70dd75 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/google/uuid v1.6.0 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	golang.org/x/crypto v0.50.0 // indirect
 	golang.org/x/net v0.53.0 // indirect
@@ -27,6 +26,5 @@ require (
 
 replace (
 	github.com/belLena81/raglibrarian/pkg/auth => ../../pkg/auth
-	github.com/belLena81/raglibrarian/pkg/domain => ../../pkg/domain
 	github.com/belLena81/raglibrarian/pkg/proto => ../../pkg/proto
 )

@@ -36,6 +36,9 @@ edge-api -> answer-service (optional synthesis over retrieval evidence)
   Another service never reads its tables directly.
 - Share versioned protobuf/event contracts and small platform libraries only;
   do not share evolving domain aggregates between services.
+- Shared platform modules remain single-purpose: token cryptography, internal
+  TLS, peer authorization, logging, process primitives, and generated contracts.
+  Runtime configuration and business models remain inside the owning service.
 - Use Buf compatibility checks for gRPC contracts. Introduce additive fields
   and new versions instead of breaking existing consumers.
 - Publish domain events through a transactional outbox. Consumers are

@@ -4,12 +4,14 @@ toolchain go1.26.5
 
 use (
 	./pkg/auth
-	./pkg/config
-	./pkg/domain
+	./pkg/grpcauth
+	./pkg/internaltls
 	./pkg/logger
+	./pkg/process
 	./pkg/proto
 	./services/catalog-service
 	./services/edge-api
 	./services/identity-service
 	./tests/e2e
+	./tools/healthcheck
 )

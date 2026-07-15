@@ -4,7 +4,7 @@ package repository
 import (
 	"context"
 
-	"github.com/belLena81/raglibrarian/pkg/domain"
+	"github.com/belLena81/raglibrarian/services/identity-service/domain"
 )
 
 // UserRepository is the persistence port for the User aggregate.

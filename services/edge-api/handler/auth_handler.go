@@ -3,15 +3,13 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
 
-	"github.com/belLena81/raglibrarian/pkg/auth"
-	"github.com/belLena81/raglibrarian/pkg/domain"
+	"github.com/belLena81/raglibrarian/services/edge-api/authflow"
 	querymiddleware "github.com/belLena81/raglibrarian/services/edge-api/middleware"
 )
 
@@ -51,27 +49,26 @@ type AuthHandler struct {
 	secureCookie bool
 }
 
-// NewAuthHandler constructs an AuthHandler. Panics on nil deps.
-func NewAuthHandler(uc AuthUseCase, log *zap.Logger, secureCookie ...bool) *AuthHandler {
+// CookieConfig controls refresh-cookie transport security.
+type CookieConfig struct{ Secure bool }
+
+// NewAuthHandler constructs an AuthHandler with explicit cookie policy.
+func NewAuthHandler(uc AuthUseCase, log *zap.Logger, cookies CookieConfig) *AuthHandler {
 	if uc == nil {
 		panic("handler: AuthUseCase must not be nil")
 	}
 	if log == nil {
 		panic("handler: Logger must not be nil")
 	}
-	secure := true
-	if len(secureCookie) > 0 {
-		secure = secureCookie[0]
-	}
-	return &AuthHandler{uc: uc, log: log, secureCookie: secure}
+	return &AuthHandler{uc: uc, log: log, secureCookie: cookies.Secure}
 }
 
 // AuthUseCase is the edge-facing identity contract. Its production adapter is
 // a generated gRPC client; tests use a local fake.
 type AuthUseCase interface {
-	Register(context.Context, string, string) (auth.SessionTokens, domain.User, error)
-	Login(context.Context, string, string) (auth.SessionTokens, error)
-	Refresh(context.Context, string) (auth.SessionTokens, error)
+	Register(context.Context, string, string) (authflow.Session, error)
+	Login(context.Context, string, string) (authflow.Session, error)
+	Refresh(context.Context, string) (authflow.Session, error)
 	Logout(context.Context, string) error
 }
 
@@ -86,7 +83,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tokens, user, err := h.uc.Register(r.Context(), req.Email, req.Password)
+	tokens, err := h.uc.Register(r.Context(), req.Email, req.Password)
 	if err != nil {
 		h.log.Debug("register failed",
 			zap.String("request_id", reqID),
@@ -99,12 +96,12 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	h.setRefreshCookie(w, tokens.RefreshToken)
 	writeAuthJSON(w, http.StatusCreated, AuthResponse{
 		Token: tokens.AccessToken,
-		Role:  string(user.Role()),
+		Role:  tokens.Role,
 	})
 }
 
 // Me handles GET /auth/me.
-// Returns identity from the caller's PASETO token claims — no DB call.
+// Uses claims only after middleware has validated the live Identity session.
 func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	claims, ok := querymiddleware.ClaimsFromContext(r.Context())
 	if !ok {
@@ -125,7 +122,7 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
-	if err := h.uc.Logout(r.Context(), claims.SessionID); err != nil && !errors.Is(err, domain.ErrInvalidCredentials) {
+	if err := h.uc.Logout(r.Context(), claims.SessionID); err != nil && !errors.Is(err, authflow.ErrInvalidCredentials) {
 		writeAuthError(w, http.StatusServiceUnavailable, "authentication service unavailable")
 		return
 	}
@@ -147,7 +144,11 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	tokens, err := h.uc.Login(r.Context(), req.Email, req.Password)
 	if err != nil {
 		h.log.Debug("login failed", zap.String("request_id", middleware.GetReqID(r.Context())))
-		writeAuthError(w, http.StatusUnauthorized, "invalid credentials")
+		if errors.Is(err, authflow.ErrInvalidCredentials) {
+			writeAuthError(w, http.StatusUnauthorized, "invalid credentials")
+			return
+		}
+		writeAuthError(w, http.StatusServiceUnavailable, "authentication service unavailable")
 		return
 	}
 
@@ -166,7 +167,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	tokens, err := h.uc.Refresh(r.Context(), cookie.Value)
 	if err != nil {
 		h.clearRefreshCookie(w)
-		if errors.Is(err, domain.ErrInvalidCredentials) {
+		if errors.Is(err, authflow.ErrInvalidCredentials) {
 			writeAuthError(w, http.StatusUnauthorized, "invalid refresh session")
 			return
 		}
@@ -175,58 +176,4 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 	h.setRefreshCookie(w, tokens.RefreshToken)
 	writeAuthJSON(w, http.StatusOK, AuthResponse{Token: tokens.AccessToken, Role: tokens.Role})
-}
-
-func (h *AuthHandler) setRefreshCookie(w http.ResponseWriter, value string) {
-	http.SetCookie(w, &http.Cookie{Name: "refresh_token", Value: value, Path: "/auth", HttpOnly: true, Secure: h.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: 60 * 60 * 24 * 30})
-}
-
-func (h *AuthHandler) clearRefreshCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: "refresh_token", Value: "", Path: "/auth", HttpOnly: true, Secure: h.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: -1})
-}
-
-// ── Error mapping ─────────────────────────────────────────────────────────────
-
-func authErrToStatus(err error) int {
-	switch {
-	case errors.Is(err, domain.ErrEmailTaken):
-		return http.StatusConflict
-	case errors.Is(err, domain.ErrInvalidEmail),
-		errors.Is(err, domain.ErrEmptyEmail),
-		errors.Is(err, domain.ErrInvalidPassword),
-		errors.Is(err, domain.ErrInvalidRole):
-		return http.StatusUnprocessableEntity
-	case errors.Is(err, domain.ErrInvalidCredentials):
-		return http.StatusUnauthorized
-	default:
-		return http.StatusInternalServerError
-	}
-}
-
-func sanitiseAuthError(err error) string {
-	switch {
-	case errors.Is(err, domain.ErrEmailTaken):
-		return "email is already registered"
-	case errors.Is(err, domain.ErrInvalidEmail), errors.Is(err, domain.ErrInvalidPassword):
-		return "email or password is invalid"
-	case errors.Is(err, domain.ErrInvalidRole):
-		return "role must be admin or reader"
-	case errors.Is(err, domain.ErrInvalidCredentials):
-		return "invalid credentials"
-	default:
-		return "internal server error"
-	}
-}
-
-func writeAuthJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeAuthError(w http.ResponseWriter, status int, msg string) {
-	type errBody struct {
-		Error string `json:"error"`
-	}
-	writeAuthJSON(w, status, errBody{Error: msg})
 }

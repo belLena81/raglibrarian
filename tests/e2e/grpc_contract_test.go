@@ -78,6 +78,15 @@ func TestGRPCIdentityRejectsCatalogClientCertificate(t *testing.T) {
 	assert.Equal(t, codes.PermissionDenied, status.Code(err))
 }
 
+func TestGRPCIdentityRejectsUnknownClientCertificate(t *testing.T) {
+	requireContractTests(t)
+	conn := dialMTLS(t, envOr("IDENTITY_GRPC_ADDR", "identity-service:50051"), "identity-service", "UNKNOWN_TLS_CERT_FILE", "UNKNOWN_TLS_KEY_FILE")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := identityv1.NewIdentityServiceClient(conn).Register(ctx, &identityv1.RegisterRequest{Email: "unknown@example.test", Password: validPassword})
+	assert.Equal(t, codes.PermissionDenied, status.Code(err))
+}
+
 func TestGRPCDeadlineIsHonored(t *testing.T) {
 	requireContractTests(t)
 	conn := dialMTLS(t, envOr("CATALOG_GRPC_ADDR", "catalog-service:50052"), "catalog-service", "EDGE_TLS_CERT_FILE", "EDGE_TLS_KEY_FILE")

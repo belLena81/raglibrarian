@@ -4,24 +4,21 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln proto-check proto-generate build run-edge-api run-identity run-catalog dev tidy e2e migrate-identity-up migrate-identity-down infra-up infra-down stack-up keygen proto dev-certs
+.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-generate build run-edge-api run-identity run-catalog dev tidy e2e migrate-identity-up migrate-identity-down infra-up infra-down stack-up keygen proto dev-certs
 
 # Service/library modules — looped over by test, lint, tidy, fmt.
 MODULES := \
-	pkg/domain \
 	pkg/auth \
+	pkg/grpcauth \
+	pkg/internaltls \
 	pkg/logger \
-	pkg/config \
+	pkg/process \
 	pkg/proto \
 	services/identity-service \
 	services/catalog-service \
 	services/edge-api \
-	tests/e2e
-
-# Go packages import generated protobuf bindings. Generate them before any
-# target that compiles or analyzes those packages.
-GO_PROTO_TARGETS := test test-race lint fmt fmt-check vet vuln build run-edge-api run-identity run-catalog tidy
-$(GO_PROTO_TARGETS): proto-generate
+	tests/e2e \
+	tools/healthcheck
 
 # Go packages import generated protobuf bindings. Generate them before any
 # target that compiles or analyzes those packages.
@@ -45,6 +42,10 @@ test: _require_root
 		(cd $$mod && go test ./...) || fail=1; \
 	done; \
 	exit $$fail
+
+arch-check: _require_root
+	@! rg -n 'github.com/belLena81/raglibrarian/pkg/(domain|config)' --glob '*.go' --glob 'go.mod' .
+	@! test -f pkg/proto/cmd/healthcheck/main.go
 
 test-race: _require_root
 	@fail=0; \

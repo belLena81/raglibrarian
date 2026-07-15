@@ -2,120 +2,21 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"net"
-	"os"
+	"os/signal"
 	"syscall"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/health"
-	grpc_health_v1 "google.golang.org/grpc/health/grpc_health_v1"
-	"google.golang.org/grpc/peer"
-	"google.golang.org/grpc/status"
-
-	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
+	"github.com/belLena81/raglibrarian/services/catalog-service/config"
+	"github.com/belLena81/raglibrarian/services/catalog-service/internal/app"
 )
 
-type server struct {
-	catalogv1.UnimplementedCatalogServiceServer
-}
-
-func (server) Check(ctx context.Context, _ *catalogv1.CheckRequest) (*catalogv1.CheckResponse, error) {
-	if err := requireEdgeCaller(ctx); err != nil {
-		return nil, err
-	}
-	if ctx.Err() != nil {
-		return nil, status.Error(codes.Canceled, "request cancelled")
-	}
-
-	return &catalogv1.CheckResponse{Status: "SERVING"}, nil
-}
-
-func requireEdgeCaller(ctx context.Context) error {
-	p, ok := peer.FromContext(ctx)
-	if !ok {
-		return status.Error(codes.Unauthenticated, "missing peer identity")
-	}
-	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
-	if !ok || len(tlsInfo.State.PeerCertificates) == 0 {
-		return status.Error(codes.Unauthenticated, "missing peer certificate")
-	}
-	if err := tlsInfo.State.PeerCertificates[0].VerifyHostname("edge-api"); err != nil {
-		return status.Error(codes.PermissionDenied, "caller is not authorized")
-	}
-	return nil
-}
-
 func main() {
-	addr := os.Getenv("CATALOG_GRPC_ADDR")
-	if addr == "" {
-		addr = ":50052"
-	}
-
-	listener, err := net.Listen("tcp", addr)
+	cfg, err := config.Load()
 	if err != nil {
 		panic(err)
 	}
-
-	creds, err := serverCredentials()
-	if err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err = app.Run(ctx, cfg); err != nil {
 		panic(err)
 	}
-	if err = dropPrivileges(); err != nil {
-		panic(err)
-	}
-
-	grpcServer := grpc.NewServer(grpc.Creds(creds))
-	catalogv1.RegisterCatalogServiceServer(grpcServer, server{})
-
-	healthServer := health.NewServer()
-	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
-	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
-
-	if err := grpcServer.Serve(listener); err != nil {
-		panic(err)
-	}
-}
-
-func dropPrivileges() error {
-	if os.Geteuid() != 0 {
-		return nil
-	}
-	if err := syscall.Setgroups([]int{}); err != nil {
-		return err
-	}
-	if err := syscall.Setgid(65532); err != nil {
-		return err
-	}
-	return syscall.Setuid(65532)
-}
-
-func serverCredentials() (credentials.TransportCredentials, error) {
-	ca, err := os.ReadFile(os.Getenv("INTERNAL_TLS_CA_FILE")) // #nosec G703 -- operator-controlled runtime configuration
-	if err != nil {
-		return nil, err
-	}
-
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(ca) {
-		return nil, os.ErrInvalid
-	}
-
-	cert, err := tls.LoadX509KeyPair(
-		os.Getenv("CATALOG_TLS_CERT_FILE"),
-		os.Getenv("CATALOG_TLS_KEY_FILE"),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return credentials.NewTLS(&tls.Config{
-		MinVersion:   tls.VersionTLS13,
-		Certificates: []tls.Certificate{cert},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    pool,
-	}), nil
 }

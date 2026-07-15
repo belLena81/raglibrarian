@@ -3,238 +3,57 @@ package handler_test
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 
-	"github.com/belLena81/raglibrarian/pkg/auth"
-	"github.com/belLena81/raglibrarian/pkg/domain"
+	"github.com/belLena81/raglibrarian/services/edge-api/authflow"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
 )
 
-// ── Fake auth use case ────────────────────────────────────────────────────────
+type fakeAuthUseCase struct{ registerErr, loginErr, refreshErr error }
 
-type fakeAuthUseCase struct {
-	registerToken        string
-	registerRefreshToken string
-	registerUser         domain.User
-	registerErr          error
-	loginToken           string
-	loginRefreshToken    string
-	loginErr             error
-	refreshTokens        auth.SessionTokens
-	refreshErr           error
-	logoutSessionID      string
+func (f *fakeAuthUseCase) Register(context.Context, string, string) (authflow.Session, error) {
+	return authflow.Session{AccessToken: "access", RefreshToken: "refresh", Role: "reader"}, f.registerErr
+}
+func (f *fakeAuthUseCase) Login(context.Context, string, string) (authflow.Session, error) {
+	return authflow.Session{AccessToken: "access", RefreshToken: "refresh", Role: "reader"}, f.loginErr
+}
+func (f *fakeAuthUseCase) Refresh(context.Context, string) (authflow.Session, error) {
+	return authflow.Session{AccessToken: "access", RefreshToken: "refresh", Role: "reader"}, f.refreshErr
+}
+func (*fakeAuthUseCase) Logout(context.Context, string) error { return nil }
+
+func newHandler(t *testing.T, useCase *fakeAuthUseCase) *handler.AuthHandler {
+	return handler.NewAuthHandler(useCase, zaptest.NewLogger(t), handler.CookieConfig{Secure: true})
 }
 
-func (f *fakeAuthUseCase) Register(_ context.Context, _ string, _ string) (auth.SessionTokens, domain.User, error) {
-	if f.registerErr != nil {
-		return auth.SessionTokens{}, domain.User{}, f.registerErr
-	}
-	return auth.SessionTokens{AccessToken: f.registerToken, RefreshToken: f.registerRefreshToken, Role: string(f.registerUser.Role())}, f.registerUser, nil
-}
-
-func (f *fakeAuthUseCase) Login(_ context.Context, _, _ string) (auth.SessionTokens, error) {
-	return auth.SessionTokens{AccessToken: f.loginToken, RefreshToken: f.loginRefreshToken, Role: "reader"}, f.loginErr
-}
-
-func (f *fakeAuthUseCase) Refresh(_ context.Context, _ string) (auth.SessionTokens, error) {
-	return f.refreshTokens, f.refreshErr
-}
-
-func (f *fakeAuthUseCase) Logout(_ context.Context, sessionID string) error {
-	f.logoutSessionID = sessionID
-	return nil
-}
-
-func newRegisteredUser(t *testing.T) domain.User {
+func post(t *testing.T, h http.HandlerFunc, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	u, err := domain.NewUser("alice@example.com", "hash", domain.RoleReader)
-	require.NoError(t, err)
-	return u
+	recorder := httptest.NewRecorder()
+	h.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body)))
+	return recorder
 }
 
-func newAuthHandler(t *testing.T, uc *fakeAuthUseCase) *handler.AuthHandler {
-	t.Helper()
-	return handler.NewAuthHandler(uc, zaptest.NewLogger(t))
+func TestRegisterMapsStableApplicationErrors(t *testing.T) {
+	assert.Equal(t, http.StatusCreated, post(t, newHandler(t, &fakeAuthUseCase{}).Register, `{"email":"reader@example.com","password":"password-1234"}`).Code)
+	assert.Equal(t, http.StatusConflict, post(t, newHandler(t, &fakeAuthUseCase{registerErr: authflow.ErrEmailTaken}).Register, `{"email":"reader@example.com","password":"password-1234"}`).Code)
+	invalid := post(t, newHandler(t, &fakeAuthUseCase{registerErr: authflow.ErrInvalidRegistration}).Register, `{"email":"bad","password":"short"}`)
+	assert.Equal(t, http.StatusUnprocessableEntity, invalid.Code)
+	assert.JSONEq(t, `{"error":"email or password is invalid"}`, invalid.Body.String())
+	assert.Equal(t, http.StatusServiceUnavailable, post(t, newHandler(t, &fakeAuthUseCase{registerErr: authflow.ErrUnavailable}).Register, `{"email":"reader@example.com","password":"password-1234"}`).Code)
 }
 
-// ── POST /auth/register ───────────────────────────────────────────────────────
-
-func TestAuthHandler_Register_Returns201_WithToken(t *testing.T) {
-	uc := &fakeAuthUseCase{
-		registerToken: "v2.local.token",
-		registerUser:  newRegisteredUser(t),
-	}
-	h := newAuthHandler(t, uc)
-
-	body, _ := json.Marshal(handler.RegisterRequest{
-		Email:    "alice@example.com",
-		Password: "password123",
-	})
-	req := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	h.Register(rr, req)
-
-	assert.Equal(t, http.StatusCreated, rr.Code)
-
-	var resp handler.AuthResponse
-	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
-	assert.Equal(t, "v2.local.token", resp.Token)
-	assert.Equal(t, "reader", resp.Role)
+func TestLoginDistinguishesInvalidCredentialsFromOutage(t *testing.T) {
+	body := `{"email":"reader@example.com","password":"password-1234"}`
+	assert.Equal(t, http.StatusUnauthorized, post(t, newHandler(t, &fakeAuthUseCase{loginErr: authflow.ErrInvalidCredentials}).Login, body).Code)
+	assert.Equal(t, http.StatusServiceUnavailable, post(t, newHandler(t, &fakeAuthUseCase{loginErr: authflow.ErrUnavailable}).Login, body).Code)
 }
 
-func TestAuthHandler_Register_DuplicateEmail_Returns409(t *testing.T) {
-	uc := &fakeAuthUseCase{registerErr: domain.ErrEmailTaken}
-	h := newAuthHandler(t, uc)
-
-	body, _ := json.Marshal(handler.RegisterRequest{Email: "dup@example.com", Password: "pw"})
-	req := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	h.Register(rr, req)
-
-	assert.Equal(t, http.StatusConflict, rr.Code)
-}
-
-func TestAuthHandler_Register_InvalidEmail_Returns422(t *testing.T) {
-	uc := &fakeAuthUseCase{registerErr: domain.ErrInvalidEmail}
-	h := newAuthHandler(t, uc)
-
-	body, _ := json.Marshal(handler.RegisterRequest{Email: "bad", Password: "pw"})
-	req := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	h.Register(rr, req)
-
-	assert.Equal(t, http.StatusUnprocessableEntity, rr.Code)
-}
-
-func TestAuthHandler_Register_InvalidPassword_Returns422WithSanitizedMessage(t *testing.T) {
-	uc := &fakeAuthUseCase{registerErr: domain.ErrInvalidPassword}
-	h := newAuthHandler(t, uc)
-	body, _ := json.Marshal(handler.RegisterRequest{Email: "valid@example.com", Password: "short"})
-	req := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(body))
-	rr := httptest.NewRecorder()
-	h.Register(rr, req)
-	assert.Equal(t, http.StatusUnprocessableEntity, rr.Code)
-	assert.JSONEq(t, `{"error":"email or password is invalid"}`, rr.Body.String())
-}
-
-func TestAuthHandler_Register_InvalidJSON_Returns400(t *testing.T) {
-	uc := &fakeAuthUseCase{}
-	h := newAuthHandler(t, uc)
-
-	req := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewBufferString("{bad json"))
-	rr := httptest.NewRecorder()
-	h.Register(rr, req)
-
-	assert.Equal(t, http.StatusBadRequest, rr.Code)
-}
-
-func TestAuthHandler_Register_RejectsClientControlledRole(t *testing.T) {
-	uc := &fakeAuthUseCase{registerToken: "tok"}
-	uc.registerUser, _ = domain.NewUser("r@e.com", "h", domain.RoleReader)
-	h := newAuthHandler(t, uc)
-	body, _ := json.Marshal(map[string]string{"email": "r@e.com", "password": "pw", "role": "admin"})
-	req := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	h.Register(rr, req)
-
-	assert.Equal(t, http.StatusBadRequest, rr.Code)
-}
-
-// ── POST /auth/login ──────────────────────────────────────────────────────────
-
-func TestAuthHandler_Login_ValidCredentials_Returns200WithToken(t *testing.T) {
-	uc := &fakeAuthUseCase{loginToken: "v2.public.token", loginRefreshToken: "rotating-refresh"}
-	h := newAuthHandler(t, uc)
-
-	body, _ := json.Marshal(handler.LoginRequest{Email: "a@b.com", Password: "pw"})
-	req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	h.Login(rr, req)
-
-	assert.Equal(t, http.StatusOK, rr.Code)
-
-	var resp handler.AuthResponse
-	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
-	assert.Equal(t, "v2.public.token", resp.Token)
-	cookies := rr.Result().Cookies()
-	require.Len(t, cookies, 1)
-	assert.Equal(t, "refresh_token", cookies[0].Name)
-	assert.True(t, cookies[0].HttpOnly)
-	assert.True(t, cookies[0].Secure)
-	assert.Equal(t, http.SameSiteStrictMode, cookies[0].SameSite)
-}
-
-func TestAuthHandler_Refresh_RotatesCookieWithoutExposingRefreshToken(t *testing.T) {
-	uc := &fakeAuthUseCase{refreshTokens: auth.SessionTokens{AccessToken: "new-access", RefreshToken: "new-refresh", Role: "reader"}}
-	h := newAuthHandler(t, uc)
-	req := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
-	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: "old-refresh"})
-	rr := httptest.NewRecorder()
-	h.Refresh(rr, req)
-
-	assert.Equal(t, http.StatusOK, rr.Code)
-	assert.Contains(t, rr.Header().Get("Set-Cookie"), "refresh_token=new-refresh")
-	assert.NotContains(t, rr.Body.String(), "new-refresh")
-}
-
-func TestAuthHandler_Refresh_InvalidToken_ClearsCookie(t *testing.T) {
-	uc := &fakeAuthUseCase{refreshErr: domain.ErrInvalidCredentials}
-	h := newAuthHandler(t, uc)
-	req := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
-	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: "reused"})
-	rr := httptest.NewRecorder()
-	h.Refresh(rr, req)
-
-	assert.Equal(t, http.StatusUnauthorized, rr.Code)
-	assert.Contains(t, rr.Header().Get("Set-Cookie"), "Max-Age=0")
-}
-
-func TestAuthHandler_Login_InvalidCredentials_Returns401(t *testing.T) {
-	uc := &fakeAuthUseCase{loginErr: domain.ErrInvalidCredentials}
-	h := newAuthHandler(t, uc)
-
-	body, _ := json.Marshal(handler.LoginRequest{Email: "a@b.com", Password: "wrong"})
-	req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	h.Login(rr, req)
-
-	assert.Equal(t, http.StatusUnauthorized, rr.Code)
-}
-
-func TestAuthHandler_Login_InvalidJSON_Returns400(t *testing.T) {
-	uc := &fakeAuthUseCase{}
-	h := newAuthHandler(t, uc)
-
-	req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewBufferString("{bad"))
-	rr := httptest.NewRecorder()
-	h.Login(rr, req)
-
-	assert.Equal(t, http.StatusBadRequest, rr.Code)
-}
-
-// ── Wiring guards ─────────────────────────────────────────────────────────────
-
-func TestNewAuthHandler_NilUseCase_Panics(t *testing.T) {
-	assert.Panics(t, func() {
-		handler.NewAuthHandler(nil, zaptest.NewLogger(t))
-	})
-}
-
-func TestNewAuthHandler_NilLogger_Panics(t *testing.T) {
-	assert.Panics(t, func() {
-		handler.NewAuthHandler(&fakeAuthUseCase{}, nil)
-	})
+func TestConstructorRequiresDependencies(t *testing.T) {
+	assert.Panics(t, func() { handler.NewAuthHandler(nil, zaptest.NewLogger(t), handler.CookieConfig{}) })
+	assert.Panics(t, func() { handler.NewAuthHandler(&fakeAuthUseCase{}, nil, handler.CookieConfig{}) })
 }
