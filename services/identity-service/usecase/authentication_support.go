@@ -28,10 +28,14 @@ type AuthResult struct {
 	Role         domain.Role
 }
 
-// PasswordHasher owns password validation and bounded expensive work.
+// PasswordHasher validates and hashes newly registered passwords.
 type PasswordHasher interface {
 	Validate(string) error
 	Hash(context.Context, string) (string, error)
+}
+
+// PasswordVerifier verifies login credentials without applying registration policy.
+type PasswordVerifier interface {
 	Compare(context.Context, string, string) error
 }
 

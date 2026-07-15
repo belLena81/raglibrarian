@@ -8,7 +8,10 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/bcrypt"
 
+	"github.com/belLena81/raglibrarian/services/identity-service/domain"
 	"github.com/belLena81/raglibrarian/services/identity-service/password"
 )
 
@@ -43,4 +46,34 @@ func TestLimitedHasherBoundsConcurrentWork(t *testing.T) {
 	group.Wait()
 	assert.LessOrEqual(t, next.maximum.Load(), int32(2))
 	assert.Zero(t, next.active.Load())
+}
+
+func TestBcryptHasherAcceptsLegacyShortPasswordForVerification(t *testing.T) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.MinCost)
+	require.NoError(t, err)
+
+	err = (password.BcryptHasher{}).Compare(context.Background(), string(hash), "secret")
+
+	require.NoError(t, err)
+}
+
+func TestBcryptHasherKeepsRegistrationPasswordMinimum(t *testing.T) {
+	_, err := (password.BcryptHasher{}).Hash(context.Background(), "secret")
+
+	assert.ErrorIs(t, err, domain.ErrInvalidPassword)
+}
+
+func TestBcryptHasherRejectsInvalidVerificationBounds(t *testing.T) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("password-1234"), bcrypt.MinCost)
+	require.NoError(t, err)
+
+	for name, plaintext := range map[string]string{
+		"empty":     "",
+		"oversized": string(make([]byte, 73)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := (password.BcryptHasher{}).Compare(context.Background(), string(hash), plaintext)
+			assert.ErrorIs(t, err, domain.ErrInvalidCredentials)
+		})
+	}
 }

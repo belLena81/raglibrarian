@@ -30,7 +30,7 @@ services:
       - -ec
       - |
         for migration in /migrations/*.up.sql; do
-          psql "$${IDENTITY_POSTGRES_DSN}" -v ON_ERROR_STOP=1 -f "$${migration}"
+          psql "$${IDENTITY_POSTGRES_DSN}" --set ON_ERROR_STOP=1 --single-transaction -f "$${migration}"
         done
 
   identity-service:

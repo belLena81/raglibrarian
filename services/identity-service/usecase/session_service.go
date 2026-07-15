@@ -15,7 +15,7 @@ type SessionService struct {
 	users      port.UserReader
 	sessions   port.SessionStore
 	issuer     AccessTokenIssuer
-	passwords  PasswordHasher
+	passwords  PasswordVerifier
 	clock      Clock
 	sessionTTL time.Duration
 }
@@ -25,7 +25,7 @@ func NewSessionService(
 	users port.UserReader,
 	sessions port.SessionStore,
 	issuer AccessTokenIssuer,
-	passwords PasswordHasher,
+	passwords PasswordVerifier,
 	clock Clock,
 	sessionTTL time.Duration,
 ) *SessionService {
@@ -39,9 +39,6 @@ func NewSessionService(
 func (s *SessionService) Login(ctx context.Context, email, plaintext string) (AuthResult, error) {
 	email = normalizeEmail(email)
 	if _, err := domain.NewUser(email, "validation-placeholder", domain.RoleReader); err != nil {
-		return AuthResult{}, domain.ErrInvalidCredentials
-	}
-	if s.passwords.Validate(plaintext) != nil {
 		return AuthResult{}, domain.ErrInvalidCredentials
 	}
 	user, err := s.users.FindByEmail(ctx, email)

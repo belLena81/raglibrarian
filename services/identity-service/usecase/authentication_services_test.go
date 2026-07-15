@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/services/identity-service/domain"
@@ -207,6 +208,29 @@ func TestLoginSigningFailureDoesNotPersistSession(t *testing.T) {
 	assert.Empty(t, sessions.sessions)
 }
 
+func TestLoginAcceptsLegacyShortPassword(t *testing.T) {
+	legacyHash, err := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.MinCost)
+	require.NoError(t, err)
+	user, err := domain.NewUser("reader@example.com", string(legacyHash), domain.RoleReader)
+	require.NoError(t, err)
+	_, tokenIssuer := newIssuer(t)
+	sessions := newMemorySessions()
+	service := NewSessionService(
+		&fakeUsers{users: map[string]domain.User{user.Email(): user}},
+		sessions,
+		tokenIssuer,
+		password.NewLimitedHasher(password.BcryptHasher{}, 1),
+		fixedClock{now: time.Now().UTC()},
+		time.Hour,
+	)
+
+	result, err := service.Login(context.Background(), "  READER@EXAMPLE.COM ", "secret")
+
+	require.NoError(t, err)
+	assert.NotEmpty(t, result.AccessToken)
+	assert.Contains(t, sessions.sessions, result.SessionID)
+}
+
 func TestRefreshPreparationFailureLeavesOriginalTokenRetryable(t *testing.T) {
 	issuer, tokenIssuer := newIssuer(t)
 	now := time.Now().UTC()
@@ -280,6 +304,29 @@ func TestPasswordAndInvalidCredentialsAreSanitized(t *testing.T) {
 	_, err = sessions.Login(context.Background(), "none@example.com", "password-1234")
 	assert.ErrorIs(t, err, domain.ErrInvalidCredentials)
 	assert.False(t, errors.Is(err, domain.ErrUserNotFound))
+}
+
+func TestShortPasswordMismatchDoesNotRevealAccountExistence(t *testing.T) {
+	legacyHash, err := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.MinCost)
+	require.NoError(t, err)
+	user, err := domain.NewUser("reader@example.com", string(legacyHash), domain.RoleReader)
+	require.NoError(t, err)
+	_, tokenIssuer := newIssuer(t)
+	service := NewSessionService(
+		&fakeUsers{users: map[string]domain.User{user.Email(): user}},
+		newMemorySessions(),
+		tokenIssuer,
+		password.NewLimitedHasher(password.BcryptHasher{}, 1),
+		fixedClock{now: time.Now().UTC()},
+		time.Hour,
+	)
+
+	_, knownErr := service.Login(context.Background(), user.Email(), "wrong")
+	_, unknownErr := service.Login(context.Background(), "unknown@example.com", "wrong")
+
+	assert.ErrorIs(t, knownErr, domain.ErrInvalidCredentials)
+	assert.ErrorIs(t, unknownErr, domain.ErrInvalidCredentials)
+	assert.Equal(t, knownErr, unknownErr)
 }
 
 func TestDummyPasswordHashIsAValidBcryptMismatch(t *testing.T) {

@@ -40,9 +40,10 @@ func (h BcryptHasher) Hash(_ context.Context, plaintext string) (string, error) 
 	return string(encoded), nil
 }
 
-// Compare checks a password without leaking bcrypt-specific mismatch details.
-func (h BcryptHasher) Compare(_ context.Context, hash, plaintext string) error {
-	if h.Validate(plaintext) != nil {
+// Compare checks a password without applying the newer registration minimum.
+// The absolute bcrypt input bounds still reject malformed credentials.
+func (BcryptHasher) Compare(_ context.Context, hash, plaintext string) error {
+	if len(plaintext) == 0 || len(plaintext) > maxBytes {
 		return domain.ErrInvalidCredentials
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(plaintext)); err != nil {

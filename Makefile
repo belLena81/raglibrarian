@@ -149,14 +149,14 @@ migrate-identity-up: _require_root
 	@set -a && . ./.env && set +a && \
 		for f in $(CURDIR)/services/identity-service/migrations/*.up.sql; do \
 			echo "Applying $$f..."; \
-			psql "$$IDENTITY_POSTGRES_DSN" -f "$$f" || exit 1; \
+			psql "$$IDENTITY_POSTGRES_DSN" --set ON_ERROR_STOP=1 --single-transaction -f "$$f" || exit 1; \
 		done
 
 migrate-identity-down: _require_root
 	@set -a && . ./.env && set +a && \
 		for f in $$(ls -r $(CURDIR)/services/identity-service/migrations/*.down.sql); do \
 			echo "Reverting $$f..."; \
-			psql "$$IDENTITY_POSTGRES_DSN" -f "$$f" || exit 1; \
+			psql "$$IDENTITY_POSTGRES_DSN" --set ON_ERROR_STOP=1 --single-transaction -f "$$f" || exit 1; \
 		done
 
 # ── Infrastructure ────────────────────────────────────────────────────────────

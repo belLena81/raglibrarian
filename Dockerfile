@@ -11,7 +11,7 @@ RUN apk add --no-cache protobuf \
 
 FROM builder AS contract-tests
 ENTRYPOINT ["/bin/sh", "-ec"]
-CMD ["cd /src/tests/e2e && go test -v -tags=e2e -run '^TestGRPC' ./... && cd /src/services/identity-service && go test -v -tags=integration ./repository"]
+CMD ["cd /src/tests/e2e && go test -v -tags=e2e -run '^TestGRPC' ./... && cd /src/services/identity-service && go test -v -tags=integration ./repository && go test -v -tags=integration ./migrations"]
 
 FROM gcr.io/distroless/static:nonroot
 COPY --from=builder /bin/service /service
