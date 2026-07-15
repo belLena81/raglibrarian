@@ -22,7 +22,7 @@ MODULES := \
 
 # Go packages import generated protobuf bindings. Generate them before any
 # target that compiles or analyzes those packages.
-GO_PROTO_TARGETS := test test-race lint fmt fmt-check vet vuln build run-edge-api run-identity run-catalog tidy
+GO_PROTO_TARGETS := test test-race lint fmt fmt-check vet vuln build run-edge-api run-identity run-catalog tidy e2e
 $(GO_PROTO_TARGETS): proto-generate
 
 # Guard: abort if not run from the workspace root.

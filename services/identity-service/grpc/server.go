@@ -131,9 +131,6 @@ func registerResponse(result usecase.AuthResult) *identityv1.RegisterResponse {
 }
 
 func authenticatedOperation(ctx context.Context) (context.Context, context.CancelFunc, error) {
-	if _, ok := ctx.Deadline(); ok {
-		return ctx, func() {}, nil
-	}
 	deadlineCtx, cancel := context.WithTimeout(ctx, operationTimeout)
 	return deadlineCtx, cancel, nil
 }
