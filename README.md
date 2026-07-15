@@ -28,9 +28,10 @@ client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
   exposes standard health and `Catalog.Check`; book metadata is its future responsibility.
 - Internal gRPC ports and Postgres are private in Compose. Service-to-service
   calls use TLS 1.3 with client certificates.
-- Future ingestion, indexing, retrieval, and answer generation will be added
-  as separate services/consumers. Their contracts will be versioned and
-  additive. See the local architecture decision record in `docs/`.
+- Future ingestion, indexing, retrieval, and answer generation are added in
+  their owning bounded contexts. Bounded event work may run as Lambda or a
+  portable worker without becoming another microservice. Contracts remain
+  versioned and additive. See the local architecture decision record in `docs/`.
 
 ## Current implementation state
 
@@ -46,6 +47,20 @@ client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
 | Sessions, refresh tokens, revocation | Implemented | Refresh tokens rotate in an `HttpOnly`, `SameSite=Strict` cookie; logout/replay invalidates the server-side session family. |
 | Rate limiting / Redis | Not implemented | Required before an Internet-facing deployment. |
 | File upload, ingestion, vectors, LLM | Not implemented | Future additive services. |
+
+## Delivery roadmap
+
+Milestone 1 is complete. The next deliverable is **Milestone 2: Identity RBAC
+and approval**—secure singleton-admin bootstrap, pending librarian registration,
+and admin approval/rejection. Book upload follows only after its role dependency
+is independently usable.
+
+The canonical service-by-service roadmap, data ownership, Lambda/worker
+deployment policy, contracts, and acceptance gates are in
+[docs/README.md](docs/README.md). The product requirements are in
+[docs/spec_rag_tech_books.md](docs/spec_rag_tech_books.md). UI routes for admin,
+books, and real query results are staged contracts until their owning milestone
+is marked delivered.
 
 ## Security model
 

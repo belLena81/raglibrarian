@@ -23,11 +23,11 @@ separate processes with versioned gRPC contracts from their first release.
 Later capabilities are additive:
 
 ```text
-catalog-service --book.uploaded.v1--> ingestion consumer
-ingestion consumer --chunks.ready.v1--> indexing consumer
-indexing consumer --book.indexed.v1--> catalog-service
+catalog-service --BookUploadedV1--> ingestion Lambda/worker
+ingestion Lambda/worker --BookChunksReadyV1--> retrieval index Lambda/worker
+retrieval index Lambda/worker --BookIndexedV1--> catalog-service
 edge-api -> retrieval-service -> Qdrant
-edge-api -> answer-service (optional synthesis over retrieval evidence)
+edge-api -> answer-service -> retrieval-service (optional synthesis)
 ```
 
 ## Boundary rules
@@ -48,10 +48,66 @@ edge-api -> answer-service (optional synthesis over retrieval evidence)
 - Validate PASETO at the edge. Internal services accept actor metadata only on
   authenticated internal gRPC connections; never expose internal ports.
 
-## Migration from the current codebase
+## Clarifications for later milestones
 
-Before adding book or ingestion features, turn `services/query` into the
-edge-api process and run the existing authentication persistence/use case in an
-independent identity-service process. Create catalog-service for book work.
-This is a small, one-time extraction while the code is still small; subsequent
-features must extend the service map rather than repeat this pattern.
+- Identity role/bootstrap/approval behavior is delivered before upload so
+  Catalog authorization depends on an existing, independently tested role.
+- The first upload is a bounded PDF multipart stream through Edge to Catalog.
+  Edge does not buffer or parse the file; Catalog owns metadata, the generated
+  object key, the original object, and `BookUploadedV1` publication.
+- Ingestion owns processing jobs and derived chunk artifacts. Retrieval alone
+  owns embedding compatibility, evidence projections, and Qdrant access.
+- Parser, chunker, embedder, and indexer are application components, not four
+  microservices. Extraction/chunking belong to Ingestion; indexing belongs to
+  Retrieval.
+- Admin operations call the service that owns the state. Do not add an Admin
+  proxy service unless a separate analytics read model becomes a bounded
+  context with its own data and contract.
+
+## Lambda as a deployment adapter
+
+Lambda does not define a service boundary. Bounded asynchronous work may use a
+thin Lambda handler while local Compose/CI and workloads outside the accepted
+Lambda envelope use a RabbitMQ worker command over the same application use
+case:
+
+- Ingestion PDF/EPUB extraction and chunking may run as a Lambda container.
+- Retrieval embedding/index batches may run as a Lambda container.
+- Short owning-context cleanup tasks may run as scheduled Lambdas.
+
+Edge, Identity, Catalog, Retrieval search, and synchronous Answer remain
+long-running services because they require stable HTTP/gRPC, streaming or
+pooled connections, dependency-aware readiness, or predictable latency.
+
+AWS uses Amazon MQ for RabbitMQ event-source mappings with batch size one for
+document jobs. Delivery is at least once, so a service-owned inbox/business key
+provides idempotency. Functions use dedicated least-privilege roles, secret
+references, reserved concurrency, bounded temporary storage, DLQs, and alarms.
+RabbitMQ mappings default to one concurrent Lambda environment; measured
+throughput must justify a mapping-specific limit increase or selection of the
+portable worker deployment.
+Functions have no public URL and accept only validated versioned events with
+controlled object references; an event can never direct a function to fetch an
+arbitrary URL or object prefix.
+MQ-triggered work must finish below AWS's 14-minute limit. Work outside the
+configured file/page/resource budget fails with a visible bounded status. If
+accepted workloads cannot fit reliably, disable the event-source mapping and
+deploy the same application as the queue's portable container worker without
+duplicating business logic or running competing adapters. See AWS's
+[Amazon MQ integration](https://docs.aws.amazon.com/lambda/latest/dg/with-mq.html)
+and [Lambda quotas](https://docs.aws.amazon.com/lambda/latest/dg/gettingstarted-limits.html).
+
+## Current state and delivery order
+
+The one-time extraction is complete: Edge, Identity, and Catalog are separate
+processes. The remaining vertical slices are delivered in this order:
+
+1. Identity RBAC and librarian approval.
+2. Catalog PDF upload, MinIO, RabbitMQ, and transactional publication.
+3. Ingestion extraction/chunking through Lambda and worker adapters.
+4. Retrieval indexing/search through Lambda/worker indexing and gRPC search.
+5. Optional grounded Answer synthesis.
+6. EPUB and library lifecycle completion.
+7. Internet-ready hardening.
+
+The canonical acceptance criteria are in [README.md](README.md).
