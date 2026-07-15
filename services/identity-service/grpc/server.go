@@ -15,14 +15,33 @@ import (
 
 const operationTimeout = 5 * time.Second
 
+// RegistrationUseCase is the transport-facing registration contract.
+type RegistrationUseCase interface {
+	Register(context.Context, string, string, domain.Role) (usecase.AuthResult, error)
+}
+
+// SessionUseCase is the transport-facing session lifecycle contract.
+type SessionUseCase interface {
+	Login(context.Context, string, string) (usecase.AuthResult, error)
+	Refresh(context.Context, string) (usecase.AuthResult, error)
+	ValidateSession(context.Context, string, string) error
+	Logout(context.Context, string) error
+}
+
 // Server exposes Identity's versioned internal gRPC contract.
 type Server struct {
 	identityv1.UnimplementedIdentityServiceServer
-	useCase usecase.AuthUseCase
+	registration RegistrationUseCase
+	sessions     SessionUseCase
 }
 
 // NewServer constructs an Identity gRPC adapter.
-func NewServer(uc usecase.AuthUseCase) *Server { return &Server{useCase: uc} }
+func NewServer(registration RegistrationUseCase, sessions SessionUseCase) *Server {
+	if registration == nil || sessions == nil {
+		panic("grpc: registration and session use cases are required")
+	}
+	return &Server{registration: registration, sessions: sessions}
+}
 
 // Register creates a reader account for an authorized Edge caller.
 func (s *Server) Register(ctx context.Context, req *identityv1.RegisterRequest) (*identityv1.RegisterResponse, error) {
@@ -34,7 +53,7 @@ func (s *Server) Register(ctx context.Context, req *identityv1.RegisterRequest) 
 	if req == nil || req.Email == "" || req.Password == "" {
 		return nil, status.Error(codes.InvalidArgument, "invalid registration")
 	}
-	result, err := s.useCase.Register(ctx, req.Email, req.Password, domain.RoleReader)
+	result, err := s.registration.Register(ctx, req.Email, req.Password, domain.RoleReader)
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -51,7 +70,7 @@ func (s *Server) Login(ctx context.Context, req *identityv1.LoginRequest) (*iden
 	if req == nil || req.Email == "" || req.Password == "" {
 		return nil, status.Error(codes.InvalidArgument, "invalid credentials")
 	}
-	result, err := s.useCase.Login(ctx, req.Email, req.Password)
+	result, err := s.sessions.Login(ctx, req.Email, req.Password)
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -68,7 +87,7 @@ func (s *Server) Refresh(ctx context.Context, req *identityv1.RefreshRequest) (*
 	if req == nil || req.RefreshToken == "" {
 		return nil, status.Error(codes.InvalidArgument, "invalid refresh request")
 	}
-	result, err := s.useCase.Refresh(ctx, req.RefreshToken)
+	result, err := s.sessions.Refresh(ctx, req.RefreshToken)
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -85,7 +104,7 @@ func (s *Server) ValidateSession(ctx context.Context, req *identityv1.ValidateSe
 	if req == nil || req.UserId == "" || req.SessionId == "" {
 		return nil, status.Error(codes.InvalidArgument, "invalid session")
 	}
-	if err = s.useCase.ValidateSession(ctx, req.UserId, req.SessionId); err != nil {
+	if err = s.sessions.ValidateSession(ctx, req.UserId, req.SessionId); err != nil {
 		return nil, toStatus(err)
 	}
 	return &identityv1.ValidateSessionResponse{}, nil
@@ -101,7 +120,7 @@ func (s *Server) Logout(ctx context.Context, req *identityv1.LogoutRequest) (*id
 	if req == nil || req.SessionId == "" {
 		return nil, status.Error(codes.InvalidArgument, "invalid session")
 	}
-	if err = s.useCase.Logout(ctx, req.SessionId); err != nil {
+	if err = s.sessions.Logout(ctx, req.SessionId); err != nil {
 		return nil, toStatus(err)
 	}
 	return &identityv1.LogoutResponse{}, nil

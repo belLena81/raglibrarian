@@ -8,8 +8,6 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/health"
 	grpc_health_v1 "google.golang.org/grpc/health/grpc_health_v1"
-
-	"github.com/belLena81/raglibrarian/services/identity-service/repository"
 )
 
 func monitorDatabaseHealth(ctx context.Context, pool *pgxpool.Pool, healthServer *health.Server) {
@@ -35,7 +33,11 @@ func monitorDatabaseHealth(ctx context.Context, pool *pgxpool.Pool, healthServer
 	}
 }
 
-func cleanupExpiredSessions(ctx context.Context, sessions repository.SessionRepository, log *zap.Logger) {
+type expiredSessionCleaner interface {
+	CleanupExpired(context.Context, time.Time) (int64, error)
+}
+
+func cleanupExpiredSessions(ctx context.Context, sessions expiredSessionCleaner, log *zap.Logger) {
 	cleanup := func() {
 		cleanupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()

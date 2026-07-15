@@ -40,8 +40,13 @@ func TestRegisterErrorMapping(t *testing.T) {
 }
 
 func TestCredentialErrorMapping(t *testing.T) {
+	assert.NoError(t, mapCredentialError(nil))
+	assert.ErrorIs(t, mapCredentialError(status.Error(codes.InvalidArgument, "")), authflow.ErrInvalidCredentials)
 	assert.ErrorIs(t, mapCredentialError(status.Error(codes.Unauthenticated, "")), authflow.ErrInvalidCredentials)
+	assert.ErrorIs(t, mapCredentialError(status.Error(codes.Internal, "")), authflow.ErrUnavailable)
+	assert.ErrorIs(t, mapCredentialError(status.Error(codes.Unavailable, "")), authflow.ErrUnavailable)
 	assert.ErrorIs(t, mapCredentialError(status.Error(codes.DeadlineExceeded, "")), authflow.ErrUnavailable)
+	assert.ErrorIs(t, mapCredentialError(status.Error(codes.Canceled, "")), authflow.ErrUnavailable)
 }
 
 func TestReadinessRequiresServingHealth(t *testing.T) {

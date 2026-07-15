@@ -10,6 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/belLena81/raglibrarian/services/identity-service/domain"
+	"github.com/belLena81/raglibrarian/services/identity-service/usecase/port"
 )
 
 // PostgresSessionRepository implements durable sessions. Rotation locks the
@@ -26,88 +29,128 @@ func NewPostgresSessionRepository(pool *pgxpool.Pool) *PostgresSessionRepository
 	return &PostgresSessionRepository{pool: pool}
 }
 
-// Create persists a new session and its initial refresh-token hash.
-func (r *PostgresSessionRepository) Create(ctx context.Context, userID string, expiresAt time.Time, tokenHash []byte) (Session, error) {
-	now := time.Now().UTC()
-	session := Session{ID: uuid.NewString(), UserID: userID, FamilyID: uuid.NewString(), ExpiresAt: expiresAt.UTC()}
+// Create persists a prepared session and its initial refresh-token hash.
+func (r *PostgresSessionRepository) Create(ctx context.Context, session port.Session, createdAt time.Time, tokenHash []byte) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return Session{}, fmt.Errorf("session: begin create: %w", err)
+		return fmt.Errorf("session: begin create: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	_, err = tx.Exec(ctx, `INSERT INTO identity.sessions (id, user_id, family_id, expires_at, created_at, last_used_at) VALUES ($1,$2,$3,$4,$5,$5)`, session.ID, session.UserID, session.FamilyID, session.ExpiresAt, now)
-	if err != nil {
-		return Session{}, fmt.Errorf("session: insert: %w", err)
-	}
-	_, err = tx.Exec(ctx, `INSERT INTO identity.refresh_tokens (id, session_id, token_hash, expires_at, created_at) VALUES ($1,$2,$3,$4,$5)`, uuid.NewString(), session.ID, tokenHash, session.ExpiresAt, now)
-	if err != nil {
-		return Session{}, fmt.Errorf("session: insert refresh token: %w", err)
+	if err = insertSessionAndToken(ctx, tx, session, createdAt, tokenHash); err != nil {
+		return err
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return Session{}, fmt.Errorf("session: commit create: %w", err)
+		return fmt.Errorf("session: commit create: %w", err)
 	}
-	return session, nil
+	return nil
 }
 
-// Rotate atomically consumes a refresh token and creates its successor.
-func (r *PostgresSessionRepository) Rotate(ctx context.Context, tokenHash, successorHash []byte, now time.Time) (Session, error) {
+func insertSessionAndToken(
+	ctx context.Context,
+	tx pgx.Tx,
+	session port.Session,
+	createdAt time.Time,
+	tokenHash []byte,
+) error {
+	createdAt = createdAt.UTC()
+	_, err := tx.Exec(ctx, `INSERT INTO identity.sessions (id, user_id, family_id, expires_at, created_at, last_used_at) VALUES ($1,$2,$3,$4,$5,$5)`, session.ID, session.UserID, session.FamilyID, session.ExpiresAt, createdAt)
+	if err != nil {
+		return fmt.Errorf("session: insert: %w", err)
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO identity.refresh_tokens (id, session_id, token_hash, expires_at, created_at) VALUES ($1,$2,$3,$4,$5)`, uuid.NewString(), session.ID, tokenHash, session.ExpiresAt, createdAt)
+	if err != nil {
+		return fmt.Errorf("session: insert refresh token: %w", err)
+	}
+	return nil
+}
+
+// Rotate prepares and atomically commits a one-time refresh-token successor.
+func (r *PostgresSessionRepository) Rotate(
+	ctx context.Context,
+	tokenHash []byte,
+	successorHash []byte,
+	now time.Time,
+	prepare port.PrepareRefresh,
+) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return Session{}, fmt.Errorf("session: begin rotation: %w", err)
+		return fmt.Errorf("session: begin rotation: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var session Session
+	var session port.Session
 	var tokenID string
 	var consumedAt pgtype.Timestamptz
-	err = tx.QueryRow(ctx, `SELECT s.id,s.user_id,s.family_id,s.expires_at,t.id,t.consumed_at FROM identity.refresh_tokens t JOIN identity.sessions s ON s.id=t.session_id WHERE t.token_hash=$1 FOR UPDATE OF t,s`, tokenHash).Scan(&session.ID, &session.UserID, &session.FamilyID, &session.ExpiresAt, &tokenID, &consumedAt)
+	var revokedAt pgtype.Timestamptz
+	var (
+		userID string
+		email  string
+		role   string
+	)
+	err = tx.QueryRow(ctx, `SELECT s.id,s.user_id,s.family_id,s.expires_at,s.revoked_at,t.id,t.consumed_at,u.id,u.email,u.role FROM identity.refresh_tokens t JOIN identity.sessions s ON s.id=t.session_id JOIN identity.users u ON u.id=s.user_id WHERE t.token_hash=$1 FOR UPDATE OF t,s,u`, tokenHash).Scan(
+		&session.ID,
+		&session.UserID,
+		&session.FamilyID,
+		&session.ExpiresAt,
+		&revokedAt,
+		&tokenID,
+		&consumedAt,
+		&userID,
+		&email,
+		&role,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Session{}, ErrRefreshTokenInvalid
+		return port.ErrRefreshTokenInvalid
 	}
 	if err != nil {
-		return Session{}, fmt.Errorf("session: lock refresh token: %w", err)
+		return fmt.Errorf("session: lock refresh principal: %w", err)
 	}
 	if consumedAt.Valid {
 		_, err = tx.Exec(ctx, `UPDATE identity.sessions SET revoked_at=$1 WHERE family_id=$2 AND revoked_at IS NULL`, now, session.FamilyID)
 		if err != nil {
-			return Session{}, fmt.Errorf("session: revoke reused family: %w", err)
+			return fmt.Errorf("session: revoke reused family: %w", err)
 		}
 		if err = tx.Commit(ctx); err != nil {
-			return Session{}, fmt.Errorf("session: commit reuse revocation: %w", err)
+			return fmt.Errorf("session: commit reuse revocation: %w", err)
 		}
-		return Session{}, ErrRefreshTokenReused
+		return port.ErrRefreshTokenReused
 	}
 	if !session.ExpiresAt.After(now) {
-		return Session{}, ErrRefreshTokenInvalid
+		return port.ErrRefreshTokenInvalid
 	}
 
-	var revokedAt pgtype.Timestamptz
-	err = tx.QueryRow(ctx, `SELECT revoked_at FROM identity.sessions WHERE id=$1`, session.ID).Scan(&revokedAt)
-	if err != nil {
-		return Session{}, fmt.Errorf("session: check revocation: %w", err)
-	}
 	if revokedAt.Valid {
-		return Session{}, ErrRefreshTokenInvalid
+		return port.ErrRefreshTokenInvalid
+	}
+
+	principal := port.RefreshPrincipal{
+		Session: session,
+		UserID:  userID,
+		Email:   email,
+		Role:    domain.Role(role),
+	}
+	if err = prepare(principal); err != nil {
+		return fmt.Errorf("session: prepare rotation: %w", err)
 	}
 
 	successorID := uuid.NewString()
 	_, err = tx.Exec(ctx, `INSERT INTO identity.refresh_tokens (id,session_id,token_hash,expires_at,created_at) VALUES ($1,$2,$3,$4,$5)`, successorID, session.ID, successorHash, session.ExpiresAt, now)
 	if err != nil {
-		return Session{}, fmt.Errorf("session: insert successor: %w", err)
+		return fmt.Errorf("session: insert successor: %w", err)
 	}
 	_, err = tx.Exec(ctx, `UPDATE identity.refresh_tokens SET consumed_at=$1,replaced_by_id=$2 WHERE id=$3`, now, successorID, tokenID)
 	if err != nil {
-		return Session{}, fmt.Errorf("session: consume refresh token: %w", err)
+		return fmt.Errorf("session: consume refresh token: %w", err)
 	}
 	_, err = tx.Exec(ctx, `UPDATE identity.sessions SET last_used_at=$1 WHERE id=$2`, now, session.ID)
 	if err != nil {
-		return Session{}, fmt.Errorf("session: update last use: %w", err)
+		return fmt.Errorf("session: update last use: %w", err)
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return Session{}, fmt.Errorf("session: commit rotation: %w", err)
+		return fmt.Errorf("session: commit rotation: %w", err)
 	}
-	return session, nil
+	return nil
 }
 
 // Validate confirms an active session belongs to the requested user.
@@ -115,7 +158,7 @@ func (r *PostgresSessionRepository) Validate(ctx context.Context, userID, sessio
 	var id string
 	err := r.pool.QueryRow(ctx, `SELECT id FROM identity.sessions WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL AND expires_at>$3`, sessionID, userID, now).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrSessionInvalid
+		return port.ErrSessionInvalid
 	}
 	if err != nil {
 		return fmt.Errorf("session: validate: %w", err)

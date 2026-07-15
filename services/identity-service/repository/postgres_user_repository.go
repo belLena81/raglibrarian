@@ -23,10 +23,6 @@ const (
 	findUserByEmailQuery = `
 	SELECT id, email, password_hash, role, created_at
 	FROM identity.users WHERE email=$1`
-
-	findUserByIDQuery = `
-	SELECT id, email, password_hash, role, created_at
-	FROM identity.users WHERE id=$1`
 )
 
 // PostgresUserRepository is the pgx/v5 implementation of UserRepository.
@@ -43,9 +39,12 @@ func NewPostgresUserRepository(pool *pgxpool.Pool) *PostgresUserRepository {
 	return &PostgresUserRepository{pool: pool}
 }
 
-// Save inserts a new user row. Maps unique-email violations to domain.ErrEmailTaken.
-func (r *PostgresUserRepository) Save(ctx context.Context, user domain.User) error {
-	_, err := r.pool.Exec(ctx,
+type userExecutor interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func insertUser(ctx context.Context, db userExecutor, user domain.User) error {
+	_, err := db.Exec(ctx,
 		insertUserQuery,
 		user.ID(),
 		user.Email(),
@@ -54,7 +53,9 @@ func (r *PostgresUserRepository) Save(ctx context.Context, user domain.User) err
 		user.CreatedAt(),
 	)
 	if err != nil {
-		if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == pgUniqueViolation {
+		if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok &&
+			pgErr.Code == pgUniqueViolation &&
+			pgErr.ConstraintName == "users_email_unique" {
 			return domain.ErrEmailTaken
 		}
 		return fmt.Errorf("repository: save user: %w", err)
@@ -67,15 +68,6 @@ func (r *PostgresUserRepository) FindByEmail(ctx context.Context, email string) 
 	row := r.pool.QueryRow(ctx,
 		findUserByEmailQuery,
 		email,
-	)
-	return scanUser(row)
-}
-
-// FindByID looks up a user by UUID. Returns domain.ErrUserNotFound when absent.
-func (r *PostgresUserRepository) FindByID(ctx context.Context, id string) (domain.User, error) {
-	row := r.pool.QueryRow(ctx,
-		findUserByIDQuery,
-		id,
 	)
 	return scanUser(row)
 }

@@ -166,8 +166,8 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 	tokens, err := h.uc.Refresh(r.Context(), cookie.Value)
 	if err != nil {
-		h.clearRefreshCookie(w)
 		if errors.Is(err, authflow.ErrInvalidCredentials) {
+			h.clearRefreshCookie(w)
 			writeAuthError(w, http.StatusUnauthorized, "invalid refresh session")
 			return
 		}
