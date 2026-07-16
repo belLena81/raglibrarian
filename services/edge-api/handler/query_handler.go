@@ -4,9 +4,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/go-chi/chi/v5/middleware"
-	"go.uber.org/zap"
-
 	querymiddleware "github.com/belLena81/raglibrarian/services/edge-api/middleware"
 )
 
@@ -15,15 +12,19 @@ type QueryRequest struct {
 	Question string `json:"question"`
 }
 
+type queryDiagnostics interface {
+	RetrievalUnavailable(*http.Request)
+}
+
 // QueryHandler exposes only the truthful Milestone 1 query boundary.
-type QueryHandler struct{ log *zap.Logger }
+type QueryHandler struct{ diagnostics queryDiagnostics }
 
 // NewQueryHandler constructs the Milestone 1 query boundary.
-func NewQueryHandler(log *zap.Logger) *QueryHandler {
-	if log == nil {
+func NewQueryHandler(diagnostics queryDiagnostics) *QueryHandler {
+	if dependencyMissing(diagnostics) {
 		panic("handler: Logger must not be nil")
 	}
-	return &QueryHandler{log: log}
+	return &QueryHandler{diagnostics: diagnostics}
 }
 
 // Query validates the request and reports that retrieval is not delivered yet.
@@ -42,9 +43,6 @@ func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid query")
 		return
 	}
-	h.log.Debug("query.retrieval.unavailable",
-		zap.String("request_id", middleware.GetReqID(r.Context())),
-		zap.String("outcome", "not_implemented"),
-	)
+	h.diagnostics.RetrievalUnavailable(r)
 	writeError(w, http.StatusNotImplemented, "retrieval is unavailable in milestone 1")
 }

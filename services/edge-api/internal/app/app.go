@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	grpc_health_v1 "google.golang.org/grpc/health/grpc_health_v1"
 
@@ -17,12 +16,16 @@ import (
 	identityv1 "github.com/belLena81/raglibrarian/pkg/proto/identity/v1"
 	edgeapi "github.com/belLena81/raglibrarian/services/edge-api"
 	"github.com/belLena81/raglibrarian/services/edge-api/config"
+	"github.com/belLena81/raglibrarian/services/edge-api/diagnostic"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
 	"github.com/belLena81/raglibrarian/services/edge-api/identityclient"
 )
 
 // Run composes and manages the Edge process lifecycle.
-func Run(ctx context.Context, cfg config.Config, log *zap.Logger) error {
+func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorder) error {
+	if diagnostics == nil {
+		panic("app: diagnostics are required")
+	}
 	verifier, err := auth.NewVerifier(cfg.VerifyKey)
 	if err != nil {
 		return err
@@ -40,12 +43,12 @@ func Run(ctx context.Context, cfg config.Config, log *zap.Logger) error {
 	}
 	defer func() { _ = connection.Close() }()
 	identity := identityclient.New(identityv1.NewIdentityServiceClient(connection), grpc_health_v1.NewHealthClient(connection))
-	authHandler := handler.NewAuthHandler(identity, log, handler.CookieConfig{Secure: cfg.SecureCookie})
-	queryHandler := handler.NewQueryHandler(log)
+	authHandler := handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: cfg.SecureCookie})
+	queryHandler := handler.NewQueryHandler(diagnostics)
 	healthHandler := handler.NewHealthHandler(identity)
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           edgeapi.NewRouter(queryHandler, authHandler, healthHandler, verifier, identity, log, edgeapi.RouterConfig{TrustedProxyCIDRs: cfg.TrustedProxyCIDRs}),
+		Handler:           edgeapi.NewRouter(queryHandler, authHandler, healthHandler, verifier, identity, diagnostics, edgeapi.RouterConfig{TrustedProxyCIDRs: cfg.TrustedProxyCIDRs}),
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,

@@ -11,21 +11,21 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 
+	"github.com/belLena81/raglibrarian/services/edge-api/diagnostic"
 	qmiddleware "github.com/belLena81/raglibrarian/services/edge-api/middleware"
 )
 
 // newObservedLogger returns a zap logger that stores log entries in memory so
 // tests can make assertions on what was logged without touching stdout.
-func newObservedLogger() (*zap.Logger, *observer.ObservedLogs) {
+func newObservedLogger() (*diagnostic.Recorder, *observer.ObservedLogs) {
 	core, logs := observer.New(zapcore.DebugLevel)
-	return zap.New(core), logs
+	return diagnostic.New(zap.New(core)), logs
 }
 
 func fieldsToString(fields map[string]any) string {
@@ -36,7 +36,7 @@ func fieldsToString(fields map[string]any) string {
 // wrapWithRequestID simulates chi's RequestID middleware so the request_id
 // field is populated in the log output under test.
 func wrapWithRequestID(next http.Handler) http.Handler {
-	return chimiddleware.RequestID(next)
+	return qmiddleware.RequestID(next)
 }
 
 func makeHandler(status int) http.HandlerFunc {
@@ -229,4 +229,9 @@ func TestRequestLogger_DoesNotEmitSensitiveRequestInputs(t *testing.T) {
 	require.Equal(t, 1, logs.Len())
 	serialized := strings.ToLower(fmt.Sprintf("%s %s", logs.All()[0].Message, fieldsToString(logs.All()[0].ContextMap())))
 	assert.NotContains(t, serialized, strings.ToLower(canary))
+}
+
+func TestRequestLoggerRejectsTypedNilDiagnostics(t *testing.T) {
+	var diagnostics *diagnostic.Recorder
+	assert.Panics(t, func() { qmiddleware.RequestLogger(diagnostics) })
 }

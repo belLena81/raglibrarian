@@ -14,6 +14,7 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/auth"
 	edgeapi "github.com/belLena81/raglibrarian/services/edge-api"
 	"github.com/belLena81/raglibrarian/services/edge-api/authflow"
+	"github.com/belLena81/raglibrarian/services/edge-api/diagnostic"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
 )
 
@@ -36,14 +37,15 @@ func TestRouterRequiresSessionValidatorAndAppliesSecurityHeaders(t *testing.T) {
 	issuer, err := auth.NewIssuer(make([]byte, 32), time.Hour)
 	require.NoError(t, err)
 	log := zaptest.NewLogger(t)
+	diagnostics := diagnostic.New(log)
 	identity := fakeIdentity{}
 	router := edgeapi.NewRouter(
-		handler.NewQueryHandler(log),
-		handler.NewAuthHandler(identity, log, handler.CookieConfig{Secure: true}),
+		handler.NewQueryHandler(diagnostics),
+		handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: true}),
 		handler.NewHealthHandler(identity),
 		issuer,
 		identity,
-		log,
+		diagnostics,
 		edgeapi.RouterConfig{},
 	)
 	recorder := httptest.NewRecorder()
@@ -60,8 +62,9 @@ func TestRouterPanicsWithoutSessionValidator(t *testing.T) {
 	issuer, err := auth.NewIssuer(make([]byte, 32), time.Hour)
 	require.NoError(t, err)
 	log := zaptest.NewLogger(t)
+	diagnostics := diagnostic.New(log)
 	identity := fakeIdentity{}
 	assert.Panics(t, func() {
-		edgeapi.NewRouter(handler.NewQueryHandler(log), handler.NewAuthHandler(identity, log, handler.CookieConfig{}), handler.NewHealthHandler(identity), issuer, nil, log, edgeapi.RouterConfig{})
+		edgeapi.NewRouter(handler.NewQueryHandler(diagnostics), handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{}), handler.NewHealthHandler(identity), issuer, nil, diagnostics, edgeapi.RouterConfig{})
 	})
 }

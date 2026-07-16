@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"strings"
 
-	"go.uber.org/zap"
-
 	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/services/edge-api/authflow"
 )
@@ -29,9 +27,13 @@ type SessionValidator interface {
 	ValidateSession(context.Context, string, string) error
 }
 
+type authDiagnostics interface {
+	TokenRejected(*http.Request)
+}
+
 // Authenticator validates a bearer token and stores verified claims in context.
-func Authenticator(verifier tokenVerifier, sessions SessionValidator, log *zap.Logger) func(http.Handler) http.Handler {
-	if verifier == nil || sessions == nil || log == nil {
+func Authenticator(verifier tokenVerifier, sessions SessionValidator, diagnostics authDiagnostics) func(http.Handler) http.Handler {
+	if dependencyMissing(verifier) || dependencyMissing(sessions) || dependencyMissing(diagnostics) {
 		panic("middleware: authentication dependencies are required")
 	}
 	return func(next http.Handler) http.Handler {
@@ -44,7 +46,7 @@ func Authenticator(verifier tokenVerifier, sessions SessionValidator, log *zap.L
 
 			claims, err := verifier.Validate(tokenStr)
 			if err != nil {
-				log.Debug("auth.token.rejected", zap.String("outcome", "invalid_token"))
+				diagnostics.TokenRejected(r)
 				writeUnauthorized(w, "invalid or expired token")
 				return
 			}

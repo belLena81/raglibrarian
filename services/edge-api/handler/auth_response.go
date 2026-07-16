@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/belLena81/raglibrarian/services/edge-api/authflow"
+	"github.com/belLena81/raglibrarian/services/edge-api/diagnostic"
 )
 
 func authErrToStatus(err error) int {
@@ -34,16 +35,16 @@ func sanitiseAuthError(err error) string {
 	}
 }
 
-func authErrorOutcome(err error) string {
+func authErrorOutcome(err error) diagnostic.AuthFailure {
 	switch {
 	case errors.Is(err, authflow.ErrEmailTaken):
-		return "email_conflict"
+		return diagnostic.AuthEmailConflict
 	case errors.Is(err, authflow.ErrInvalidRegistration):
-		return "invalid_registration"
+		return diagnostic.AuthInvalidRegistration
 	case errors.Is(err, authflow.ErrInvalidCredentials):
-		return "invalid_credentials"
+		return diagnostic.AuthInvalidCredentials
 	default:
-		return "dependency_unavailable"
+		return diagnostic.AuthDependencyUnavailable
 	}
 }
 

@@ -16,7 +16,9 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/belLena81/raglibrarian/services/edge-api/authflow"
+	"github.com/belLena81/raglibrarian/services/edge-api/diagnostic"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
+	qmiddleware "github.com/belLena81/raglibrarian/services/edge-api/middleware"
 )
 
 type fakeAuthUseCase struct {
@@ -37,13 +39,13 @@ func (f *fakeAuthUseCase) Refresh(context.Context, string) (authflow.Session, er
 func (*fakeAuthUseCase) Logout(context.Context, string) error { return nil }
 
 func newHandler(t *testing.T, useCase *fakeAuthUseCase) *handler.AuthHandler {
-	return handler.NewAuthHandler(useCase, zaptest.NewLogger(t), handler.CookieConfig{Secure: true})
+	return handler.NewAuthHandler(useCase, diagnostic.New(zaptest.NewLogger(t)), handler.CookieConfig{Secure: true})
 }
 
 func post(t *testing.T, h http.HandlerFunc, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	recorder := httptest.NewRecorder()
-	h.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body)))
+	qmiddleware.RequestID(h).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body)))
 	return recorder
 }
 
@@ -141,8 +143,10 @@ func TestRefreshSuccessReplacesCookieWithoutExposingIt(t *testing.T) {
 }
 
 func TestConstructorRequiresDependencies(t *testing.T) {
-	assert.Panics(t, func() { handler.NewAuthHandler(nil, zaptest.NewLogger(t), handler.CookieConfig{}) })
+	assert.Panics(t, func() { handler.NewAuthHandler(nil, diagnostic.New(zaptest.NewLogger(t)), handler.CookieConfig{}) })
 	assert.Panics(t, func() { handler.NewAuthHandler(&fakeAuthUseCase{}, nil, handler.CookieConfig{}) })
+	var typedNil *diagnostic.Recorder
+	assert.Panics(t, func() { handler.NewAuthHandler(&fakeAuthUseCase{}, typedNil, handler.CookieConfig{}) })
 }
 
 func TestRegisterDoesNotLogDependencyError(t *testing.T) {
@@ -151,7 +155,7 @@ func TestRegisterDoesNotLogDependencyError(t *testing.T) {
 	log := zap.New(core)
 	h := handler.NewAuthHandler(
 		&fakeAuthUseCase{registerErr: errors.New(canary)},
-		log,
+		diagnostic.New(log),
 		handler.CookieConfig{Secure: true},
 	)
 

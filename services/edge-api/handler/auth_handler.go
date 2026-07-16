@@ -6,10 +6,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/go-chi/chi/v5/middleware"
-	"go.uber.org/zap"
-
 	"github.com/belLena81/raglibrarian/services/edge-api/authflow"
+	"github.com/belLena81/raglibrarian/services/edge-api/diagnostic"
 	querymiddleware "github.com/belLena81/raglibrarian/services/edge-api/middleware"
 )
 
@@ -45,22 +43,27 @@ type MeResponse struct {
 // AuthHandler handles the /auth/* routes.
 type AuthHandler struct {
 	uc           AuthUseCase
-	log          *zap.Logger
+	diagnostics  authDiagnostics
 	secureCookie bool
+}
+
+type authDiagnostics interface {
+	RegistrationFailed(*http.Request, diagnostic.AuthFailure)
+	LoginFailed(*http.Request, diagnostic.AuthFailure)
 }
 
 // CookieConfig controls refresh-cookie transport security.
 type CookieConfig struct{ Secure bool }
 
 // NewAuthHandler constructs an AuthHandler with explicit cookie policy.
-func NewAuthHandler(uc AuthUseCase, log *zap.Logger, cookies CookieConfig) *AuthHandler {
+func NewAuthHandler(uc AuthUseCase, diagnostics authDiagnostics, cookies CookieConfig) *AuthHandler {
 	if uc == nil {
 		panic("handler: AuthUseCase must not be nil")
 	}
-	if log == nil {
+	if dependencyMissing(diagnostics) {
 		panic("handler: Logger must not be nil")
 	}
-	return &AuthHandler{uc: uc, log: log, secureCookie: cookies.Secure}
+	return &AuthHandler{uc: uc, diagnostics: diagnostics, secureCookie: cookies.Secure}
 }
 
 // AuthUseCase is the edge-facing identity contract. Its production adapter is
@@ -75,8 +78,6 @@ type AuthUseCase interface {
 // Register handles POST /auth/register.
 // Creates an account and issues a token in one request.
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
-	reqID := middleware.GetReqID(r.Context())
-
 	var req RegisterRequest
 	if err := decodeJSONBody(w, r, &req); err != nil {
 		writeAuthError(w, http.StatusBadRequest, "invalid JSON body")
@@ -85,10 +86,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 	tokens, err := h.uc.Register(r.Context(), req.Email, req.Password)
 	if err != nil {
-		h.log.Debug("auth.register.failed",
-			zap.String("request_id", reqID),
-			zap.String("outcome", authErrorOutcome(err)),
-		)
+		h.diagnostics.RegistrationFailed(r, authErrorOutcome(err))
 		writeAuthError(w, authErrToStatus(err), sanitiseAuthError(err))
 		return
 	}
@@ -143,10 +141,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	tokens, err := h.uc.Login(r.Context(), req.Email, req.Password)
 	if err != nil {
-		h.log.Debug("auth.login.failed",
-			zap.String("request_id", middleware.GetReqID(r.Context())),
-			zap.String("outcome", authErrorOutcome(err)),
-		)
+		h.diagnostics.LoginFailed(r, authErrorOutcome(err))
 		if errors.Is(err, authflow.ErrInvalidCredentials) {
 			writeAuthError(w, http.StatusUnauthorized, "invalid credentials")
 			return

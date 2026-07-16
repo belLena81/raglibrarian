@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/belLena81/raglibrarian/services/edge-api/diagnostic"
 	qmiddleware "github.com/belLena81/raglibrarian/services/edge-api/middleware"
 )
 
@@ -93,4 +94,9 @@ func TestRecoveryDoesNotAppendErrorBodyAfterResponseCommitted(t *testing.T) {
 	assert.Equal(t, responseBody, recorder.Body.String())
 	require.Equal(t, 1, logs.Len())
 	assert.NotContains(t, fieldsToString(logs.All()[0].ContextMap()), "sensitive-panic-value")
+}
+
+func TestRecoveryRejectsTypedNilDiagnostics(t *testing.T) {
+	var diagnostics *diagnostic.Recorder
+	assert.Panics(t, func() { qmiddleware.Recovery(diagnostics) })
 }

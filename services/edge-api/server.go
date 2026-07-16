@@ -6,9 +6,9 @@ import (
 	"net/netip"
 
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 
 	"github.com/belLena81/raglibrarian/pkg/auth"
+	"github.com/belLena81/raglibrarian/services/edge-api/diagnostic"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
 	"github.com/belLena81/raglibrarian/services/edge-api/middleware"
 )
@@ -28,19 +28,19 @@ func NewRouter(
 	health *handler.HealthHandler,
 	verifier TokenVerifier,
 	sessions middleware.SessionValidator,
-	log *zap.Logger,
+	diagnostics *diagnostic.Recorder,
 	config RouterConfig,
 ) http.Handler {
-	if query == nil || authHandler == nil || health == nil || verifier == nil || sessions == nil || log == nil {
+	if query == nil || authHandler == nil || health == nil || verifier == nil || sessions == nil || diagnostics == nil {
 		panic("edgeapi: all router dependencies are required")
 	}
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
-	router.Use(middleware.Recovery(log))
+	router.Use(middleware.Recovery(diagnostics))
 	if len(config.TrustedProxyCIDRs) > 0 {
 		router.Use(middleware.TrustedProxyRealIP(config.TrustedProxyCIDRs))
 	}
-	router.Use(middleware.RequestLogger(log))
+	router.Use(middleware.RequestLogger(diagnostics))
 	router.Use(middleware.SecurityHeaders)
 
 	router.Get("/healthz", health.Live)
@@ -50,13 +50,13 @@ func NewRouter(
 		router.Post("/login", authHandler.Login)
 		router.Post("/refresh", authHandler.Refresh)
 		router.Group(func(router chi.Router) {
-			router.Use(middleware.Authenticator(verifier, sessions, log))
+			router.Use(middleware.Authenticator(verifier, sessions, diagnostics))
 			router.Get("/me", authHandler.Me)
 			router.Post("/logout", authHandler.Logout)
 		})
 	})
 	router.Group(func(router chi.Router) {
-		router.Use(middleware.Authenticator(verifier, sessions, log))
+		router.Use(middleware.Authenticator(verifier, sessions, diagnostics))
 		router.Post("/query", query.Query)
 		router.Route("/query", func(router chi.Router) { router.Post("/", query.Query) })
 	})
