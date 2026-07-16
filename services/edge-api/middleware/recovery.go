@@ -28,7 +28,7 @@ func Recovery(diagnostics panicDiagnostics) func(http.Handler) http.Handler {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ww := chimiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			ww := newCommitTrackingWriter(w, r.ProtoMajor)
 			defer func() {
 				recovered := recover()
 				if recovered == nil {
@@ -36,15 +36,13 @@ func Recovery(diagnostics panicDiagnostics) func(http.Handler) http.Handler {
 				}
 				recoveredError, isError := recovered.(error)
 				if isError && errors.Is(recoveredError, http.ErrAbortHandler) {
-					setCompletionOutcome(r, diagnostic.RequestResponseAborted)
-					panic(http.ErrAbortHandler)
+					abortRecoveredResponse(r, ww)
 				}
 
 				requestID := chimiddleware.GetReqID(r.Context())
 				diagnostics.PanicRecovered(r)
-				if ww.Status() != 0 {
-					setCompletionOutcome(r, diagnostic.RequestResponseAborted)
-					panic(http.ErrAbortHandler)
+				if ww.Committed() {
+					abortRecoveredResponse(r, ww)
 				}
 				ww.Header().Set("Content-Type", "application/json")
 				ww.Header().Set("Cache-Control", "no-store, private")
@@ -60,4 +58,14 @@ func Recovery(diagnostics panicDiagnostics) func(http.Handler) http.Handler {
 			next.ServeHTTP(ww, r)
 		})
 	}
+}
+
+func abortRecoveredResponse(request *http.Request, writer commitAwareResponseWriter) {
+	setCompletionOutcome(request, diagnostic.RequestResponseAborted)
+	if writer.Status() == 0 {
+		if status, ok := writer.ImplicitStatus(); ok {
+			setCompletionStatus(request, status)
+		}
+	}
+	panic(http.ErrAbortHandler)
 }

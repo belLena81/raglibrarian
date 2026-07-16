@@ -28,6 +28,9 @@ func RequestLogger(diagnostics requestDiagnostics) func(http.Handler) http.Handl
 			defer func() {
 				if recovered := recover(); recovered != nil {
 					status := ww.Status()
+					if state.hasStatus {
+						status = state.status
+					}
 					outcome := diagnostic.RequestResponseAborted
 					if state.hasOutcome {
 						outcome = state.outcome
@@ -39,6 +42,9 @@ func RequestLogger(diagnostics requestDiagnostics) func(http.Handler) http.Handl
 					panic(recovered)
 				}
 				status := ww.Status()
+				if state.hasStatus {
+					status = state.status
+				}
 				if status == 0 {
 					status = http.StatusOK
 				}

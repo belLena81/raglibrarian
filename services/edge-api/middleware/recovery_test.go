@@ -176,19 +176,62 @@ func TestRecoveryReportsCommittedPanicAsAborted(t *testing.T) {
 	assert.NotContains(t, serialized, canary)
 }
 
+func TestRecoveryReportsFlushedPanicAsAborted(t *testing.T) {
+	const canary = "flushed-panic-secret-canary"
+	for _, protocolMajor := range []int{1, 2} {
+		t.Run(fmt.Sprintf("HTTP/%d", protocolMajor), func(t *testing.T) {
+			log, logs := newObservedLogger()
+			router := chi.NewRouter()
+			router.Use(wrapWithRequestID)
+			router.Use(qmiddleware.RequestLogger(log))
+			router.Use(qmiddleware.Recovery(log))
+			router.Get("/stream", func(w http.ResponseWriter, _ *http.Request) {
+				w.(http.Flusher).Flush()
+				panic(canary)
+			})
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/stream", nil)
+			request.ProtoMajor = protocolMajor
+
+			assert.PanicsWithValue(t, http.ErrAbortHandler, func() {
+				router.ServeHTTP(recorder, request)
+			})
+
+			assert.True(t, recorder.Flushed)
+			assert.Equal(t, http.StatusOK, recorder.Code)
+			assert.Empty(t, recorder.Body.String())
+			require.Equal(t, 2, logs.Len())
+			assert.Equal(t, "http.panic.recovered", logs.All()[0].Message)
+			completion := logs.All()[1]
+			assert.Equal(t, "http.request.completed", completion.Message)
+			assert.Equal(t, "response_aborted", completion.ContextMap()["outcome"])
+			assert.EqualValues(t, http.StatusOK, completion.ContextMap()["status"])
+			assert.EqualValues(t, 0, completion.ContextMap()["response_bytes"])
+			serialized := recorder.Body.String()
+			for _, entry := range logs.All() {
+				serialized += entry.Message + fieldsToString(entry.ContextMap())
+			}
+			assert.NotContains(t, serialized, canary)
+		})
+	}
+}
+
 func TestRecoveryRepanicsAbortHandlerWithoutPanicEventOrErrorBody(t *testing.T) {
 	const canary = "wrapped-abort-secret-canary"
 	tests := []struct {
 		name       string
 		panicValue any
 		write      bool
+		flush      bool
 		wantStatus int
 		wantBytes  int
 	}{
 		{name: "direct uncommitted", panicValue: http.ErrAbortHandler, wantStatus: 0},
 		{name: "direct committed", panicValue: http.ErrAbortHandler, write: true, wantStatus: http.StatusAccepted, wantBytes: len("partial")},
+		{name: "direct flushed", panicValue: http.ErrAbortHandler, flush: true, wantStatus: http.StatusOK},
 		{name: "wrapped uncommitted", panicValue: fmt.Errorf("%s: %w", canary, http.ErrAbortHandler), wantStatus: 0},
 		{name: "wrapped committed", panicValue: fmt.Errorf("%s: %w", canary, http.ErrAbortHandler), write: true, wantStatus: http.StatusAccepted, wantBytes: len("partial")},
+		{name: "wrapped flushed", panicValue: fmt.Errorf("%s: %w", canary, http.ErrAbortHandler), flush: true, wantStatus: http.StatusOK},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -201,6 +244,9 @@ func TestRecoveryRepanicsAbortHandlerWithoutPanicEventOrErrorBody(t *testing.T) 
 				if test.write {
 					w.WriteHeader(http.StatusAccepted)
 					_, _ = w.Write([]byte("partial"))
+				}
+				if test.flush {
+					w.(http.Flusher).Flush()
 				}
 				panic(test.panicValue)
 			})
