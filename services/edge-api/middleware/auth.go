@@ -44,7 +44,7 @@ func Authenticator(verifier tokenVerifier, sessions SessionValidator, log *zap.L
 
 			claims, err := verifier.Validate(tokenStr)
 			if err != nil {
-				log.Debug("token validation failed", zap.Error(err))
+				log.Debug("auth.token.rejected", zap.String("outcome", "invalid_token"))
 				writeUnauthorized(w, "invalid or expired token")
 				return
 			}

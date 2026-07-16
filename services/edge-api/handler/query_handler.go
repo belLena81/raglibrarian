@@ -33,7 +33,7 @@ func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	claims, ok := querymiddleware.ClaimsFromContext(r.Context())
+	_, ok := querymiddleware.ClaimsFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
@@ -42,6 +42,9 @@ func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid query")
 		return
 	}
-	h.log.Debug("retrieval unavailable in milestone 1", zap.String("request_id", middleware.GetReqID(r.Context())), zap.String("user_id", claims.UserID))
+	h.log.Debug("query.retrieval.unavailable",
+		zap.String("request_id", middleware.GetReqID(r.Context())),
+		zap.String("outcome", "not_implemented"),
+	)
 	writeError(w, http.StatusNotImplemented, "retrieval is unavailable in milestone 1")
 }

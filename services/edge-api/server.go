@@ -6,7 +6,6 @@ import (
 	"net/netip"
 
 	"github.com/go-chi/chi/v5"
-	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
 
 	"github.com/belLena81/raglibrarian/pkg/auth"
@@ -36,13 +35,13 @@ func NewRouter(
 		panic("edgeapi: all router dependencies are required")
 	}
 	router := chi.NewRouter()
+	router.Use(middleware.RequestID)
+	router.Use(middleware.Recovery(log))
 	if len(config.TrustedProxyCIDRs) > 0 {
 		router.Use(middleware.TrustedProxyRealIP(config.TrustedProxyCIDRs))
 	}
-	router.Use(chimiddleware.RequestID)
-	router.Use(middleware.SecurityHeaders)
 	router.Use(middleware.RequestLogger(log))
-	router.Use(chimiddleware.Recoverer)
+	router.Use(middleware.SecurityHeaders)
 
 	router.Get("/healthz", health.Live)
 	router.Get("/readyz", health.Ready)

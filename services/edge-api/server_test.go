@@ -47,9 +47,13 @@ func TestRouterRequiresSessionValidatorAndAppliesSecurityHeaders(t *testing.T) {
 		edgeapi.RouterConfig{},
 	)
 	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/auth/me", nil))
+	request := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
+	request.Header.Set("X-Request-ID", "client-controlled-request-id")
+	router.ServeHTTP(recorder, request)
 	assert.Equal(t, http.StatusUnauthorized, recorder.Code)
 	assert.Equal(t, "no-store", recorder.Header().Get("Cache-Control"))
+	assert.NotEqual(t, "client-controlled-request-id", recorder.Header().Get("X-Request-ID"))
+	assert.Len(t, recorder.Header().Get("X-Request-ID"), 32)
 }
 
 func TestRouterPanicsWithoutSessionValidator(t *testing.T) {

@@ -30,10 +30,29 @@ func token(t *testing.T, issuer *auth.Issuer, sessionID string) string {
 
 type fakeVerifier struct {
 	claims auth.Claims
+	err    error
 }
 
 func (f fakeVerifier) Validate(string) (auth.Claims, error) {
-	return f.claims, nil
+	return f.claims, f.err
+}
+
+func TestAuthenticatorDoesNotLogVerifierError(t *testing.T) {
+	const canary = "sensitive-bearer-error-canary"
+	log, logs := newObservedLogger()
+	authenticator := qmiddleware.Authenticator(
+		fakeVerifier{err: errors.New(canary)},
+		fakeSessionValidator{},
+		log,
+	)
+	request := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
+	request.Header.Set("Authorization", "Bearer sensitive-token")
+
+	authenticator(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(httptest.NewRecorder(), request)
+
+	require.Equal(t, 1, logs.Len())
+	assert.Equal(t, "auth.token.rejected", logs.All()[0].Message)
+	assert.NotContains(t, fieldsToString(logs.All()[0].ContextMap()), canary)
 }
 
 func request(t *testing.T, validator fakeSessionValidator, sessionID string) *httptest.ResponseRecorder {

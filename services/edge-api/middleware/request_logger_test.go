@@ -1,12 +1,19 @@
 package middleware_test
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"sort"
+	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -19,6 +26,11 @@ import (
 func newObservedLogger() (*zap.Logger, *observer.ObservedLogs) {
 	core, logs := observer.New(zapcore.DebugLevel)
 	return zap.New(core), logs
+}
+
+func fieldsToString(fields map[string]any) string {
+	encoded, _ := json.Marshal(fields)
+	return string(encoded)
 }
 
 // wrapWithRequestID simulates chi's RequestID middleware so the request_id
@@ -112,9 +124,10 @@ func TestRequestLogger_ContainsMandatoryFields(t *testing.T) {
 		fieldNames[f.Key] = struct{}{}
 	}
 
-	for _, required := range []string{"request_id", "method", "path", "status", "latency_ms", "bytes"} {
+	for _, required := range []string{"request_id", "method", "route", "status", "outcome", "duration_ms", "response_bytes"} {
 		assert.Contains(t, fieldNames, required, "missing field: %s", required)
 	}
+	assert.Len(t, fieldNames, 7)
 }
 
 func TestRequestLogger_StatusField_MatchesResponse(t *testing.T) {
@@ -150,14 +163,16 @@ func TestRequestLogger_StatusField_MatchesResponse(t *testing.T) {
 	}
 }
 
-func TestRequestLogger_MethodAndPath_AreRecorded(t *testing.T) {
+func TestRequestLogger_UsesMethodAndRouteTemplate(t *testing.T) {
 	log, logs := newObservedLogger()
-	mw := qmiddleware.RequestLogger(log)
-	handler := wrapWithRequestID(mw(makeHandler(http.StatusOK)))
+	router := chi.NewRouter()
+	router.Use(qmiddleware.RequestID)
+	router.Use(qmiddleware.RequestLogger(log))
+	router.Get("/books/{bookID}", makeHandler(http.StatusOK))
 
-	req := httptest.NewRequest(http.MethodPost, "/query/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/books/sensitive-book-id?token=sensitive-query", nil)
 	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
+	router.ServeHTTP(rr, req)
 
 	entry := logs.All()[0]
 	fields := make(map[string]string)
@@ -167,6 +182,51 @@ func TestRequestLogger_MethodAndPath_AreRecorded(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, "POST", fields["method"])
-	assert.Equal(t, "/query/", fields["path"])
+	assert.Equal(t, "GET", fields["method"])
+	assert.Equal(t, "/books/{bookID}", fields["route"])
+	assert.Equal(t, "http.request.completed", entry.Message)
+	assert.NotContains(t, fieldsToString(entry.ContextMap()), "sensitive-book-id")
+	assert.NotContains(t, fieldsToString(entry.ContextMap()), "sensitive-query")
+}
+
+func TestRequestLogger_UsesExactAllowlistedSchemaAndFixedOutcome(t *testing.T) {
+	log, logs := newObservedLogger()
+	router := chi.NewRouter()
+	router.Use(qmiddleware.RequestID)
+	router.Use(qmiddleware.RequestLogger(log))
+	router.Post("/query", makeHandler(http.StatusNotImplemented))
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/query", strings.NewReader("sensitive-body")))
+
+	require.Equal(t, 1, logs.Len())
+	entry := logs.All()[0]
+	keys := make([]string, 0, len(entry.Context))
+	for _, field := range entry.Context {
+		keys = append(keys, field.Key)
+	}
+	sort.Strings(keys)
+	assert.Equal(t, []string{"duration_ms", "method", "outcome", "request_id", "response_bytes", "route", "status"}, keys)
+	assert.Equal(t, "not_implemented", entry.ContextMap()["outcome"])
+}
+
+func TestRequestLogger_DoesNotEmitSensitiveRequestInputs(t *testing.T) {
+	const canary = "SensitiveCanaryValue42"
+	log, logs := newObservedLogger()
+	router := chi.NewRouter()
+	router.Use(qmiddleware.RequestID)
+	router.Use(qmiddleware.RequestLogger(log))
+	router.Post("/items/{itemID}", makeHandler(http.StatusBadRequest))
+
+	request := httptest.NewRequest(http.MethodPost, "/items/"+canary+"?q="+url.QueryEscape(canary), strings.NewReader(canary))
+	request.Header.Set("Authorization", "Bearer "+canary)
+	request.Header.Set("Cookie", "session="+canary)
+	request.Header.Set("X-Request-ID", canary)
+	request.Header.Set("User-Agent", canary)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, 1, logs.Len())
+	serialized := strings.ToLower(fmt.Sprintf("%s %s", logs.All()[0].Message, fieldsToString(logs.All()[0].ContextMap())))
+	assert.NotContains(t, serialized, strings.ToLower(canary))
 }

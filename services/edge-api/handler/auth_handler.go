@@ -85,9 +85,9 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 	tokens, err := h.uc.Register(r.Context(), req.Email, req.Password)
 	if err != nil {
-		h.log.Debug("register failed",
+		h.log.Debug("auth.register.failed",
 			zap.String("request_id", reqID),
-			zap.Error(err),
+			zap.String("outcome", authErrorOutcome(err)),
 		)
 		writeAuthError(w, authErrToStatus(err), sanitiseAuthError(err))
 		return
@@ -143,7 +143,10 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	tokens, err := h.uc.Login(r.Context(), req.Email, req.Password)
 	if err != nil {
-		h.log.Debug("login failed", zap.String("request_id", middleware.GetReqID(r.Context())))
+		h.log.Debug("auth.login.failed",
+			zap.String("request_id", middleware.GetReqID(r.Context())),
+			zap.String("outcome", authErrorOutcome(err)),
+		)
 		if errors.Is(err, authflow.ErrInvalidCredentials) {
 			writeAuthError(w, http.StatusUnauthorized, "invalid credentials")
 			return

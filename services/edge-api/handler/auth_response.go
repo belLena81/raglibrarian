@@ -34,6 +34,19 @@ func sanitiseAuthError(err error) string {
 	}
 }
 
+func authErrorOutcome(err error) string {
+	switch {
+	case errors.Is(err, authflow.ErrEmailTaken):
+		return "email_conflict"
+	case errors.Is(err, authflow.ErrInvalidRegistration):
+		return "invalid_registration"
+	case errors.Is(err, authflow.ErrInvalidCredentials):
+		return "invalid_credentials"
+	default:
+		return "dependency_unavailable"
+	}
+}
+
 func writeAuthJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

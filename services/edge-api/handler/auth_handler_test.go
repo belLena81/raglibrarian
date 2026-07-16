@@ -9,7 +9,11 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/belLena81/raglibrarian/services/edge-api/authflow"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
@@ -139,4 +143,26 @@ func TestRefreshSuccessReplacesCookieWithoutExposingIt(t *testing.T) {
 func TestConstructorRequiresDependencies(t *testing.T) {
 	assert.Panics(t, func() { handler.NewAuthHandler(nil, zaptest.NewLogger(t), handler.CookieConfig{}) })
 	assert.Panics(t, func() { handler.NewAuthHandler(&fakeAuthUseCase{}, nil, handler.CookieConfig{}) })
+}
+
+func TestRegisterDoesNotLogDependencyError(t *testing.T) {
+	const canary = "sensitive-registration-error-canary"
+	core, logs := observer.New(zapcore.DebugLevel)
+	log := zap.New(core)
+	h := handler.NewAuthHandler(
+		&fakeAuthUseCase{registerErr: errors.New(canary)},
+		log,
+		handler.CookieConfig{Secure: true},
+	)
+
+	recorder := post(t, h.Register, `{"email":"reader@example.com","password":"password-1234"}`)
+
+	assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Equal(t, 1, logs.Len())
+	entry := logs.All()[0]
+	assert.Equal(t, "auth.register.failed", entry.Message)
+	assert.NotContains(t, entry.Message, canary)
+	for _, field := range entry.Context {
+		assert.NotContains(t, field.String, canary)
+	}
 }
