@@ -4,12 +4,74 @@ package catalog.v1;
 
 option go_package = "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1;catalogv1";
 
+import "google/protobuf/timestamp.proto";
+
 service CatalogService {
   rpc Check(CheckRequest) returns (CheckResponse);
+  rpc UploadBook(stream UploadBookRequest) returns (UploadBookResponse);
+  rpc ListBooks(ListBooksRequest) returns (ListBooksResponse);
+  rpc GetBook(GetBookRequest) returns (GetBookResponse);
 }
 
 message CheckRequest {}
 
 message CheckResponse {
   string status = 1;
+}
+
+message UploadBookRequest {
+  oneof frame {
+    UploadBookMetadata metadata = 1;
+    bytes chunk = 2;
+  }
+}
+
+message UploadBookMetadata {
+  string title = 1;
+  string author = 2;
+  int32 year = 3;
+  repeated string tags = 4;
+  string actor_id = 5;
+  string correlation_id = 6;
+}
+
+message UploadBookResponse { Book book = 1; }
+
+message ListBooksRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListBooksResponse {
+  repeated Book books = 1;
+  string next_page_token = 2;
+}
+
+message GetBookRequest { string book_id = 1; }
+message GetBookResponse { Book book = 1; }
+
+message Book {
+  string id = 1;
+  string title = 2;
+  string author = 3;
+  int32 year = 4;
+  repeated string tags = 5;
+  string processing_status = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message BookUploadedV1 {
+  string event_id = 1;
+  string book_id = 2;
+  string title = 3;
+  string author = 4;
+  int32 year = 5;
+  repeated string tags = 6;
+  string object_reference = 7;
+  bytes sha256 = 8;
+  int64 byte_size = 9;
+  string media_type = 10;
+  string actor_id = 11;
+  string correlation_id = 12;
+  google.protobuf.Timestamp occurred_at = 13;
 }

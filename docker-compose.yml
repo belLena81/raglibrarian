@@ -196,6 +196,7 @@ services:
     environment:
       QUERY_ADDR: ":8080"
       IDENTITY_GRPC_ADDR: identity-service:50051
+      CATALOG_GRPC_ADDR: catalog-service:50052
       INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
       EDGE_TLS_CERT_FILE: /run/secrets/edge_tls_cert
       EDGE_TLS_KEY_FILE: /run/secrets/edge_tls_key

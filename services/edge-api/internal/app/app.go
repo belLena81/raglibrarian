@@ -15,8 +15,10 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/process"
+	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	identityv1 "github.com/belLena81/raglibrarian/pkg/proto/identity/v1"
 	edgeapi "github.com/belLena81/raglibrarian/services/edge-api"
+	"github.com/belLena81/raglibrarian/services/edge-api/catalogclient"
 	"github.com/belLena81/raglibrarian/services/edge-api/config"
 	"github.com/belLena81/raglibrarian/services/edge-api/diagnostic"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
@@ -63,10 +65,21 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		return appFailure(ErrIdentityClientInitialization, err)
 	}
 	defer func() { _ = connection.Close() }()
+	catalogCredentials, err := internaltls.ClientCredentials(cfg.TLS, "catalog-service")
+	if err != nil {
+		return tlsFailure(err)
+	}
+	catalogConnection, err := grpc.NewClient(cfg.CatalogAddress, grpc.WithTransportCredentials(catalogCredentials))
+	if err != nil {
+		return appFailure(ErrIdentityClientInitialization, err)
+	}
+	defer func() { _ = catalogConnection.Close() }()
 	identity := identityclient.New(identityv1.NewIdentityServiceClient(connection), grpc_health_v1.NewHealthClient(connection))
+	catalog := catalogclient.New(catalogv1.NewCatalogServiceClient(catalogConnection))
 	authHandler := handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: cfg.SecureCookie})
 	queryHandler := handler.NewQueryHandler(diagnostics)
-	healthHandler := handler.NewHealthHandler(identity)
+	healthHandler := handler.NewHealthHandler(readiness{identity: identity, catalog: catalog})
+	booksHandler := handler.NewBooksHandler(catalog)
 	setupHandler := handler.NewSetupHandler(identity)
 	hub := handler.NewPendingHub(200)
 	adminHandler := handler.NewAdminHandler(identity, hub)
@@ -75,7 +88,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		Addr: cfg.Addr,
 		Handler: edgeapi.NewRouter(queryHandler, authHandler, healthHandler, setupHandler, adminHandler, verifier, identity, diagnostics, edgeapi.RouterConfig{
 			TrustedProxyCIDRs: cfg.TrustedProxyCIDRs, PublicOrigin: cfg.PublicOrigin, EnforceBrowserOrigin: cfg.EnforceBrowserOrigin,
-		}),
+		}, booksHandler),
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -98,6 +111,18 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		}
 		return nil
 	}
+}
+
+type readiness struct {
+	identity interface{ CheckReady(context.Context) error }
+	catalog  interface{ CheckReady(context.Context) error }
+}
+
+func (r readiness) CheckReady(ctx context.Context) error {
+	if err := r.identity.CheckReady(ctx); err != nil {
+		return err
+	}
+	return r.catalog.CheckReady(ctx)
 }
 
 type pendingWatcher interface {

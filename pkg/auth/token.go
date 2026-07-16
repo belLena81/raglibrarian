@@ -25,12 +25,13 @@ type Role string
 
 // Supported access-token role claims.
 const (
-	RoleAdmin  Role = "admin"
-	RoleReader Role = "reader"
+	RoleAdmin     Role = "admin"
+	RoleLibrarian Role = "librarian"
+	RoleReader    Role = "reader"
 )
 
 // IsValid reports whether the role is safe for authorization decisions.
-func (r Role) IsValid() bool { return r == RoleAdmin || r == RoleReader }
+func (r Role) IsValid() bool { return r == RoleAdmin || r == RoleLibrarian || r == RoleReader }
 
 // Claims holds the verified token payload stored in request context.
 type Claims struct {

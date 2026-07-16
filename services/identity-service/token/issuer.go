@@ -19,5 +19,5 @@ func NewIssuer(signer *auth.Signer) *Issuer {
 
 // Issue creates an access token without exposing the User aggregate.
 func (i *Issuer) Issue(userID, email string, role domain.Role, sessionID string) (string, error) {
-	return i.signer.Issue(auth.Subject{UserID: userID, SessionID: sessionID})
+	return i.signer.Issue(auth.Subject{UserID: userID, Email: email, Role: auth.Role(role), SessionID: sessionID})
 }

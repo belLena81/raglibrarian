@@ -30,15 +30,15 @@ var (
 
 // Config is validated Edge runtime configuration.
 type Config struct {
-	Addr, IdentityAddress string
-	VerifyKey             []byte
-	PreviousVerifyKey     []byte
-	TrustedProxyCIDRs     []netip.Prefix
-	TLS                   internaltls.Files
-	SecureCookie          bool
-	PublicOrigin          string
-	EnforceBrowserOrigin  bool
-	RunAs                 process.Identity
+	Addr, IdentityAddress, CatalogAddress string
+	VerifyKey                             []byte
+	PreviousVerifyKey                     []byte
+	TrustedProxyCIDRs                     []netip.Prefix
+	TLS                                   internaltls.Files
+	SecureCookie                          bool
+	PublicOrigin                          string
+	EnforceBrowserOrigin                  bool
+	RunAs                                 process.Identity
 }
 
 // Load reads Edge configuration from the environment.
@@ -102,6 +102,7 @@ func Load() (Config, error) {
 	return Config{
 		Addr:                 optional("QUERY_ADDR", ":8080"),
 		IdentityAddress:      optional("IDENTITY_GRPC_ADDR", "identity-service:50051"),
+		CatalogAddress:       optional("CATALOG_GRPC_ADDR", "catalog-service:50052"),
 		VerifyKey:            key,
 		PreviousVerifyKey:    previousKey,
 		TrustedProxyCIDRs:    prefixes,

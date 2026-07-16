@@ -101,6 +101,25 @@ func RequireRole(required auth.Role) func(http.Handler) http.Handler {
 	}
 }
 
+// RequireAnyRole admits an authenticated principal with one of the supplied roles.
+func RequireAnyRole(roles ...auth.Role) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			principal, ok := PrincipalFromContext(r.Context())
+			if !ok {
+				panic("middleware: RequireAnyRole called without Authenticator in chain")
+			}
+			for _, role := range roles {
+				if auth.Role(principal.Role) == role {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			writeForbidden(w, r)
+		})
+	}
+}
+
 // ClaimsFromContext retrieves the verified Claims stored by Authenticator.
 // Returns (Claims{}, false) if the route is public.
 func ClaimsFromContext(ctx context.Context) (auth.Claims, bool) {

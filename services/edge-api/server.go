@@ -37,6 +37,7 @@ func NewRouter(
 	sessions middleware.SessionValidator,
 	diagnostics *diagnostic.Recorder,
 	config RouterConfig,
+	books ...*handler.BooksHandler,
 ) http.Handler {
 	if query == nil || authHandler == nil || health == nil || setup == nil || admin == nil || verifier == nil || sessions == nil || diagnostics == nil {
 		panic("edgeapi: all router dependencies are required")
@@ -101,5 +102,17 @@ func NewRouter(
 		router.Post("/query", query.Query)
 		router.Route("/query", func(router chi.Router) { router.Post("/", query.Query) })
 	})
+	if len(books) == 1 && books[0] != nil {
+		booksHandler := books[0]
+		router.Route("/books", func(router chi.Router) {
+			router.Use(middleware.Authenticator(verifier, sessions, diagnostics))
+			router.Get("/", booksHandler.List)
+			router.Get("/{book_id}", booksHandler.Get)
+			router.Group(func(router chi.Router) {
+				router.Use(middleware.RequireAnyRole(auth.RoleLibrarian, auth.RoleAdmin))
+				router.Post("/", booksHandler.Upload)
+			})
+		})
+	}
 	return router
 }

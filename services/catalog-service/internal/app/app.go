@@ -17,6 +17,7 @@ import (
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	"github.com/belLena81/raglibrarian/services/catalog-service/config"
 	cataloggrpc "github.com/belLena81/raglibrarian/services/catalog-service/grpc"
+	"github.com/belLena81/raglibrarian/services/catalog-service/internal/catalog"
 )
 
 // Run composes and manages the Catalog process lifecycle.
@@ -37,7 +38,8 @@ func Run(ctx context.Context, cfg config.Config) error {
 		grpc.Creds(credentials),
 		grpc.UnaryInterceptor(grpcauth.UnaryServerInterceptor(grpcauth.Policy{Service: "catalog.v1.CatalogService", DNSName: "edge-api"})),
 	)
-	catalogv1.RegisterCatalogServiceServer(server, cataloggrpc.NewServer())
+	service := catalog.NewService(catalog.NewMemoryRepository(), catalog.NewMemoryObjectStore(), 0)
+	catalogv1.RegisterCatalogServiceServer(server, cataloggrpc.NewServer(service))
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 	grpc_health_v1.RegisterHealthServer(server, healthServer)
