@@ -125,7 +125,7 @@ dev: stack-up
 tidy: _require_root
 	@for mod in $(MODULES); do \
 		echo "Tidying $$mod..."; \
-		(cd $$mod && go mod tidy); \
+		(cd $$mod && GOWORK=off go mod tidy); \
 	done
 	go work sync
 
