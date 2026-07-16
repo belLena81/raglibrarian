@@ -36,11 +36,11 @@ func NewRouter(
 	}
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
+	router.Use(middleware.RequestLogger(diagnostics))
 	router.Use(middleware.Recovery(diagnostics))
 	if len(config.TrustedProxyCIDRs) > 0 {
 		router.Use(middleware.TrustedProxyRealIP(config.TrustedProxyCIDRs))
 	}
-	router.Use(middleware.RequestLogger(diagnostics))
 	router.Use(middleware.SecurityHeaders)
 
 	router.Get("/healthz", health.Live)

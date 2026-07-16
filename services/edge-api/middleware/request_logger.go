@@ -23,11 +23,15 @@ func RequestLogger(diagnostics requestDiagnostics) func(http.Handler) http.Handl
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			ww := chimiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			state := &completionState{}
+			r = withCompletionState(r, state)
 			defer func() {
 				if recovered := recover(); recovered != nil {
 					status := ww.Status()
 					outcome := diagnostic.RequestResponseAborted
-					if status == 0 {
+					if state.hasOutcome {
+						outcome = state.outcome
+					} else if status == 0 {
 						status = http.StatusInternalServerError
 						outcome = diagnostic.RequestServerError
 					}
@@ -38,7 +42,11 @@ func RequestLogger(diagnostics requestDiagnostics) func(http.Handler) http.Handl
 				if status == 0 {
 					status = http.StatusOK
 				}
-				diagnostics.RequestCompleted(r, status, requestOutcome(status), time.Since(start), ww.BytesWritten())
+				outcome := requestOutcome(status)
+				if state.hasOutcome {
+					outcome = state.outcome
+				}
+				diagnostics.RequestCompleted(r, status, outcome, time.Since(start), ww.BytesWritten())
 			}()
 
 			next.ServeHTTP(ww, r)
