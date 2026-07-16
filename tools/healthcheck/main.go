@@ -29,7 +29,7 @@ func main() {
 }
 
 func checkHTTP(ctx context.Context, url string) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil) // #nosec G704 -- local operator-controlled probe
 	if err != nil {
 		return err
 	}
