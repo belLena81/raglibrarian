@@ -2,6 +2,7 @@ package middleware_test
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -20,11 +21,13 @@ import (
 
 type fakeSessionValidator struct{ err error }
 
-func (f fakeSessionValidator) ValidateSession(context.Context, string, string) error { return f.err }
+func (f fakeSessionValidator) ValidateSession(_ context.Context, userID, sessionID string) (authflow.Principal, error) {
+	return authflow.Principal{UserID: userID, SessionID: sessionID, Role: "reader", Status: "active"}, f.err
+}
 
-func token(t *testing.T, issuer *auth.Issuer, sessionID string) string {
+func token(t *testing.T, signer *auth.Signer, sessionID string) string {
 	t.Helper()
-	value, err := issuer.Issue(auth.Subject{UserID: "user-1", Email: "reader@example.com", Role: auth.RoleReader, SessionID: sessionID})
+	value, err := signer.Issue(auth.Subject{UserID: "user-1", Email: "reader@example.com", Role: auth.RoleReader, SessionID: sessionID})
 	require.NoError(t, err)
 	return value
 }
@@ -58,9 +61,8 @@ func TestAuthenticatorDoesNotLogVerifierError(t *testing.T) {
 
 func request(t *testing.T, validator fakeSessionValidator, sessionID string) *httptest.ResponseRecorder {
 	t.Helper()
-	issuer, err := auth.NewIssuer(make([]byte, 32), time.Hour)
-	require.NoError(t, err)
-	middleware := qmiddleware.Authenticator(issuer, validator, diagnostic.New(zaptest.NewLogger(t)))
+	signer, verifier := testKeyPair(t)
+	middleware := qmiddleware.Authenticator(verifier, validator, diagnostic.New(zaptest.NewLogger(t)))
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := qmiddleware.ClaimsFromContext(r.Context())
 		assert.True(t, ok)
@@ -68,7 +70,7 @@ func request(t *testing.T, validator fakeSessionValidator, sessionID string) *ht
 		w.WriteHeader(http.StatusNoContent)
 	})
 	req := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
-	req.Header.Set("Authorization", "Bearer "+token(t, issuer, sessionID))
+	req.Header.Set("Authorization", "Bearer "+token(t, signer, sessionID))
 	recorder := httptest.NewRecorder()
 	middleware(next).ServeHTTP(recorder, req)
 	return recorder
@@ -81,17 +83,26 @@ func TestAuthenticatorRequiresLiveSession(t *testing.T) {
 	middleware := qmiddleware.Authenticator(fakeVerifier{claims: auth.Claims{UserID: "user-1"}}, fakeSessionValidator{}, diagnostic.New(zaptest.NewLogger(t)))
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
-	req.Header.Set("Authorization", "Bearer legacy-token")
+	req.Header.Set("Authorization", "Bearer malformed-token")
 	middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(recorder, req)
 	assert.Equal(t, http.StatusUnauthorized, recorder.Code)
 }
 
 func TestAuthenticatorRejectsMissingHeader(t *testing.T) {
-	issuer, err := auth.NewIssuer(make([]byte, 32), time.Hour)
-	require.NoError(t, err)
+	_, verifier := testKeyPair(t)
 	recorder := httptest.NewRecorder()
-	qmiddleware.Authenticator(issuer, fakeSessionValidator{}, diagnostic.New(zaptest.NewLogger(t)))(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	qmiddleware.Authenticator(verifier, fakeSessionValidator{}, diagnostic.New(zaptest.NewLogger(t)))(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
 	assert.Equal(t, http.StatusUnauthorized, recorder.Code)
+}
+
+func testKeyPair(t *testing.T) (*auth.Signer, *auth.Verifier) {
+	t.Helper()
+	privateKey := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	signer, err := auth.NewSigner(privateKey, time.Hour)
+	require.NoError(t, err)
+	verifier, err := auth.NewVerifier(privateKey.Public().(ed25519.PublicKey))
+	require.NoError(t, err)
+	return signer, verifier
 }
 
 func TestRequireRoleRejectsReaderForAdmin(t *testing.T) {

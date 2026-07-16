@@ -9,7 +9,7 @@ import (
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 )
 
-// Server exposes Catalog's current Milestone 1 contract.
+// Server exposes Catalog's health-only contract until catalog capabilities are delivered.
 type Server struct {
 	catalogv1.UnimplementedCatalogServiceServer
 }

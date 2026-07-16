@@ -6,8 +6,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
-	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -20,7 +18,6 @@ import (
 	grpc_health_v1 "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 
-	"github.com/belLena81/raglibrarian/pkg/auth"
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	identityv1 "github.com/belLena81/raglibrarian/pkg/proto/identity/v1"
 )
@@ -41,32 +38,6 @@ func TestGRPCStandardHealthAndCatalogCheck(t *testing.T) {
 	checked, err := catalogv1.NewCatalogServiceClient(catalogConn).Check(ctx, &catalogv1.CheckRequest{})
 	require.NoError(t, err)
 	assert.Equal(t, "SERVING", checked.GetStatus())
-}
-
-func TestGRPCIdentityAuthenticationLifecycle(t *testing.T) {
-	requireContractTests(t)
-	conn := dialMTLS(t, envOr("IDENTITY_GRPC_ADDR", "identity-service:50051"), "identity-service", "EDGE_TLS_CERT_FILE", "EDGE_TLS_KEY_FILE")
-	client := identityv1.NewIdentityServiceClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	email := fmt.Sprintf("grpc-contract+%d@example.test", time.Now().UnixNano())
-	registered, err := client.Register(ctx, &identityv1.RegisterRequest{Email: email, Password: validPassword})
-	require.NoError(t, err)
-	require.NotEmpty(t, registered.GetAccessToken())
-	require.NotEmpty(t, registered.GetRefreshToken())
-
-	loggedIn, err := client.Login(ctx, &identityv1.LoginRequest{Email: email, Password: validPassword})
-	require.NoError(t, err)
-	userID := tokenUserID(t, loggedIn.GetAccessToken())
-	_, err = client.ValidateSession(ctx, &identityv1.ValidateSessionRequest{UserId: userID, SessionId: loggedIn.GetSessionId()})
-	require.NoError(t, err)
-	refreshed, err := client.Refresh(ctx, &identityv1.RefreshRequest{RefreshToken: loggedIn.GetRefreshToken()})
-	require.NoError(t, err)
-	assert.NotEqual(t, loggedIn.GetRefreshToken(), refreshed.GetRefreshToken())
-	_, err = client.Logout(ctx, &identityv1.LogoutRequest{SessionId: loggedIn.GetSessionId()})
-	require.NoError(t, err)
-	_, err = client.ValidateSession(ctx, &identityv1.ValidateSessionRequest{UserId: userID, SessionId: loggedIn.GetSessionId()})
-	assert.Equal(t, codes.Unauthenticated, status.Code(err))
 }
 
 func TestGRPCIdentityRejectsCatalogClientCertificate(t *testing.T) {
@@ -124,15 +95,4 @@ func envOr(key, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func tokenUserID(t *testing.T, token string) string {
-	t.Helper()
-	key, err := hex.DecodeString(os.Getenv("EDGE_VERIFY_KEY"))
-	require.NoError(t, err)
-	verifier, err := auth.NewVerifier(key)
-	require.NoError(t, err)
-	claims, err := verifier.Validate(token)
-	require.NoError(t, err)
-	return claims.UserID
 }

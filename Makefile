@@ -4,7 +4,14 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-generate build run-edge-api run-identity run-catalog dev tidy e2e migrate-identity-up migrate-identity-down infra-up infra-down stack-up keygen proto dev-certs
+.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-generate build run-edge-api run-identity run-catalog dev tidy e2e migrate-identity-up migrate-identity-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets bootstrap-verifier compose-config ui-check ui-audit secret-scan dockerfile-lint image-build image-scan security-check full-gates integration-gates smtp-url
+
+GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
+HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
+# 0.69.2 is the vendor-designated unaffected Trivy release after the 2026
+# publishing incident. Do not move this pin without reviewing the advisory.
+TRIVY_IMAGE := aquasec/trivy:0.69.2
+SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local
 
 # Service/library modules — looped over by test, lint, tidy, fmt.
 MODULES := \
@@ -112,10 +119,12 @@ run-catalog: _require_root
 stack-up: _require_root
 	@test -f .env || { \
 		echo ""; \
-		echo "  !! .env not found. Run: cp .env.example .env && make keygen >> .env !!"; \
+		echo "  !! .env not found. Run: cp .env.example .env && make dev-secrets bootstrap-verifier dev-certs !!"; \
 		echo ""; \
 		exit 1; \
 	}
+	@test -r "$${SECRET_DIR:-.dev/secrets}/identity_runtime_dsn" || { echo "development secrets are missing; run make dev-secrets"; exit 1; }
+	@test -r "$${SECRET_DIR:-.dev/secrets}/identity_bootstrap_verifier" || { echo "bootstrap verifier is missing; run make bootstrap-verifier"; exit 1; }
 	@docker compose up -d --build
 
 # dev is retained as a convenient alias for the full Compose workflow.
@@ -135,40 +144,47 @@ tidy: _require_root
 #
 # Override target URL:
 #   E2E_BASE_URL=http://staging:8080 make e2e
+# The complete M2 lifecycle additionally needs E2E_BOOTSTRAP_CODE and a local
+# Mailpit latest-message URL such as http://127.0.0.1:8025/view/latest.txt.
 e2e: _require_root
 	cd tests/e2e && go test -v -tags e2e ./...
 
 .PHONY: contract-test
 contract-test: _require_root
+	docker compose --profile test build contract-tests
 	docker compose --profile test run --rm contract-tests
 
 # ── Database ──────────────────────────────────────────────────────────────────
 # Uses psql directly — no migrate CLI dependency.
 # Identity migrations are applied in lexicographic order (001_, 002_, ...).
 migrate-identity-up: _require_root
-	@set -a && . ./.env && set +a && \
-		for f in $(CURDIR)/services/identity-service/migrations/*.up.sql; do \
-			echo "Applying $$f..."; \
-			psql "$$IDENTITY_POSTGRES_DSN" --set ON_ERROR_STOP=1 --single-transaction -f "$$f" || exit 1; \
-		done
+	docker compose run --rm identity-migrate
 
 migrate-identity-down: _require_root
-	@set -a && . ./.env && set +a && \
-		for f in $$(ls -r $(CURDIR)/services/identity-service/migrations/*.down.sql); do \
-			echo "Reverting $$f..."; \
-			psql "$$IDENTITY_POSTGRES_DSN" --set ON_ERROR_STOP=1 --single-transaction -f "$$f" || exit 1; \
-		done
+	docker compose run --rm -e MIGRATION_DIRECTION=down identity-migrate
 
 # ── Infrastructure ────────────────────────────────────────────────────────────
 infra-up: stack-up
 
 infra-down:
-	docker-compose down
+	docker compose down
 
 # ── Keygen ────────────────────────────────────────────────────────────────────
 # Prints a new AUTH_SECRET_KEY line ready to paste into .env.
 keygen: _require_root
 	cd pkg/auth && go run ./cmd/keygen/
+
+dev-secrets: _require_root
+	bash ./scripts/generate-dev-secrets.sh
+
+bootstrap-verifier: _require_root
+	@secret_dir="$${SECRET_DIR:-$(CURDIR)/.dev/secrets}"; \
+	case "$$secret_dir" in /*) ;; *) secret_dir="$(CURDIR)/$$secret_dir" ;; esac; \
+	test ! -e "$$secret_dir/identity_bootstrap_verifier" || { \
+		echo "refusing to overwrite an existing verifier; remove that one file intentionally first"; \
+		exit 1; \
+	}; \
+	cd services/identity-service && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" go run ./cmd/bootstrap-verifier --out "$$secret_dir/identity_bootstrap_verifier"
 
 proto: _require_root
 	$(MAKE) proto-check
@@ -182,3 +198,44 @@ proto-check: _require_root
 
 dev-certs: _require_root
 	bash ./scripts/generate-dev-certs.sh
+
+# ── UI and security gates ────────────────────────────────────────────────────
+compose-config: _require_root
+	docker compose config --quiet
+
+ui-check: _require_root
+	npm --prefix ui ci
+	npm --prefix ui run lint
+	npm --prefix ui run type-check
+	npm --prefix ui run build
+
+ui-audit: _require_root
+	npm --prefix ui audit --audit-level=high
+
+secret-scan: _require_root
+	docker run --rm -v "$(CURDIR):/repo:ro" -w /repo $(GITLEAKS_IMAGE) git --redact --no-banner
+
+dockerfile-lint: _require_root
+	docker run --rm -i $(HADOLINT_IMAGE) hadolint - < Dockerfile
+
+image-build: _require_root
+	docker build --build-arg SERVICE=identity-service -t raglibrarian-identity-service:local .
+	docker build --build-arg SERVICE=catalog-service -t raglibrarian-catalog-service:local .
+	docker build --build-arg SERVICE=edge-api -t raglibrarian-edge-api:local .
+
+image-scan: image-build
+	@for image in $(SERVICE_IMAGES); do \
+		docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+			$(TRIVY_IMAGE) image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL "$$image" || exit 1; \
+	done
+
+security-check: secret-scan dockerfile-lint image-scan ui-audit
+
+full-gates: fmt-check vet lint test test-race arch-check vuln proto-check compose-config ui-check security-check
+
+integration-gates: compose-config
+	docker compose up -d --build --wait --wait-timeout 180
+	$(MAKE) contract-test e2e
+
+smtp-url:
+	@echo "Mailpit is available only on http://127.0.0.1:$${MAILPIT_UI_PORT:-8025}"

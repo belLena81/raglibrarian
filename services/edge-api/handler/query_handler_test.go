@@ -22,7 +22,7 @@ func TestQueryReturnsTruthfulMilestoneResponse(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	h.Query(recorder, req)
 	assert.Equal(t, http.StatusNotImplemented, recorder.Code)
-	assert.JSONEq(t, `{"error":"retrieval is unavailable in milestone 1"}`, recorder.Body.String())
+	assert.JSONEq(t, `{"error":"retrieval is unavailable"}`, recorder.Body.String())
 }
 
 func TestQueryRejectsEmptyQuestion(t *testing.T) {

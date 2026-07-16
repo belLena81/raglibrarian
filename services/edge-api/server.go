@@ -4,6 +4,7 @@ package edgeapi
 import (
 	"net/http"
 	"net/netip"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -19,19 +20,25 @@ type TokenVerifier interface {
 }
 
 // RouterConfig controls optional perimeter proxy trust.
-type RouterConfig struct{ TrustedProxyCIDRs []netip.Prefix }
+type RouterConfig struct {
+	TrustedProxyCIDRs    []netip.Prefix
+	PublicOrigin         string
+	EnforceBrowserOrigin bool
+}
 
 // NewRouter wires all public routes and mandatory authentication dependencies.
 func NewRouter(
 	query *handler.QueryHandler,
 	authHandler *handler.AuthHandler,
 	health *handler.HealthHandler,
+	setup *handler.SetupHandler,
+	admin *handler.AdminHandler,
 	verifier TokenVerifier,
 	sessions middleware.SessionValidator,
 	diagnostics *diagnostic.Recorder,
 	config RouterConfig,
 ) http.Handler {
-	if query == nil || authHandler == nil || health == nil || verifier == nil || sessions == nil || diagnostics == nil {
+	if query == nil || authHandler == nil || health == nil || setup == nil || admin == nil || verifier == nil || sessions == nil || diagnostics == nil {
 		panic("edgeapi: all router dependencies are required")
 	}
 	router := chi.NewRouter()
@@ -42,18 +49,52 @@ func NewRouter(
 		router.Use(middleware.TrustedProxyRealIP(config.TrustedProxyCIDRs))
 	}
 	router.Use(middleware.SecurityHeaders)
+	router.Use(middleware.BrowserMutationGuard(config.PublicOrigin, config.EnforceBrowserOrigin))
 
 	router.Get("/healthz", health.Live)
 	router.Get("/readyz", health.Ready)
 	router.Route("/auth", func(router chi.Router) {
-		router.Post("/register", authHandler.Register)
-		router.Post("/login", authHandler.Login)
+		registrationLimit := middleware.FixedWindowRateLimit(20, time.Hour, 10000)
+		verificationLimit := middleware.FixedWindowRateLimit(30, time.Hour, 10000)
+		loginLimit := middleware.FixedWindowRateLimit(30, time.Minute, 10000)
+		resendLimit := middleware.FixedWindowRateLimit(5, time.Hour, 10000)
+		router.Group(func(router chi.Router) {
+			router.Use(registrationLimit)
+			router.Post("/register", authHandler.Register)
+		})
+		router.Group(func(router chi.Router) {
+			router.Use(verificationLimit)
+			router.Post("/verify-email", authHandler.VerifyEmail)
+		})
+		router.Group(func(router chi.Router) {
+			router.Use(loginLimit)
+			router.Post("/login", authHandler.Login)
+		})
+		router.Group(func(router chi.Router) {
+			router.Use(resendLimit)
+			router.Post("/verification/resend", authHandler.ResendVerification)
+		})
 		router.Post("/refresh", authHandler.Refresh)
 		router.Group(func(router chi.Router) {
 			router.Use(middleware.Authenticator(verifier, sessions, diagnostics))
 			router.Get("/me", authHandler.Me)
 			router.Post("/logout", authHandler.Logout)
 		})
+	})
+	router.Route("/setup", func(router chi.Router) {
+		router.Get("/status", setup.Status)
+		router.Group(func(router chi.Router) {
+			router.Use(middleware.FixedWindowRateLimit(5, 15*time.Minute, 1000))
+			router.Post("/admin", setup.CreateAdmin)
+		})
+	})
+	router.Route("/admin", func(router chi.Router) {
+		router.Use(middleware.Authenticator(verifier, sessions, diagnostics))
+		router.Use(middleware.RequireRole(auth.RoleAdmin))
+		router.Get("/users/pending", admin.ListPending)
+		router.Post("/users/approve", admin.Approve)
+		router.Post("/users/reject", admin.Reject)
+		router.Get("/events", admin.Events)
 	})
 	router.Group(func(router chi.Router) {
 		router.Use(middleware.Authenticator(verifier, sessions, diagnostics))

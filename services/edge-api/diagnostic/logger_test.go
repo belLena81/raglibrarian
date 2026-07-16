@@ -111,7 +111,6 @@ func TestSecurityAndStateEventsUseExactSchemas(t *testing.T) {
 		keys    []string
 	}{
 		{name: "token", emit: func(r *diagnostic.Recorder) { r.TokenRejected(request) }, event: "auth.token.rejected", outcome: "invalid_token", keys: []string{"outcome", "request_id"}},
-		{name: "registration", emit: func(r *diagnostic.Recorder) { r.RegistrationFailed(request, diagnostic.AuthEmailConflict) }, event: "auth.register.failed", outcome: "email_conflict", keys: []string{"outcome", "request_id"}},
 		{name: "login", emit: func(r *diagnostic.Recorder) { r.LoginFailed(request, diagnostic.AuthInvalidCredentials) }, event: "auth.login.failed", outcome: "invalid_credentials", keys: []string{"outcome", "request_id"}},
 		{name: "query", emit: func(r *diagnostic.Recorder) { r.RetrievalUnavailable(request) }, event: "query.retrieval.unavailable", outcome: "not_implemented", keys: []string{"outcome", "request_id"}},
 	}
@@ -297,7 +296,6 @@ func TestInvalidOutcomesProduceNoDiagnosticEvent(t *testing.T) {
 			r.RequestCompleted(request, http.StatusOK, diagnostic.RequestOutcome(255), 0, 0)
 		}},
 		{name: "registration context", emit: func(r *diagnostic.Recorder) { r.RegistrationFailed(request, diagnostic.AuthInvalidCredentials) }},
-		{name: "login context", emit: func(r *diagnostic.Recorder) { r.LoginFailed(request, diagnostic.AuthEmailConflict) }},
 		{name: "unknown auth", emit: func(r *diagnostic.Recorder) { r.LoginFailed(request, diagnostic.AuthFailure(255)) }},
 	}
 	for _, test := range tests {

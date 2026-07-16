@@ -50,9 +50,8 @@ git clone <repo>
 cd raglibrarian
 
 cp .env.example .env
-# Generate the asymmetric key pair and put each value in the owning service
-# configuration. Never put IDENTITY_SIGNING_KEY in Edge configuration.
-make keygen
+make dev-secrets # file-backed local DB, signing, email, and SMTP secrets
+make bootstrap-verifier # interactive echo-disabled admin verifier
 make dev-certs
 make stack-up       # start and health-check the complete local stack
 make e2e            # run black-box HTTP workflows

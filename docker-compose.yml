@@ -1,44 +1,132 @@
+x-service-hardening: &service-hardening
+  read_only: true
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  cap_add:
+    - DAC_READ_SEARCH
+    - SETGID
+    - SETUID
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=32m
+
+x-job-hardening: &job-hardening
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  cap_add:
+    - DAC_READ_SEARCH
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=32m
+
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.9-alpine
     environment:
-      POSTGRES_USER: "${POSTGRES_USER:?POSTGRES_USER is required}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
-      POSTGRES_DB: "${POSTGRES_DB:?POSTGRES_DB is required}"
-      IDENTITY_DB_PASSWORD: "${IDENTITY_DB_PASSWORD:?IDENTITY_DB_PASSWORD is required}"
-      CATALOG_DB_PASSWORD: "${CATALOG_DB_PASSWORD:?CATALOG_DB_PASSWORD is required}"
+      POSTGRES_USER: raglibrarian_bootstrap
+      POSTGRES_DB: raglibrarian_platform
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U raglibrarian"]
+      test: ["CMD-SHELL", "pg_isready -U raglibrarian_bootstrap -d raglibrarian_platform"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
-  identity-migrate:
-    image: postgres:16-alpine
+  identity-db-bootstrap:
+    <<: *job-hardening
+    image: postgres:16.9-alpine
     environment:
-      IDENTITY_POSTGRES_DSN: "${IDENTITY_POSTGRES_DSN:?IDENTITY_POSTGRES_DSN is required}"
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: raglibrarian_platform
+      PGUSER: raglibrarian_bootstrap
+      PGPASSFILE: /run/secrets/postgres_pgpass
+    secrets:
+      - postgres_pgpass
+      - identity_migration_password
+      - identity_runtime_password
     volumes:
-      - ./services/identity-service/migrations:/migrations:ro
+      - ./infra/postgres/init.sql:/bootstrap/identity.sql:ro
+      - ./scripts/run-postgres-bootstrap.sh:/usr/local/bin/run-postgres-bootstrap:ro
+    networks:
+      - backend
     depends_on:
       postgres:
         condition: service_healthy
-    command:
-      - /bin/sh
-      - -ec
-      - |
-        for migration in /migrations/*.up.sql; do
-          psql "$${IDENTITY_POSTGRES_DSN}" --set ON_ERROR_STOP=1 --single-transaction -f "$${migration}"
-        done
+    command: ["/usr/local/bin/run-postgres-bootstrap"]
+
+  identity-migrate:
+    <<: *job-hardening
+    image: postgres:16.9-alpine
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: identity
+      PGUSER: identity_migrator
+      PGPASSFILE: /run/secrets/identity_migration_pgpass
+      MIGRATION_DIRECTION: up
+    secrets:
+      - identity_migration_pgpass
+    volumes:
+      - ./services/identity-service/migrations:/migrations:ro
+      - ./scripts/run-identity-migrations.sh:/usr/local/bin/run-identity-migrations:ro
+    networks:
+      - backend
+    depends_on:
+      identity-db-bootstrap:
+        condition: service_completed_successfully
+    command: ["/usr/local/bin/run-identity-migrations"]
+
+  mailpit:
+    image: axllent/mailpit:v1.30.0
+    user: "65532:65532"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    environment:
+      MP_DATABASE: /tmp/mailpit.db
+      MP_MAX_MESSAGES: "500"
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    ports:
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
+    networks:
+      - backend
+      - frontend
 
   identity-service:
+    <<: *service-hardening
     build: { context: ., args: { SERVICE: identity-service } }
     environment:
       IDENTITY_GRPC_ADDR: ":50051"
-      IDENTITY_POSTGRES_DSN: "${IDENTITY_POSTGRES_DSN:?IDENTITY_POSTGRES_DSN is required}"
-      IDENTITY_SIGNING_KEY: "${IDENTITY_SIGNING_KEY:?IDENTITY_SIGNING_KEY is required}"
+      IDENTITY_POSTGRES_DSN_FILE: /run/secrets/identity_runtime_dsn
+      IDENTITY_SIGNING_KEY_FILE: /run/secrets/identity_signing_key
+      IDENTITY_BOOTSTRAP_VERIFIER_FILE: /run/secrets/identity_bootstrap_verifier
+      IDENTITY_EMAIL_OUTBOX_KEY_FILE: /run/secrets/identity_email_outbox_key
+      IDENTITY_EMAIL_OUTBOX_KEY_ID: local-v1
+      IDENTITY_EMAIL_FINGERPRINT_KEY_FILE: /run/secrets/identity_email_fingerprint_key
+      IDENTITY_SMTP_PASSWORD_FILE: /run/secrets/identity_smtp_password
+      IDENTITY_SMTP_ADDR: mailpit:1025
+      IDENTITY_SMTP_SERVER_NAME: mailpit
+      IDENTITY_SMTP_FROM: no-reply@raglibrarian.local
+      IDENTITY_VERIFY_URL: http://localhost:5173/verify-email
+      IDENTITY_SMTP_STARTTLS: "false"
       IDENTITY_TLS_KEY_FILE: /run/secrets/identity_tls_key
       IDENTITY_TLS_CERT_FILE: /run/secrets/identity_tls_cert
       INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
@@ -53,9 +141,19 @@ services:
       - internal_ca
       - identity_tls_cert
       - identity_tls_key
+      - identity_runtime_dsn
+      - identity_signing_key
+      - identity_bootstrap_verifier
+      - identity_email_outbox_key
+      - identity_email_fingerprint_key
+      - identity_smtp_password
+    networks:
+      - backend
     depends_on:
       identity-migrate:
         condition: service_completed_successfully
+      mailpit:
+        condition: service_started
     healthcheck:
       test: ["CMD", "/healthcheck"]
       interval: 5s
@@ -63,6 +161,7 @@ services:
       retries: 10
 
   catalog-service:
+    <<: *service-hardening
     build: { context: ., args: { SERVICE: catalog-service } }
     environment:
       CATALOG_GRPC_ADDR: ":50052"
@@ -79,6 +178,8 @@ services:
       - internal_ca
       - catalog_tls_cert
       - catalog_tls_key
+    networks:
+      - backend
     healthcheck:
       test: ["CMD", "/healthcheck"]
       interval: 5s
@@ -86,26 +187,32 @@ services:
       retries: 10
 
   edge-api:
+    <<: *service-hardening
     build: { context: ., args: { SERVICE: edge-api } }
-    ports: ["8080:8080"]
+    env_file:
+      - ${SECRET_DIR:-./.dev/secrets}/edge.env
+    ports:
+      - "127.0.0.1:${EDGE_PORT:-8080}:8080"
     environment:
       QUERY_ADDR: ":8080"
-      IDENTITY_GRPC_ADDR: "identity-service:50051"
-      EDGE_VERIFY_KEY: "${EDGE_VERIFY_KEY:?EDGE_VERIFY_KEY is required}"
+      IDENTITY_GRPC_ADDR: identity-service:50051
       INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
       EDGE_TLS_CERT_FILE: /run/secrets/edge_tls_cert
       EDGE_TLS_KEY_FILE: /run/secrets/edge_tls_key
       EDGE_INSECURE_REFRESH_COOKIE: "${EDGE_INSECURE_REFRESH_COOKIE:-false}"
       EDGE_TRUSTED_PROXY_CIDRS: "${EDGE_TRUSTED_PROXY_CIDRS:-}"
       HEALTHCHECK_HTTP_URL: http://localhost:8080/readyz
-      LOG_ENV: "production"
-      LOG_LEVEL: "info"
+      LOG_ENV: production
+      LOG_LEVEL: info
       RUN_AS_UID: "${RUN_AS_UID:-65532}"
       RUN_AS_GID: "${RUN_AS_GID:-65532}"
     secrets:
       - internal_ca
       - edge_tls_cert
       - edge_tls_key
+    networks:
+      - frontend
+      - backend
     depends_on:
       identity-service:
         condition: service_healthy
@@ -118,6 +225,9 @@ services:
       retries: 10
 
   contract-tests:
+    <<: *job-hardening
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=1g
     profiles: ["test"]
     build:
       context: .
@@ -125,10 +235,11 @@ services:
       args: { SERVICE: edge-api }
     environment:
       IDENTITY_GRPC_ADDR: identity-service:50051
-      IDENTITY_POSTGRES_DSN: "${IDENTITY_POSTGRES_DSN:?IDENTITY_POSTGRES_DSN is required}"
+      IDENTITY_POSTGRES_DSN_FILE: /run/secrets/identity_runtime_dsn
+      IDENTITY_MIGRATION_POSTGRES_DSN_FILE: /run/secrets/identity_migration_dsn
       CATALOG_GRPC_ADDR: catalog-service:50052
       GRPC_CONTRACT_TESTS: "true"
-      EDGE_VERIFY_KEY: "${EDGE_VERIFY_KEY:?EDGE_VERIFY_KEY is required}"
+      EDGE_VERIFY_KEY_FILE: /run/secrets/edge_verify_key
       INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
       EDGE_TLS_CERT_FILE: /run/secrets/edge_tls_cert
       EDGE_TLS_KEY_FILE: /run/secrets/edge_tls_key
@@ -136,7 +247,11 @@ services:
       CATALOG_TLS_KEY_FILE: /run/secrets/catalog_tls_key
       UNKNOWN_TLS_CERT_FILE: /run/secrets/unknown_tls_cert
       UNKNOWN_TLS_KEY_FILE: /run/secrets/unknown_tls_key
+      GOCACHE: /tmp/go-build
     secrets:
+      - identity_runtime_dsn
+      - identity_migration_dsn
+      - edge_verify_key
       - internal_ca
       - edge_tls_cert
       - edge_tls_key
@@ -144,6 +259,8 @@ services:
       - catalog_tls_key
       - unknown_tls_cert
       - unknown_tls_key
+    networks:
+      - backend
     depends_on:
       identity-service:
         condition: service_healthy
@@ -153,7 +270,38 @@ services:
 volumes:
   postgres_data:
 
+networks:
+  frontend:
+  backend:
+    internal: true
+
 secrets:
+  postgres_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/postgres_password
+  postgres_pgpass:
+    file: ${SECRET_DIR:-./.dev/secrets}/postgres_pgpass
+  identity_migration_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/identity_migration_password
+  identity_runtime_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/identity_runtime_password
+  identity_migration_pgpass:
+    file: ${SECRET_DIR:-./.dev/secrets}/identity_migration_pgpass
+  identity_runtime_dsn:
+    file: ${SECRET_DIR:-./.dev/secrets}/identity_runtime_dsn
+  identity_migration_dsn:
+    file: ${SECRET_DIR:-./.dev/secrets}/identity_migration_dsn
+  identity_signing_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/identity_signing_key
+  edge_verify_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/edge_verify_key
+  identity_bootstrap_verifier:
+    file: ${SECRET_DIR:-./.dev/secrets}/identity_bootstrap_verifier
+  identity_email_outbox_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/identity_email_outbox_key
+  identity_email_fingerprint_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/identity_email_fingerprint_key
+  identity_smtp_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/identity_smtp_password
   internal_ca:
     file: ${CERT_DIR:-./.dev/certs}/ca.crt
   edge_tls_cert:

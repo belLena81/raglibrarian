@@ -47,7 +47,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	if diagnostics == nil {
 		panic("app: diagnostics are required")
 	}
-	verifier, err := auth.NewVerifier(cfg.VerifyKey)
+	verifier, err := auth.NewKeyring(cfg.VerifyKey, cfg.PreviousVerifyKey)
 	if err != nil {
 		return appFailure(ErrTokenVerifierInitialization, err)
 	}
@@ -67,9 +67,15 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	authHandler := handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: cfg.SecureCookie})
 	queryHandler := handler.NewQueryHandler(diagnostics)
 	healthHandler := handler.NewHealthHandler(identity)
+	setupHandler := handler.NewSetupHandler(identity)
+	hub := handler.NewPendingHub(200)
+	adminHandler := handler.NewAdminHandler(identity, hub)
+	go watchPendingChanges(ctx, identity, hub)
 	server := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           edgeapi.NewRouter(queryHandler, authHandler, healthHandler, verifier, identity, diagnostics, edgeapi.RouterConfig{TrustedProxyCIDRs: cfg.TrustedProxyCIDRs}),
+		Addr: cfg.Addr,
+		Handler: edgeapi.NewRouter(queryHandler, authHandler, healthHandler, setupHandler, adminHandler, verifier, identity, diagnostics, edgeapi.RouterConfig{
+			TrustedProxyCIDRs: cfg.TrustedProxyCIDRs, PublicOrigin: cfg.PublicOrigin, EnforceBrowserOrigin: cfg.EnforceBrowserOrigin,
+		}),
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -91,6 +97,42 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 			return appFailure(ErrHTTPShutdown, err)
 		}
 		return nil
+	}
+}
+
+type pendingWatcher interface {
+	WatchPending(context.Context, chan<- struct{}) error
+}
+
+type pendingPublisher interface{ Publish() }
+
+func watchPendingChanges(ctx context.Context, watcher pendingWatcher, publisher pendingPublisher) {
+	backoff := time.Second
+	for ctx.Err() == nil {
+		changes := make(chan struct{}, 1)
+		done := make(chan error, 1)
+		go func() { done <- watcher.WatchPending(ctx, changes) }()
+		watching := true
+		for watching {
+			select {
+			case <-ctx.Done():
+				return
+			case <-changes:
+				publisher.Publish()
+			case <-done:
+				watching = false
+			}
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
+		}
 	}
 }
 

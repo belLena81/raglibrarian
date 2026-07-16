@@ -4,9 +4,9 @@ import "net/http"
 
 func (h *AuthHandler) setRefreshCookie(w http.ResponseWriter, value string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     "refresh_token",
+		Name:     h.refreshCookieName(),
 		Value:    value,
-		Path:     "/auth",
+		Path:     "/",
 		HttpOnly: true,
 		Secure:   h.secureCookie,
 		SameSite: http.SameSiteStrictMode,
@@ -16,12 +16,19 @@ func (h *AuthHandler) setRefreshCookie(w http.ResponseWriter, value string) {
 
 func (h *AuthHandler) clearRefreshCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     "refresh_token",
+		Name:     h.refreshCookieName(),
 		Value:    "",
-		Path:     "/auth",
+		Path:     "/",
 		HttpOnly: true,
 		Secure:   h.secureCookie,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
+}
+
+func (h *AuthHandler) refreshCookieName() string {
+	if h.secureCookie {
+		return "__Host-refresh_token"
+	}
+	return "refresh_token"
 }

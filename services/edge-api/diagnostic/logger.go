@@ -71,10 +71,8 @@ const (
 type AuthFailure uint8
 
 const (
-	// AuthEmailConflict identifies an existing registration without exposing an email.
-	AuthEmailConflict AuthFailure = iota + 1
 	// AuthInvalidRegistration identifies rejected registration input.
-	AuthInvalidRegistration
+	AuthInvalidRegistration AuthFailure = iota + 1
 	// AuthInvalidCredentials identifies a rejected login.
 	AuthInvalidCredentials
 	// AuthDependencyUnavailable identifies an unavailable Identity dependency.
@@ -326,8 +324,6 @@ func serviceFailureReasonValue(reason ServiceFailureReason) string {
 
 func registrationFailureValue(failure AuthFailure) (string, bool) {
 	switch failure {
-	case AuthEmailConflict:
-		return "email_conflict", true
 	case AuthInvalidRegistration:
 		return "invalid_registration", true
 	case AuthDependencyUnavailable:

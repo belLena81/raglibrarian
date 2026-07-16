@@ -16,10 +16,10 @@ type queryDiagnostics interface {
 	RetrievalUnavailable(*http.Request)
 }
 
-// QueryHandler exposes only the truthful Milestone 1 query boundary.
+// QueryHandler exposes only the truthful placeholder query boundary.
 type QueryHandler struct{ diagnostics queryDiagnostics }
 
-// NewQueryHandler constructs the Milestone 1 query boundary.
+// NewQueryHandler constructs the placeholder query boundary.
 func NewQueryHandler(diagnostics queryDiagnostics) *QueryHandler {
 	if dependencyMissing(diagnostics) {
 		panic("handler: Logger must not be nil")
@@ -44,5 +44,5 @@ func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.diagnostics.RetrievalUnavailable(r)
-	writeError(w, http.StatusNotImplemented, "retrieval is unavailable in milestone 1")
+	writeError(w, http.StatusNotImplemented, "retrieval is unavailable")
 }

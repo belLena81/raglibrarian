@@ -146,14 +146,14 @@ The foundation invariants remain mandatory in all later milestones.
 
 **Owning service:** Identity.
 
-**Outcome:** an operator securely creates the singleton admin; readers register
-immediately; librarians register as pending; an admin lists, approves, or
+**Outcome:** an operator securely creates the singleton admin; verified readers
+become active; verified librarians become pending; an admin lists, approves, or
 rejects applications; only active accounts can log in.
 
 Implementation:
 
-- Add `librarian`, account status, display name, and an auditable librarian
-  application to Identity-owned migrations.
+- Define `librarian`, account status, display name, verification, and auditable
+  review state in the greenfield Identity schema baseline.
 - Protect initial admin creation with a one-time operator bootstrap code. Make
   creation atomic, permit exactly one admin, and never store or log the code.
 - Split Identity application behavior into narrow registration, session,
@@ -170,7 +170,8 @@ Acceptance:
 
 - Concurrent bootstrap attempts create one admin only; missing or invalid
   bootstrap codes fail closed.
-- Reader registration remains backward compatible.
+- Reader and librarian registration remains privacy-preserving and requires a
+  single-use email-verification token before account creation.
 - Non-admin and stale-role sessions cannot approve or reject librarians.
 - Identity unit, PostgreSQL integration, live mTLS contract, UI-compatible HTTP
   E2E, security, race, and abuse-concurrency tests pass.

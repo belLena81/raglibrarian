@@ -5,40 +5,14 @@ import (
 	"errors"
 	"net/http"
 
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
+
 	"github.com/belLena81/raglibrarian/services/edge-api/authflow"
 	"github.com/belLena81/raglibrarian/services/edge-api/diagnostic"
 )
 
-func authErrToStatus(err error) int {
-	switch {
-	case errors.Is(err, authflow.ErrEmailTaken):
-		return http.StatusConflict
-	case errors.Is(err, authflow.ErrInvalidRegistration):
-		return http.StatusUnprocessableEntity
-	case errors.Is(err, authflow.ErrInvalidCredentials):
-		return http.StatusUnauthorized
-	default:
-		return http.StatusServiceUnavailable
-	}
-}
-
-func sanitiseAuthError(err error) string {
-	switch {
-	case errors.Is(err, authflow.ErrEmailTaken):
-		return "email is already registered"
-	case errors.Is(err, authflow.ErrInvalidRegistration):
-		return "email or password is invalid"
-	case errors.Is(err, authflow.ErrInvalidCredentials):
-		return "invalid credentials"
-	default:
-		return "authentication service unavailable"
-	}
-}
-
 func authErrorOutcome(err error) diagnostic.AuthFailure {
 	switch {
-	case errors.Is(err, authflow.ErrEmailTaken):
-		return diagnostic.AuthEmailConflict
 	case errors.Is(err, authflow.ErrInvalidRegistration):
 		return diagnostic.AuthInvalidRegistration
 	case errors.Is(err, authflow.ErrInvalidCredentials):
@@ -54,9 +28,16 @@ func writeAuthJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-func writeAuthError(w http.ResponseWriter, status int, message string) {
+func writeIdentityError(w http.ResponseWriter, request *http.Request, status int, code, message string) {
 	type body struct {
-		Error string `json:"error"`
+		Code      string `json:"code"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"`
 	}
-	writeAuthJSON(w, status, body{Error: message})
+	setPrivateNoStore(w)
+	writeAuthJSON(w, status, body{Code: code, Error: message, RequestID: chimiddleware.GetReqID(request.Context())})
+}
+
+func setPrivateNoStore(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store, private")
 }

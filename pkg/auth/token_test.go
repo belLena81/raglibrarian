@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"crypto/ed25519"
 	"testing"
 	"time"
 
@@ -11,12 +12,11 @@ import (
 )
 
 func TestIssueAndValidatePrimitiveSubject(t *testing.T) {
-	issuer, err := auth.NewIssuer(make([]byte, 32), time.Hour)
-	require.NoError(t, err)
+	signer, verifier := testKeyPair(t)
 	subject := auth.Subject{UserID: "user-1", Email: "reader@example.com", Role: auth.RoleReader, SessionID: "session-1"}
-	token, err := issuer.Issue(subject)
+	token, err := signer.Issue(subject)
 	require.NoError(t, err)
-	claims, err := issuer.Validate(token)
+	claims, err := verifier.Validate(token)
 	require.NoError(t, err)
 	assert.Equal(t, subject.UserID, claims.UserID)
 	assert.Equal(t, subject.Role, claims.Role)
@@ -24,9 +24,8 @@ func TestIssueAndValidatePrimitiveSubject(t *testing.T) {
 }
 
 func TestValidateRejectsTamperedToken(t *testing.T) {
-	issuer, err := auth.NewIssuer(make([]byte, 32), time.Hour)
-	require.NoError(t, err)
-	_, err = issuer.Validate("v4.public.invalid")
+	_, verifier := testKeyPair(t)
+	_, err := verifier.Validate("v4.public.invalid")
 	assert.ErrorIs(t, err, auth.ErrInvalidToken)
 }
 
@@ -35,8 +34,17 @@ func TestRoleContractRejectsUnknownRole(t *testing.T) {
 }
 
 func TestIssueRejectsIncompleteSubject(t *testing.T) {
-	issuer, err := auth.NewIssuer(make([]byte, 32), time.Hour)
-	require.NoError(t, err)
-	_, err = issuer.Issue(auth.Subject{UserID: "user-1", Email: "reader@example.com", Role: auth.RoleReader})
+	signer, _ := testKeyPair(t)
+	_, err := signer.Issue(auth.Subject{UserID: "user-1", Email: "reader@example.com", Role: auth.RoleReader})
 	assert.ErrorIs(t, err, auth.ErrInvalidSubject)
+}
+
+func testKeyPair(t *testing.T) (*auth.Signer, *auth.Verifier) {
+	t.Helper()
+	privateKey := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	signer, err := auth.NewSigner(privateKey, time.Hour)
+	require.NoError(t, err)
+	verifier, err := auth.NewVerifier(privateKey.Public().(ed25519.PublicKey))
+	require.NoError(t, err)
+	return signer, verifier
 }

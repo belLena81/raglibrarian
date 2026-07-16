@@ -3,6 +3,8 @@ package auth
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -36,6 +38,8 @@ type Claims struct {
 	Email     string
 	Role      Role
 	SessionID string
+	TokenID   string
+	KeyID     string
 }
 
 // Subject is the primitive token input; it deliberately contains no service aggregate.
@@ -52,6 +56,7 @@ type Signer struct {
 	key        gopasseto.V4AsymmetricSecretKey
 	ttl        time.Duration
 	timeSource func() time.Time // injectable so tests can control "now"
+	keyID      string
 }
 
 // Verifier validates PASETO v4 public tokens. It can never mint a token.
@@ -60,35 +65,46 @@ type Verifier struct {
 	timeSource func() time.Time
 }
 
-// Issuer is retained for focused tests that need one object capable of both
-// issuing and verifying. Production code must use Signer in identity-service
-// and Verifier in edge-api so the private key cannot cross the boundary.
-type Issuer struct {
-	*Signer
-	*Verifier
+// Keyring validates with an active key and, during rotation, one previous key.
+// It tries a bounded set and never trusts an unverified key identifier.
+type Keyring struct{ verifiers []*Verifier }
+
+// NewKeyring constructs a bounded verifier set from the active public key and
+// an optional previous public key used during rotation.
+func NewKeyring(active []byte, previous []byte) (*Keyring, error) {
+	activeVerifier, err := NewVerifier(active)
+	if err != nil {
+		return nil, err
+	}
+	keyring := &Keyring{verifiers: []*Verifier{activeVerifier}}
+	if len(previous) > 0 {
+		previousVerifier, previousErr := NewVerifier(previous)
+		if previousErr != nil {
+			return nil, previousErr
+		}
+		keyring.verifiers = append(keyring.verifiers, previousVerifier)
+	}
+	return keyring, nil
 }
 
-// NewIssuer derives an asymmetric key pair from a 32-byte test seed. It is a
-// compatibility helper and must not be used for runtime configuration.
-func NewIssuer(seed []byte, ttl time.Duration) (*Issuer, error) {
-	if len(seed) != ed25519.SeedSize {
-		return nil, fmt.Errorf("auth: test seed must be exactly %d bytes, got %d", ed25519.SeedSize, len(seed))
+// Validate accepts a token signed by either configured key and returns one
+// stable error for all untrustworthy inputs.
+func (k *Keyring) Validate(token string) (Claims, error) {
+	if k == nil {
+		return Claims{}, ErrInvalidToken
 	}
-	privateKey := ed25519.NewKeyFromSeed(seed)
-	signer, err := NewSigner(privateKey, ttl)
-	if err != nil {
-		return nil, err
+	for _, verifier := range k.verifiers {
+		claims, err := verifier.Validate(token)
+		if err == nil {
+			return claims, nil
+		}
 	}
-	verifier, err := NewVerifier(privateKey.Public().(ed25519.PublicKey))
-	if err != nil {
-		return nil, err
-	}
-	return &Issuer{Signer: signer, Verifier: verifier}, nil
+	return Claims{}, ErrInvalidToken
 }
 
 // NewSigner constructs a Signer from a 64-byte Ed25519 private key.
 func NewSigner(rawKey []byte, ttl time.Duration) (*Signer, error) {
-	if len(rawKey) != 64 {
+	if len(rawKey) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf(
 			"auth: signing key must be exactly 64 bytes, got %d", len(rawKey),
 		)
@@ -103,12 +119,27 @@ func NewSigner(rawKey []byte, ttl time.Duration) (*Signer, error) {
 		key:        key,
 		ttl:        ttl,
 		timeSource: time.Now,
+		keyID:      "active-v1",
 	}, nil
+}
+
+// NewSignerWithKeyID constructs a signer that identifies its active key in
+// issued token metadata without changing validation trust decisions.
+func NewSignerWithKeyID(rawKey []byte, ttl time.Duration, keyID string) (*Signer, error) {
+	if strings.TrimSpace(keyID) == "" || len(keyID) > 64 {
+		return nil, ErrInvalidSubject
+	}
+	signer, err := NewSigner(rawKey, ttl)
+	if err != nil {
+		return nil, err
+	}
+	signer.keyID = keyID
+	return signer, nil
 }
 
 // NewVerifier constructs a Verifier from a 32-byte Ed25519 public key.
 func NewVerifier(rawKey []byte) (*Verifier, error) {
-	if len(rawKey) != 32 {
+	if len(rawKey) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("auth: verification key must be exactly 32 bytes, got %d", len(rawKey))
 	}
 	key, err := gopasseto.NewV4AsymmetricPublicKeyFromBytes(rawKey)
@@ -120,10 +151,10 @@ func NewVerifier(rawKey []byte) (*Verifier, error) {
 
 // Issue mints a PASETO v4 public token for the given user.
 func (s *Signer) Issue(subject Subject) (string, error) {
-	if strings.TrimSpace(subject.UserID) == "" ||
-		strings.TrimSpace(subject.Email) == "" ||
-		strings.TrimSpace(subject.SessionID) == "" ||
-		!subject.Role.IsValid() {
+	if strings.TrimSpace(subject.UserID) == "" || strings.TrimSpace(subject.SessionID) == "" {
+		return "", ErrInvalidSubject
+	}
+	if subject.Role != "" && !subject.Role.IsValid() {
 		return "", ErrInvalidSubject
 	}
 	now := s.timeSource()
@@ -136,9 +167,19 @@ func (s *Signer) Issue(subject Subject) (string, error) {
 	token.SetSubject(subject.UserID)
 	token.SetIssuer("raglibrarian")
 	token.SetAudience("edge-api")
+	tokenIDRaw := make([]byte, 16)
+	if _, err := rand.Read(tokenIDRaw); err != nil {
+		return "", ErrInvalidSubject
+	}
+	token.SetJti(hex.EncodeToString(tokenIDRaw))
+	token.SetString("kid", s.keyID)
 
-	token.SetString("email", subject.Email)
-	token.SetString("role", string(subject.Role))
+	if subject.Email != "" {
+		token.SetString("email", subject.Email)
+	}
+	if subject.Role != "" {
+		token.SetString("role", string(subject.Role))
+	}
 	token.SetString("session_id", subject.SessionID)
 
 	return token.V4Sign(s.key, nil), nil
@@ -164,31 +205,26 @@ func (v *Verifier) Validate(tokenStr string) (Claims, error) {
 		return Claims{}, ErrInvalidToken
 	}
 
-	email, err := token.GetString("email")
-	if err != nil {
-		return Claims{}, ErrInvalidToken
-	}
-
-	roleStr, err := token.GetString("role")
-	if err != nil {
-		return Claims{}, ErrInvalidToken
-	}
-
+	email, _ := token.GetString("email")
+	roleStr, _ := token.GetString("role")
 	role := Role(roleStr)
-	if !role.IsValid() {
+	if role != "" && !role.IsValid() {
 		return Claims{}, ErrInvalidToken
 	}
 
 	sessionID, err := token.GetString("session_id")
 	if err != nil {
-		// Tokens issued before session support remain valid until they expire.
-		sessionID = ""
+		return Claims{}, ErrInvalidToken
 	}
+	tokenID, _ := token.GetJti()
+	keyID, _ := token.GetString("kid")
 
 	return Claims{
 		UserID:    userID,
 		Email:     email,
 		Role:      role,
 		SessionID: sessionID,
+		TokenID:   tokenID,
+		KeyID:     keyID,
 	}, nil
 }

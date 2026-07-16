@@ -4,9 +4,10 @@
 The eventual product will ingest books, retrieve evidence, and return answers
 with traceable book, chapter, page, and passage citations.
 
-The repository is currently at **Milestone 1**: a secure, runnable service
-foundation. It does not yet ingest files, query Qdrant, call an LLM, or return
-real retrieval results.
+The repository currently implements **Milestone 2**: secure Identity RBAC,
+email verification, singleton-admin bootstrap, and librarian approval. It does
+not yet ingest files, query Qdrant, call an LLM, or return real retrieval
+results.
 
 ## Architecture decision
 
@@ -38,22 +39,21 @@ client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
 | Capability | State | Notes |
 |---|---|---|
 | Edge, Identity, Catalog processes | Implemented | Compose migrates Identity, then starts all three services. |
-| Public auth API | Implemented | Register, login, refresh, `/me`, and server-side logout. Public registration creates readers only. |
+| Public auth API | Implemented | Privacy-preserving registration, email verification/resend, login, refresh, `/me`, and server-side logout. |
 | Access tokens | Implemented | PASETO v4 public, Ed25519 signed by Identity and verified by Edge; 15-minute lifetime and `edge-api` audience. |
 | Password storage | Implemented | bcrypt at cost 12; plaintext is never persisted. |
-| Identity persistence | Implemented | Identity-owned users migration and Postgres repository. |
+| Identity persistence | Implemented | One greenfield Identity schema baseline, least-privilege database roles, and Postgres adapters. |
 | HTTP hardening | Implemented | Strict, bounded JSON, request/header timeouts, security headers, sanitized errors, and request IDs. |
 | Real query/retrieval | Not implemented | `/query` is authenticated and returns `501`; it never fabricates citations. |
 | Sessions, refresh tokens, revocation | Implemented | Refresh tokens rotate in an `HttpOnly`, `SameSite=Strict` cookie; logout/replay invalidates the server-side session family. |
-| Rate limiting / Redis | Not implemented | Required before an Internet-facing deployment. |
+| Abuse controls | Implemented | Bounded in-process trusted-client-aware limits protect registration, verification, setup, login, and refresh. |
 | File upload, ingestion, vectors, LLM | Not implemented | Future additive services. |
 
 ## Delivery roadmap
 
-Milestone 1 is complete. The next deliverable is **Milestone 2: Identity RBAC
-and approval**—secure singleton-admin bootstrap, pending librarian registration,
-and admin approval/rejection. Book upload follows only after its role dependency
-is independently usable.
+Milestone 2 is complete. It provides secure singleton-admin bootstrap, verified
+reader registration, pending librarian registration, authoritative live-role
+checks, and admin approval/rejection. Book upload remains outside this milestone.
 
 The canonical service-by-service roadmap, data ownership, Lambda/worker
 deployment policy, contracts, and acceptance gates are in
@@ -64,7 +64,8 @@ is marked delivered.
 
 ## Security model
 
-Run `make keygen` to produce two values:
+Local development generates the key pair into owner-readable files with
+`make dev-secrets`:
 
 - `IDENTITY_SIGNING_KEY`: a private Ed25519 key. Configure it only in
   `identity-service`.
@@ -72,7 +73,10 @@ Run `make keygen` to produce two values:
   `edge-api`.
 
 Never commit either value, local certificates, connection strings, tokens, or
-book content. The signing key must never be present in Edge configuration.
+book content. The signing key is mounted only into Identity; Edge receives only
+the public verification key. Identity database, bootstrap, email-protection,
+and SMTP credentials are also delivered as files rather than environment
+values. See [OPERATIONS.md](OPERATIONS.md) for rotation and migration guidance.
 
 ## Public API
 
@@ -80,10 +84,12 @@ book content. The signing key must never be present in Edge configuration.
 |---|---|---|---|
 | `GET` | `/healthz` | None | Edge process health. |
 | `GET` | `/readyz` | None | Edge readiness; returns `503` until Identity gRPC health is serving. |
-| `POST` | `/auth/register` | None | Creates a `reader`, returns a short-lived access token, and sets a refresh cookie. |
+| `POST` | `/auth/register` | None | Accepts a bounded reader or librarian registration and returns the same generic response for privacy. |
+| `POST` | `/auth/verify-email` | None | Consumes a single-use verification token and creates the account. |
+| `POST` | `/auth/verification/resend` | None | Requests a bounded, privacy-preserving verification resend. |
 | `POST` | `/auth/login` | None | Validates credentials, returns a short-lived access token, and sets a refresh cookie. |
 | `POST` | `/auth/refresh` | Refresh cookie | Rotates the refresh token and returns a replacement access token. |
-| `GET` | `/auth/me` | Bearer token | Returns verified claims after validating the Identity session. |
+| `GET` | `/auth/me` | Bearer token | Returns the authoritative current principal after validating the live Identity session. |
 | `POST` | `/auth/logout` | Bearer token | Revokes the Identity session and clears the refresh cookie. |
 | `POST` | `/query` | Bearer token | Validates the session, then returns `501` until retrieval exists. `/query/` remains compatible. |
 
@@ -100,7 +106,7 @@ plain HTTP for local development. This is not a production setting.
 pkg/                 Focused auth/TLS/gRPC/process libraries and protobuf clients
 services/edge-api/   Public HTTP boundary and query stub
 services/identity-service/
-                     Identity domain, gRPC adapter, Postgres repository, migration
+				     Identity domain, gRPC adapter, Postgres repository, schema baseline
 services/catalog-service/
                      Independent catalog gRPC scaffold
 tools/healthcheck/   Operational HTTP/gRPC probe binary
@@ -126,14 +132,18 @@ lint and generate them explicitly after changing a `.proto` contract.
 
 ```bash
 cp .env.example .env
-make keygen >> .env
+make dev-secrets
+make bootstrap-verifier
 make dev-certs
 make stack-up
 make e2e
 ```
 
-`make stack-up` starts the full Compose stack on `:8080` and applies Identity
-migrations before starting Identity. `make dev` is an alias for this workflow.
+`make stack-up` starts the full Compose stack on loopback `:8080`, applies
+Identity migrations with the migration-only role, and then starts Identity
+with its bounded runtime role. A disposable Mailpit SMTP fixture is private to
+the backend network; its inspection UI is loopback-only on `:8025`. `make dev`
+is an alias for this workflow.
 Identity and Catalog expose standard gRPC health services inside the private
 Compose network. `make contract-test` verifies both services over mTLS.
 
@@ -156,6 +166,9 @@ make lint        # golangci-lint per module
 make vuln        # govulncheck per module
 make proto-check # Buf contract lint
 make contract-test # live Identity/Catalog mTLS and database contracts
+make ui-check    # UI install, lint, type-check, and production build
+make security-check # secret, Dockerfile, and service-image scans
+make full-gates  # complete local static, test, UI, and security gate
 ```
 
 The workspace declares Go 1.26.5 as its minimum toolchain. CI and service

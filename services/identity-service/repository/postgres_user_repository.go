@@ -3,11 +3,8 @@ package repository
 import (
 	"context"
 	"errors"
-	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/belLena81/raglibrarian/services/identity-service/domain"
@@ -15,15 +12,9 @@ import (
 
 // pgUniqueViolation is the Postgres SQLSTATE code for unique constraint violations.
 const pgUniqueViolation = "23505"
-const (
-	insertUserQuery = `
-	INSERT INTO identity.users (id, email, password_hash, role, created_at)
-	VALUES ($1, $2, $3, $4, $5)`
-
-	findUserByEmailQuery = `
-	SELECT id, email, password_hash, role, created_at
+const findUserByEmailQuery = `
+	SELECT id, display_name, email, password_hash, email_fingerprint, role, status, email_verified_at, created_at, reviewed_by, reviewed_at
 	FROM identity.users WHERE email=$1`
-)
 
 // PostgresUserRepository is the pgx/v5 implementation of UserRepository.
 type PostgresUserRepository struct {
@@ -39,30 +30,6 @@ func NewPostgresUserRepository(pool *pgxpool.Pool) *PostgresUserRepository {
 	return &PostgresUserRepository{pool: pool}
 }
 
-type userExecutor interface {
-	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
-}
-
-func insertUser(ctx context.Context, db userExecutor, user domain.User) error {
-	_, err := db.Exec(ctx,
-		insertUserQuery,
-		user.ID(),
-		user.Email(),
-		user.PasswordHash(),
-		string(user.Role()),
-		user.CreatedAt(),
-	)
-	if err != nil {
-		if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok &&
-			pgErr.Code == pgUniqueViolation &&
-			pgErr.ConstraintName == "users_email_unique" {
-			return domain.ErrEmailTaken
-		}
-		return fmt.Errorf("repository: save user: %w", err)
-	}
-	return nil
-}
-
 // FindByEmail looks up a user by email. Returns domain.ErrUserNotFound when absent.
 func (r *PostgresUserRepository) FindByEmail(ctx context.Context, email string) (domain.User, error) {
 	row := r.pool.QueryRow(ctx,
@@ -73,20 +40,12 @@ func (r *PostgresUserRepository) FindByEmail(ctx context.Context, email string) 
 }
 
 func scanUser(row pgx.Row) (domain.User, error) {
-	var (
-		id        string
-		email     string
-		hash      string
-		roleStr   string
-		createdAt time.Time
-	)
-
-	if err := row.Scan(&id, &email, &hash, &roleStr, &createdAt); err != nil {
+	user, err := scanIdentityUser(row)
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.User{}, domain.ErrUserNotFound
 		}
-		return domain.User{}, fmt.Errorf("repository: scan user: %w", err)
+		return domain.User{}, err
 	}
-
-	return domain.NewUserFromDB(id, email, hash, domain.Role(roleStr), createdAt), nil
+	return user, nil
 }

@@ -2,11 +2,13 @@ package usecase
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
@@ -17,24 +19,6 @@ import (
 	identitytoken "github.com/belLena81/raglibrarian/services/identity-service/token"
 	"github.com/belLena81/raglibrarian/services/identity-service/usecase/port"
 )
-
-type fakeRegistrationStore struct {
-	user      domain.User
-	createdAt time.Time
-	expiresAt time.Time
-	tokenHash []byte
-	calls     int
-	err       error
-}
-
-func (s *fakeRegistrationStore) CreateRegistration(_ context.Context, registration port.Registration) error {
-	s.calls++
-	s.user = registration.User
-	s.createdAt = registration.CreatedAt
-	s.expiresAt = registration.Session.ExpiresAt
-	s.tokenHash = append([]byte(nil), registration.RefreshTokenHash...)
-	return s.err
-}
 
 type fakeUsers struct{ users map[string]domain.User }
 
@@ -139,58 +123,21 @@ func (i failingIssuer) Issue(string, string, domain.Role, string) (string, error
 	return "", i.err
 }
 
-func newIssuer(t *testing.T) (*auth.Issuer, AccessTokenIssuer) {
+func newIssuer(t *testing.T) (*auth.Verifier, AccessTokenIssuer) {
 	t.Helper()
-	issuer, err := auth.NewIssuer(make([]byte, 32), time.Hour)
+	privateKey := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	signer, err := auth.NewSigner(privateKey, time.Hour)
 	require.NoError(t, err)
-	return issuer, identitytoken.NewIssuer(issuer.Signer)
-}
-
-func TestRegisterSubmitsOneAtomicRegistrationCommand(t *testing.T) {
-	issuer, tokenIssuer := newIssuer(t)
-	store := &fakeRegistrationStore{}
-	now := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
-	service := NewRegistrationService(store, tokenIssuer, password.NewLimitedHasher(password.BcryptHasher{}, 2), fixedClock{now: now}, time.Hour)
-
-	result, err := service.Register(context.Background(), "  USER@Example.COM ", "password-1234", domain.RoleReader)
+	verifier, err := auth.NewVerifier(privateKey.Public().(ed25519.PublicKey))
 	require.NoError(t, err)
-	assert.Equal(t, "user@example.com", store.user.Email())
-	assert.Equal(t, now, store.createdAt)
-	assert.Equal(t, now.Add(time.Hour), store.expiresAt)
-	assert.Len(t, store.tokenHash, 32)
-	assert.Len(t, result.RefreshToken, 43)
-	claims, err := issuer.Validate(result.AccessToken)
-	require.NoError(t, err)
-	assert.Equal(t, result.SessionID, claims.SessionID)
-}
-
-func TestRegisterReturnsAtomicStoreFailure(t *testing.T) {
-	_, tokenIssuer := newIssuer(t)
-	storeErr := errors.New("registration transaction failed")
-	store := &fakeRegistrationStore{err: storeErr}
-	service := NewRegistrationService(store, tokenIssuer, password.NewLimitedHasher(password.BcryptHasher{}, 1), fixedClock{now: time.Now().UTC()}, time.Hour)
-
-	_, err := service.Register(context.Background(), "reader@example.com", "password-1234", domain.RoleReader)
-	assert.ErrorIs(t, err, storeErr)
-}
-
-func TestRegisterSigningFailureDoesNotPersistRegistration(t *testing.T) {
-	store := &fakeRegistrationStore{}
-	issuerErr := errors.New("signing failed")
-	service := NewRegistrationService(store, failingIssuer{err: issuerErr}, password.NewLimitedHasher(password.BcryptHasher{}, 1), fixedClock{now: time.Now().UTC()}, time.Hour)
-
-	_, err := service.Register(context.Background(), "reader@example.com", "password-1234", domain.RoleReader)
-
-	assert.ErrorIs(t, err, issuerErr)
-	assert.Zero(t, store.calls)
+	return verifier, identitytoken.NewIssuer(signer)
 }
 
 func TestLoginSigningFailureDoesNotPersistSession(t *testing.T) {
 	passwords := password.NewLimitedHasher(password.BcryptHasher{}, 1)
 	hash, err := passwords.Hash(context.Background(), "password-1234")
 	require.NoError(t, err)
-	user, err := domain.NewUser("reader@example.com", hash, domain.RoleReader)
-	require.NoError(t, err)
+	user := activeTestUser(t, "reader@example.com", hash)
 	sessions := newMemorySessions()
 	issuerErr := errors.New("signing failed")
 	service := NewSessionService(
@@ -208,11 +155,10 @@ func TestLoginSigningFailureDoesNotPersistSession(t *testing.T) {
 	assert.Empty(t, sessions.sessions)
 }
 
-func TestLoginAcceptsLegacyShortPassword(t *testing.T) {
-	legacyHash, err := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.MinCost)
+func TestLoginAcceptsStoredBcryptPassword(t *testing.T) {
+	storedHash, err := bcrypt.GenerateFromPassword([]byte("password-1234"), bcrypt.MinCost)
 	require.NoError(t, err)
-	user, err := domain.NewUser("reader@example.com", string(legacyHash), domain.RoleReader)
-	require.NoError(t, err)
+	user := activeTestUser(t, "reader@example.com", string(storedHash))
 	_, tokenIssuer := newIssuer(t)
 	sessions := newMemorySessions()
 	service := NewSessionService(
@@ -224,7 +170,7 @@ func TestLoginAcceptsLegacyShortPassword(t *testing.T) {
 		time.Hour,
 	)
 
-	result, err := service.Login(context.Background(), "  READER@EXAMPLE.COM ", "secret")
+	result, err := service.Login(context.Background(), "  READER@EXAMPLE.COM ", "password-1234")
 
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.AccessToken)
@@ -234,8 +180,7 @@ func TestLoginAcceptsLegacyShortPassword(t *testing.T) {
 func TestRefreshPreparationFailureLeavesOriginalTokenRetryable(t *testing.T) {
 	issuer, tokenIssuer := newIssuer(t)
 	now := time.Now().UTC()
-	user, err := domain.NewUser("reader@example.com", "hash", domain.RoleReader)
-	require.NoError(t, err)
+	user := activeTestUser(t, "reader@example.com", "hash")
 	sessions := newMemorySessions()
 	sessions.users[user.ID()] = user
 	currentToken := "current-refresh-token"
@@ -244,7 +189,7 @@ func TestRefreshPreparationFailureLeavesOriginalTokenRetryable(t *testing.T) {
 	users := &fakeUsers{users: map[string]domain.User{user.Email(): user}}
 	service := NewSessionService(users, sessions, failingIssuer{err: errors.New("signing failed")}, password.NewLimitedHasher(password.BcryptHasher{}, 1), fixedClock{now: now}, time.Hour)
 
-	_, err = service.Refresh(context.Background(), currentToken)
+	_, err := service.Refresh(context.Background(), currentToken)
 	require.Error(t, err)
 	service.issuer = tokenIssuer
 	result, err := service.Refresh(context.Background(), currentToken)
@@ -257,8 +202,7 @@ func TestRefreshPreparationFailureLeavesOriginalTokenRetryable(t *testing.T) {
 func TestRefreshPrincipalFailureLeavesOriginalTokenRetryable(t *testing.T) {
 	_, tokenIssuer := newIssuer(t)
 	now := time.Now().UTC()
-	user, err := domain.NewUser("reader@example.com", "hash", domain.RoleReader)
-	require.NoError(t, err)
+	user := activeTestUser(t, "reader@example.com", "hash")
 	sessions := newMemorySessions()
 	sessions.users[user.ID()] = user
 	currentToken := "current-refresh-token"
@@ -267,7 +211,7 @@ func TestRefreshPrincipalFailureLeavesOriginalTokenRetryable(t *testing.T) {
 	sessions.rotateErr = errors.New("database unavailable")
 	service := NewSessionService(&fakeUsers{users: map[string]domain.User{}}, sessions, tokenIssuer, password.NewLimitedHasher(password.BcryptHasher{}, 1), fixedClock{now: now}, time.Hour)
 
-	_, err = service.Refresh(context.Background(), currentToken)
+	_, err := service.Refresh(context.Background(), currentToken)
 	require.Error(t, err)
 	_, err = service.Refresh(context.Background(), currentToken)
 	require.NoError(t, err)
@@ -276,8 +220,7 @@ func TestRefreshPrincipalFailureLeavesOriginalTokenRetryable(t *testing.T) {
 func TestRefreshRotatesAndReuseRevokesSession(t *testing.T) {
 	_, tokenIssuer := newIssuer(t)
 	now := time.Now().UTC()
-	user, err := domain.NewUser("reader@example.com", "hash", domain.RoleReader)
-	require.NoError(t, err)
+	user := activeTestUser(t, "reader@example.com", "hash")
 	sessions := newMemorySessions()
 	sessions.users[user.ID()] = user
 	currentToken := "current-refresh-token"
@@ -294,23 +237,18 @@ func TestRefreshRotatesAndReuseRevokesSession(t *testing.T) {
 	assert.ErrorIs(t, err, domain.ErrInvalidCredentials)
 }
 
-func TestPasswordAndInvalidCredentialsAreSanitized(t *testing.T) {
+func TestInvalidCredentialsAreSanitized(t *testing.T) {
 	_, tokenIssuer := newIssuer(t)
-	registration := NewRegistrationService(&fakeRegistrationStore{}, tokenIssuer, password.NewLimitedHasher(password.BcryptHasher{}, 1), fixedClock{now: time.Now().UTC()}, time.Hour)
-	_, err := registration.Register(context.Background(), "reader@example.com", "short", domain.RoleReader)
-	assert.ErrorIs(t, err, domain.ErrInvalidPassword)
-
 	sessions := NewSessionService(&fakeUsers{users: map[string]domain.User{}}, newMemorySessions(), tokenIssuer, password.NewLimitedHasher(password.BcryptHasher{}, 1), fixedClock{now: time.Now().UTC()}, time.Hour)
-	_, err = sessions.Login(context.Background(), "none@example.com", "password-1234")
+	_, err := sessions.Login(context.Background(), "none@example.com", "password-1234")
 	assert.ErrorIs(t, err, domain.ErrInvalidCredentials)
 	assert.False(t, errors.Is(err, domain.ErrUserNotFound))
 }
 
 func TestShortPasswordMismatchDoesNotRevealAccountExistence(t *testing.T) {
-	legacyHash, err := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.MinCost)
+	storedHash, err := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.MinCost)
 	require.NoError(t, err)
-	user, err := domain.NewUser("reader@example.com", string(legacyHash), domain.RoleReader)
-	require.NoError(t, err)
+	user := activeTestUser(t, "reader@example.com", string(storedHash))
 	_, tokenIssuer := newIssuer(t)
 	service := NewSessionService(
 		&fakeUsers{users: map[string]domain.User{user.Email(): user}},
@@ -332,4 +270,15 @@ func TestShortPasswordMismatchDoesNotRevealAccountExistence(t *testing.T) {
 func TestDummyPasswordHashIsAValidBcryptMismatch(t *testing.T) {
 	err := (password.BcryptHasher{}).Compare(context.Background(), dummyPasswordHash, "password-1234")
 	assert.ErrorIs(t, err, domain.ErrInvalidCredentials)
+}
+
+func activeTestUser(t *testing.T, email, passwordHash string) domain.User {
+	t.Helper()
+	now := time.Now().UTC()
+	user, err := domain.NewVerifiedUser(
+		uuid.NewString(), "Reader", email, make([]byte, 32), passwordHash,
+		domain.RoleReader, domain.StatusActive, now, now,
+	)
+	require.NoError(t, err)
+	return user
 }

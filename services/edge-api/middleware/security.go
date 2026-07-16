@@ -18,7 +18,7 @@ func applySecurityHeaders(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
-	if strings.HasPrefix(r.URL.Path, "/auth/") || r.URL.Path == "/query" || strings.HasPrefix(r.URL.Path, "/query/") {
-		w.Header().Set("Cache-Control", "no-store")
+	if strings.HasPrefix(r.URL.Path, "/auth/") || strings.HasPrefix(r.URL.Path, "/setup/") || strings.HasPrefix(r.URL.Path, "/admin/") || r.URL.Path == "/query" || strings.HasPrefix(r.URL.Path, "/query/") {
+		w.Header().Set("Cache-Control", "no-store, private")
 	}
 }

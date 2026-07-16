@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -20,7 +19,7 @@ import (
 )
 
 func TestPostgresSessionRepository_Rotate(t *testing.T) {
-	dsn := os.Getenv("IDENTITY_POSTGRES_DSN")
+	dsn := integrationDSN(t)
 	if dsn == "" {
 		t.Skip("IDENTITY_POSTGRES_DSN is required for integration tests")
 	}
@@ -32,9 +31,10 @@ func TestPostgresSessionRepository_Rotate(t *testing.T) {
 
 	userID := uuid.NewString()
 	_, err = pool.Exec(ctx,
-		`INSERT INTO identity.users (id, email, password_hash, role, created_at) VALUES ($1, $2, $3, $4, $5)`,
+		`INSERT INTO identity.users (id,display_name,email,email_fingerprint,password_hash,role,status,email_verified_at,created_at) VALUES ($1,$2,$2,$3,$4,$5,'active',$6,$6)`,
 		userID,
 		fmt.Sprintf("session-%s@example.test", userID),
+		integrationFingerprint(userID),
 		"integration-test-hash",
 		"reader",
 		time.Now().UTC(),
@@ -61,7 +61,7 @@ func TestPostgresSessionRepository_Rotate(t *testing.T) {
 }
 
 func TestPostgresSessionRepository_ReusedTokenRevokesFamily(t *testing.T) {
-	dsn := os.Getenv("IDENTITY_POSTGRES_DSN")
+	dsn := integrationDSN(t)
 	if dsn == "" {
 		t.Skip("IDENTITY_POSTGRES_DSN is required for integration tests")
 	}
@@ -72,8 +72,8 @@ func TestPostgresSessionRepository_ReusedTokenRevokesFamily(t *testing.T) {
 
 	userID := uuid.NewString()
 	_, err = pool.Exec(ctx,
-		`INSERT INTO identity.users (id, email, password_hash, role, created_at) VALUES ($1,$2,$3,$4,$5)`,
-		userID, fmt.Sprintf("reuse-%s@example.test", userID), "hash", "reader", time.Now().UTC(),
+		`INSERT INTO identity.users (id,display_name,email,email_fingerprint,password_hash,role,status,email_verified_at,created_at) VALUES ($1,$2,$2,$3,$4,$5,'active',$6,$6)`,
+		userID, fmt.Sprintf("reuse-%s@example.test", userID), integrationFingerprint(userID), "hash", "reader", time.Now().UTC(),
 	)
 	require.NoError(t, err)
 
@@ -97,7 +97,7 @@ func TestPostgresSessionRepository_ReusedTokenRevokesFamily(t *testing.T) {
 }
 
 func TestPostgresSessionRepository_ConcurrentRefreshAllowsOneThenRevokesFamily(t *testing.T) {
-	dsn := os.Getenv("IDENTITY_POSTGRES_DSN")
+	dsn := integrationDSN(t)
 	if dsn == "" {
 		t.Skip("IDENTITY_POSTGRES_DSN is required for integration tests")
 	}
@@ -108,8 +108,8 @@ func TestPostgresSessionRepository_ConcurrentRefreshAllowsOneThenRevokesFamily(t
 
 	userID := uuid.NewString()
 	_, err = pool.Exec(ctx,
-		`INSERT INTO identity.users (id, email, password_hash, role, created_at) VALUES ($1,$2,$3,$4,$5)`,
-		userID, fmt.Sprintf("concurrent-refresh-%s@example.test", userID), "hash", "reader", time.Now().UTC(),
+		`INSERT INTO identity.users (id,display_name,email,email_fingerprint,password_hash,role,status,email_verified_at,created_at) VALUES ($1,$2,$2,$3,$4,$5,'active',$6,$6)`,
+		userID, fmt.Sprintf("concurrent-refresh-%s@example.test", userID), integrationFingerprint(userID), "hash", "reader", time.Now().UTC(),
 	)
 	require.NoError(t, err)
 
@@ -154,7 +154,7 @@ func TestPostgresSessionRepository_ConcurrentRefreshAllowsOneThenRevokesFamily(t
 }
 
 func TestPostgresSessionRepository_PrepareFailureRollsBackRotation(t *testing.T) {
-	dsn := os.Getenv("IDENTITY_POSTGRES_DSN")
+	dsn := integrationDSN(t)
 	if dsn == "" {
 		t.Skip("IDENTITY_POSTGRES_DSN is required for integration tests")
 	}
@@ -165,8 +165,8 @@ func TestPostgresSessionRepository_PrepareFailureRollsBackRotation(t *testing.T)
 
 	userID := uuid.NewString()
 	_, err = pool.Exec(ctx,
-		`INSERT INTO identity.users (id, email, password_hash, role, created_at) VALUES ($1, $2, $3, $4, $5)`,
-		userID, fmt.Sprintf("rollback-%s@example.test", userID), "integration-test-hash", "reader", time.Now().UTC(),
+		`INSERT INTO identity.users (id,display_name,email,email_fingerprint,password_hash,role,status,email_verified_at,created_at) VALUES ($1,$2,$2,$3,$4,$5,'active',$6,$6)`,
+		userID, fmt.Sprintf("rollback-%s@example.test", userID), integrationFingerprint(userID), "integration-test-hash", "reader", time.Now().UTC(),
 	)
 	require.NoError(t, err)
 
@@ -194,7 +194,7 @@ func TestPostgresSessionRepository_PrepareFailureRollsBackRotation(t *testing.T)
 }
 
 func TestPostgresSessionRepository_CleanupExpiredCascadesRefreshTokens(t *testing.T) {
-	dsn := os.Getenv("IDENTITY_POSTGRES_DSN")
+	dsn := integrationDSN(t)
 	if dsn == "" {
 		t.Skip("IDENTITY_POSTGRES_DSN is required for integration tests")
 	}
@@ -205,8 +205,8 @@ func TestPostgresSessionRepository_CleanupExpiredCascadesRefreshTokens(t *testin
 
 	userID := uuid.NewString()
 	_, err = pool.Exec(ctx,
-		`INSERT INTO identity.users (id, email, password_hash, role, created_at) VALUES ($1, $2, $3, $4, $5)`,
-		userID, fmt.Sprintf("cleanup-%s@example.test", userID), "integration-test-hash", "reader", time.Now().UTC(),
+		`INSERT INTO identity.users (id,display_name,email,email_fingerprint,password_hash,role,status,email_verified_at,created_at) VALUES ($1,$2,$2,$3,$4,$5,'active',$6,$6)`,
+		userID, fmt.Sprintf("cleanup-%s@example.test", userID), integrationFingerprint(userID), "integration-test-hash", "reader", time.Now().UTC(),
 	)
 	require.NoError(t, err)
 
@@ -227,4 +227,9 @@ func TestPostgresSessionRepository_CleanupExpiredCascadesRefreshTokens(t *testin
 
 func integrationSession(userID string, expiresAt time.Time) port.Session {
 	return port.Session{ID: uuid.NewString(), UserID: userID, FamilyID: uuid.NewString(), ExpiresAt: expiresAt.UTC()}
+}
+
+func integrationFingerprint(userID string) []byte {
+	fingerprint := sha256.Sum256([]byte(userID))
+	return fingerprint[:]
 }

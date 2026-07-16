@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -31,9 +32,12 @@ var (
 type Config struct {
 	Addr, IdentityAddress string
 	VerifyKey             []byte
+	PreviousVerifyKey     []byte
 	TrustedProxyCIDRs     []netip.Prefix
 	TLS                   internaltls.Files
 	SecureCookie          bool
+	PublicOrigin          string
+	EnforceBrowserOrigin  bool
 	RunAs                 process.Identity
 }
 
@@ -47,6 +51,13 @@ func Load() (Config, error) {
 	if err != nil || len(key) != 32 {
 		return Config{}, fmt.Errorf("%w: EDGE_VERIFY_KEY must be 64 hex characters", ErrVerifyKeyConfiguration)
 	}
+	var previousKey []byte
+	if previousHex := strings.TrimSpace(os.Getenv("EDGE_PREVIOUS_VERIFY_KEY")); previousHex != "" {
+		previousKey, err = hex.DecodeString(previousHex)
+		if err != nil || len(previousKey) != 32 {
+			return Config{}, fmt.Errorf("%w: EDGE_PREVIOUS_VERIFY_KEY must be 64 hex characters", ErrVerifyKeyConfiguration)
+		}
+	}
 	prefixes, err := parseCIDRs(os.Getenv("EDGE_TRUSTED_PROXY_CIDRS"))
 	if err != nil {
 		return Config{}, err
@@ -54,6 +65,23 @@ func Load() (Config, error) {
 	insecureCookie, err := strconv.ParseBool(optional("EDGE_INSECURE_REFRESH_COOKIE", "false"))
 	if err != nil {
 		return Config{}, fmt.Errorf("%w: EDGE_INSECURE_REFRESH_COOKIE: %w", ErrRefreshCookieConfiguration, err)
+	}
+	enforceOrigin, err := strconv.ParseBool(optional("EDGE_ENFORCE_BROWSER_ORIGIN", "false"))
+	if err != nil {
+		return Config{}, fmt.Errorf("EDGE_ENFORCE_BROWSER_ORIGIN: %w", err)
+	}
+	publicOrigin := strings.TrimRight(strings.TrimSpace(os.Getenv("EDGE_PUBLIC_ORIGIN")), "/")
+	if enforceOrigin && publicOrigin == "" {
+		return Config{}, fmt.Errorf("EDGE_PUBLIC_ORIGIN is required when browser origin enforcement is enabled")
+	}
+	if enforceOrigin {
+		parsedOrigin, parseErr := url.Parse(publicOrigin)
+		if parseErr != nil || parsedOrigin.Host == "" || parsedOrigin.Path != "" || parsedOrigin.RawQuery != "" || parsedOrigin.Fragment != "" {
+			return Config{}, fmt.Errorf("EDGE_PUBLIC_ORIGIN must be an absolute origin")
+		}
+		if parsedOrigin.Scheme != "https" && !insecureCookie {
+			return Config{}, fmt.Errorf("EDGE_PUBLIC_ORIGIN must use HTTPS")
+		}
 	}
 	runAs, err := processIdentity()
 	if err != nil {
@@ -72,13 +100,16 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return Config{
-		Addr:              optional("QUERY_ADDR", ":8080"),
-		IdentityAddress:   optional("IDENTITY_GRPC_ADDR", "identity-service:50051"),
-		VerifyKey:         key,
-		TrustedProxyCIDRs: prefixes,
-		TLS:               internaltls.Files{CA: ca, Certificate: cert, Key: keyFile},
-		SecureCookie:      !insecureCookie,
-		RunAs:             runAs,
+		Addr:                 optional("QUERY_ADDR", ":8080"),
+		IdentityAddress:      optional("IDENTITY_GRPC_ADDR", "identity-service:50051"),
+		VerifyKey:            key,
+		PreviousVerifyKey:    previousKey,
+		TrustedProxyCIDRs:    prefixes,
+		TLS:                  internaltls.Files{CA: ca, Certificate: cert, Key: keyFile},
+		SecureCookie:         !insecureCookie,
+		PublicOrigin:         publicOrigin,
+		EnforceBrowserOrigin: enforceOrigin,
+		RunAs:                runAs,
 	}, nil
 }
 

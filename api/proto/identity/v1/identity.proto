@@ -6,15 +6,25 @@ option go_package = "github.com/belLena81/raglibrarian/pkg/proto/identity/v1;ide
 
 service IdentityService {
   rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse);
+  rpc ResendVerification(ResendVerificationRequest) returns (ResendVerificationResponse);
   rpc Login(LoginRequest) returns (LoginResponse);
   rpc Refresh(RefreshRequest) returns (RefreshResponse);
   rpc ValidateSession(ValidateSessionRequest) returns (ValidateSessionResponse);
   rpc Logout(LogoutRequest) returns (LogoutResponse);
+  rpc GetSetupStatus(GetSetupStatusRequest) returns (GetSetupStatusResponse);
+  rpc BootstrapAdmin(BootstrapAdminRequest) returns (BootstrapAdminResponse);
+  rpc ListPendingLibrarians(ListPendingLibrariansRequest) returns (ListPendingLibrariansResponse);
+  rpc ApproveLibrarian(ApproveLibrarianRequest) returns (ApproveLibrarianResponse);
+  rpc RejectLibrarian(RejectLibrarianRequest) returns (RejectLibrarianResponse);
+  rpc WatchPendingLibrarians(WatchPendingLibrariansRequest) returns (stream WatchPendingLibrariansResponse);
 }
 
 message RegisterRequest {
   string email = 1;
   string password = 2;
+  string name = 3;
+  string role = 4;
 }
 
 message LoginRequest {
@@ -23,10 +33,18 @@ message LoginRequest {
 }
 
 message RegisterResponse {
-  string access_token = 1;
-  string role = 2;
-  string refresh_token = 3;
-  string session_id = 4;
+  bool accepted = 1;
+}
+
+message VerifyEmailRequest {
+  string token = 1;
+}
+message VerifyEmailResponse {}
+message ResendVerificationRequest {
+  string email = 1;
+}
+message ResendVerificationResponse {
+  bool accepted = 1;
 }
 
 message LoginResponse {
@@ -36,7 +54,9 @@ message LoginResponse {
   string session_id = 4;
 }
 
-message RefreshRequest { string refresh_token = 1; }
+message RefreshRequest {
+  string refresh_token = 1;
+}
 
 message RefreshResponse {
   string access_token = 1;
@@ -49,7 +69,74 @@ message ValidateSessionRequest {
   string user_id = 1;
   string session_id = 2;
 }
-message ValidateSessionResponse {}
+message ValidateSessionResponse {
+  Principal principal = 1;
+}
 
-message LogoutRequest { string session_id = 1; }
+message Principal {
+  string user_id = 1;
+  string name = 2;
+  string email = 3;
+  string role = 4;
+  string status = 5;
+  string session_id = 6;
+}
+
+message LogoutRequest {
+  string session_id = 1;
+}
 message LogoutResponse {}
+
+message GetSetupStatusRequest {}
+message GetSetupStatusResponse {
+  bool required = 1;
+}
+
+message BootstrapAdminRequest {
+  string name = 1;
+  string email = 2;
+  string password = 3;
+  string bootstrap_code = 4;
+}
+message BootstrapAdminResponse {
+  bool created = 1;
+}
+
+message Actor {
+  string user_id = 1;
+  string session_id = 2;
+}
+
+message PendingLibrarian {
+  string user_id = 1;
+  string name = 2;
+  string email = 3;
+  string registered_at = 4;
+}
+
+message ListPendingLibrariansRequest {
+  Actor actor = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+message ListPendingLibrariansResponse {
+  repeated PendingLibrarian users = 1;
+  string next_page_token = 2;
+}
+
+message ApproveLibrarianRequest {
+  Actor actor = 1;
+  string user_id = 2;
+}
+message ApproveLibrarianResponse {}
+
+message RejectLibrarianRequest {
+  Actor actor = 1;
+  string user_id = 2;
+}
+message RejectLibrarianResponse {}
+
+message WatchPendingLibrariansRequest {}
+message WatchPendingLibrariansResponse {
+  uint32 version = 1;
+}

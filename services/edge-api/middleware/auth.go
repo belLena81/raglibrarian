@@ -2,9 +2,12 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
+
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/services/edge-api/authflow"
@@ -13,7 +16,7 @@ import (
 // contextKey is an unexported type for context keys to avoid collisions.
 type contextKey string
 
-const claimsKey contextKey = "auth_claims"
+const principalKey contextKey = "auth_principal"
 
 // Authenticator validates the Authorization: Bearer token and stores Claims in context.
 // Rejects with 401 if the header is absent or the token is invalid.
@@ -24,7 +27,7 @@ type tokenVerifier interface {
 // SessionValidator is the narrow Identity contract required after local token
 // verification. Identity is authoritative for revocation.
 type SessionValidator interface {
-	ValidateSession(context.Context, string, string) error
+	ValidateSession(context.Context, string, string) (authflow.Principal, error)
 }
 
 type authDiagnostics interface {
@@ -40,39 +43,42 @@ func Authenticator(verifier tokenVerifier, sessions SessionValidator, diagnostic
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenStr, ok := bearerToken(r)
 			if !ok {
-				writeUnauthorized(w, "missing or malformed Authorization header")
+				writeUnauthorized(w, r)
 				return
 			}
 
 			claims, err := verifier.Validate(tokenStr)
 			if err != nil {
 				diagnostics.TokenRejected(r)
-				writeUnauthorized(w, "invalid or expired token")
+				writeUnauthorized(w, r)
 				return
 			}
 			if claims.SessionID == "" {
-				writeUnauthorized(w, "invalid or expired token")
+				writeUnauthorized(w, r)
 				return
 			}
-			if err := sessions.ValidateSession(r.Context(), claims.UserID, claims.SessionID); err != nil {
+			principal, err := sessions.ValidateSession(r.Context(), claims.UserID, claims.SessionID)
+			if err != nil {
 				if errors.Is(err, authflow.ErrInvalidCredentials) {
-					writeUnauthorized(w, "invalid or expired token")
+					writeUnauthorized(w, r)
 					return
 				}
-				writeUnavailable(w)
+				writeUnavailable(w, r)
+				return
+			}
+			if principal.UserID != claims.UserID || principal.SessionID != claims.SessionID || principal.Status != "active" {
+				writeUnauthorized(w, r)
 				return
 			}
 
-			ctx := context.WithValue(r.Context(), claimsKey, claims)
+			ctx := context.WithValue(r.Context(), principalKey, principal)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
-func writeUnavailable(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusServiceUnavailable)
-	_, _ = w.Write([]byte(`{"error":"authentication service unavailable"}`))
+func writeUnavailable(w http.ResponseWriter, r *http.Request) {
+	writeBoundaryError(w, r, http.StatusServiceUnavailable, "identity_unavailable", "authentication service unavailable")
 }
 
 // RequireRole enforces a minimum role. Must be applied after Authenticator.
@@ -80,13 +86,13 @@ func writeUnavailable(w http.ResponseWriter) {
 func RequireRole(required auth.Role) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			claims, ok := ClaimsFromContext(r.Context())
+			principal, ok := PrincipalFromContext(r.Context())
 			if !ok {
 				panic("middleware: RequireRole called without Authenticator in chain")
 			}
 
-			if required == auth.RoleAdmin && claims.Role != auth.RoleAdmin {
-				writeForbidden(w, "admin role required")
+			if required == auth.RoleAdmin && !principal.IsActiveAdmin() {
+				writeForbidden(w, r)
 				return
 			}
 
@@ -98,15 +104,29 @@ func RequireRole(required auth.Role) func(http.Handler) http.Handler {
 // ClaimsFromContext retrieves the verified Claims stored by Authenticator.
 // Returns (Claims{}, false) if the route is public.
 func ClaimsFromContext(ctx context.Context) (auth.Claims, bool) {
-	claims, ok := ctx.Value(claimsKey).(auth.Claims)
-	return claims, ok
+	principal, ok := PrincipalFromContext(ctx)
+	if !ok {
+		return auth.Claims{}, false
+	}
+	return auth.Claims{UserID: principal.UserID, SessionID: principal.SessionID, Email: principal.Email, Role: auth.Role(principal.Role)}, true
+}
+
+// PrincipalFromContext returns the live Identity principal stored by Authenticator.
+func PrincipalFromContext(ctx context.Context) (authflow.Principal, bool) {
+	principal, ok := ctx.Value(principalKey).(authflow.Principal)
+	return principal, ok
 }
 
 // WithClaims attaches already-validated claims. It is useful for trusted
 // internal adapters and focused handler tests; public requests must use
 // Authenticator.
 func WithClaims(ctx context.Context, claims auth.Claims) context.Context {
-	return context.WithValue(ctx, claimsKey, claims)
+	return WithPrincipal(ctx, authflow.Principal{UserID: claims.UserID, SessionID: claims.SessionID, Email: claims.Email, Role: string(claims.Role), Status: "active"})
+}
+
+// WithPrincipal attaches an already validated principal for trusted adapters and tests.
+func WithPrincipal(ctx context.Context, principal authflow.Principal) context.Context {
+	return context.WithValue(ctx, principalKey, principal)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -127,15 +147,23 @@ func bearerToken(r *http.Request) (string, bool) {
 	return token, true
 }
 
-func writeUnauthorized(w http.ResponseWriter, msg string) {
-	w.Header().Set("Content-Type", "application/json")
+func writeUnauthorized(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("WWW-Authenticate", "Bearer")
-	w.WriteHeader(http.StatusUnauthorized)
-	_, _ = w.Write([]byte(`{"error":"` + msg + `"}`))
+	writeBoundaryError(w, r, http.StatusUnauthorized, "unauthorized", "invalid or expired credentials")
 }
 
-func writeForbidden(w http.ResponseWriter, msg string) {
+func writeForbidden(w http.ResponseWriter, r *http.Request) {
+	writeBoundaryError(w, r, http.StatusForbidden, "forbidden", "forbidden")
+}
+
+func writeBoundaryError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
+	type response struct {
+		Code      string `json:"code"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"`
+	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusForbidden)
-	_, _ = w.Write([]byte(`{"error":"` + msg + `"}`))
+	w.Header().Set("Cache-Control", "no-store, private")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(response{Code: code, Error: message, RequestID: chimiddleware.GetReqID(r.Context())})
 }

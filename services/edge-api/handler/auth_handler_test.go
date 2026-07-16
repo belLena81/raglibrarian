@@ -26,9 +26,11 @@ type fakeAuthUseCase struct {
 	refreshCalls                      int
 }
 
-func (f *fakeAuthUseCase) Register(context.Context, string, string) (authflow.Session, error) {
-	return authflow.Session{AccessToken: "access", RefreshToken: "refresh", Role: "reader"}, f.registerErr
+func (f *fakeAuthUseCase) Register(context.Context, string, string, string, string) error {
+	return f.registerErr
 }
+func (f *fakeAuthUseCase) VerifyEmail(context.Context, string) error        { return nil }
+func (f *fakeAuthUseCase) ResendVerification(context.Context, string) error { return nil }
 func (f *fakeAuthUseCase) Login(context.Context, string, string) (authflow.Session, error) {
 	return authflow.Session{AccessToken: "access", RefreshToken: "refresh", Role: "reader"}, f.loginErr
 }
@@ -50,12 +52,12 @@ func post(t *testing.T, h http.HandlerFunc, body string) *httptest.ResponseRecor
 }
 
 func TestRegisterMapsStableApplicationErrors(t *testing.T) {
-	assert.Equal(t, http.StatusCreated, post(t, newHandler(t, &fakeAuthUseCase{}).Register, `{"email":"reader@example.com","password":"password-1234"}`).Code)
-	assert.Equal(t, http.StatusConflict, post(t, newHandler(t, &fakeAuthUseCase{registerErr: authflow.ErrEmailTaken}).Register, `{"email":"reader@example.com","password":"password-1234"}`).Code)
-	invalid := post(t, newHandler(t, &fakeAuthUseCase{registerErr: authflow.ErrInvalidRegistration}).Register, `{"email":"bad","password":"short"}`)
+	body := `{"name":"Reader","email":"reader@example.com","password":"password-1234","role":"reader"}`
+	assert.Equal(t, http.StatusAccepted, post(t, newHandler(t, &fakeAuthUseCase{}).Register, body).Code)
+	invalid := post(t, newHandler(t, &fakeAuthUseCase{registerErr: authflow.ErrInvalidRegistration}).Register, body)
 	assert.Equal(t, http.StatusUnprocessableEntity, invalid.Code)
-	assert.JSONEq(t, `{"error":"email or password is invalid"}`, invalid.Body.String())
-	assert.Equal(t, http.StatusServiceUnavailable, post(t, newHandler(t, &fakeAuthUseCase{registerErr: authflow.ErrUnavailable}).Register, `{"email":"reader@example.com","password":"password-1234"}`).Code)
+	assert.Contains(t, invalid.Body.String(), `"code":"invalid_registration"`)
+	assert.Equal(t, http.StatusServiceUnavailable, post(t, newHandler(t, &fakeAuthUseCase{registerErr: authflow.ErrUnavailable}).Register, body).Code)
 }
 
 func TestLoginDistinguishesInvalidCredentialsFromOutage(t *testing.T) {
@@ -68,13 +70,13 @@ func TestRefreshUnavailablePreservesCookie(t *testing.T) {
 	h := newHandler(t, &fakeAuthUseCase{refreshErr: authflow.ErrUnavailable})
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
-	request.AddCookie(&http.Cookie{Name: "refresh_token", Value: "existing-refresh"})
+	request.AddCookie(&http.Cookie{Name: "__Host-refresh_token", Value: "existing-refresh"})
 
 	h.Refresh(recorder, request)
 
 	assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 	assert.Empty(t, recorder.Header().Values("Set-Cookie"))
-	assert.JSONEq(t, `{"error":"authentication service unavailable"}`, recorder.Body.String())
+	assert.Contains(t, recorder.Body.String(), `"code":"identity_unavailable"`)
 }
 
 func TestRefreshMissingCookieDoesNotCallIdentity(t *testing.T) {
@@ -89,7 +91,7 @@ func TestRefreshMissingCookieDoesNotCallIdentity(t *testing.T) {
 	assert.Zero(t, useCase.refreshCalls)
 	cookies := recorder.Result().Cookies()
 	if assert.Len(t, cookies, 1) {
-		assert.Equal(t, "refresh_token", cookies[0].Name)
+		assert.Equal(t, "__Host-refresh_token", cookies[0].Name)
 		assert.Less(t, cookies[0].MaxAge, 0)
 	}
 }
@@ -98,7 +100,7 @@ func TestRefreshUnexpectedFailurePreservesCookie(t *testing.T) {
 	h := newHandler(t, &fakeAuthUseCase{refreshErr: errors.New("transport failure")})
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
-	request.AddCookie(&http.Cookie{Name: "refresh_token", Value: "existing-refresh"})
+	request.AddCookie(&http.Cookie{Name: "__Host-refresh_token", Value: "existing-refresh"})
 
 	h.Refresh(recorder, request)
 
@@ -110,14 +112,14 @@ func TestRefreshInvalidCredentialsClearsCookie(t *testing.T) {
 	h := newHandler(t, &fakeAuthUseCase{refreshErr: authflow.ErrInvalidCredentials})
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
-	request.AddCookie(&http.Cookie{Name: "refresh_token", Value: "invalid-refresh"})
+	request.AddCookie(&http.Cookie{Name: "__Host-refresh_token", Value: "invalid-refresh"})
 
 	h.Refresh(recorder, request)
 
 	assert.Equal(t, http.StatusUnauthorized, recorder.Code)
 	cookies := recorder.Result().Cookies()
 	if assert.Len(t, cookies, 1) {
-		assert.Equal(t, "refresh_token", cookies[0].Name)
+		assert.Equal(t, "__Host-refresh_token", cookies[0].Name)
 		assert.Empty(t, cookies[0].Value)
 		assert.Less(t, cookies[0].MaxAge, 0)
 		assert.True(t, cookies[0].HttpOnly)
@@ -130,7 +132,7 @@ func TestRefreshSuccessReplacesCookieWithoutExposingIt(t *testing.T) {
 	h := newHandler(t, &fakeAuthUseCase{})
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
-	request.AddCookie(&http.Cookie{Name: "refresh_token", Value: "existing-refresh"})
+	request.AddCookie(&http.Cookie{Name: "__Host-refresh_token", Value: "existing-refresh"})
 
 	h.Refresh(recorder, request)
 
@@ -159,7 +161,7 @@ func TestRegisterDoesNotLogDependencyError(t *testing.T) {
 		handler.CookieConfig{Secure: true},
 	)
 
-	recorder := post(t, h.Register, `{"email":"reader@example.com","password":"password-1234"}`)
+	recorder := post(t, h.Register, `{"name":"Reader","email":"reader@example.com","password":"password-1234","role":"reader"}`)
 
 	assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 	require.Equal(t, 1, logs.Len())

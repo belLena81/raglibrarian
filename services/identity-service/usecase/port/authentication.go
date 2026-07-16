@@ -28,29 +28,19 @@ type Session struct {
 
 // RefreshPrincipal is loaded and locked before a refresh token is consumed.
 type RefreshPrincipal struct {
-	Session Session
-	UserID  string
-	Email   string
-	Role    domain.Role
-}
-
-// Registration contains the complete atomic registration persistence command.
-type Registration struct {
-	User             domain.User
-	Session          Session
-	CreatedAt        time.Time
-	RefreshTokenHash []byte
+	Session    Session
+	UserID     string
+	Name       string
+	Email      string
+	Role       domain.Role
+	Status     domain.Status
+	VerifiedAt time.Time
 }
 
 // PrepareRefresh performs bounded local work before rotation is committed.
 // Implementations must not call a database, network, filesystem, or blocking
 // external dependency while the store holds transaction locks.
 type PrepareRefresh func(RefreshPrincipal) error
-
-// RegistrationStore atomically persists a user and initial session family.
-type RegistrationStore interface {
-	CreateRegistration(context.Context, Registration) error
-}
 
 // UserReader supplies credential-bearing users for login.
 type UserReader interface {

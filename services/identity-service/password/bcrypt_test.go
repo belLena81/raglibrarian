@@ -48,13 +48,13 @@ func TestLimitedHasherBoundsConcurrentWork(t *testing.T) {
 	assert.Zero(t, next.active.Load())
 }
 
-func TestBcryptHasherAcceptsLegacyShortPasswordForVerification(t *testing.T) {
+func TestBcryptHasherRejectsShortPasswordForVerification(t *testing.T) {
 	hash, err := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.MinCost)
 	require.NoError(t, err)
 
 	err = (password.BcryptHasher{}).Compare(context.Background(), string(hash), "secret")
 
-	require.NoError(t, err)
+	require.ErrorIs(t, err, domain.ErrInvalidCredentials)
 }
 
 func TestBcryptHasherKeepsRegistrationPasswordMinimum(t *testing.T) {

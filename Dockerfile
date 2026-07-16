@@ -1,7 +1,20 @@
 FROM golang:1.26.5-alpine AS builder
 ARG SERVICE
 WORKDIR /src
-COPY . .
+
+# Keep the build context explicit: operational files, local secrets, UI assets,
+# and repository metadata never enter service image layers.
+COPY go.work go.work.sum ./
+COPY api/proto ./api/proto
+COPY pkg ./pkg
+COPY services ./services
+COPY tools ./tools
+COPY tests ./tests
+
+# The Go base image is patch-version pinned. The Alpine package revision stays
+# movable so patched repository packages remain consumable; the resulting
+# service images are blocked by the pinned vulnerability scan gate.
+# hadolint ignore=DL3018
 RUN apk add --no-cache protobuf \
     && go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10 \
     && go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1 \
@@ -10,15 +23,17 @@ RUN apk add --no-cache protobuf \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /bin/healthcheck ./tools/healthcheck
 
 FROM builder AS contract-tests
+RUN go -C /src/tests/e2e mod download \
+    && go -C /src/services/identity-service mod download
 ENTRYPOINT ["/bin/sh", "-ec"]
-CMD ["cd /src/tests/e2e && go test -v -tags=e2e -run '^TestGRPC' ./... && cd /src/services/identity-service && go test -v -tags=integration ./repository && go test -v -tags=integration ./migrations"]
+CMD ["go -C /src/tests/e2e test -v -tags=e2e -run '^TestGRPC' ./... && go -C /src/services/identity-service test -v -tags=integration ./repository && go -C /src/services/identity-service test -v -tags=integration ./migrations"]
 
 FROM gcr.io/distroless/static:nonroot
 COPY --from=builder /bin/service /service
 COPY --from=builder /bin/healthcheck /healthcheck
-# Compose file-backed secrets preserve their host-side 0600 permissions. The
-# service loads only its assigned secrets, then drops to this image's 65532
-# non-root identity before accepting traffic. Health probes remain isolated
-# processes and need root only to read the same service-specific probe files.
+# The process starts with only SETUID/SETGID capabilities so it can read its
+# root-owned 0400 Compose secrets and permanently drop to UID/GID 65532 before
+# accepting traffic. The filesystem remains read-only at runtime.
+# hadolint ignore=DL3002
 USER root:root
 ENTRYPOINT ["/service"]

@@ -38,7 +38,7 @@ func NewSessionService(
 // Login verifies normalized credentials without revealing account existence.
 func (s *SessionService) Login(ctx context.Context, email, plaintext string) (AuthResult, error) {
 	email = normalizeEmail(email)
-	if _, err := domain.NewUser(email, "validation-placeholder", domain.RoleReader); err != nil {
+	if !validEmail(email) {
 		return AuthResult{}, domain.ErrInvalidCredentials
 	}
 	user, err := s.users.FindByEmail(ctx, email)
@@ -54,6 +54,9 @@ func (s *SessionService) Login(ctx context.Context, email, plaintext string) (Au
 			return AuthResult{}, domain.ErrInvalidCredentials
 		}
 		return AuthResult{}, fmt.Errorf("login: compare password: %w", err)
+	}
+	if !user.CanAuthenticate() {
+		return AuthResult{}, domain.ErrInvalidCredentials
 	}
 	return s.createSession(ctx, user)
 }
@@ -109,6 +112,26 @@ func (s *SessionService) ValidateSession(ctx context.Context, userID, sessionID 
 		return fmt.Errorf("validate session: %w", err)
 	}
 	return nil
+}
+
+// ValidatePrincipal returns current Identity-owned authorization facts. It is
+// deliberately separate from access-token claims.
+func (s *SessionService) ValidatePrincipal(ctx context.Context, userID, sessionID string) (domain.Principal, error) {
+	if userID == "" || sessionID == "" {
+		return domain.Principal{}, domain.ErrInvalidCredentials
+	}
+	store, ok := s.sessions.(port.PrincipalStore)
+	if !ok {
+		return domain.Principal{}, fmt.Errorf("validate principal: store unsupported")
+	}
+	principal, err := store.ValidatePrincipal(ctx, userID, sessionID, s.clock.Now().UTC())
+	if errors.Is(err, port.ErrSessionInvalid) {
+		return domain.Principal{}, domain.ErrInvalidCredentials
+	}
+	if err != nil {
+		return domain.Principal{}, fmt.Errorf("validate principal: %w", err)
+	}
+	return principal, nil
 }
 
 // Logout revokes a session immediately.

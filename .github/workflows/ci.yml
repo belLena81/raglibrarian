@@ -8,59 +8,99 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   go:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-go@v5.5.0
         with:
           go-version: '1.26.5'
-      - name: Install protobuf generators
+          cache: true
+      - name: Install pinned Go and protobuf tooling
         run: |
           sudo apt-get update
           sudo apt-get install --yes protobuf-compiler
+          go install github.com/bufbuild/buf/cmd/buf@v1.71.0
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
-      - uses: bufbuild/buf-action@v1
-        with:
-          version: '1.71.0'
-          input: api/proto
-          lint: true
-          push: false
-          pr_comment: false
-      - name: Install golangci-lint
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+      - name: Install pinned golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.11.4
           install-only: true
-      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - run: make fmt-check vet lint test test-race arch-check vuln proto-check
+      - name: Run Go quality gates
+        run: make fmt-check vet lint test test-race arch-check vuln proto-check
+
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: '22.17.0'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build, lint, and type-check UI
+        run: make ui-check
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: '22.17.0'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install UI dependencies for dependency audit
+        run: npm --prefix ui ci
+      - name: Scan repository, Dockerfile, and service images
+        run: make security-check
 
   integration:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-go@v5.5.0
         with:
           go-version: '1.26.5'
-      - name: Install protobuf generators
+      - name: Install pinned protobuf generators
         run: |
           sudo apt-get update
           sudo apt-get install --yes protobuf-compiler
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
-      - name: Create ephemeral local configuration
+      - name: Create ephemeral file-backed local configuration
         run: |
           cp .env.example .env
-          make --silent keygen >> .env
-          make dev-certs
-      - name: Start the local stack
-        run: docker compose up -d --build --wait --wait-timeout 180
+          make dev-secrets dev-certs
+          umask 077
+          openssl rand -base64 24 | tr -d '\n' > .dev/secrets/e2e_bootstrap_code
+          { printf 'raglibrarian/admin-bootstrap/v1\0'; cat .dev/secrets/e2e_bootstrap_code; } \
+            | openssl dgst -sha256 -binary > .dev/secrets/identity_bootstrap_verifier
+          chmod 400 .dev/secrets/e2e_bootstrap_code .dev/secrets/identity_bootstrap_verifier
+      - name: Validate and start the local stack
+        run: |
+          make compose-config
+          docker compose up -d --build --wait --wait-timeout 180
       - name: Run live mTLS service contracts
         run: make contract-test
       - name: Run black-box tests
-        run: make e2e
+        run: |
+          E2E_BOOTSTRAP_CODE="$(cat .dev/secrets/e2e_bootstrap_code)" \
+          E2E_MAIL_FIXTURE_URL=http://127.0.0.1:8025/view/latest.txt \
+            make e2e
       - name: Verify database-loss readiness behavior
         run: |
           docker compose stop postgres
@@ -73,9 +113,9 @@ jobs:
             sleep 1
           done
           exit 1
-      - name: Collect service logs
+      - name: Show container state
         if: failure()
-        run: docker compose logs
+        run: docker compose ps --all
       - name: Tear down stack
         if: always()
         run: docker compose down -v

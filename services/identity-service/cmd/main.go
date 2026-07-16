@@ -5,23 +5,23 @@ import (
 	"os/signal"
 	"syscall"
 
-	"go.uber.org/zap"
-
 	"github.com/belLena81/raglibrarian/pkg/logger"
 	"github.com/belLena81/raglibrarian/services/identity-service/config"
+	"github.com/belLena81/raglibrarian/services/identity-service/diagnostic"
 	"github.com/belLena81/raglibrarian/services/identity-service/internal/app"
 )
 
 func main() {
 	log := logger.Must("identity-service")
 	defer func() { _ = log.Sync() }()
+	diagnostics := diagnostic.New(log)
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatal("invalid configuration", zap.Error(err))
+		diagnostics.ServiceStartFailed()
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if err = app.Run(ctx, cfg, log); err != nil {
-		log.Fatal("service exited", zap.Error(err))
+	if err = app.Run(ctx, cfg, diagnostics); err != nil {
+		diagnostics.ServiceRunFailed()
 	}
 }

@@ -7,8 +7,8 @@ import (
 	"net"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	grpc_health_v1 "google.golang.org/grpc/health/grpc_health_v1"
@@ -19,9 +19,12 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/process"
 	identityv1 "github.com/belLena81/raglibrarian/pkg/proto/identity/v1"
 	"github.com/belLena81/raglibrarian/services/identity-service/config"
+	"github.com/belLena81/raglibrarian/services/identity-service/diagnostic"
+	"github.com/belLena81/raglibrarian/services/identity-service/email"
 	identitygrpc "github.com/belLena81/raglibrarian/services/identity-service/grpc"
 	"github.com/belLena81/raglibrarian/services/identity-service/password"
 	"github.com/belLena81/raglibrarian/services/identity-service/repository"
+	"github.com/belLena81/raglibrarian/services/identity-service/securevalue"
 	identitytoken "github.com/belLena81/raglibrarian/services/identity-service/token"
 	"github.com/belLena81/raglibrarian/services/identity-service/usecase"
 )
@@ -31,8 +34,16 @@ type systemClock struct{}
 // Now implements the application clock with UTC-normalized caller usage.
 func (systemClock) Now() time.Time { return time.Now() }
 
+type systemIDs struct{}
+
+// NewID returns a new opaque application identifier.
+func (systemIDs) NewID() string { return uuid.NewString() }
+
 // Run composes and manages the Identity process lifecycle.
-func Run(ctx context.Context, cfg config.Config, log *zap.Logger) error {
+func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorder) error {
+	if diagnostics == nil {
+		panic("app: diagnostics are required")
+	}
 	pool, err := pgxpool.New(ctx, cfg.DSN)
 	if err != nil {
 		return fmt.Errorf("database connection: %w", err)
@@ -43,7 +54,7 @@ func Run(ctx context.Context, cfg config.Config, log *zap.Logger) error {
 	if err = pool.Ping(pingCtx); err != nil {
 		return fmt.Errorf("database unavailable: %w", err)
 	}
-	signer, err := auth.NewSigner(cfg.SigningKey, 15*time.Minute)
+	signer, err := auth.NewSignerWithKeyID(cfg.SigningKey, 15*time.Minute, cfg.SigningKeyID)
 	if err != nil {
 		return err
 	}
@@ -59,23 +70,39 @@ func Run(ctx context.Context, cfg config.Config, log *zap.Logger) error {
 	if err = process.DropPrivileges(cfg.RunAs); err != nil {
 		return err
 	}
+	policy := grpcauth.Policy{Service: "identity.v1.IdentityService", DNSName: "edge-api"}
 	server := grpc.NewServer(
 		grpc.Creds(credentials),
-		grpc.UnaryInterceptor(grpcauth.UnaryServerInterceptor(grpcauth.Policy{Service: "identity.v1.IdentityService", DNSName: "edge-api"})),
+		grpc.UnaryInterceptor(grpcauth.UnaryServerInterceptor(policy)),
+		grpc.StreamInterceptor(grpcauth.StreamServerInterceptor(policy)),
 	)
 	sessions := repository.NewPostgresSessionRepository(pool)
 	users := repository.NewPostgresUserRepository(pool)
+	identityStore := repository.NewPostgresIdentityRepository(pool)
 	passwords := password.NewLimitedHasher(password.BcryptHasher{}, cfg.BcryptConcurrency)
 	issuer := identitytoken.NewIssuer(signer)
-	registrationService := usecase.NewRegistrationService(repository.NewPostgresRegistrationRepository(pool), issuer, passwords, systemClock{}, 30*24*time.Hour)
 	sessionService := usecase.NewSessionService(users, sessions, issuer, passwords, systemClock{}, 30*24*time.Hour)
-	identityv1.RegisterIdentityServiceServer(server, identitygrpc.NewServer(registrationService, sessionService))
+	protector, err := securevalue.New(cfg.FingerprintKey, cfg.OutboxKey, cfg.OutboxKeyID)
+	if err != nil {
+		return fmt.Errorf("secure values unavailable: %w", err)
+	}
+	sender, err := email.NewSMTPSender(cfg.SMTP)
+	if err != nil {
+		return fmt.Errorf("email adapter unavailable: %w", err)
+	}
+	verificationService := usecase.NewVerificationService(identityStore, passwords, protector, protector, systemIDs{}, systemClock{})
+	bootstrapService := usecase.NewBootstrapService(identityStore, passwords, protector, systemIDs{}, systemClock{}, cfg.BootstrapVerifier)
+	approvalService := usecase.NewApprovalService(identityStore, systemClock{})
+	notifications := repository.NewPostgresNotifications(pool)
+	identityv1.RegisterIdentityServiceServer(server, identitygrpc.NewServer(verificationService, sessionService, bootstrapService, approvalService, notifications))
 	healthServer := health.NewServer()
 	grpc_health_v1.RegisterHealthServer(server, healthServer)
 	backgroundCtx, stopBackground := context.WithCancel(ctx)
 	defer stopBackground()
 	go monitorDatabaseHealth(backgroundCtx, pool, healthServer)
-	go cleanupExpiredSessions(backgroundCtx, sessions, log)
+	go cleanupExpiredSessions(backgroundCtx, sessions, diagnostics)
+	go cleanupIdentityState(backgroundCtx, verificationService, approvalService, diagnostics)
+	go deliverVerificationEmails(backgroundCtx, identityStore, protector, sender, diagnostics)
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.Serve(listener) }()
 	select {

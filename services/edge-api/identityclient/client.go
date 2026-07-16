@@ -5,8 +5,10 @@ import (
 	"context"
 	"time"
 
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"google.golang.org/grpc/codes"
 	grpc_health_v1 "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	identityv1 "github.com/belLena81/raglibrarian/pkg/proto/identity/v1"
@@ -31,7 +33,7 @@ func New(rpc identityv1.IdentityServiceClient, health grpc_health_v1.HealthClien
 
 // CheckReady verifies Identity's standard health service with a bounded deadline.
 func (c *Client) CheckReady(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	ctx, cancel := rpcContext(ctx)
 	defer cancel()
 	response, err := c.health.Check(ctx, &grpc_health_v1.HealthCheckRequest{})
 	if err != nil || response.GetStatus() != grpc_health_v1.HealthCheckResponse_SERVING {
@@ -40,20 +42,39 @@ func (c *Client) CheckReady(ctx context.Context) error {
 	return nil
 }
 
-// Register delegates reader registration and maps errors into Edge's taxonomy.
-func (c *Client) Register(ctx context.Context, email, password string) (authflow.Session, error) {
-	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+// Register requests a private, verification-required registration.
+func (c *Client) Register(ctx context.Context, name, email, password, role string) error {
+	ctx, cancel := rpcContext(ctx)
 	defer cancel()
-	response, err := c.rpc.Register(ctx, &identityv1.RegisterRequest{Email: email, Password: password})
+	_, err := c.rpc.Register(ctx, &identityv1.RegisterRequest{Name: name, Email: email, Password: password, Role: role})
 	if err != nil {
-		return authflow.Session{}, mapRegisterError(err)
+		return mapRegisterError(err)
 	}
-	return registerSession(response), nil
+	return nil
+}
+
+// VerifyEmail consumes a single-use email-verification token.
+func (c *Client) VerifyEmail(ctx context.Context, token string) error {
+	ctx, cancel := rpcContext(ctx)
+	defer cancel()
+	_, err := c.rpc.VerifyEmail(ctx, &identityv1.VerifyEmailRequest{Token: token})
+	if status.Code(err) == codes.InvalidArgument {
+		return authflow.ErrInvalidVerification
+	}
+	return mapDependencyError(err)
+}
+
+// ResendVerification requests a new token without revealing account existence.
+func (c *Client) ResendVerification(ctx context.Context, email string) error {
+	ctx, cancel := rpcContext(ctx)
+	defer cancel()
+	_, err := c.rpc.ResendVerification(ctx, &identityv1.ResendVerificationRequest{Email: email})
+	return mapDependencyError(err)
 }
 
 // Login delegates credential verification.
 func (c *Client) Login(ctx context.Context, email, password string) (authflow.Session, error) {
-	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	ctx, cancel := rpcContext(ctx)
 	defer cancel()
 	response, err := c.rpc.Login(ctx, &identityv1.LoginRequest{Email: email, Password: password})
 	if err != nil {
@@ -69,7 +90,7 @@ func (c *Client) Login(ctx context.Context, email, password string) (authflow.Se
 
 // Refresh rotates an opaque refresh token.
 func (c *Client) Refresh(ctx context.Context, refreshToken string) (authflow.Session, error) {
-	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	ctx, cancel := rpcContext(ctx)
 	defer cancel()
 	response, err := c.rpc.Refresh(ctx, &identityv1.RefreshRequest{RefreshToken: refreshToken})
 	if err != nil {
@@ -84,27 +105,110 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (authflow.Ses
 }
 
 // ValidateSession checks authoritative revocation state.
-func (c *Client) ValidateSession(ctx context.Context, userID, sessionID string) error {
-	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+func (c *Client) ValidateSession(ctx context.Context, userID, sessionID string) (authflow.Principal, error) {
+	ctx, cancel := rpcContext(ctx)
 	defer cancel()
-	_, err := c.rpc.ValidateSession(ctx, &identityv1.ValidateSessionRequest{UserId: userID, SessionId: sessionID})
-	return mapCredentialError(err)
+	response, err := c.rpc.ValidateSession(ctx, &identityv1.ValidateSessionRequest{UserId: userID, SessionId: sessionID})
+	if err != nil {
+		return authflow.Principal{}, mapCredentialError(err)
+	}
+	principal := response.GetPrincipal()
+	if principal == nil || principal.UserId == "" || principal.SessionId == "" {
+		return authflow.Principal{}, authflow.ErrInvalidCredentials
+	}
+	return authflow.Principal{
+		UserID: principal.UserId, SessionID: principal.SessionId, Name: principal.Name,
+		Email: principal.Email, Role: principal.Role, Status: principal.Status,
+	}, nil
 }
 
 // Logout revokes a verified session.
 func (c *Client) Logout(ctx context.Context, sessionID string) error {
-	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	ctx, cancel := rpcContext(ctx)
 	defer cancel()
 	_, err := c.rpc.Logout(ctx, &identityv1.LogoutRequest{SessionId: sessionID})
 	return mapCredentialError(err)
 }
 
-func registerSession(response *identityv1.RegisterResponse) authflow.Session {
-	return authflow.Session{
-		AccessToken:  response.AccessToken,
-		RefreshToken: response.RefreshToken,
-		SessionID:    response.SessionId,
-		Role:         response.Role,
+// SetupStatus reports whether initial administrator bootstrap is required.
+func (c *Client) SetupStatus(ctx context.Context) (bool, error) {
+	ctx, cancel := rpcContext(ctx)
+	defer cancel()
+	response, err := c.rpc.GetSetupStatus(ctx, &identityv1.GetSetupStatusRequest{})
+	if err != nil {
+		return false, mapDependencyError(err)
+	}
+	return response.Required, nil
+}
+
+// BootstrapAdmin submits the one-time administrator bootstrap request.
+func (c *Client) BootstrapAdmin(ctx context.Context, name, email, password, code string) error {
+	ctx, cancel := rpcContext(ctx)
+	defer cancel()
+	_, err := c.rpc.BootstrapAdmin(ctx, &identityv1.BootstrapAdminRequest{Name: name, Email: email, Password: password, BootstrapCode: code})
+	return mapStateError(err)
+}
+
+// ListPending returns one bounded page of librarians awaiting review.
+func (c *Client) ListPending(ctx context.Context, actor authflow.Principal, pageSize int, pageToken string) (authflow.PendingPage, error) {
+	if pageSize < 1 || pageSize > 100 {
+		return authflow.PendingPage{}, authflow.ErrInvalidRegistration
+	}
+	ctx, cancel := rpcContext(ctx)
+	defer cancel()
+	response, err := c.rpc.ListPendingLibrarians(ctx, &identityv1.ListPendingLibrariansRequest{
+		Actor: &identityv1.Actor{UserId: actor.UserID, SessionId: actor.SessionID}, PageSize: int32(pageSize), PageToken: pageToken,
+	})
+	if err != nil {
+		return authflow.PendingPage{}, mapStateError(err)
+	}
+	page := authflow.PendingPage{NextPageToken: response.NextPageToken, Users: make([]authflow.PendingLibrarian, 0, len(response.Users))}
+	for _, user := range response.Users {
+		page.Users = append(page.Users, authflow.PendingLibrarian{UserID: user.UserId, Name: user.Name, Email: user.Email, RegisteredAt: user.RegisteredAt})
+	}
+	return page, nil
+}
+
+// Approve requests activation of a pending librarian.
+func (c *Client) Approve(ctx context.Context, actor authflow.Principal, userID string) error {
+	return c.decide(ctx, actor, userID, true)
+}
+
+// Reject requests rejection of a pending librarian.
+func (c *Client) Reject(ctx context.Context, actor authflow.Principal, userID string) error {
+	return c.decide(ctx, actor, userID, false)
+}
+
+func (c *Client) decide(ctx context.Context, actor authflow.Principal, userID string, approve bool) error {
+	ctx, cancel := rpcContext(ctx)
+	defer cancel()
+	var err error
+	if approve {
+		_, err = c.rpc.ApproveLibrarian(ctx, &identityv1.ApproveLibrarianRequest{Actor: &identityv1.Actor{UserId: actor.UserID, SessionId: actor.SessionID}, UserId: userID})
+	} else {
+		_, err = c.rpc.RejectLibrarian(ctx, &identityv1.RejectLibrarianRequest{Actor: &identityv1.Actor{UserId: actor.UserID, SessionId: actor.SessionID}, UserId: userID})
+	}
+	return mapStateError(err)
+}
+
+// WatchPending forwards versioned Identity change notifications until failure.
+func (c *Client) WatchPending(ctx context.Context, changes chan<- struct{}) error {
+	stream, err := c.rpc.WatchPendingLibrarians(ctx, &identityv1.WatchPendingLibrariansRequest{})
+	if err != nil {
+		return authflow.ErrUnavailable
+	}
+	for {
+		message, recvErr := stream.Recv()
+		if recvErr != nil {
+			return authflow.ErrUnavailable
+		}
+		if message.Version != 1 {
+			continue
+		}
+		select {
+		case changes <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -113,10 +217,31 @@ func mapRegisterError(err error) error {
 		return nil
 	}
 	switch status.Code(err) {
-	case codes.AlreadyExists:
-		return authflow.ErrEmailTaken
 	case codes.InvalidArgument:
 		return authflow.ErrInvalidRegistration
+	default:
+		return authflow.ErrUnavailable
+	}
+}
+
+func mapDependencyError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return authflow.ErrUnavailable
+}
+
+func mapStateError(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch status.Code(err) {
+	case codes.PermissionDenied, codes.Unauthenticated:
+		return authflow.ErrForbidden
+	case codes.InvalidArgument:
+		return authflow.ErrInvalidRegistration
+	case codes.FailedPrecondition, codes.AlreadyExists:
+		return authflow.ErrConflict
 	default:
 		return authflow.ErrUnavailable
 	}
@@ -132,4 +257,12 @@ func mapCredentialError(err error) error {
 	default:
 		return authflow.ErrUnavailable
 	}
+}
+
+func rpcContext(parent context.Context) (context.Context, context.CancelFunc) {
+	requestID := chimiddleware.GetReqID(parent)
+	if requestID != "" {
+		parent = metadata.AppendToOutgoingContext(parent, "x-request-id", requestID)
+	}
+	return context.WithTimeout(parent, rpcTimeout)
 }

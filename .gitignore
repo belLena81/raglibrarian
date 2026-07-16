@@ -31,6 +31,9 @@ pkg/proto/**/*.pb.go
 *.iml
 /bin/
 
+# Local Codex project settings
+/.codex/config.toml
+
 # Local agent-planning notes and historical planning archives.
 /AGENTS.md
 /AGENTIC_*.md

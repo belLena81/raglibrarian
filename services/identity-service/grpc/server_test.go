@@ -14,7 +14,6 @@ import (
 )
 
 func TestToStatusPreservesSanitizedContract(t *testing.T) {
-	assert.Equal(t, codes.AlreadyExists, status.Code(toStatus(domain.ErrEmailTaken)))
 	assert.Equal(t, codes.InvalidArgument, status.Code(toStatus(domain.ErrInvalidPassword)))
 	assert.Equal(t, codes.Unauthenticated, status.Code(toStatus(domain.ErrInvalidCredentials)))
 }

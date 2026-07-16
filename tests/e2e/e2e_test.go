@@ -1,27 +1,28 @@
 //go:build e2e
 
-// Package e2e contains end-to-end tests that run against a live service.
+// Package e2e contains black-box tests that run against a live service stack.
 //
-// Prerequisites:
-//   - the Compose stack is running (`make stack-up`)
-//   - Edge is ready on E2E_BASE_URL (default: http://localhost:8080)
+// The complete Milestone 2 lifecycle additionally requires:
+//   - E2E_BOOTSTRAP_CODE: the one-time code configured for the test stack
+//   - E2E_MAIL_FIXTURE_URL: a local Mailpit latest-message endpoint or a
+//     test-only endpoint returning {"token":"..."} for the latest message
 //
-// Run manually:
-//
-//	make stack-up
-//	make e2e
-//
-// Override the target:
-//
-//	E2E_BASE_URL=http://staging:8080 make e2e
+// Neither value is printed by these tests. The mail endpoint must only be
+// exposed inside the local test environment; it is not a production API.
 package e2e_test
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,335 +32,639 @@ import (
 
 const validPassword = "correct-horse-123"
 
-// ── Config ────────────────────────────────────────────────────────────────────
+var verificationTokenPattern = regexp.MustCompile(`#[A-Za-z0-9_-]{43}`)
+
+type authSession struct {
+	Token string `json:"token"`
+}
+
+type principal struct {
+	UserID string `json:"user_id"`
+	Name   string `json:"name"`
+	Email  string `json:"email"`
+	Role   string `json:"role"`
+	Status string `json:"status"`
+}
+
+type pendingUser struct {
+	UserID       string `json:"user_id"`
+	Name         string `json:"name"`
+	Email        string `json:"email"`
+	RegisteredAt string `json:"registered_at"`
+}
+
+type pendingPage struct {
+	Users         []pendingUser `json:"users"`
+	NextPageToken string        `json:"next_page_token"`
+}
+
+type errorResponse struct {
+	Code      string `json:"code"`
+	Error     string `json:"error"`
+	RequestID string `json:"request_id"`
+}
 
 func baseURL() string {
-	if u := os.Getenv("E2E_BASE_URL"); u != "" {
-		return u
+	if value := os.Getenv("E2E_BASE_URL"); value != "" {
+		return strings.TrimRight(value, "/")
 	}
 	return "http://localhost:8080"
 }
 
-// uniqueEmail generates a unique address per test run so repeated runs
-// against the same DB do not fail with "email already registered".
 func uniqueEmail(prefix string) string {
 	return fmt.Sprintf("%s+%d@e2e.example.com", prefix, time.Now().UnixNano())
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-func postJSON(t *testing.T, path string, body any, token string) *http.Response {
+func request(t *testing.T, method, path string, body any, token string) *http.Response {
 	t.Helper()
-	var req *http.Request
-	var err error
+
+	var reader io.Reader
 	if body != nil {
-		b, merr := json.Marshal(body)
-		require.NoError(t, merr)
-		req, err = http.NewRequest(http.MethodPost, baseURL()+path, bytes.NewReader(b))
+		encoded, err := json.Marshal(body)
 		require.NoError(t, err)
+		reader = bytes.NewReader(encoded)
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), method, baseURL()+path, reader)
+	require.NoError(t, err)
+	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
-	} else {
-		req, err = http.NewRequest(http.MethodPost, baseURL()+path, nil)
-		require.NoError(t, err)
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	return resp
 }
 
-// requireStatus asserts the expected status code and prints the body on failure.
 func requireStatus(t *testing.T, want int, resp *http.Response) {
 	t.Helper()
-	if resp.StatusCode != want {
-		var buf bytes.Buffer
-		_, _ = buf.ReadFrom(resp.Body)
-		t.Fatalf("expected status %d, got %d — body: %s", want, resp.StatusCode, buf.String())
-	}
+	require.Equal(t, want, resp.StatusCode, "unexpected HTTP status")
 }
 
 func decodeJSON(t *testing.T, resp *http.Response, dst any) {
 	t.Helper()
 	defer resp.Body.Close()
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(dst))
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 64<<10))
+	require.NoError(t, decoder.Decode(dst), "response was not valid bounded JSON")
+	require.NoError(t, ensureJSONEOF(decoder), "response contained trailing JSON")
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-func TestHealthz(t *testing.T) {
-	resp, err := http.Get(baseURL() + "/healthz")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+func ensureJSONEOF(decoder *json.Decoder) error {
+	var trailing any
+	err := decoder.Decode(&trailing)
+	if err == io.EOF {
+		return nil
+	}
+	if err == nil {
+		return fmt.Errorf("multiple JSON values")
+	}
+	return err
 }
 
-func TestHealthz_ReturnsRequestIDHeader(t *testing.T) {
-	resp, err := http.Get(baseURL() + "/healthz")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.NotEmpty(t, resp.Header.Get("X-Request-ID"))
+func closeBody(t *testing.T, resp *http.Response) {
+	t.Helper()
+	require.NoError(t, resp.Body.Close())
 }
 
-func TestReadyz(t *testing.T) {
-	resp, err := http.Get(baseURL() + "/readyz")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+func assertPrivateNoStore(t *testing.T, resp *http.Response) {
+	t.Helper()
+	cacheControl := strings.ToLower(resp.Header.Get("Cache-Control"))
+	assert.Contains(t, cacheControl, "no-store")
+	assert.Contains(t, cacheControl, "private")
 }
 
-func TestRegister_ValidReader_Returns201WithToken(t *testing.T) {
-	resp := postJSON(t, "/auth/register", map[string]string{
-		"email":    uniqueEmail("reader"),
-		"password": validPassword,
-	}, "")
+func assertNoSessionArtifacts(t *testing.T, resp *http.Response) {
+	t.Helper()
+	if count := len(resp.Header.Values("Set-Cookie")); count != 0 {
+		t.Errorf("response must not create a session; got %d Set-Cookie headers", count)
+	}
+}
 
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
+func requireSanitizedError(t *testing.T, resp *http.Response) errorResponse {
+	t.Helper()
+	assertPrivateNoStore(t, resp)
+	var raw map[string]json.RawMessage
+	decodeJSON(t, resp, &raw)
+	allowed := map[string]bool{"code": true, "error": true, "request_id": true}
+	if len(raw) != len(allowed) {
+		t.Errorf("sanitized error must contain exactly %d fields; got %d", len(allowed), len(raw))
+	}
+	for key := range raw {
+		if !allowed[key] {
+			t.Errorf("sanitized error contained unexpected field %q", key)
+		}
+	}
+	var body errorResponse
+	require.NoError(t, json.Unmarshal(raw["code"], &body.Code))
+	require.NoError(t, json.Unmarshal(raw["error"], &body.Error))
+	require.NoError(t, json.Unmarshal(raw["request_id"], &body.RequestID))
+	require.NotEmpty(t, body.Code)
+	require.NotEmpty(t, body.Error)
+	require.NotEmpty(t, body.RequestID)
+	lowerError := strings.ToLower(body.Error)
+	for _, forbidden := range []string{"sql", "grpc", "stack", "password"} {
+		if strings.Contains(lowerError, forbidden) {
+			t.Error("error message contained a forbidden implementation or credential detail")
+		}
+	}
+	return body
+}
 
-	var body map[string]string
+func requireExactBooleanResponse(t *testing.T, resp *http.Response, key string) {
+	t.Helper()
+	var body map[string]json.RawMessage
 	decodeJSON(t, resp, &body)
-	assert.NotEmpty(t, body["token"])
-	assert.Equal(t, "reader", body["role"])
-	assert.Len(t, resp.Cookies(), 1)
+	if len(body) != 1 {
+		t.Errorf("response must contain exactly one field; got %d", len(body))
+	}
+	for actualKey := range body {
+		if actualKey != key {
+			t.Errorf("response contained unexpected field %q", actualKey)
+		}
+	}
+	var value bool
+	require.NoError(t, json.Unmarshal(body[key], &value))
+	assert.True(t, value)
 }
 
-func TestRegister_RejectsClientControlledRole(t *testing.T) {
-	resp := postJSON(t, "/auth/register", map[string]string{
-		"email":    uniqueEmail("role"),
-		"password": validPassword,
-		"role":     "admin",
+func register(t *testing.T, name, email, role string) {
+	t.Helper()
+	resp := request(t, http.MethodPost, "/auth/register", map[string]string{
+		"name": name, "email": email, "password": validPassword, "role": role,
 	}, "")
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	requireStatus(t, http.StatusAccepted, resp)
+	assertPrivateNoStore(t, resp)
+	assertNoSessionArtifacts(t, resp)
+	requireExactBooleanResponse(t, resp, "accepted")
 }
 
-func TestRegister_DuplicateEmail_Returns409(t *testing.T) {
-	email := uniqueEmail("dup")
-	payload := map[string]string{"email": email, "password": validPassword}
+func mailVerificationToken(t *testing.T, email string) string {
+	t.Helper()
+	fixtureURL := os.Getenv("E2E_MAIL_FIXTURE_URL")
+	if fixtureURL == "" {
+		t.Skip("E2E_MAIL_FIXTURE_URL is required for email-verification lifecycle tests")
+	}
 
-	resp := postJSON(t, "/auth/register", payload, "")
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
-	resp.Body.Close()
+	parsed, err := url.Parse(fixtureURL)
+	require.NoError(t, err, "mail fixture URL is invalid")
 
-	// Second registration with same email must be rejected.
-	resp = postJSON(t, "/auth/register", payload, "")
-	assert.Equal(t, http.StatusConflict, resp.StatusCode)
-	resp.Body.Close()
+	var token string
+	require.Eventually(t, func() bool {
+		payload, available := verificationPayload(context.Background(), parsed, email)
+		if !available {
+			return false
+		}
+		var body struct {
+			Token string `json:"token"`
+		}
+		if json.Unmarshal(payload, &body) == nil && body.Token != "" {
+			token = body.Token
+			return true
+		}
+		match := verificationTokenPattern.Find(payload)
+		if len(match) != 44 {
+			return false
+		}
+		token = string(match[1:])
+		return true
+	}, 10*time.Second, 200*time.Millisecond, "verification message was not available")
+	return token
 }
 
-func TestRegister_InvalidEmail_Returns422(t *testing.T) {
-	resp := postJSON(t, "/auth/register", map[string]string{
-		"email":    "not-an-email",
-		"password": validPassword,
-	}, "")
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+func verificationPayload(ctx context.Context, fixtureURL *url.URL, email string) ([]byte, bool) {
+	if strings.HasSuffix(fixtureURL.Path, "/view/latest.txt") {
+		searchURL := *fixtureURL
+		searchURL.Path = "/api/v1/search"
+		query := url.Values{}
+		query.Set("query", `to:"`+email+`"`)
+		searchURL.RawQuery = query.Encode()
+		payload, ok := getBounded(ctx, searchURL.String())
+		if !ok {
+			return nil, false
+		}
+		var search struct {
+			Messages []struct {
+				ID string `json:"ID"`
+			} `json:"messages"`
+		}
+		if json.Unmarshal(payload, &search) != nil || len(search.Messages) == 0 || search.Messages[0].ID == "" {
+			return nil, false
+		}
+		messageURL := *fixtureURL
+		messageURL.Path = "/view/" + url.PathEscape(search.Messages[0].ID) + ".txt"
+		messageURL.RawQuery = ""
+		return getBounded(ctx, messageURL.String())
+	}
+	customURL := *fixtureURL
+	query := customURL.Query()
+	query.Set("recipient", email)
+	customURL.RawQuery = query.Encode()
+	return getBounded(ctx, customURL.String())
 }
 
-func TestRegister_RejectsUnknownField(t *testing.T) {
-	resp := postJSON(t, "/auth/register", map[string]string{
-		"email":    uniqueEmail("unknown"),
-		"password": validPassword,
-		"user_id":  "client-controlled",
-	}, "")
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-}
-
-func TestLogin_ValidCredentials_Returns200WithToken(t *testing.T) {
-	email := uniqueEmail("login")
-	password := validPassword
-
-	// Register first.
-	resp := postJSON(t, "/auth/register", map[string]string{
-		"email": email, "password": password,
-	}, "")
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
-	resp.Body.Close()
-
-	// Then login.
-	resp = postJSON(t, "/auth/login", map[string]string{
-		"email": email, "password": password,
-	}, "")
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	var body map[string]string
-	decodeJSON(t, resp, &body)
-	assert.NotEmpty(t, body["token"])
-}
-
-func TestLogin_WrongPassword_Returns401(t *testing.T) {
-	email := uniqueEmail("wrongpw")
-
-	resp := postJSON(t, "/auth/register", map[string]string{
-		"email": email, "password": validPassword,
-	}, "")
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
-	resp.Body.Close()
-
-	resp = postJSON(t, "/auth/login", map[string]string{
-		"email": email, "password": "wrong-password",
-	}, "")
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-}
-
-func TestLogin_UnknownEmail_Returns401(t *testing.T) {
-	// Must return the same 401 as wrong password — no user enumeration.
-	resp := postJSON(t, "/auth/login", map[string]string{
-		"email": "nobody@nowhere.example.com", "password": "irrelevant-password",
-	}, "")
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-}
-
-func TestMe_WithValidToken_Returns200WithIdentity(t *testing.T) {
-	email := uniqueEmail("me")
-	resp := postJSON(t, "/auth/register", map[string]string{
-		"email": email, "password": validPassword,
-	}, "")
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
-
-	var reg map[string]string
-	decodeJSON(t, resp, &reg)
-	token := reg["token"]
-	require.NotEmpty(t, token)
-
-	meResp, err := http.NewRequest(http.MethodGet, baseURL()+"/auth/me", nil)
-	require.NoError(t, err)
-	meResp.Header.Set("Authorization", "Bearer "+token)
-	result, err := http.DefaultClient.Do(meResp)
-	require.NoError(t, err)
-	requireStatus(t, http.StatusOK, result)
-
-	var body map[string]string
-	decodeJSON(t, result, &body)
-	assert.Equal(t, email, body["email"])
-	assert.Equal(t, "reader", body["role"])
-	assert.NotEmpty(t, body["user_id"])
-}
-
-func TestMe_WithoutToken_Returns401(t *testing.T) {
-	req, err := http.NewRequest(http.MethodGet, baseURL()+"/auth/me", nil)
-	require.NoError(t, err)
+func getBounded(ctx context.Context, endpoint string) ([]byte, bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, false
+	}
 	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
+	if err != nil {
+		return nil, false
+	}
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	return payload, err == nil
 }
 
-func TestLogout_WithValidToken_Returns200(t *testing.T) {
-	email := uniqueEmail("logout")
-	resp := postJSON(t, "/auth/register", map[string]string{
+func verifyEmail(t *testing.T, email string) {
+	t.Helper()
+	token := mailVerificationToken(t, email)
+	resp := request(t, http.MethodPost, "/auth/verify-email", map[string]string{"token": token}, "")
+	requireStatus(t, http.StatusNoContent, resp)
+	assertPrivateNoStore(t, resp)
+	assertNoSessionArtifacts(t, resp)
+	closeBody(t, resp)
+}
+
+func login(t *testing.T, email string) authSession {
+	t.Helper()
+	resp := request(t, http.MethodPost, "/auth/login", map[string]string{
 		"email": email, "password": validPassword,
 	}, "")
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
-
-	var reg map[string]string
-	decodeJSON(t, resp, &reg)
-	token := reg["token"]
-
-	resp = postJSON(t, "/auth/logout", nil, token)
 	requireStatus(t, http.StatusOK, resp)
+	assertPrivateNoStore(t, resp)
+	var session authSession
+	decodeJSON(t, resp, &session)
+	require.NotEmpty(t, session.Token)
+	return session
+}
 
-	var body map[string]string
+func getMe(t *testing.T, token string) principal {
+	t.Helper()
+	resp := request(t, http.MethodGet, "/auth/me", nil, token)
+	requireStatus(t, http.StatusOK, resp)
+	assertPrivateNoStore(t, resp)
+	var body principal
 	decodeJSON(t, resp, &body)
-	assert.Equal(t, "logged out", body["message"])
+	return body
 }
 
-func TestLogout_WithoutToken_Returns401(t *testing.T) {
-	resp := postJSON(t, "/auth/logout", nil, "")
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+func TestHealthAndReadiness(t *testing.T) {
+	for _, path := range []string{"/healthz", "/readyz"} {
+		t.Run(path, func(t *testing.T) {
+			resp := request(t, http.MethodGet, path, nil, "")
+			defer closeBody(t, resp)
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
+			assert.NotEmpty(t, resp.Header.Get("X-Request-ID"))
+		})
+	}
 }
 
-func TestQuery_WithValidToken_Returns501WithoutFabricatedEvidence(t *testing.T) {
-	email := uniqueEmail("query")
-	password := validPassword
+func TestSetupStatusContract(t *testing.T) {
+	resp := request(t, http.MethodGet, "/setup/status", nil, "")
+	requireStatus(t, http.StatusOK, resp)
+	assertPrivateNoStore(t, resp)
+	var body struct {
+		Required bool `json:"required"`
+	}
+	decodeJSON(t, resp, &body)
+}
 
-	resp := postJSON(t, "/auth/register", map[string]string{
-		"email": email, "password": password,
+func TestRegisterIsGenericAndCreatesNoSession(t *testing.T) {
+	email := uniqueEmail("generic")
+	payload := map[string]string{
+		"name": "Generic Reader", "email": email, "password": validPassword, "role": "reader",
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		resp := request(t, http.MethodPost, "/auth/register", payload, "")
+		requireStatus(t, http.StatusAccepted, resp)
+		assertPrivateNoStore(t, resp)
+		assertNoSessionArtifacts(t, resp)
+		requireExactBooleanResponse(t, resp, "accepted")
+	}
+}
+
+func TestStrictJSONAndSanitizedErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body map[string]string
+	}{
+		{
+			name: "register",
+			path: "/auth/register",
+			body: map[string]string{"name": "Reader", "email": uniqueEmail("unknown-register"), "password": validPassword, "role": "reader", "unexpected": "value"},
+		},
+		{
+			name: "verify email",
+			path: "/auth/verify-email",
+			body: map[string]string{"token": "invalid-test-value", "unexpected": "value"},
+		},
+		{
+			name: "resend verification",
+			path: "/auth/verification/resend",
+			body: map[string]string{"email": uniqueEmail("unknown-resend"), "unexpected": "value"},
+		},
+		{
+			name: "login",
+			path: "/auth/login",
+			body: map[string]string{"email": uniqueEmail("unknown-login"), "password": validPassword, "unexpected": "value"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resp := request(t, http.MethodPost, test.path, test.body, "")
+			requireStatus(t, http.StatusBadRequest, resp)
+			assertNoSessionArtifacts(t, resp)
+			requireSanitizedError(t, resp)
+		})
+	}
+}
+
+func TestInvalidVerificationTokensShareSanitizedResponse(t *testing.T) {
+	var first errorResponse
+	for attempt := 0; attempt < 2; attempt++ {
+		resp := request(t, http.MethodPost, "/auth/verify-email", map[string]string{
+			"token": fmt.Sprintf("invalid-test-value-%d", attempt),
+		}, "")
+		requireStatus(t, http.StatusBadRequest, resp)
+		assertNoSessionArtifacts(t, resp)
+		body := requireSanitizedError(t, resp)
+		if attempt == 0 {
+			first = body
+			continue
+		}
+		if first.Code != body.Code || first.Error != body.Error {
+			t.Error("invalid verification tokens did not share one sanitized error contract")
+		}
+	}
+}
+
+func TestVerificationResendIsGeneric(t *testing.T) {
+	resp := request(t, http.MethodPost, "/auth/verification/resend", map[string]string{
+		"email": uniqueEmail("absent-resend"),
 	}, "")
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
-
-	var reg map[string]string
-	decodeJSON(t, resp, &reg)
-	token := reg["token"]
-	require.NotEmpty(t, token)
-
-	resp = postJSON(t, "/query/", map[string]string{
-		"question": "What is a goroutine?",
-	}, token)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+	requireStatus(t, http.StatusAccepted, resp)
+	assertPrivateNoStore(t, resp)
+	assertNoSessionArtifacts(t, resp)
+	requireExactBooleanResponse(t, resp, "accepted")
 }
 
-func TestQuery_WithoutToken_Returns401(t *testing.T) {
-	resp := postJSON(t, "/query/", map[string]string{
-		"question": "test?",
-	}, "")
-	defer resp.Body.Close()
+func TestMilestone2IdentityLifecycle(t *testing.T) {
+	bootstrapCode := os.Getenv("E2E_BOOTSTRAP_CODE")
+	if bootstrapCode == "" {
+		t.Skip("E2E_BOOTSTRAP_CODE is required for the complete Milestone 2 lifecycle")
+	}
+	if os.Getenv("E2E_MAIL_FIXTURE_URL") == "" {
+		t.Skip("E2E_MAIL_FIXTURE_URL is required for the complete Milestone 2 lifecycle")
+	}
+	status := request(t, http.MethodGet, "/setup/status", nil, "")
+	requireStatus(t, http.StatusOK, status)
+	var setup struct {
+		Required bool `json:"required"`
+	}
+	decodeJSON(t, status, &setup)
+	if !setup.Required {
+		t.Skip("stack already contains an administrator; use a fresh M2 database to test the complete lifecycle")
+	}
 
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	adminEmail := uniqueEmail("admin")
+	readerEmail := uniqueEmail("reader")
+	approvedEmail := uniqueEmail("librarian-approved")
+	rejectedEmail := uniqueEmail("librarian-rejected")
+	eventEmail := uniqueEmail("librarian-event")
+
+	t.Run("bootstrap singleton admin", func(t *testing.T) {
+		invalid := request(t, http.MethodPost, "/setup/admin", map[string]string{
+			"name": "E2E Admin", "email": adminEmail, "password": validPassword, "bootstrap_code": bootstrapCode + "-invalid",
+		}, "")
+		assert.Equal(t, http.StatusUnauthorized, invalid.StatusCode)
+		assertNoSessionArtifacts(t, invalid)
+		requireSanitizedError(t, invalid)
+
+		created := request(t, http.MethodPost, "/setup/admin", map[string]string{
+			"name": "E2E Admin", "email": adminEmail, "password": validPassword, "bootstrap_code": bootstrapCode,
+		}, "")
+		requireStatus(t, http.StatusCreated, created)
+		assertPrivateNoStore(t, created)
+		assertNoSessionArtifacts(t, created)
+		requireExactBooleanResponse(t, created, "created")
+
+		repeated := request(t, http.MethodPost, "/setup/admin", map[string]string{
+			"name": "Second Admin", "email": uniqueEmail("second-admin"), "password": validPassword, "bootstrap_code": bootstrapCode,
+		}, "")
+		assert.NotEqual(t, http.StatusCreated, repeated.StatusCode)
+		assertNoSessionArtifacts(t, repeated)
+		requireSanitizedError(t, repeated)
+	})
+
+	admin := login(t, adminEmail)
+	adminPrincipal := getMe(t, admin.Token)
+	assert.Equal(t, "admin", adminPrincipal.Role)
+	assert.Equal(t, "active", adminPrincipal.Status)
+	assert.Equal(t, adminEmail, adminPrincipal.Email)
+	assert.NotEmpty(t, adminPrincipal.UserID)
+
+	t.Run("reader verifies and receives live principal", func(t *testing.T) {
+		register(t, "E2E Reader", readerEmail, "reader")
+
+		pendingLogin := request(t, http.MethodPost, "/auth/login", map[string]string{
+			"email": readerEmail, "password": validPassword,
+		}, "")
+		assert.Equal(t, http.StatusUnauthorized, pendingLogin.StatusCode)
+		requireSanitizedError(t, pendingLogin)
+
+		verifyEmail(t, readerEmail)
+		reader := login(t, readerEmail)
+		actual := getMe(t, reader.Token)
+		assert.Equal(t, principal{Name: "E2E Reader", Email: readerEmail, Role: "reader", Status: "active", UserID: actual.UserID}, actual)
+
+		forbidden := request(t, http.MethodGet, "/admin/users/pending", nil, reader.Token)
+		assert.Equal(t, http.StatusForbidden, forbidden.StatusCode)
+		requireSanitizedError(t, forbidden)
+
+		logout := request(t, http.MethodPost, "/auth/logout", nil, reader.Token)
+		assert.Contains(t, []int{http.StatusOK, http.StatusNoContent}, logout.StatusCode)
+		assertPrivateNoStore(t, logout)
+		closeBody(t, logout)
+
+		revoked := request(t, http.MethodGet, "/auth/me", nil, reader.Token)
+		assert.Equal(t, http.StatusUnauthorized, revoked.StatusCode)
+		requireSanitizedError(t, revoked)
+	})
+
+	register(t, "Approved Librarian", approvedEmail, "librarian")
+	verifyEmail(t, approvedEmail)
+	register(t, "Rejected Librarian", rejectedEmail, "librarian")
+	verifyEmail(t, rejectedEmail)
+
+	t.Run("pending login is denied with generic error", func(t *testing.T) {
+		resp := request(t, http.MethodPost, "/auth/login", map[string]string{
+			"email": approvedEmail, "password": validPassword,
+		}, "")
+		requireStatus(t, http.StatusUnauthorized, resp)
+		requireSanitizedError(t, resp)
+	})
+
+	var approvedUserID string
+	var rejectedUserID string
+	t.Run("pending list uses bounded cursor pagination", func(t *testing.T) {
+		oversized := request(t, http.MethodGet, "/admin/users/pending?page_size=101", nil, admin.Token)
+		requireStatus(t, http.StatusBadRequest, oversized)
+		requireSanitizedError(t, oversized)
+
+		invalidCursor := request(t, http.MethodGet, "/admin/users/pending?page_token=invalid-test-value", nil, admin.Token)
+		requireStatus(t, http.StatusBadRequest, invalidCursor)
+		requireSanitizedError(t, invalidCursor)
+
+		first := request(t, http.MethodGet, "/admin/users/pending?page_size=1", nil, admin.Token)
+		requireStatus(t, http.StatusOK, first)
+		assertPrivateNoStore(t, first)
+		var page pendingPage
+		decodeJSON(t, first, &page)
+		require.Len(t, page.Users, 1)
+		require.NotEmpty(t, page.NextPageToken)
+		assert.NotEmpty(t, page.Users[0].UserID)
+		assert.NotEmpty(t, page.Users[0].Name)
+		assert.NotEmpty(t, page.Users[0].RegisteredAt)
+
+		seen := map[string]string{page.Users[0].Email: page.Users[0].UserID}
+		cursor := page.NextPageToken
+		for cursor != "" && len(seen) < 20 {
+			path := "/admin/users/pending?page_size=1&page_token=" + url.QueryEscape(cursor)
+			next := request(t, http.MethodGet, path, nil, admin.Token)
+			requireStatus(t, http.StatusOK, next)
+			var nextPage pendingPage
+			decodeJSON(t, next, &nextPage)
+			for _, user := range nextPage.Users {
+				seen[user.Email] = user.UserID
+			}
+			cursor = nextPage.NextPageToken
+		}
+		approvedUserID = seen[approvedEmail]
+		rejectedUserID = seen[rejectedEmail]
+		require.NotEmpty(t, approvedUserID)
+		require.NotEmpty(t, rejectedUserID)
+	})
+
+	t.Run("admin decisions are body based", func(t *testing.T) {
+		unknown := request(t, http.MethodPost, "/admin/users/approve", map[string]string{
+			"user_id": approvedUserID, "unexpected": "value",
+		}, admin.Token)
+		requireStatus(t, http.StatusBadRequest, unknown)
+		requireSanitizedError(t, unknown)
+
+		approved := request(t, http.MethodPost, "/admin/users/approve", map[string]string{"user_id": approvedUserID}, admin.Token)
+		requireStatus(t, http.StatusNoContent, approved)
+		assertPrivateNoStore(t, approved)
+		closeBody(t, approved)
+
+		rejected := request(t, http.MethodPost, "/admin/users/reject", map[string]string{"user_id": rejectedUserID}, admin.Token)
+		requireStatus(t, http.StatusNoContent, rejected)
+		assertPrivateNoStore(t, rejected)
+		closeBody(t, rejected)
+
+		approvedSession := login(t, approvedEmail)
+		actual := getMe(t, approvedSession.Token)
+		assert.Equal(t, "librarian", actual.Role)
+		assert.Equal(t, "active", actual.Status)
+
+		rejectedLogin := request(t, http.MethodPost, "/auth/login", map[string]string{
+			"email": rejectedEmail, "password": validPassword,
+		}, "")
+		requireStatus(t, http.StatusUnauthorized, rejectedLogin)
+		requireSanitizedError(t, rejectedLogin)
+	})
+
+	t.Run("SSE emits fixed PII-free hint", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL()+"/admin/events", nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+admin.Token)
+		req.Header.Set("Accept", "text/event-stream")
+
+		responseCh := make(chan *http.Response, 1)
+		errorCh := make(chan error, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr != nil {
+				errorCh <- doErr
+				return
+			}
+			responseCh <- resp
+		}()
+		var stream *http.Response
+		select {
+		case stream = <-responseCh:
+			requireStatus(t, http.StatusOK, stream)
+		case err := <-errorCh:
+			require.NoError(t, err)
+		case <-time.After(time.Second):
+			// Some HTTP servers do not flush SSE response headers until the
+			// first event. Continue and collect the response after the change.
+		}
+
+		register(t, "Event Librarian", eventEmail, "librarian")
+		verifyEmail(t, eventEmail)
+
+		if stream == nil {
+			select {
+			case stream = <-responseCh:
+			case err := <-errorCh:
+				require.NoError(t, err)
+			case <-ctx.Done():
+				t.Fatal("SSE connection was not established before its deadline")
+			}
+		}
+		defer closeBody(t, stream)
+		requireStatus(t, http.StatusOK, stream)
+		assertPrivateNoStore(t, stream)
+		assert.Equal(t, "text/event-stream", strings.Split(stream.Header.Get("Content-Type"), ";")[0])
+
+		reader := bufio.NewReader(io.LimitReader(stream.Body, 8<<10))
+		var eventName string
+		var eventData string
+		for eventName == "" || eventData == "" {
+			line, readErr := reader.ReadString('\n')
+			require.NoError(t, readErr, "SSE stream ended before the expected hint")
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "event:") {
+				eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			}
+			if strings.HasPrefix(line, "data:") {
+				eventData = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			}
+		}
+		if eventName != "pending-librarians-changed" {
+			t.Error("SSE stream emitted an unexpected event name")
+		}
+		var data map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal([]byte(eventData), &data), "SSE data was not valid JSON")
+		if len(data) != 1 {
+			t.Errorf("SSE data must contain exactly one field; got %d", len(data))
+		}
+		for key := range data {
+			if key != "version" {
+				t.Errorf("SSE data contained unexpected field %q", key)
+			}
+		}
+		var version int
+		require.NoError(t, json.Unmarshal(data["version"], &version))
+		assert.Equal(t, 1, version)
+	})
 }
 
-func TestQuery_WithInvalidToken_Returns401(t *testing.T) {
-	resp := postJSON(t, "/query/", map[string]string{
-		"question": "test?",
-	}, "v4.local.totallyinvalid")
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-}
-
-func TestRefreshReuseRevokesSessionFamily(t *testing.T) {
-	resp := postJSON(t, "/auth/register", map[string]string{
-		"email": uniqueEmail("refresh"), "password": validPassword,
-	}, "")
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
-	cookies := resp.Cookies()
-	require.Len(t, cookies, 1)
-	refreshCookie := cookies[0]
-	resp.Body.Close()
-
-	refreshReq, err := http.NewRequest(http.MethodPost, baseURL()+"/auth/refresh", nil)
-	require.NoError(t, err)
-	refreshReq.AddCookie(refreshCookie)
-	refreshed, err := http.DefaultClient.Do(refreshReq)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, refreshed.StatusCode)
-	var refreshedBody map[string]string
-	decodeJSON(t, refreshed, &refreshedBody)
-	refreshedAccessToken := refreshedBody["token"]
-	require.NotEmpty(t, refreshedAccessToken)
-
-	reusedReq, err := http.NewRequest(http.MethodPost, baseURL()+"/auth/refresh", nil)
-	require.NoError(t, err)
-	reusedReq.AddCookie(refreshCookie)
-	reused, err := http.DefaultClient.Do(reusedReq)
-	require.NoError(t, err)
-	defer reused.Body.Close()
-	assert.Equal(t, http.StatusUnauthorized, reused.StatusCode)
-
-	queryResp := postJSON(t, "/query", map[string]string{"question": "test?"}, refreshedAccessToken)
-	defer queryResp.Body.Close()
-	assert.Equal(t, http.StatusUnauthorized, queryResp.StatusCode)
-}
-
-func TestUnknownRoute_Returns404(t *testing.T) {
-	resp, err := http.Get(baseURL() + "/nonexistent")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
+func TestUnknownRouteReturns404(t *testing.T) {
+	resp := request(t, http.MethodGet, "/nonexistent", nil, "")
+	defer closeBody(t, resp)
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
