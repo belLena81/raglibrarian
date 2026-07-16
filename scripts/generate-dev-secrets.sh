@@ -12,6 +12,7 @@ chmod 700 "$dir"
 
 files=(
   postgres_password postgres_pgpass identity_migration_password identity_runtime_password
+	 catalog_migration_password catalog_runtime_password catalog_migration_pgpass catalog_runtime_dsn
   identity_migration_pgpass identity_migration_dsn identity_runtime_dsn identity_signing_key
   edge_verify_key edge.env identity_email_outbox_key
   identity_email_fingerprint_key identity_smtp_password
@@ -26,6 +27,8 @@ done
 postgres_password=$(openssl rand -hex 32)
 migration_password=$(openssl rand -hex 32)
 runtime_password=$(openssl rand -hex 32)
+catalog_migration_password=$(openssl rand -hex 32)
+catalog_runtime_password=$(openssl rand -hex 32)
 smtp_password=$(openssl rand -hex 32)
 key_output=$(cd pkg/auth && go run ./cmd/keygen/)
 signing_key=$(printf '%s\n' "$key_output" | sed -n 's/^IDENTITY_SIGNING_KEY=//p')
@@ -36,9 +39,13 @@ printf '%s\n' "$postgres_password" > "$dir/postgres_password"
 printf 'postgres:5432:*:raglibrarian_bootstrap:%s\n' "$postgres_password" > "$dir/postgres_pgpass"
 printf '%s\n' "$migration_password" > "$dir/identity_migration_password"
 printf '%s\n' "$runtime_password" > "$dir/identity_runtime_password"
+printf '%s\n' "$catalog_migration_password" > "$dir/catalog_migration_password"
+printf '%s\n' "$catalog_runtime_password" > "$dir/catalog_runtime_password"
 printf 'postgres:5432:identity:identity_migrator:%s\n' "$migration_password" > "$dir/identity_migration_pgpass"
 printf 'postgres://identity_migrator:%s@postgres:5432/identity?sslmode=disable\n' "$migration_password" > "$dir/identity_migration_dsn"
 printf 'postgres://identity_runtime:%s@postgres:5432/identity?sslmode=disable\n' "$runtime_password" > "$dir/identity_runtime_dsn"
+printf 'postgres:5432:catalog:catalog_migrator:%s\n' "$catalog_migration_password" > "$dir/catalog_migration_pgpass"
+printf 'postgres://catalog_runtime:%s@postgres:5432/catalog?sslmode=disable\n' "$catalog_runtime_password" > "$dir/catalog_runtime_dsn"
 printf '%s\n' "$signing_key" > "$dir/identity_signing_key"
 printf '%s\n' "$verify_key" > "$dir/edge_verify_key"
 printf 'EDGE_VERIFY_KEY=%s\n' "$verify_key" > "$dir/edge.env"
@@ -47,5 +54,5 @@ openssl rand -hex 32 > "$dir/identity_email_fingerprint_key"
 printf '%s\n' "$smtp_password" > "$dir/identity_smtp_password"
 
 chmod 400 "$dir"/*
-unset postgres_password migration_password runtime_password smtp_password key_output signing_key verify_key
+unset postgres_password migration_password runtime_password catalog_migration_password catalog_runtime_password smtp_password key_output signing_key verify_key
 echo "Generated file-backed development credentials in $dir"

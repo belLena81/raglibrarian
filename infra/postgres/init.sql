@@ -5,6 +5,8 @@
 -- output and disappear with this one-shot bootstrap process.
 \set identity_migration_password `cat /run/secrets/identity_migration_password`
 \set identity_runtime_password `cat /run/secrets/identity_runtime_password`
+\set catalog_migration_password `cat /run/secrets/catalog_migration_password`
+\set catalog_runtime_password `cat /run/secrets/catalog_runtime_password`
 
 SELECT format('CREATE ROLE identity_migrator LOGIN PASSWORD %L', :'identity_migration_password')
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'identity_migrator') \gexec
@@ -30,5 +32,25 @@ ALTER DEFAULT PRIVILEGES FOR ROLE identity_migrator IN SCHEMA identity
 ALTER DEFAULT PRIVILEGES FOR ROLE identity_migrator IN SCHEMA identity
     GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO identity_runtime;
 
+\connect raglibrarian_platform
+SELECT format('CREATE ROLE catalog_migrator LOGIN PASSWORD %L', :'catalog_migration_password')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'catalog_migrator') \gexec
+SELECT format('CREATE ROLE catalog_runtime LOGIN PASSWORD %L', :'catalog_runtime_password')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'catalog_runtime') \gexec
+SELECT 'CREATE DATABASE catalog OWNER catalog_migrator TEMPLATE template0'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'catalog') \gexec
+REVOKE ALL ON DATABASE catalog FROM PUBLIC;
+GRANT CONNECT ON DATABASE catalog TO catalog_runtime;
+\connect catalog
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+CREATE SCHEMA IF NOT EXISTS catalog AUTHORIZATION catalog_migrator;
+REVOKE ALL ON SCHEMA catalog FROM PUBLIC;
+GRANT USAGE ON SCHEMA catalog TO catalog_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA catalog TO catalog_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE catalog_migrator IN SCHEMA catalog
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO catalog_runtime;
+
 \unset identity_migration_password
 \unset identity_runtime_password
+\unset catalog_migration_password
+\unset catalog_runtime_password

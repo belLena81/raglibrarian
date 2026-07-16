@@ -12,6 +12,11 @@ import (
 	"io"
 	"sort"
 	"time"
+
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 )
 
 const (
@@ -50,8 +55,9 @@ type OriginalObjectStore interface {
 }
 
 type OutboxEvent struct {
-	ID, Type, Payload string
-	OccurredAt        time.Time
+	ID, Type   string
+	Payload    []byte
+	OccurredAt time.Time
 }
 
 // Service coordinates validation, private object storage and atomic persistence.
@@ -103,13 +109,29 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 		_ = s.objects.Delete(context.Background(), objectReference)
 		return Book{}, fmt.Errorf("generate book ID: %w", err)
 	}
-	book := Book{ID: bookID, Metadata: input.Metadata, ProcessingStatus: BookStatusPending, CreatedAt: now, ObjectReference: objectReference, Checksum: reader.sum(), ByteSize: reader.size}
+	actorID := input.Actor.UserID
+	if actorID == "" {
+		actorID = input.ActorID
+	}
+	book := Book{ID: bookID, Metadata: input.Metadata, ProcessingStatus: BookStatusPending, CreatedAt: now, ObjectReference: objectReference, Checksum: reader.sum(), ByteSize: reader.size, ActorID: actorID}
 	eventID, err := generatedID()
 	if err != nil {
 		_ = s.objects.Delete(context.Background(), objectReference)
 		return Book{}, fmt.Errorf("generate event ID: %w", err)
 	}
-	event := OutboxEvent{ID: eventID, Type: "catalog.book.uploaded.v1", OccurredAt: now, Payload: eventID}
+	payload, err := proto.Marshal(&catalogv1.BookUploadedV1{
+		EventId: eventID, BookId: book.ID, Title: book.Metadata.Title, Author: book.Metadata.Author,
+		Year: int32(book.Metadata.Year), Tags: append([]string(nil), book.Metadata.Tags...),
+		ObjectReference: book.ObjectReference, Sha256: book.Checksum[:], ByteSize: book.ByteSize,
+		MediaType: "application/pdf", ActorId: actorID, CorrelationId: input.CorrelationID,
+		OccurredAt: timestamppb.New(now), CausationId: input.CorrelationID, Producer: "catalog-service",
+		SchemaVersion: "v1", IdempotencyKey: book.ID,
+	})
+	if err != nil {
+		_ = s.objects.Delete(context.Background(), objectReference)
+		return Book{}, errors.New("catalog event unavailable")
+	}
+	event := OutboxEvent{ID: eventID, Type: "catalog.book.uploaded.v1", OccurredAt: now, Payload: payload}
 	if err = s.repository.Create(ctx, book, event); err != nil {
 		_ = s.objects.Delete(context.Background(), objectReference)
 		return Book{}, errors.New("catalog persistence unavailable")

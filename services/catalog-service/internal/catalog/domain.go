@@ -66,6 +66,7 @@ type Book struct {
 	ObjectReference  string
 	Checksum         [32]byte
 	ByteSize         int64
+	ActorID          string
 }
 
 func ValidateMetadata(metadata BookMetadata) error {

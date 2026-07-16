@@ -57,6 +57,8 @@ services:
       - postgres_pgpass
       - identity_migration_password
       - identity_runtime_password
+      - catalog_migration_password
+      - catalog_runtime_password
     volumes:
       - ./infra/postgres/init.sql:/bootstrap/identity.sql:ro
       - ./scripts/run-postgres-bootstrap.sh:/usr/local/bin/run-postgres-bootstrap:ro
@@ -165,6 +167,7 @@ services:
     build: { context: ., args: { SERVICE: catalog-service } }
     environment:
       CATALOG_GRPC_ADDR: ":50052"
+      CATALOG_POSTGRES_DSN_FILE: /run/secrets/catalog_runtime_dsn
       INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
       CATALOG_TLS_CERT_FILE: /run/secrets/catalog_tls_cert
       CATALOG_TLS_KEY_FILE: /run/secrets/catalog_tls_key
@@ -178,8 +181,12 @@ services:
       - internal_ca
       - catalog_tls_cert
       - catalog_tls_key
+      - catalog_runtime_dsn
     networks:
       - backend
+    depends_on:
+      catalog-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "/healthcheck"]
       interval: 5s
@@ -224,6 +231,28 @@ services:
       interval: 5s
       timeout: 4s
       retries: 10
+
+  catalog-migrate:
+    <<: *job-hardening
+    image: postgres:16.9-alpine
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: catalog
+      PGUSER: catalog_migrator
+      PGPASSFILE: /run/secrets/catalog_migration_pgpass
+      MIGRATION_DIRECTION: up
+    secrets:
+      - catalog_migration_pgpass
+    volumes:
+      - ./services/catalog-service/migrations:/migrations:ro
+      - ./scripts/run-catalog-migrations.sh:/usr/local/bin/run-catalog-migrations:ro
+    networks:
+      - backend
+    depends_on:
+      identity-db-bootstrap:
+        condition: service_completed_successfully
+    command: ["/usr/local/bin/run-catalog-migrations"]
 
   contract-tests:
     <<: *job-hardening
@@ -285,6 +314,14 @@ secrets:
     file: ${SECRET_DIR:-./.dev/secrets}/identity_migration_password
   identity_runtime_password:
     file: ${SECRET_DIR:-./.dev/secrets}/identity_runtime_password
+  catalog_migration_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/catalog_migration_password
+  catalog_runtime_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/catalog_runtime_password
+  catalog_migration_pgpass:
+    file: ${SECRET_DIR:-./.dev/secrets}/catalog_migration_pgpass
+  catalog_runtime_dsn:
+    file: ${SECRET_DIR:-./.dev/secrets}/catalog_runtime_dsn
   identity_migration_pgpass:
     file: ${SECRET_DIR:-./.dev/secrets}/identity_migration_pgpass
   identity_runtime_dsn:

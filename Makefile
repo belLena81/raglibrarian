@@ -4,7 +4,7 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-generate build run-edge-api run-identity run-catalog dev tidy e2e migrate-identity-up migrate-identity-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets bootstrap-verifier compose-config ui-check ui-audit secret-scan dockerfile-lint image-build image-scan security-check full-gates integration-gates smtp-url
+.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-generate build run-edge-api run-identity run-catalog dev tidy e2e migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets dev-secrets-m3 bootstrap-verifier compose-config ui-check ui-audit secret-scan dockerfile-lint image-build image-scan security-check full-gates integration-gates smtp-url
 
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
 HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
@@ -163,6 +163,12 @@ migrate-identity-up: _require_root
 migrate-identity-down: _require_root
 	docker compose run --rm -e MIGRATION_DIRECTION=down identity-migrate
 
+migrate-catalog-up: _require_root
+	docker compose run --rm catalog-migrate
+
+migrate-catalog-down: _require_root
+	docker compose run --rm -e MIGRATION_DIRECTION=down catalog-migrate
+
 # ── Infrastructure ────────────────────────────────────────────────────────────
 infra-up: stack-up
 
@@ -176,6 +182,9 @@ keygen: _require_root
 
 dev-secrets: _require_root
 	bash ./scripts/generate-dev-secrets.sh
+
+dev-secrets-m3: _require_root
+	bash ./scripts/generate-catalog-dev-secrets.sh
 
 bootstrap-verifier: _require_root
 	@secret_dir="$${SECRET_DIR:-$(CURDIR)/.dev/secrets}"; \
