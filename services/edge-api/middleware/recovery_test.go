@@ -40,7 +40,7 @@ func (d delayedPanicDiagnostics) RequestCompleted(
 func TestRecoveryReturnsSanitizedErrorAndSafeEvent(t *testing.T) {
 	const canary = "panic-secret-canary"
 	log, logs := newObservedLogger()
-	handler := qmiddleware.RequestID(
+	handler := wrapWithRequestID(
 		qmiddleware.Recovery(log)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			panic(canary)
 		})),
@@ -86,7 +86,7 @@ func TestRecoveryHandlesNonComparablePanicValues(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			log, logs := newObservedLogger()
-			handler := qmiddleware.RequestID(
+			handler := wrapWithRequestID(
 				qmiddleware.Recovery(log)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 					panic(test.value)
 				})),
@@ -110,7 +110,7 @@ func TestRecoveryAndCompletionLoggerShareRequestIDAndStatus(t *testing.T) {
 	const recoveryDelay = 15 * time.Millisecond
 	log := delayedPanicDiagnostics{recorder: recorder, delay: recoveryDelay}
 	router := chi.NewRouter()
-	router.Use(qmiddleware.RequestID)
+	router.Use(wrapWithRequestID)
 	router.Use(qmiddleware.RequestLogger(log))
 	router.Use(qmiddleware.Recovery(log))
 	router.Get("/panic", func(http.ResponseWriter, *http.Request) {
@@ -146,7 +146,7 @@ func TestRecoveryReportsCommittedPanicAsAborted(t *testing.T) {
 	const canary = "committed-panic-secret-canary"
 	log, logs := newObservedLogger()
 	router := chi.NewRouter()
-	router.Use(qmiddleware.RequestID)
+	router.Use(wrapWithRequestID)
 	router.Use(qmiddleware.RequestLogger(log))
 	router.Use(qmiddleware.Recovery(log))
 	router.Get("/work", func(w http.ResponseWriter, _ *http.Request) {
@@ -194,7 +194,7 @@ func TestRecoveryRepanicsAbortHandlerWithoutPanicEventOrErrorBody(t *testing.T) 
 		t.Run(test.name, func(t *testing.T) {
 			log, logs := newObservedLogger()
 			router := chi.NewRouter()
-			router.Use(qmiddleware.RequestID)
+			router.Use(wrapWithRequestID)
 			router.Use(qmiddleware.RequestLogger(log))
 			router.Use(qmiddleware.Recovery(log))
 			router.Get("/abort", func(w http.ResponseWriter, _ *http.Request) {
@@ -225,7 +225,7 @@ func TestRecoveryRepanicsAbortHandlerWithoutPanicEventOrErrorBody(t *testing.T) 
 func TestRecoveryDoesNotAppendErrorBodyAfterResponseCommitted(t *testing.T) {
 	const responseBody = "safe partial response"
 	log, logs := newObservedLogger()
-	handler := qmiddleware.RequestID(
+	handler := wrapWithRequestID(
 		qmiddleware.Recovery(log)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusAccepted)
 			_, _ = w.Write([]byte(responseBody))

@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"encoding/hex"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +14,10 @@ import (
 func setRequired(t *testing.T) {
 	t.Helper()
 	t.Setenv("EDGE_VERIFY_KEY", hex.EncodeToString(make([]byte, 32)))
+	t.Setenv("EDGE_TRUSTED_PROXY_CIDRS", "")
+	t.Setenv("EDGE_INSECURE_REFRESH_COOKIE", "false")
+	t.Setenv("RUN_AS_UID", "65532")
+	t.Setenv("RUN_AS_GID", "65532")
 	t.Setenv("INTERNAL_TLS_CA_FILE", "/ca")
 	t.Setenv("EDGE_TLS_CERT_FILE", "/cert")
 	t.Setenv("EDGE_TLS_KEY_FILE", "/key")
@@ -33,5 +38,61 @@ func TestLoadRejectsInvalidSecurityConfiguration(t *testing.T) {
 	setRequired(t)
 	t.Setenv("EDGE_INSECURE_REFRESH_COOKIE", "sometimes")
 	_, err := config.Load()
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, config.ErrRefreshCookieConfiguration)
+}
+
+func TestLoadClassifiesConfigurationFailures(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*testing.T)
+		expected  error
+	}{
+		{
+			name: "required value missing",
+			configure: func(t *testing.T) {
+				t.Setenv("INTERNAL_TLS_CA_FILE", "")
+			},
+			expected: config.ErrRequiredConfiguration,
+		},
+		{
+			name: "verify key invalid",
+			configure: func(t *testing.T) {
+				t.Setenv("EDGE_VERIFY_KEY", "not-a-key")
+			},
+			expected: config.ErrVerifyKeyConfiguration,
+		},
+		{
+			name: "trusted proxy CIDR invalid",
+			configure: func(t *testing.T) {
+				t.Setenv("EDGE_TRUSTED_PROXY_CIDRS", "not-a-cidr")
+			},
+			expected: config.ErrTrustedProxyConfiguration,
+		},
+		{
+			name: "refresh cookie policy invalid",
+			configure: func(t *testing.T) {
+				t.Setenv("EDGE_INSECURE_REFRESH_COOKIE", "sometimes")
+			},
+			expected: config.ErrRefreshCookieConfiguration,
+		},
+		{
+			name: "run identity invalid",
+			configure: func(t *testing.T) {
+				t.Setenv("RUN_AS_UID", "root")
+			},
+			expected: config.ErrRunIdentityConfiguration,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			setRequired(t)
+			test.configure(t)
+
+			_, err := config.Load()
+
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, test.expected))
+		})
+	}
 }

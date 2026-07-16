@@ -36,7 +36,7 @@ func fieldsToString(fields map[string]any) string {
 // wrapWithRequestID simulates chi's RequestID middleware so the request_id
 // field is populated in the log output under test.
 func wrapWithRequestID(next http.Handler) http.Handler {
-	return qmiddleware.RequestID(next)
+	return qmiddleware.RequestID(diagnostic.New(zap.NewNop()))(next)
 }
 
 func makeHandler(status int) http.HandlerFunc {
@@ -166,7 +166,7 @@ func TestRequestLogger_StatusField_MatchesResponse(t *testing.T) {
 func TestRequestLogger_UsesMethodAndRouteTemplate(t *testing.T) {
 	log, logs := newObservedLogger()
 	router := chi.NewRouter()
-	router.Use(qmiddleware.RequestID)
+	router.Use(wrapWithRequestID)
 	router.Use(qmiddleware.RequestLogger(log))
 	router.Get("/books/{bookID}", makeHandler(http.StatusOK))
 
@@ -192,7 +192,7 @@ func TestRequestLogger_UsesMethodAndRouteTemplate(t *testing.T) {
 func TestRequestLogger_UsesExactAllowlistedSchemaAndFixedOutcome(t *testing.T) {
 	log, logs := newObservedLogger()
 	router := chi.NewRouter()
-	router.Use(qmiddleware.RequestID)
+	router.Use(wrapWithRequestID)
 	router.Use(qmiddleware.RequestLogger(log))
 	router.Post("/query", makeHandler(http.StatusNotImplemented))
 
@@ -214,7 +214,7 @@ func TestRequestLogger_DoesNotEmitSensitiveRequestInputs(t *testing.T) {
 	const canary = "SensitiveCanaryValue42"
 	log, logs := newObservedLogger()
 	router := chi.NewRouter()
-	router.Use(qmiddleware.RequestID)
+	router.Use(wrapWithRequestID)
 	router.Use(qmiddleware.RequestLogger(log))
 	router.Post("/items/{itemID}", makeHandler(http.StatusBadRequest))
 

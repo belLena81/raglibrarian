@@ -45,7 +45,7 @@ func newHandler(t *testing.T, useCase *fakeAuthUseCase) *handler.AuthHandler {
 func post(t *testing.T, h http.HandlerFunc, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	recorder := httptest.NewRecorder()
-	qmiddleware.RequestID(h).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body)))
+	qmiddleware.RequestID(diagnostic.New(zap.NewNop()))(h).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body)))
 	return recorder
 }
 

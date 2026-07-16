@@ -33,6 +33,40 @@ const (
 	RequestResponseAborted
 )
 
+// ServiceFailureReason is a closed set of safe lifecycle failure classes.
+type ServiceFailureReason uint8
+
+const (
+	// ServiceFailureUnknown identifies an unmapped lifecycle failure.
+	ServiceFailureUnknown ServiceFailureReason = iota + 1
+	// ServiceFailureConfigRequiredMissing identifies missing required configuration.
+	ServiceFailureConfigRequiredMissing
+	// ServiceFailureConfigVerifyKeyInvalid identifies invalid verification-key configuration.
+	ServiceFailureConfigVerifyKeyInvalid
+	// ServiceFailureConfigTrustedProxyInvalid identifies invalid trusted-proxy configuration.
+	ServiceFailureConfigTrustedProxyInvalid
+	// ServiceFailureConfigRefreshCookieInvalid identifies invalid refresh-cookie configuration.
+	ServiceFailureConfigRefreshCookieInvalid
+	// ServiceFailureConfigRunIdentityInvalid identifies invalid runtime identity configuration.
+	ServiceFailureConfigRunIdentityInvalid
+	// ServiceFailureTokenVerifierInitialization identifies verifier construction failure.
+	ServiceFailureTokenVerifierInitialization
+	// ServiceFailureInternalTLSFilesUnreadable identifies inaccessible internal TLS files.
+	ServiceFailureInternalTLSFilesUnreadable
+	// ServiceFailureInternalTLSMaterialInvalid identifies malformed internal TLS material.
+	ServiceFailureInternalTLSMaterialInvalid
+	// ServiceFailurePrivilegeDrop identifies privilege reduction failure.
+	ServiceFailurePrivilegeDrop
+	// ServiceFailureIdentityClientInitialization identifies Identity client construction failure.
+	ServiceFailureIdentityClientInitialization
+	// ServiceFailureHTTPListen identifies HTTP listener creation failure.
+	ServiceFailureHTTPListen
+	// ServiceFailureHTTPServe identifies HTTP serving failure after listener creation.
+	ServiceFailureHTTPServe
+	// ServiceFailureHTTPShutdown identifies graceful HTTP shutdown failure.
+	ServiceFailureHTTPShutdown
+)
+
 // AuthFailure is a closed set of safe authentication outcomes.
 type AuthFailure uint8
 
@@ -60,14 +94,19 @@ func New(log *zap.Logger) *Recorder {
 	return &Recorder{log: log}
 }
 
-// ServiceStartFailed records a fixed startup failure and terminates the process.
-func (r *Recorder) ServiceStartFailed() {
-	r.log.Fatal("service.start.failed")
+// ServiceStartFailed records a classified startup failure and terminates the process.
+func (r *Recorder) ServiceStartFailed(reason ServiceFailureReason) {
+	r.log.Fatal("service.start.failed", zap.String("reason_code", serviceFailureReasonValue(reason)))
 }
 
-// ServiceRunFailed records a fixed runtime failure and terminates the process.
-func (r *Recorder) ServiceRunFailed() {
-	r.log.Fatal("service.run.failed")
+// ServiceRunFailed records a classified runtime failure and terminates the process.
+func (r *Recorder) ServiceRunFailed(reason ServiceFailureReason) {
+	r.log.Fatal("service.run.failed", zap.String("reason_code", serviceFailureReasonValue(reason)))
+}
+
+// RequestIDGenerationFailed records an entropy failure without request data.
+func (r *Recorder) RequestIDGenerationFailed() {
+	r.log.Error("http.request_id.failed", zap.String("error_code", "request_id_generation_failed"))
 }
 
 // RequestCompleted records one HTTP completion event.
@@ -249,6 +288,39 @@ func requestOutcomeValue(outcome RequestOutcome) (string, bool) {
 		return "response_aborted", true
 	default:
 		return "", false
+	}
+}
+
+func serviceFailureReasonValue(reason ServiceFailureReason) string {
+	switch reason {
+	case ServiceFailureConfigRequiredMissing:
+		return "config_required_missing"
+	case ServiceFailureConfigVerifyKeyInvalid:
+		return "config_verify_key_invalid"
+	case ServiceFailureConfigTrustedProxyInvalid:
+		return "config_trusted_proxy_cidrs_invalid"
+	case ServiceFailureConfigRefreshCookieInvalid:
+		return "config_refresh_cookie_policy_invalid"
+	case ServiceFailureConfigRunIdentityInvalid:
+		return "config_run_as_identity_invalid"
+	case ServiceFailureTokenVerifierInitialization:
+		return "token_verifier_initialization_failed"
+	case ServiceFailureInternalTLSFilesUnreadable:
+		return "internal_tls_files_unreadable"
+	case ServiceFailureInternalTLSMaterialInvalid:
+		return "internal_tls_material_invalid"
+	case ServiceFailurePrivilegeDrop:
+		return "privilege_drop_failed"
+	case ServiceFailureIdentityClientInitialization:
+		return "identity_client_initialization_failed"
+	case ServiceFailureHTTPListen:
+		return "http_listen_failed"
+	case ServiceFailureHTTPServe:
+		return "http_serve_failed"
+	case ServiceFailureHTTPShutdown:
+		return "http_shutdown_failed"
+	default:
+		return "unknown_failure"
 	}
 }
 

@@ -35,7 +35,7 @@ func NewRouter(
 		panic("edgeapi: all router dependencies are required")
 	}
 	router := chi.NewRouter()
-	router.Use(middleware.RequestID)
+	router.Use(middleware.RequestID(diagnostics))
 	router.Use(middleware.RequestLogger(diagnostics))
 	router.Use(middleware.Recovery(diagnostics))
 	if len(config.TrustedProxyCIDRs) > 0 {

@@ -30,6 +30,22 @@ func observedRecorder() (*diagnostic.Recorder, *observer.ObservedLogs) {
 	return diagnostic.New(zap.New(core)), logs
 }
 
+func observedFatalRecorder() (*diagnostic.Recorder, *observer.ObservedLogs) {
+	core, logs := observer.New(zapcore.DebugLevel)
+	log := zap.New(core, zap.WithFatalHook(zapcore.WriteThenGoexit))
+	return diagnostic.New(log), logs
+}
+
+func invokeFatal(t *testing.T, emit func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		emit()
+	}()
+	<-done
+}
+
 func diagnosticRequest(method, target, pattern string) *http.Request {
 	request := httptest.NewRequest(method, target, nil)
 	routeContext := chi.NewRouteContext()
@@ -110,6 +126,142 @@ func TestSecurityAndStateEventsUseExactSchemas(t *testing.T) {
 			assert.Equal(t, test.keys, sortedKeys(entry))
 		})
 	}
+}
+
+func TestLifecycleFailuresUseExactSafeReasons(t *testing.T) {
+	tests := []struct {
+		name   string
+		event  string
+		reason diagnostic.ServiceFailureReason
+		value  string
+		emit   func(*diagnostic.Recorder, diagnostic.ServiceFailureReason)
+	}{
+		{
+			name:   "startup",
+			event:  "service.start.failed",
+			reason: diagnostic.ServiceFailureConfigRequiredMissing,
+			value:  "config_required_missing",
+			emit:   (*diagnostic.Recorder).ServiceStartFailed,
+		},
+		{
+			name:   "verify key",
+			event:  "service.run.failed",
+			reason: diagnostic.ServiceFailureConfigVerifyKeyInvalid,
+			value:  "config_verify_key_invalid",
+			emit:   (*diagnostic.Recorder).ServiceRunFailed,
+		},
+		{
+			name:   "trusted proxy",
+			event:  "service.run.failed",
+			reason: diagnostic.ServiceFailureConfigTrustedProxyInvalid,
+			value:  "config_trusted_proxy_cidrs_invalid",
+			emit:   (*diagnostic.Recorder).ServiceRunFailed,
+		},
+		{
+			name:   "refresh cookie",
+			event:  "service.run.failed",
+			reason: diagnostic.ServiceFailureConfigRefreshCookieInvalid,
+			value:  "config_refresh_cookie_policy_invalid",
+			emit:   (*diagnostic.Recorder).ServiceRunFailed,
+		},
+		{
+			name:   "run identity",
+			event:  "service.run.failed",
+			reason: diagnostic.ServiceFailureConfigRunIdentityInvalid,
+			value:  "config_run_as_identity_invalid",
+			emit:   (*diagnostic.Recorder).ServiceRunFailed,
+		},
+		{
+			name:   "token verifier",
+			event:  "service.run.failed",
+			reason: diagnostic.ServiceFailureTokenVerifierInitialization,
+			value:  "token_verifier_initialization_failed",
+			emit:   (*diagnostic.Recorder).ServiceRunFailed,
+		},
+		{
+			name:   "TLS files",
+			event:  "service.run.failed",
+			reason: diagnostic.ServiceFailureInternalTLSFilesUnreadable,
+			value:  "internal_tls_files_unreadable",
+			emit:   (*diagnostic.Recorder).ServiceRunFailed,
+		},
+		{
+			name:   "TLS material",
+			event:  "service.run.failed",
+			reason: diagnostic.ServiceFailureInternalTLSMaterialInvalid,
+			value:  "internal_tls_material_invalid",
+			emit:   (*diagnostic.Recorder).ServiceRunFailed,
+		},
+		{
+			name:   "privilege drop",
+			event:  "service.run.failed",
+			reason: diagnostic.ServiceFailurePrivilegeDrop,
+			value:  "privilege_drop_failed",
+			emit:   (*diagnostic.Recorder).ServiceRunFailed,
+		},
+		{
+			name:   "identity client",
+			event:  "service.run.failed",
+			reason: diagnostic.ServiceFailureIdentityClientInitialization,
+			value:  "identity_client_initialization_failed",
+			emit:   (*diagnostic.Recorder).ServiceRunFailed,
+		},
+		{
+			name:   "HTTP listen",
+			event:  "service.run.failed",
+			reason: diagnostic.ServiceFailureHTTPListen,
+			value:  "http_listen_failed",
+			emit:   (*diagnostic.Recorder).ServiceRunFailed,
+		},
+		{
+			name:   "HTTP serve",
+			event:  "service.run.failed",
+			reason: diagnostic.ServiceFailureHTTPServe,
+			value:  "http_serve_failed",
+			emit:   (*diagnostic.Recorder).ServiceRunFailed,
+		},
+		{
+			name:   "HTTP shutdown",
+			event:  "service.run.failed",
+			reason: diagnostic.ServiceFailureHTTPShutdown,
+			value:  "http_shutdown_failed",
+			emit:   (*diagnostic.Recorder).ServiceRunFailed,
+		},
+		{
+			name:   "unknown fallback",
+			event:  "service.run.failed",
+			reason: diagnostic.ServiceFailureReason(255),
+			value:  "unknown_failure",
+			emit:   (*diagnostic.Recorder).ServiceRunFailed,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder, logs := observedFatalRecorder()
+			invokeFatal(t, func() { test.emit(recorder, test.reason) })
+
+			require.Equal(t, 1, logs.Len())
+			entry := logs.All()[0]
+			assert.Equal(t, zapcore.FatalLevel, entry.Level)
+			assert.Equal(t, test.event, entry.Message)
+			assert.Equal(t, test.value, entry.ContextMap()["reason_code"])
+			assert.Equal(t, []string{"reason_code"}, sortedKeys(entry))
+		})
+	}
+}
+
+func TestRequestIDGenerationFailureUsesFixedSafeSchema(t *testing.T) {
+	recorder, logs := observedRecorder()
+
+	recorder.RequestIDGenerationFailed()
+
+	require.Equal(t, 1, logs.Len())
+	entry := logs.All()[0]
+	assert.Equal(t, zapcore.ErrorLevel, entry.Level)
+	assert.Equal(t, "http.request_id.failed", entry.Message)
+	assert.Equal(t, "request_id_generation_failed", entry.ContextMap()["error_code"])
+	assert.Equal(t, []string{"error_code"}, sortedKeys(entry))
 }
 
 func TestPanicRecoveredUsesExactSafeSchema(t *testing.T) {

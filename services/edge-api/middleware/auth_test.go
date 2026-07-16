@@ -49,7 +49,7 @@ func TestAuthenticatorDoesNotLogVerifierError(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
 	request.Header.Set("Authorization", "Bearer sensitive-token")
 
-	qmiddleware.RequestID(authenticator(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))).ServeHTTP(httptest.NewRecorder(), request)
+	wrapWithRequestID(authenticator(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))).ServeHTTP(httptest.NewRecorder(), request)
 
 	require.Equal(t, 1, logs.Len())
 	assert.Equal(t, "auth.token.rejected", logs.All()[0].Message)
