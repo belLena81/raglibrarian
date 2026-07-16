@@ -22,6 +22,7 @@ import (
 const maxBookMetadataBytes = 4096
 
 var ErrInvalidBookRequest = errors.New("invalid book request")
+var ErrInvalidPagination = errors.New("invalid pagination")
 
 type BookMetadata struct {
 	Title  string   `json:"title"`
@@ -127,6 +128,10 @@ func (h *BooksHandler) List(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	page, err := h.catalog.ListBooks(ctx, size, r.URL.Query().Get("page_token"), CatalogActor{UserID: principal.UserID, Role: principal.Role, Status: principal.Status})
 	if err != nil {
+		if errors.Is(err, ErrInvalidPagination) {
+			writeBookError(w, r, http.StatusBadRequest, "invalid_pagination", "invalid pagination")
+			return
+		}
 		writeBookError(w, r, http.StatusServiceUnavailable, "catalog_unavailable", "catalog unavailable")
 		return
 	}

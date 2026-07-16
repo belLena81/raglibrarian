@@ -89,3 +89,11 @@ func TestUploadBookEnforcesSizeLimit(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestListBooksRejectsMalformedCursorAsPagination(t *testing.T) {
+	service := NewService(NewMemoryRepository(), NewMemoryObjectStore(), 1024)
+	_, _, err := service.ListBooks(context.Background(), 25, "not-a-cursor")
+	if !errors.Is(err, ErrInvalidPagination) {
+		t.Fatalf("error = %v", err)
+	}
+}

@@ -25,11 +25,12 @@ const (
 )
 
 var (
-	ErrInvalidPDF     = errors.New("invalid PDF")
-	ErrUploadTooLarge = errors.New("upload too large")
-	ErrUploadCapacity = errors.New("upload capacity exhausted")
-	ErrNotFound       = errors.New("book not found")
-	ErrInvalidStream  = errors.New("invalid upload stream")
+	ErrInvalidPDF        = errors.New("invalid PDF")
+	ErrInvalidPagination = errors.New("invalid pagination")
+	ErrUploadTooLarge    = errors.New("upload too large")
+	ErrUploadCapacity    = errors.New("upload capacity exhausted")
+	ErrNotFound          = errors.New("book not found")
+	ErrInvalidStream     = errors.New("invalid upload stream")
 )
 
 // UploadInput carries only trusted actor data and immutable metadata.
@@ -96,17 +97,17 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 	objectReference := "originals/" + key + ".pdf"
 	reader := &boundedPDFReader{reader: input.Reader, remaining: s.maxBytes, hash: sha256.New()}
 	if err = s.objects.Put(ctx, objectReference, reader); err != nil {
-		_ = s.objects.Delete(context.Background(), objectReference)
+		s.deleteObject(objectReference)
 		return Book{}, sanitizeUploadError(err)
 	}
 	if err = reader.finish(); err != nil {
-		_ = s.objects.Delete(context.Background(), objectReference)
+		s.deleteObject(objectReference)
 		return Book{}, err
 	}
 	now := s.now()
 	bookID, err := generatedID()
 	if err != nil {
-		_ = s.objects.Delete(context.Background(), objectReference)
+		s.deleteObject(objectReference)
 		return Book{}, fmt.Errorf("generate book ID: %w", err)
 	}
 	actorID := input.Actor.UserID
@@ -116,7 +117,7 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 	book := Book{ID: bookID, Metadata: input.Metadata, ProcessingStatus: BookStatusPending, CreatedAt: now, ObjectReference: objectReference, Checksum: reader.sum(), ByteSize: reader.size, ActorID: actorID}
 	eventID, err := generatedID()
 	if err != nil {
-		_ = s.objects.Delete(context.Background(), objectReference)
+		s.deleteObject(objectReference)
 		return Book{}, fmt.Errorf("generate event ID: %w", err)
 	}
 	payload, err := proto.Marshal(&catalogv1.BookUploadedV1{
@@ -128,7 +129,7 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 		SchemaVersion: "v1", IdempotencyKey: book.ID,
 	})
 	if err != nil {
-		_ = s.objects.Delete(context.Background(), objectReference)
+		s.deleteObject(objectReference)
 		return Book{}, errors.New("catalog event unavailable")
 	}
 	event := OutboxEvent{ID: eventID, Type: "catalog.book.uploaded.v1", OccurredAt: now, Payload: payload}
@@ -139,12 +140,18 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 	return book, nil
 }
 
+func (s *Service) deleteObject(reference string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = s.objects.Delete(ctx, reference)
+}
+
 func (s *Service) ListBooks(ctx context.Context, size int, token string) ([]Book, string, error) {
 	if size == 0 {
 		size = 25
 	}
 	if size < 1 || size > 100 || (token != "" && !validCursor(token)) {
-		return nil, "", ErrInvalidMetadata
+		return nil, "", ErrInvalidPagination
 	}
 	return s.repository.List(ctx, size, token)
 }

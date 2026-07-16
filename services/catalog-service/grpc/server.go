@@ -18,19 +18,31 @@ import (
 
 type Server struct {
 	catalogv1.UnimplementedCatalogServiceServer
-	service *catalog.Service
+	service   *catalog.Service
+	readiness interface{ CheckReady(context.Context) error }
 }
 
-func NewServer(service *catalog.Service) *Server {
+func NewServer(service *catalog.Service, readiness ...interface{ CheckReady(context.Context) error }) *Server {
 	if service == nil {
 		panic("cataloggrpc: service is required")
 	}
-	return &Server{service: service}
+	server := &Server{service: service}
+	if len(readiness) == 1 {
+		server.readiness = readiness[0]
+	}
+	return server
 }
 
-func (*Server) Check(ctx context.Context, _ *catalogv1.CheckRequest) (*catalogv1.CheckResponse, error) {
+func (s *Server) Check(ctx context.Context, _ *catalogv1.CheckRequest) (*catalogv1.CheckResponse, error) {
 	if ctx.Err() != nil {
 		return nil, status.Error(codes.Canceled, "request cancelled")
+	}
+	if s.readiness != nil {
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if err := s.readiness.CheckReady(probeCtx); err != nil {
+			return nil, status.Error(codes.Unavailable, "catalog unavailable")
+		}
 	}
 	return &catalogv1.CheckResponse{Status: "SERVING"}, nil
 }
@@ -129,6 +141,8 @@ func mapError(err error) error {
 	switch {
 	case errors.Is(err, context.Canceled):
 		return status.Error(codes.Canceled, "request cancelled")
+	case errors.Is(err, catalog.ErrInvalidPagination):
+		return status.Error(codes.InvalidArgument, "invalid pagination")
 	case errors.Is(err, catalog.ErrInvalidMetadata), errors.Is(err, catalog.ErrInvalidPDF), errors.Is(err, catalog.ErrInvalidStream):
 		return status.Error(codes.InvalidArgument, "invalid upload")
 	case errors.Is(err, catalog.ErrUnauthorizedActor):

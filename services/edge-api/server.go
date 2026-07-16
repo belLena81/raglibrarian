@@ -111,6 +111,7 @@ func NewRouter(
 			router.Group(func(router chi.Router) {
 				router.Use(middleware.RequireAnyRole(auth.RoleLibrarian, auth.RoleAdmin))
 				router.Use(middleware.FixedWindowRateLimit(20, time.Hour, 10000))
+				router.Use(middleware.UploadDeadline)
 				router.Post("/", booksHandler.Upload)
 			})
 		})

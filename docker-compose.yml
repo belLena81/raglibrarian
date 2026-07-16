@@ -112,6 +112,56 @@ services:
       - backend
       - frontend
 
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/minio_root_user
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+    secrets:
+      - minio_root_user
+      - minio_root_password
+    volumes:
+      - minio_data:/data
+    networks:
+      - catalog-storage
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+
+  minio-bootstrap:
+    <<: *job-hardening
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    secrets:
+      - minio_root_user
+      - minio_root_password
+      - catalog_minio_access_key
+      - catalog_minio_secret_key
+    volumes:
+      - ./scripts/bootstrap-minio.sh:/usr/local/bin/bootstrap-minio:ro
+    networks:
+      - catalog-storage
+    depends_on:
+      minio:
+        condition: service_healthy
+    command: ["/usr/local/bin/bootstrap-minio"]
+
+  rabbitmq:
+    image: rabbitmq:4.1.0-management-alpine
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ${SECRET_DIR:-./.dev/secrets}/rabbitmq_definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ${SECRET_DIR:-./.dev/secrets}/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    networks:
+      - catalog-broker
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+
   identity-service:
     <<: *service-hardening
     build: { context: ., args: { SERVICE: identity-service } }
@@ -168,6 +218,11 @@ services:
     environment:
       CATALOG_GRPC_ADDR: ":50052"
       CATALOG_POSTGRES_DSN_FILE: /run/secrets/catalog_runtime_dsn
+      CATALOG_MINIO_ENDPOINT: minio:9000
+      CATALOG_MINIO_BUCKET: original-books
+      CATALOG_MINIO_ACCESS_KEY_FILE: /run/secrets/catalog_minio_access_key
+      CATALOG_MINIO_SECRET_KEY_FILE: /run/secrets/catalog_minio_secret_key
+      CATALOG_RABBITMQ_URI_FILE: /run/secrets/catalog_rabbitmq_uri
       INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
       CATALOG_TLS_CERT_FILE: /run/secrets/catalog_tls_cert
       CATALOG_TLS_KEY_FILE: /run/secrets/catalog_tls_key
@@ -182,10 +237,19 @@ services:
       - catalog_tls_cert
       - catalog_tls_key
       - catalog_runtime_dsn
+      - catalog_minio_access_key
+      - catalog_minio_secret_key
+      - catalog_rabbitmq_uri
     networks:
       - backend
+      # MinIO and RabbitMQ credentials are development-only plaintext values;
+      # keep them off the shared backend network until TLS is provisioned.
+      - catalog-storage
+      - catalog-broker
     depends_on:
       catalog-migrate:
+        condition: service_completed_successfully
+      minio-bootstrap:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "/healthcheck"]
@@ -299,10 +363,16 @@ services:
 
 volumes:
   postgres_data:
+  minio_data:
+  rabbitmq_data:
 
 networks:
   frontend:
   backend:
+    internal: true
+  catalog-storage:
+    internal: true
+  catalog-broker:
     internal: true
 
 secrets:
@@ -322,6 +392,16 @@ secrets:
     file: ${SECRET_DIR:-./.dev/secrets}/catalog_migration_pgpass
   catalog_runtime_dsn:
     file: ${SECRET_DIR:-./.dev/secrets}/catalog_runtime_dsn
+  minio_root_user:
+    file: ${SECRET_DIR:-./.dev/secrets}/minio_root_user
+  minio_root_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/minio_root_password
+  catalog_minio_access_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/catalog_minio_access_key
+  catalog_minio_secret_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/catalog_minio_secret_key
+  catalog_rabbitmq_uri:
+    file: ${SECRET_DIR:-./.dev/secrets}/catalog_rabbitmq_uri
   identity_migration_pgpass:
     file: ${SECRET_DIR:-./.dev/secrets}/identity_migration_pgpass
   identity_runtime_dsn:

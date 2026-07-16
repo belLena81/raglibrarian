@@ -1,1 +1,2 @@
-DROP SCHEMA IF EXISTS catalog CASCADE;
+DROP TABLE IF EXISTS catalog.outbox;
+DROP TABLE IF EXISTS catalog.books;

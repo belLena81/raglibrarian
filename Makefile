@@ -124,6 +124,7 @@ stack-up: _require_root
 		exit 1; \
 	}
 	@test -r "$${SECRET_DIR:-.dev/secrets}/identity_runtime_dsn" || { echo "development secrets are missing; run make dev-secrets"; exit 1; }
+	@test -r "$${SECRET_DIR:-.dev/secrets}/catalog_minio_access_key" || { echo "MinIO/RabbitMQ development secrets are missing; run make dev-secrets-m3"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/identity_bootstrap_verifier" || { echo "bootstrap verifier is missing; run make bootstrap-verifier"; exit 1; }
 	@docker compose up -d --build
 
@@ -184,6 +185,7 @@ dev-secrets: _require_root
 	bash ./scripts/generate-dev-secrets.sh
 
 dev-secrets-m3: _require_root
+	@echo "Generating MinIO and RabbitMQ development credentials..."
 	bash ./scripts/generate-catalog-dev-secrets.sh
 
 bootstrap-verifier: _require_root

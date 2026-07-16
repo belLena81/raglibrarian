@@ -103,6 +103,9 @@ func mapError(err error) error {
 		return handler.ErrBookTooLarge
 	}
 	if status.Code(err) == codes.InvalidArgument {
+		if status.Convert(err).Message() == "invalid pagination" {
+			return handler.ErrInvalidPagination
+		}
 		return handler.ErrInvalidBookRequest
 	}
 	return err

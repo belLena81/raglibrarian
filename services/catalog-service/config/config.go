@@ -14,15 +14,32 @@ import (
 
 // Config is validated Catalog runtime configuration.
 type Config struct {
-	Address string
-	DSN     string
-	TLS     internaltls.Files
-	RunAs   process.Identity
+	Address        string
+	DSN            string
+	MinIOEndpoint  string
+	MinIOAccessKey string
+	MinIOSecretKey string
+	MinIOBucket    string
+	RabbitURI      string
+	TLS            internaltls.Files
+	RunAs          process.Identity
 }
 
 // Load reads Catalog configuration from the environment.
 func Load() (Config, error) {
 	dsn, err := readSecret("CATALOG_POSTGRES_DSN_FILE", 4096)
+	if err != nil {
+		return Config{}, err
+	}
+	minioAccessKey, err := readSecret("CATALOG_MINIO_ACCESS_KEY_FILE", 1024)
+	if err != nil {
+		return Config{}, err
+	}
+	minioSecretKey, err := readSecret("CATALOG_MINIO_SECRET_KEY_FILE", 1024)
+	if err != nil {
+		return Config{}, err
+	}
+	rabbitURI, err := readSecret("CATALOG_RABBITMQ_URI_FILE", 4096)
 	if err != nil {
 		return Config{}, err
 	}
@@ -49,7 +66,15 @@ func Load() (Config, error) {
 	if uid < 1 || gid < 1 {
 		return Config{}, fmt.Errorf("RUN_AS_UID and RUN_AS_GID must be positive")
 	}
-	return Config{Address: optional("CATALOG_GRPC_ADDR", ":50052"), DSN: dsn, TLS: internaltls.Files{CA: ca, Certificate: cert, Key: key}, RunAs: process.Identity{UID: uid, GID: gid}}, nil
+	endpoint, err := required("CATALOG_MINIO_ENDPOINT")
+	if err != nil {
+		return Config{}, err
+	}
+	bucket, err := required("CATALOG_MINIO_BUCKET")
+	if err != nil {
+		return Config{}, err
+	}
+	return Config{Address: optional("CATALOG_GRPC_ADDR", ":50052"), DSN: dsn, MinIOEndpoint: endpoint, MinIOAccessKey: minioAccessKey, MinIOSecretKey: minioSecretKey, MinIOBucket: bucket, RabbitURI: rabbitURI, TLS: internaltls.Files{CA: ca, Certificate: cert, Key: key}, RunAs: process.Identity{UID: uid, GID: gid}}, nil
 }
 
 func readSecret(key string, maxSize int) (string, error) {

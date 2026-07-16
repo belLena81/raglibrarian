@@ -55,4 +55,5 @@ printf '%s\n' "$smtp_password" > "$dir/identity_smtp_password"
 
 chmod 400 "$dir"/*
 unset postgres_password migration_password runtime_password catalog_migration_password catalog_runtime_password smtp_password key_output signing_key verify_key
+bash ./scripts/generate-catalog-dev-secrets.sh "$dir"
 echo "Generated file-backed development credentials in $dir"

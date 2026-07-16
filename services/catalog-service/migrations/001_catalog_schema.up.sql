@@ -30,9 +30,3 @@ CREATE TABLE catalog.outbox (
 
 CREATE INDEX outbox_pending_idx ON catalog.outbox (next_attempt_at, event_id)
     WHERE published_at IS NULL;
-
-CREATE TABLE catalog.schema_migrations (
-    version TEXT PRIMARY KEY,
-    checksum BYTEA NOT NULL CHECK (octet_length(checksum) = 32),
-    applied_at TIMESTAMPTZ NOT NULL
-);
