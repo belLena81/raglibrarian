@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -40,10 +42,17 @@ type BookPage struct {
 	Books         []Book
 	NextPageToken string
 }
+
+// CatalogActor carries the authenticated, live principal to Catalog.
+type CatalogActor struct {
+	UserID string
+	Role   string
+	Status string
+}
 type BookCatalog interface {
-	UploadBook(context.Context, BookMetadata, string, string, io.Reader) (Book, error)
-	ListBooks(context.Context, int, string) (BookPage, error)
-	GetBook(context.Context, string) (Book, error)
+	UploadBook(context.Context, BookMetadata, CatalogActor, string, io.Reader) (Book, error)
+	ListBooks(context.Context, int, string, CatalogActor) (BookPage, error)
+	GetBook(context.Context, string, CatalogActor) (Book, error)
 	CheckReady(context.Context) error
 }
 type BooksHandler struct{ catalog BookCatalog }
@@ -58,52 +67,83 @@ func NewBooksHandler(catalog BookCatalog) *BooksHandler {
 func (h *BooksHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	mediaType, params, err := mimeParse(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "multipart/form-data" || params["boundary"] == "" {
-		writeError(w, http.StatusBadRequest, "invalid upload")
+		writeBookError(w, r, http.StatusBadRequest, "invalid_upload", "invalid upload")
 		return
 	}
 	reader := multipart.NewReader(r.Body, params["boundary"])
 	metadataPart, err := reader.NextPart()
 	if err != nil || metadataPart.FormName() != "metadata" {
-		writeError(w, http.StatusBadRequest, "invalid upload")
+		writeBookError(w, r, http.StatusBadRequest, "invalid_upload", "invalid upload")
+		return
+	}
+	if mediaType, _, parseErr := mime.ParseMediaType(metadataPart.Header.Get("Content-Type")); parseErr != nil || mediaType != "application/json" {
+		writeBookError(w, r, http.StatusBadRequest, "invalid_upload", "invalid upload")
 		return
 	}
 	var metadata BookMetadata
-	if err = json.NewDecoder(io.LimitReader(metadataPart, maxBookMetadataBytes+1)).Decode(&metadata); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid upload")
+	if err = decodeBookMetadata(metadataPart, &metadata); err != nil {
+		writeBookError(w, r, http.StatusBadRequest, "invalid_upload", "invalid upload")
 		return
 	}
 	filePart, err := reader.NextPart()
 	if err != nil || filePart.FormName() != "file" {
-		writeError(w, http.StatusBadRequest, "invalid upload")
+		writeBookError(w, r, http.StatusBadRequest, "invalid_upload", "invalid upload")
+		return
+	}
+	if mediaType, _, parseErr := mime.ParseMediaType(filePart.Header.Get("Content-Type")); parseErr != nil || mediaType != "application/pdf" {
+		writeBookError(w, r, http.StatusUnsupportedMediaType, "unsupported_media_type", "unsupported media type")
 		return
 	}
 	principal, _ := middleware.PrincipalFromContext(r.Context())
-	book, err := h.catalog.UploadBook(r.Context(), metadata, principal.UserID, chimiddleware.GetReqID(r.Context()), &singleFileReader{part: filePart, reader: reader})
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	actor := CatalogActor{UserID: principal.UserID, Role: principal.Role, Status: principal.Status}
+	book, err := h.catalog.UploadBook(ctx, metadata, actor, chimiddleware.GetReqID(r.Context()), &singleFileReader{part: filePart, reader: reader})
 	if err != nil {
-		writeError(w, mapBookError(err), "upload unavailable")
+		status, code, message := mapBookError(err)
+		writeBookError(w, r, status, code, message)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store, private")
 	writeJSON(w, http.StatusCreated, book)
 }
 func (h *BooksHandler) List(w http.ResponseWriter, r *http.Request) {
-	size, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
-	page, err := h.catalog.ListBooks(r.Context(), size, r.URL.Query().Get("page_token"))
+	sizeValue := r.URL.Query().Get("page_size")
+	size := 0
+	var err error
+	if sizeValue != "" {
+		size, err = strconv.Atoi(sizeValue)
+		if err != nil || size < 1 || size > 100 {
+			writeBookError(w, r, http.StatusBadRequest, "invalid_pagination", "invalid pagination")
+			return
+		}
+	}
+	if token := r.URL.Query().Get("page_token"); len(token) > 512 {
+		writeBookError(w, r, http.StatusBadRequest, "invalid_pagination", "invalid pagination")
+		return
+	}
+	principal, _ := middleware.PrincipalFromContext(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	page, err := h.catalog.ListBooks(ctx, size, r.URL.Query().Get("page_token"), CatalogActor{UserID: principal.UserID, Role: principal.Role, Status: principal.Status})
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "catalog unavailable")
+		writeBookError(w, r, http.StatusServiceUnavailable, "catalog_unavailable", "catalog unavailable")
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store, private")
 	writeJSON(w, http.StatusOK, map[string]any{"books": page.Books, "next_page_token": page.NextPageToken})
 }
 func (h *BooksHandler) Get(w http.ResponseWriter, r *http.Request) {
-	book, err := h.catalog.GetBook(r.Context(), chi.URLParam(r, "book_id"))
+	principal, _ := middleware.PrincipalFromContext(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	book, err := h.catalog.GetBook(ctx, chi.URLParam(r, "book_id"), CatalogActor{UserID: principal.UserID, Role: principal.Role, Status: principal.Status})
 	if err != nil {
 		if errors.Is(err, ErrBookNotFound) {
-			writeError(w, http.StatusNotFound, "book not found")
+			writeBookError(w, r, http.StatusNotFound, "book_not_found", "book not found")
 			return
 		}
-		writeError(w, http.StatusServiceUnavailable, "catalog unavailable")
+		writeBookError(w, r, http.StatusServiceUnavailable, "catalog_unavailable", "catalog unavailable")
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store, private")
@@ -111,14 +151,53 @@ func (h *BooksHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 var ErrBookNotFound = errors.New("book not found")
+var ErrBookTooLarge = errors.New("book upload too large")
+var ErrBookUnsupportedMediaType = errors.New("unsupported book media type")
+var ErrBookCapacityExhausted = errors.New("book upload capacity exhausted")
 
-func mapBookError(err error) int {
-	if errors.Is(err, ErrInvalidBookRequest) {
-		return http.StatusBadRequest
+func mapBookError(err error) (int, string, string) {
+	switch {
+	case errors.Is(err, ErrBookTooLarge):
+		return http.StatusRequestEntityTooLarge, "upload_too_large", "upload too large"
+	case errors.Is(err, ErrBookUnsupportedMediaType):
+		return http.StatusUnsupportedMediaType, "unsupported_media_type", "unsupported media type"
+	case errors.Is(err, ErrBookCapacityExhausted):
+		return http.StatusTooManyRequests, "upload_capacity_exhausted", "upload capacity exhausted"
+	case errors.Is(err, ErrInvalidBookRequest):
+		return http.StatusBadRequest, "invalid_upload", "invalid upload"
+	default:
+		return http.StatusServiceUnavailable, "catalog_unavailable", "catalog unavailable"
 	}
-	return http.StatusServiceUnavailable
 }
 func mimeParse(value string) (string, map[string]string, error) { return mime.ParseMediaType(value) }
+
+func decodeBookMetadata(reader io.Reader, metadata *BookMetadata) error {
+	data, err := io.ReadAll(io.LimitReader(reader, maxBookMetadataBytes+1))
+	if err != nil || len(data) > maxBookMetadataBytes {
+		return ErrInvalidBookRequest
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(metadata); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return ErrInvalidBookRequest
+	}
+	if strings.TrimSpace(metadata.Title) == "" || strings.TrimSpace(metadata.Author) == "" {
+		return ErrInvalidBookRequest
+	}
+	return nil
+}
+
+func writeBookError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
+	w.Header().Set("Cache-Control", "no-store, private")
+	writeJSON(w, status, struct {
+		Code      string `json:"code"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"`
+	}{Code: code, Error: message, RequestID: chimiddleware.GetReqID(r.Context())})
+}
 
 // singleFileReader preserves streaming while rejecting a multipart body with a
 // third part before Catalog can accept the upload.

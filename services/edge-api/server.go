@@ -110,6 +110,7 @@ func NewRouter(
 			router.Get("/{book_id}", booksHandler.Get)
 			router.Group(func(router chi.Router) {
 				router.Use(middleware.RequireAnyRole(auth.RoleLibrarian, auth.RoleAdmin))
+				router.Use(middleware.FixedWindowRateLimit(20, time.Hour, 10000))
 				router.Post("/", booksHandler.Upload)
 			})
 		})

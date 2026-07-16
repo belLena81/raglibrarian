@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -21,13 +22,17 @@ const (
 var (
 	ErrInvalidPDF     = errors.New("invalid PDF")
 	ErrUploadTooLarge = errors.New("upload too large")
+	ErrUploadCapacity = errors.New("upload capacity exhausted")
 	ErrNotFound       = errors.New("book not found")
 	ErrInvalidStream  = errors.New("invalid upload stream")
 )
 
 // UploadInput carries only trusted actor data and immutable metadata.
 type UploadInput struct {
-	Metadata      BookMetadata
+	Metadata BookMetadata
+	Actor    Actor
+	// ActorID is retained temporarily for direct application tests. gRPC callers
+	// must use Actor, which carries the live authorization decision.
 	ActorID       string
 	CorrelationID string
 	Reader        io.Reader
@@ -55,18 +60,28 @@ type Service struct {
 	objects    OriginalObjectStore
 	now        func() time.Time
 	maxBytes   int64
+	uploads    chan struct{}
 }
 
 func NewService(repository BookRepository, objects OriginalObjectStore, maxBytes int64) *Service {
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxBytes
 	}
-	return &Service{repository: repository, objects: objects, now: func() time.Time { return time.Now().UTC() }, maxBytes: maxBytes}
+	return &Service{repository: repository, objects: objects, now: func() time.Time { return time.Now().UTC() }, maxBytes: maxBytes, uploads: make(chan struct{}, 2)}
 }
 
 func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, error) {
-	if err := ValidateMetadata(input.Metadata); err != nil || input.ActorID == "" || input.Reader == nil {
+	if err := ValidateMetadata(input.Metadata); err != nil || (input.Actor.UserID == "" && input.ActorID == "") || input.Reader == nil {
 		return Book{}, ErrInvalidMetadata
+	}
+	if input.Actor.UserID != "" && !input.Actor.CanUpload() {
+		return Book{}, ErrUnauthorizedActor
+	}
+	select {
+	case s.uploads <- struct{}{}:
+		defer func() { <-s.uploads }()
+	default:
+		return Book{}, ErrUploadCapacity
 	}
 	key, err := generatedID()
 	if err != nil {
@@ -103,10 +118,21 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 }
 
 func (s *Service) ListBooks(ctx context.Context, size int, token string) ([]Book, string, error) {
-	if size < 1 || size > 100 {
+	if size == 0 {
 		size = 25
 	}
+	if size < 1 || size > 100 || (token != "" && !validCursor(token)) {
+		return nil, "", ErrInvalidMetadata
+	}
 	return s.repository.List(ctx, size, token)
+}
+
+func validCursor(token string) bool {
+	if len(token) > 512 {
+		return false
+	}
+	_, err := decodeCursor(token)
+	return err == nil
 }
 
 func (s *Service) GetBook(ctx context.Context, id string) (Book, error) {
@@ -201,13 +227,16 @@ func (r *MemoryRepository) List(_ context.Context, size int, token string) ([]Bo
 	}
 	sort.Slice(books, func(i, j int) bool {
 		if books[i].CreatedAt.Equal(books[j].CreatedAt) {
-			return books[i].ID < books[j].ID
+			return books[i].ID > books[j].ID
 		}
-		return books[i].CreatedAt.Before(books[j].CreatedAt)
+		return books[i].CreatedAt.After(books[j].CreatedAt)
 	})
 	start := 0
-	for start < len(books) && books[start].ID <= token {
-		start++
+	if token != "" {
+		cursor, _ := decodeCursor(token)
+		for start < len(books) && !beforeCursor(books[start], cursor.CreatedAt, cursor.ID) {
+			start++
+		}
 	}
 	end := start + size
 	if end > len(books) {
@@ -215,9 +244,43 @@ func (r *MemoryRepository) List(_ context.Context, size int, token string) ([]Bo
 	}
 	next := ""
 	if end < len(books) {
-		next = books[end-1].ID
+		next = encodeCursor(books[end-1])
 	}
 	return books[start:end], next, nil
+}
+
+type pageCursor struct {
+	Version   int    `json:"v"`
+	CreatedAt string `json:"created_at"`
+	ID        string `json:"id"`
+}
+
+func encodeCursor(book Book) string {
+	raw, _ := json.Marshal(pageCursor{Version: 1, CreatedAt: book.CreatedAt.UTC().Format(time.RFC3339Nano), ID: book.ID})
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+func decodeCursor(token string) (pageCursor, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		return pageCursor{}, err
+	}
+	var cursor pageCursor
+	if err = json.Unmarshal(raw, &cursor); err != nil || cursor.Version != 1 || cursor.ID == "" {
+		return pageCursor{}, errors.New("invalid cursor")
+	}
+	if _, err = time.Parse(time.RFC3339Nano, cursor.CreatedAt); err != nil {
+		return pageCursor{}, err
+	}
+	return cursor, nil
+}
+
+func beforeCursor(book Book, createdAt, id string) bool {
+	parsed, err := time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return false
+	}
+	return book.CreatedAt.Before(parsed) || (book.CreatedAt.Equal(parsed) && book.ID < id)
 }
 
 type MemoryObjectStore struct{ objects map[string][]byte }

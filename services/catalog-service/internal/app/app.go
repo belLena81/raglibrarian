@@ -37,6 +37,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	server := grpc.NewServer(
 		grpc.Creds(credentials),
 		grpc.UnaryInterceptor(grpcauth.UnaryServerInterceptor(grpcauth.Policy{Service: "catalog.v1.CatalogService", DNSName: "edge-api"})),
+		grpc.StreamInterceptor(grpcauth.StreamServerInterceptor(grpcauth.Policy{Service: "catalog.v1.CatalogService", DNSName: "edge-api"})),
 	)
 	service := catalog.NewService(catalog.NewMemoryRepository(), catalog.NewMemoryObjectStore(), 0)
 	catalogv1.RegisterCatalogServiceServer(server, cataloggrpc.NewServer(service))

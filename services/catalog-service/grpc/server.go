@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -35,6 +36,8 @@ func (*Server) Check(ctx context.Context, _ *catalogv1.CheckRequest) (*catalogv1
 }
 
 func (s *Server) UploadBook(stream catalogv1.CatalogService_UploadBookServer) error {
+	ctx, cancel := context.WithTimeout(stream.Context(), 2*time.Minute)
+	defer cancel()
 	first, err := stream.Recv()
 	if err != nil {
 		return mapError(err)
@@ -44,9 +47,13 @@ func (s *Server) UploadBook(stream catalogv1.CatalogService_UploadBookServer) er
 		return status.Error(codes.InvalidArgument, "invalid upload")
 	}
 	reader := &chunkReader{stream: stream}
-	book, err := s.service.UploadBook(stream.Context(), catalog.UploadInput{
+	actor := actorFromProto(metadata.Actor)
+	if !actor.CanUpload() {
+		return status.Error(codes.PermissionDenied, "actor is not authorized")
+	}
+	book, err := s.service.UploadBook(ctx, catalog.UploadInput{
 		Metadata: catalog.BookMetadata{Title: metadata.Title, Author: metadata.Author, Year: int(metadata.Year), Tags: append([]string(nil), metadata.Tags...)},
-		ActorID:  metadata.ActorId, CorrelationID: metadata.CorrelationId, Reader: reader,
+		Actor:    actor, ActorID: metadata.ActorId, CorrelationID: metadata.CorrelationId, Reader: reader,
 	})
 	if err != nil {
 		return mapError(err)
@@ -55,6 +62,11 @@ func (s *Server) UploadBook(stream catalogv1.CatalogService_UploadBookServer) er
 }
 
 func (s *Server) ListBooks(ctx context.Context, request *catalogv1.ListBooksRequest) (*catalogv1.ListBooksResponse, error) {
+	if !actorFromProto(request.Actor).CanRead() {
+		return nil, status.Error(codes.PermissionDenied, "actor is not authorized")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	books, token, err := s.service.ListBooks(ctx, int(request.PageSize), request.PageToken)
 	if err != nil {
 		return nil, mapError(err)
@@ -67,11 +79,23 @@ func (s *Server) ListBooks(ctx context.Context, request *catalogv1.ListBooksRequ
 }
 
 func (s *Server) GetBook(ctx context.Context, request *catalogv1.GetBookRequest) (*catalogv1.GetBookResponse, error) {
+	if !actorFromProto(request.Actor).CanRead() {
+		return nil, status.Error(codes.PermissionDenied, "actor is not authorized")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	book, err := s.service.GetBook(ctx, request.BookId)
 	if err != nil {
 		return nil, mapError(err)
 	}
 	return &catalogv1.GetBookResponse{Book: bookProto(book)}, nil
+}
+
+func actorFromProto(actor *catalogv1.Actor) catalog.Actor {
+	if actor == nil {
+		return catalog.Actor{}
+	}
+	return catalog.Actor{UserID: actor.UserId, Role: actor.Role, Status: actor.Status}
 }
 
 type chunkReader struct {
@@ -107,8 +131,12 @@ func mapError(err error) error {
 		return status.Error(codes.Canceled, "request cancelled")
 	case errors.Is(err, catalog.ErrInvalidMetadata), errors.Is(err, catalog.ErrInvalidPDF), errors.Is(err, catalog.ErrInvalidStream):
 		return status.Error(codes.InvalidArgument, "invalid upload")
+	case errors.Is(err, catalog.ErrUnauthorizedActor):
+		return status.Error(codes.PermissionDenied, "actor is not authorized")
 	case errors.Is(err, catalog.ErrUploadTooLarge):
 		return status.Error(codes.ResourceExhausted, "upload too large")
+	case errors.Is(err, catalog.ErrUploadCapacity):
+		return status.Error(codes.ResourceExhausted, "upload capacity exhausted")
 	case errors.Is(err, catalog.ErrNotFound):
 		return status.Error(codes.NotFound, "book not found")
 	case errors.Is(err, io.EOF):

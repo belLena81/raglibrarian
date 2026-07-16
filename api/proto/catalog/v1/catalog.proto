@@ -33,6 +33,7 @@ message UploadBookMetadata {
   repeated string tags = 4;
   string actor_id = 5;
   string correlation_id = 6;
+  Actor actor = 7;
 }
 
 message UploadBookResponse { Book book = 1; }
@@ -40,6 +41,7 @@ message UploadBookResponse { Book book = 1; }
 message ListBooksRequest {
   int32 page_size = 1;
   string page_token = 2;
+  Actor actor = 3;
 }
 
 message ListBooksResponse {
@@ -47,7 +49,10 @@ message ListBooksResponse {
   string next_page_token = 2;
 }
 
-message GetBookRequest { string book_id = 1; }
+message GetBookRequest {
+  string book_id = 1;
+  Actor actor = 2;
+}
 message GetBookResponse { Book book = 1; }
 
 message Book {
@@ -58,6 +63,13 @@ message Book {
   repeated string tags = 5;
   string processing_status = 6;
   google.protobuf.Timestamp created_at = 7;
+}
+
+// Actor is asserted by the authenticated Edge service, never by a browser.
+message Actor {
+  string user_id = 1;
+  string role = 2;
+  string status = 3;
 }
 
 message BookUploadedV1 {
@@ -74,4 +86,8 @@ message BookUploadedV1 {
   string actor_id = 11;
   string correlation_id = 12;
   google.protobuf.Timestamp occurred_at = 13;
+  string causation_id = 14;
+  string producer = 15;
+  string schema_version = 16;
+  string idempotency_key = 17;
 }

@@ -16,10 +16,38 @@ const (
 
 var ErrInvalidMetadata = errors.New("invalid book metadata")
 
-// BookStatus is intentionally small until an ingestion service owns processing.
+var ErrUnauthorizedActor = errors.New("unauthorized actor")
+
+// BookStatus records the Catalog-owned publication lifecycle.
 type BookStatus string
 
-const BookStatusPending BookStatus = "pending"
+const (
+	BookStatusPending    BookStatus = "pending"
+	BookStatusProcessing BookStatus = "processing"
+	BookStatusIndexed    BookStatus = "indexed"
+	BookStatusFailed     BookStatus = "failed"
+	BookStatusReindexing BookStatus = "reindexing"
+	BookStatusDeleting   BookStatus = "deleting"
+	BookStatusDeleted    BookStatus = "deleted"
+)
+
+// Actor is a live principal forwarded only by the authenticated Edge service.
+type Actor struct {
+	UserID string
+	Role   string
+	Status string
+}
+
+func (a Actor) CanRead() bool {
+	if a.Status != "active" || a.UserID == "" {
+		return false
+	}
+	return a.Role == "reader" || a.Role == "librarian" || a.Role == "admin"
+}
+
+func (a Actor) CanUpload() bool {
+	return a.Status == "active" && a.UserID != "" && (a.Role == "librarian" || a.Role == "admin")
+}
 
 // BookMetadata is immutable upload metadata.
 type BookMetadata struct {
