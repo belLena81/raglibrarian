@@ -33,9 +33,10 @@ const (
 
 // Actor is a live principal forwarded only by the authenticated Edge service.
 type Actor struct {
-	UserID string
-	Role   string
-	Status string
+	UserID      string
+	Role        string
+	Status      string
+	MaskedEmail string
 }
 
 func (a Actor) CanRead() bool {

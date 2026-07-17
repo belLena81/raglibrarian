@@ -1,7 +1,9 @@
 package logger_test
 
 import (
+	"bytes"
 	"os"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,6 +20,25 @@ func TestNew_DevelopmentMode(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.NotNil(t, log)
+}
+
+func TestNewWithWriterUsesFixedSingleLineFormat(t *testing.T) {
+	var output bytes.Buffer
+	log, err := logger.NewWithWriter(&output)
+	require.NoError(t, err)
+	log.Info("upload accepted\nwithout a second line")
+	assert.Regexp(t, regexp.MustCompile(`^\[info\]\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z logger_test\.go:\d+ : upload accepted\?without a second line\n$`), output.String())
+}
+
+func TestNewWithWriterReplacesTerminalControls(t *testing.T) {
+	var output bytes.Buffer
+	log, err := logger.NewWithWriter(&output)
+	require.NoError(t, err)
+	log.Info("unsafe\x1b[31m\x00\u2028\u2029")
+	assert.NotContains(t, output.String(), "\x1b")
+	assert.NotContains(t, output.String(), "\x00")
+	assert.NotContains(t, output.String(), "\u2028")
+	assert.NotContains(t, output.String(), "\u2029")
 }
 
 func TestNew_ProductionMode(t *testing.T) {

@@ -79,14 +79,10 @@ func (p *ReconnectingPublisher) PublishWithContext(ctx context.Context, exchange
 	defer p.mu.Unlock()
 	if p.publisher == nil {
 		dialer := net.Dialer{Timeout: 5 * time.Second}
-		connection, err := amqp091.DialConfig(p.uri, amqp091.Config{Dial: func(network, address string) (net.Conn, error) {
+		connection, err := amqp091.DialConfig(p.uri, amqp091.Config{Heartbeat: 10 * time.Second, Dial: func(network, address string) (net.Conn, error) {
 			conn, dialErr := dialer.DialContext(ctx, network, address)
 			if dialErr != nil {
 				return nil, dialErr
-			}
-			if deadlineErr := conn.SetDeadline(time.Now().Add(5 * time.Second)); deadlineErr != nil {
-				_ = conn.Close()
-				return nil, deadlineErr
 			}
 			return conn, nil
 		}})

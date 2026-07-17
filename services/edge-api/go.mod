@@ -15,7 +15,7 @@ require (
 require (
 	github.com/belLena81/raglibrarian/pkg/auth v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/pkg/internaltls v0.0.0-00010101000000-000000000000
-	github.com/belLena81/raglibrarian/pkg/logger v0.0.0-20260309122639-6b9c9a70dd75
+	github.com/belLena81/raglibrarian/pkg/logger v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/pkg/process v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/pkg/proto v0.0.0-00010101000000-000000000000
 	google.golang.org/grpc v1.82.1
@@ -36,6 +36,8 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/belLena81/raglibrarian/pkg/logger => ../../pkg/logger
 
 replace (
 	github.com/belLena81/raglibrarian/pkg/auth => ../../pkg/auth

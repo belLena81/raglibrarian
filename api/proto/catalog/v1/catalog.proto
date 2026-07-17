@@ -31,7 +31,7 @@ message UploadBookMetadata {
   string author = 2;
   int32 year = 3;
   repeated string tags = 4;
-  string actor_id = 5;
+  string actor_id = 5 [deprecated = true];
   string correlation_id = 6;
   Actor actor = 7;
 }
@@ -70,6 +70,9 @@ message Actor {
   string user_id = 1;
   string role = 2;
   string status = 3;
+  // masked_email is diagnostic-only. Catalog never uses it for authorization
+  // and does not copy it into emitted domain events.
+  string masked_email = 4;
 }
 
 message BookUploadedV1 {

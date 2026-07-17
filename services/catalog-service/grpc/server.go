@@ -4,11 +4,14 @@ package cataloggrpc
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -65,12 +68,28 @@ func (s *Server) UploadBook(stream catalogv1.CatalogService_UploadBookServer) er
 	}
 	book, err := s.service.UploadBook(ctx, catalog.UploadInput{
 		Metadata: catalog.BookMetadata{Title: metadata.Title, Author: metadata.Author, Year: int(metadata.Year), Tags: append([]string(nil), metadata.Tags...)},
-		Actor:    actor, ActorID: metadata.ActorId, CorrelationID: metadata.CorrelationId, Reader: reader,
+		Actor:    actor, CorrelationID: requestIDFromMetadata(ctx), Reader: reader,
 	})
 	if err != nil {
 		return mapError(err)
 	}
 	return stream.SendAndClose(&catalogv1.UploadBookResponse{Book: bookProto(book)})
+}
+
+func requestIDFromMetadata(ctx context.Context) string {
+	values := metadata.ValueFromIncomingContext(ctx, "x-request-id")
+	if len(values) != 1 || !validRequestID(values[0]) {
+		return ""
+	}
+	return values[0]
+}
+
+func validRequestID(value string) bool {
+	if len(value) != 32 || strings.ToLower(value) != value {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 16
 }
 
 func (s *Server) ListBooks(ctx context.Context, request *catalogv1.ListBooksRequest) (*catalogv1.ListBooksResponse, error) {
@@ -107,7 +126,7 @@ func actorFromProto(actor *catalogv1.Actor) catalog.Actor {
 	if actor == nil {
 		return catalog.Actor{}
 	}
-	return catalog.Actor{UserID: actor.UserId, Role: actor.Role, Status: actor.Status}
+	return catalog.Actor{UserID: actor.UserId, Role: actor.Role, Status: actor.Status, MaskedEmail: actor.MaskedEmail}
 }
 
 type chunkReader struct {

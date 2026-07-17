@@ -16,6 +16,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
+	"github.com/belLena81/raglibrarian/pkg/logger/safe"
+	"github.com/belLena81/raglibrarian/services/edge-api/authflow"
 	"github.com/belLena81/raglibrarian/services/edge-api/middleware"
 )
 
@@ -46,9 +48,10 @@ type BookPage struct {
 
 // CatalogActor carries the authenticated, live principal to Catalog.
 type CatalogActor struct {
-	UserID string
-	Role   string
-	Status string
+	UserID      string
+	Role        string
+	Status      string
+	MaskedEmail string
 }
 type BookCatalog interface {
 	UploadBook(context.Context, BookMetadata, CatalogActor, string, io.Reader) (Book, error)
@@ -98,7 +101,7 @@ func (h *BooksHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	principal, _ := middleware.PrincipalFromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
-	actor := CatalogActor{UserID: principal.UserID, Role: principal.Role, Status: principal.Status}
+	actor := catalogActor(principal)
 	book, err := h.catalog.UploadBook(ctx, metadata, actor, chimiddleware.GetReqID(r.Context()), &singleFileReader{part: filePart, reader: reader})
 	if err != nil {
 		status, code, message := mapBookError(err)
@@ -126,7 +129,7 @@ func (h *BooksHandler) List(w http.ResponseWriter, r *http.Request) {
 	principal, _ := middleware.PrincipalFromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	page, err := h.catalog.ListBooks(ctx, size, r.URL.Query().Get("page_token"), CatalogActor{UserID: principal.UserID, Role: principal.Role, Status: principal.Status})
+	page, err := h.catalog.ListBooks(ctx, size, r.URL.Query().Get("page_token"), catalogActor(principal))
 	if err != nil {
 		if errors.Is(err, ErrInvalidPagination) {
 			writeBookError(w, r, http.StatusBadRequest, "invalid_pagination", "invalid pagination")
@@ -142,7 +145,7 @@ func (h *BooksHandler) Get(w http.ResponseWriter, r *http.Request) {
 	principal, _ := middleware.PrincipalFromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	book, err := h.catalog.GetBook(ctx, chi.URLParam(r, "book_id"), CatalogActor{UserID: principal.UserID, Role: principal.Role, Status: principal.Status})
+	book, err := h.catalog.GetBook(ctx, chi.URLParam(r, "book_id"), catalogActor(principal))
 	if err != nil {
 		if errors.Is(err, ErrBookNotFound) {
 			writeBookError(w, r, http.StatusNotFound, "book_not_found", "book not found")
@@ -202,6 +205,15 @@ func writeBookError(w http.ResponseWriter, r *http.Request, status int, code, me
 		Error     string `json:"error"`
 		RequestID string `json:"request_id"`
 	}{Code: code, Error: message, RequestID: chimiddleware.GetReqID(r.Context())})
+}
+
+func catalogActor(principal authflow.Principal) CatalogActor {
+	return CatalogActor{
+		UserID:      principal.UserID,
+		Role:        principal.Role,
+		Status:      principal.Status,
+		MaskedEmail: safe.MaskedEmail(principal.Email).String(),
+	}
 }
 
 // singleFileReader preserves streaming while rejecting a multipart body with a

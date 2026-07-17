@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -14,15 +15,18 @@ import (
 
 // Config is validated Catalog runtime configuration.
 type Config struct {
-	Address        string
-	DSN            string
-	MinIOEndpoint  string
-	MinIOAccessKey string
-	MinIOSecretKey string
-	MinIOBucket    string
-	RabbitURI      string
-	TLS            internaltls.Files
-	RunAs          process.Identity
+	Address           string
+	DSN               string
+	MinIOEndpoint     string
+	MinIOAccessKey    string
+	MinIOSecretKey    string
+	MinIOBucket       string
+	RabbitURI         string
+	MaxUploadBytes    int64
+	UploadConcurrency int
+	MetricsAddress    string
+	TLS               internaltls.Files
+	RunAs             process.Identity
 }
 
 // Load reads Catalog configuration from the environment.
@@ -74,7 +78,50 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{Address: optional("CATALOG_GRPC_ADDR", ":50052"), DSN: dsn, MinIOEndpoint: endpoint, MinIOAccessKey: minioAccessKey, MinIOSecretKey: minioSecretKey, MinIOBucket: bucket, RabbitURI: rabbitURI, TLS: internaltls.Files{CA: ca, Certificate: cert, Key: key}, RunAs: process.Identity{UID: uid, GID: gid}}, nil
+	maxUploadBytes, err := boundedInt64("CATALOG_MAX_UPLOAD_BYTES", 50<<20, 512<<20)
+	if err != nil {
+		return Config{}, err
+	}
+	uploadConcurrency, err := boundedInt("CATALOG_UPLOAD_CONCURRENCY", 2, 16)
+	if err != nil {
+		return Config{}, err
+	}
+	metricsAddress, err := privateMetricsAddress(optional("CATALOG_METRICS_ADDR", ":9092"))
+	if err != nil {
+		return Config{}, err
+	}
+	return Config{Address: optional("CATALOG_GRPC_ADDR", ":50052"), DSN: dsn, MinIOEndpoint: endpoint, MinIOAccessKey: minioAccessKey, MinIOSecretKey: minioSecretKey, MinIOBucket: bucket, RabbitURI: rabbitURI, MaxUploadBytes: maxUploadBytes, UploadConcurrency: uploadConcurrency, MetricsAddress: metricsAddress, TLS: internaltls.Files{CA: ca, Certificate: cert, Key: key}, RunAs: process.Identity{UID: uid, GID: gid}}, nil
+}
+
+func boundedInt64(key string, fallback, maximum int64) (int64, error) {
+	value, err := strconv.ParseInt(optional(key, strconv.FormatInt(fallback, 10)), 10, 64)
+	if err != nil || value < 1 || value > maximum {
+		return 0, fmt.Errorf("%s must be between 1 and %d", key, maximum)
+	}
+	return value, nil
+}
+
+func boundedInt(key string, fallback, maximum int) (int, error) {
+	value, err := strconv.Atoi(optional(key, strconv.Itoa(fallback)))
+	if err != nil || value < 1 || value > maximum {
+		return 0, fmt.Errorf("%s must be between 1 and %d", key, maximum)
+	}
+	return value, nil
+}
+
+func privateMetricsAddress(value string) (string, error) {
+	host, port, err := net.SplitHostPort(value)
+	if err != nil || port == "" {
+		return "", fmt.Errorf("CATALOG_METRICS_ADDR is invalid")
+	}
+	if host == "" || host == "localhost" {
+		return value, nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || (!ip.IsLoopback() && !ip.IsPrivate()) {
+		return "", fmt.Errorf("CATALOG_METRICS_ADDR must use a private address")
+	}
+	return value, nil
 }
 
 func readSecret(key string, maxSize int) (string, error) {

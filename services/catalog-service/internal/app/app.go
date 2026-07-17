@@ -63,7 +63,10 @@ func Run(ctx context.Context, cfg config.Config) error {
 		grpc.StreamInterceptor(grpcauth.StreamServerInterceptor(grpcauth.Policy{Service: "catalog.v1.CatalogService", DNSName: "edge-api"})),
 	)
 	bookRepository := repository.NewPostgresBookRepository(pool)
-	service := catalog.NewService(bookRepository, repository.NewMinIOObjectStore(minioClient, cfg.MinIOBucket), 0)
+	service := catalog.NewServiceWithOptions(bookRepository, repository.NewMinIOObjectStore(minioClient, cfg.MinIOBucket), catalog.ServiceOptions{
+		MaxBytes:          cfg.MaxUploadBytes,
+		UploadConcurrency: cfg.UploadConcurrency,
+	})
 	catalogv1.RegisterCatalogServiceServer(server, cataloggrpc.NewServer(service, readiness))
 	healthServer := health.NewServer()
 	updateHealth := func() {

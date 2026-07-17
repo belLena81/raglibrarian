@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -35,11 +36,8 @@ var (
 
 // UploadInput carries only trusted actor data and immutable metadata.
 type UploadInput struct {
-	Metadata BookMetadata
-	Actor    Actor
-	// ActorID is retained temporarily for direct application tests. gRPC callers
-	// must use Actor, which carries the live authorization decision.
-	ActorID       string
+	Metadata      BookMetadata
+	Actor         Actor
 	CorrelationID string
 	Reader        io.Reader
 }
@@ -66,23 +64,55 @@ type Service struct {
 	repository BookRepository
 	objects    OriginalObjectStore
 	now        func() time.Time
+	newID      func() (string, error)
 	maxBytes   int64
 	uploads    chan struct{}
 }
 
+// ServiceOptions supplies bounded runtime dependencies without exposing
+// transport or storage implementation details to Catalog's application logic.
+type ServiceOptions struct {
+	MaxBytes          int64
+	UploadConcurrency int
+	Clock             func() time.Time
+	NewID             func() (string, error)
+}
+
 func NewService(repository BookRepository, objects OriginalObjectStore, maxBytes int64) *Service {
-	if maxBytes <= 0 {
-		maxBytes = DefaultMaxBytes
+	return NewServiceWithOptions(repository, objects, ServiceOptions{MaxBytes: maxBytes})
+}
+
+func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStore, options ServiceOptions) *Service {
+	if options.MaxBytes <= 0 {
+		options.MaxBytes = DefaultMaxBytes
 	}
-	return &Service{repository: repository, objects: objects, now: func() time.Time { return time.Now().UTC() }, maxBytes: maxBytes, uploads: make(chan struct{}, 2)}
+	if options.UploadConcurrency <= 0 {
+		options.UploadConcurrency = 2
+	}
+	if options.Clock == nil {
+		options.Clock = func() time.Time { return time.Now().UTC() }
+	}
+	if options.NewID == nil {
+		options.NewID = generatedID
+	}
+	return &Service{repository: repository, objects: objects, now: options.Clock, maxBytes: options.MaxBytes, uploads: make(chan struct{}, options.UploadConcurrency), newID: options.NewID}
 }
 
 func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, error) {
-	if err := ValidateMetadata(input.Metadata); err != nil || (input.Actor.UserID == "" && input.ActorID == "") || input.Reader == nil {
+	if err := ValidateMetadata(input.Metadata); err != nil || input.Actor.UserID == "" || input.Reader == nil {
 		return Book{}, ErrInvalidMetadata
+	}
+	// Protobuf represents an empty repeated field as nil. Catalog owns the
+	// durable representation, where tags is always an empty-or-populated array.
+	if input.Metadata.Tags == nil {
+		input.Metadata.Tags = []string{}
 	}
 	if input.Actor.UserID != "" && !input.Actor.CanUpload() {
 		return Book{}, ErrUnauthorizedActor
+	}
+	prefix := make([]byte, 5)
+	if _, err := io.ReadFull(input.Reader, prefix); err != nil || string(prefix) != "%PDF-" {
+		return Book{}, ErrInvalidPDF
 	}
 	select {
 	case s.uploads <- struct{}{}:
@@ -90,12 +120,12 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 	default:
 		return Book{}, ErrUploadCapacity
 	}
-	key, err := generatedID()
+	key, err := s.newID()
 	if err != nil {
 		return Book{}, fmt.Errorf("generate object reference: %w", err)
 	}
 	objectReference := "originals/" + key + ".pdf"
-	reader := &boundedPDFReader{reader: input.Reader, remaining: s.maxBytes, hash: sha256.New()}
+	reader := &boundedPDFReader{reader: io.MultiReader(bytes.NewReader(prefix), input.Reader), remaining: s.maxBytes, hash: sha256.New()}
 	if err = s.objects.Put(ctx, objectReference, reader); err != nil {
 		s.deleteObject(objectReference)
 		return Book{}, sanitizeUploadError(err)
@@ -105,17 +135,13 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 		return Book{}, err
 	}
 	now := s.now()
-	bookID, err := generatedID()
+	bookID, err := s.newID()
 	if err != nil {
 		s.deleteObject(objectReference)
 		return Book{}, fmt.Errorf("generate book ID: %w", err)
 	}
-	actorID := input.Actor.UserID
-	if actorID == "" {
-		actorID = input.ActorID
-	}
-	book := Book{ID: bookID, Metadata: input.Metadata, ProcessingStatus: BookStatusPending, CreatedAt: now, ObjectReference: objectReference, Checksum: reader.sum(), ByteSize: reader.size, ActorID: actorID}
-	eventID, err := generatedID()
+	book := Book{ID: bookID, Metadata: input.Metadata, ProcessingStatus: BookStatusPending, CreatedAt: now, ObjectReference: objectReference, Checksum: reader.sum(), ByteSize: reader.size, ActorID: input.Actor.UserID}
+	eventID, err := s.newID()
 	if err != nil {
 		s.deleteObject(objectReference)
 		return Book{}, fmt.Errorf("generate event ID: %w", err)
@@ -124,7 +150,7 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 		EventId: eventID, BookId: book.ID, Title: book.Metadata.Title, Author: book.Metadata.Author,
 		Year: int32(book.Metadata.Year), Tags: append([]string(nil), book.Metadata.Tags...),
 		ObjectReference: book.ObjectReference, Sha256: book.Checksum[:], ByteSize: book.ByteSize,
-		MediaType: "application/pdf", ActorId: actorID, CorrelationId: input.CorrelationID,
+		MediaType: "application/pdf", ActorId: input.Actor.UserID, CorrelationId: input.CorrelationID,
 		OccurredAt: timestamppb.New(now), CausationId: input.CorrelationID, Producer: "catalog-service",
 		SchemaVersion: "v1", IdempotencyKey: book.ID,
 	})

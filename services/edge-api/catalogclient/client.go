@@ -3,11 +3,14 @@ package catalogclient
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
+	grpcmetadata "google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
@@ -27,13 +30,17 @@ func (c *Client) CheckReady(ctx context.Context) error {
 }
 
 func (c *Client) UploadBook(ctx context.Context, metadata handler.BookMetadata, actor handler.CatalogActor, correlationID string, reader io.Reader) (handler.Book, error) {
+	if !validRequestID(correlationID) {
+		return handler.Book{}, handler.ErrInvalidBookRequest
+	}
+	ctx = grpcmetadata.AppendToOutgoingContext(ctx, "x-request-id", correlationID)
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	stream, err := c.service.UploadBook(ctx)
 	if err != nil {
 		return handler.Book{}, err
 	}
-	if err = stream.Send(&catalogv1.UploadBookRequest{Frame: &catalogv1.UploadBookRequest_Metadata{Metadata: &catalogv1.UploadBookMetadata{Title: metadata.Title, Author: metadata.Author, Year: int32(metadata.Year), Tags: metadata.Tags, CorrelationId: correlationID, Actor: actorProto(actor)}}}); err != nil {
+	if err = stream.Send(&catalogv1.UploadBookRequest{Frame: &catalogv1.UploadBookRequest_Metadata{Metadata: &catalogv1.UploadBookMetadata{Title: metadata.Title, Author: metadata.Author, Year: int32(metadata.Year), Tags: metadata.Tags, Actor: actorProto(actor)}}}); err != nil {
 		return handler.Book{}, err
 	}
 	buffer := make([]byte, 64<<10)
@@ -56,6 +63,14 @@ func (c *Client) UploadBook(ctx context.Context, metadata handler.BookMetadata, 
 		return handler.Book{}, mapError(err)
 	}
 	return fromProto(response.Book), nil
+}
+
+func validRequestID(value string) bool {
+	if len(value) != 32 || strings.ToLower(value) != value {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 16
 }
 func (c *Client) ListBooks(ctx context.Context, size int, token string, actor handler.CatalogActor) (handler.BookPage, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -80,7 +95,7 @@ func (c *Client) GetBook(ctx context.Context, id string, actor handler.CatalogAc
 	return fromProto(response.Book), nil
 }
 func actorProto(actor handler.CatalogActor) *catalogv1.Actor {
-	return &catalogv1.Actor{UserId: actor.UserID, Role: actor.Role, Status: actor.Status}
+	return &catalogv1.Actor{UserId: actor.UserID, Role: actor.Role, Status: actor.Status, MaskedEmail: actor.MaskedEmail}
 }
 func fromProto(book *catalogv1.Book) handler.Book {
 	if book == nil {

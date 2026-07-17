@@ -15,7 +15,7 @@ func TestUploadBookStoresPendingPDF(t *testing.T) {
 
 	book, err := service.UploadBook(context.Background(), UploadInput{
 		Metadata: BookMetadata{Title: "A title", Author: "An author", Year: 2026, Tags: []string{"go"}},
-		ActorID:  "actor-1", Reader: bytes.NewBufferString("%PDF-1.7\nbody"),
+		Actor:    Actor{UserID: "actor-1", Role: "librarian", Status: "active"}, Reader: bytes.NewBufferString("%PDF-1.7\nbody"),
 	})
 
 	if err != nil {
@@ -26,6 +26,21 @@ func TestUploadBookStoresPendingPDF(t *testing.T) {
 	}
 	if len(objects.objects) != 1 {
 		t.Fatalf("objects = %d", len(objects.objects))
+	}
+}
+
+func TestUploadBookNormalizesAbsentTagsToEmptyArray(t *testing.T) {
+	service := NewService(NewMemoryRepository(), NewMemoryObjectStore(), 1024)
+	book, err := service.UploadBook(context.Background(), UploadInput{
+		Metadata: BookMetadata{Title: "A title", Author: "An author", Year: 2026},
+		Actor:    Actor{UserID: "actor-1", Role: "librarian", Status: "active"},
+		Reader:   bytes.NewBufferString("%PDF-1.7\nbody"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if book.Metadata.Tags == nil || len(book.Metadata.Tags) != 0 {
+		t.Fatalf("tags = %#v", book.Metadata.Tags)
 	}
 }
 
@@ -73,7 +88,7 @@ func TestMemoryRepositoryUsesNewestFirstTimestampAndIDCursor(t *testing.T) {
 func TestUploadBookRejectsSpoofedPDFAndCompensates(t *testing.T) {
 	objects := NewMemoryObjectStore()
 	service := NewService(NewMemoryRepository(), objects, 1024)
-	_, err := service.UploadBook(context.Background(), UploadInput{Metadata: BookMetadata{Title: "Title", Author: "Author", Year: 2026}, ActorID: "actor", Reader: bytes.NewBufferString("not a pdf")})
+	_, err := service.UploadBook(context.Background(), UploadInput{Metadata: BookMetadata{Title: "Title", Author: "Author", Year: 2026}, Actor: Actor{UserID: "actor", Role: "librarian", Status: "active"}, Reader: bytes.NewBufferString("not a pdf")})
 	if !errors.Is(err, ErrInvalidPDF) {
 		t.Fatalf("error = %v", err)
 	}
@@ -84,7 +99,7 @@ func TestUploadBookRejectsSpoofedPDFAndCompensates(t *testing.T) {
 
 func TestUploadBookEnforcesSizeLimit(t *testing.T) {
 	service := NewService(NewMemoryRepository(), NewMemoryObjectStore(), 5)
-	_, err := service.UploadBook(context.Background(), UploadInput{Metadata: BookMetadata{Title: "Title", Author: "Author", Year: 2026}, ActorID: "actor", Reader: bytes.NewBufferString("%PDF-too-large")})
+	_, err := service.UploadBook(context.Background(), UploadInput{Metadata: BookMetadata{Title: "Title", Author: "Author", Year: 2026}, Actor: Actor{UserID: "actor", Role: "librarian", Status: "active"}, Reader: bytes.NewBufferString("%PDF-too-large")})
 	if !errors.Is(err, ErrUploadTooLarge) {
 		t.Fatalf("error = %v", err)
 	}
