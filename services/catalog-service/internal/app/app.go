@@ -80,7 +80,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		MaxBytes:          cfg.MaxUploadBytes,
 		UploadConcurrency: cfg.UploadConcurrency,
 	})
-	catalogv1.RegisterCatalogServiceServer(server, cataloggrpc.NewServer(service, readiness))
+	catalogv1.RegisterCatalogServiceServer(server, cataloggrpc.NewServer(service, diagnostics, readiness))
 	healthServer := health.NewServer()
 	recorder := metrics.New(diagnostics)
 	updateHealth := func() {

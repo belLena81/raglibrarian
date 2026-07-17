@@ -16,20 +16,22 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
+	"github.com/belLena81/raglibrarian/services/catalog-service/diagnostic"
 	"github.com/belLena81/raglibrarian/services/catalog-service/internal/catalog"
 )
 
 type Server struct {
 	catalogv1.UnimplementedCatalogServiceServer
-	service   *catalog.Service
-	readiness interface{ CheckReady(context.Context) error }
+	service     *catalog.Service
+	diagnostics *diagnostic.Recorder
+	readiness   interface{ CheckReady(context.Context) error }
 }
 
-func NewServer(service *catalog.Service, readiness ...interface{ CheckReady(context.Context) error }) *Server {
-	if service == nil {
-		panic("cataloggrpc: service is required")
+func NewServer(service *catalog.Service, diagnostics *diagnostic.Recorder, readiness ...interface{ CheckReady(context.Context) error }) *Server {
+	if service == nil || diagnostics == nil {
+		panic("cataloggrpc: service and diagnostics are required")
 	}
-	server := &Server{service: service}
+	server := &Server{service: service, diagnostics: diagnostics}
 	if len(readiness) == 1 {
 		server.readiness = readiness[0]
 	}
@@ -55,15 +57,18 @@ func (s *Server) UploadBook(stream catalogv1.CatalogService_UploadBookServer) er
 	defer cancel()
 	first, err := stream.Recv()
 	if err != nil {
+		s.diagnostics.OperationRejected("upload_book", requestIDFromMetadata(ctx), catalog.Actor{}, uploadFailureReason(err))
 		return mapError(err)
 	}
 	metadata := first.GetMetadata()
 	if metadata == nil {
+		s.diagnostics.OperationRejected("upload_book", requestIDFromMetadata(ctx), catalog.Actor{}, "invalid_metadata")
 		return status.Error(codes.InvalidArgument, "invalid upload")
 	}
 	reader := &chunkReader{stream: stream}
 	actor := actorFromProto(metadata.Actor)
 	if !actor.CanUpload() {
+		s.diagnostics.OperationRejected("upload_book", requestIDFromMetadata(ctx), actor, "unauthorized_actor")
 		return status.Error(codes.PermissionDenied, "actor is not authorized")
 	}
 	book, err := s.service.UploadBook(ctx, catalog.UploadInput{
@@ -71,8 +76,10 @@ func (s *Server) UploadBook(stream catalogv1.CatalogService_UploadBookServer) er
 		Actor:    actor, CorrelationID: requestIDFromMetadata(ctx), Reader: reader,
 	})
 	if err != nil {
+		s.diagnostics.OperationRejected("upload_book", requestIDFromMetadata(ctx), actor, uploadFailureReason(err))
 		return mapError(err)
 	}
+	s.diagnostics.UploadCompleted(requestIDFromMetadata(ctx), actor, book)
 	return stream.SendAndClose(&catalogv1.UploadBookResponse{Book: bookProto(book)})
 }
 
@@ -93,33 +100,68 @@ func validRequestID(value string) bool {
 }
 
 func (s *Server) ListBooks(ctx context.Context, request *catalogv1.ListBooksRequest) (*catalogv1.ListBooksResponse, error) {
-	if !actorFromProto(request.Actor).CanRead() {
+	actor := actorFromProto(request.Actor)
+	requestID := requestIDFromMetadata(ctx)
+	if !actor.CanRead() {
+		s.diagnostics.OperationRejected("list_books", requestID, actor, "unauthorized_actor")
 		return nil, status.Error(codes.PermissionDenied, "actor is not authorized")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	books, token, err := s.service.ListBooks(ctx, int(request.PageSize), request.PageToken)
 	if err != nil {
+		s.diagnostics.OperationRejected("list_books", requestID, actor, uploadFailureReason(err))
 		return nil, mapError(err)
 	}
 	response := &catalogv1.ListBooksResponse{NextPageToken: token, Books: make([]*catalogv1.Book, 0, len(books))}
 	for _, book := range books {
 		response.Books = append(response.Books, bookProto(book))
 	}
+	s.diagnostics.ListCompleted(requestID, actor, int(request.PageSize), len(books))
 	return response, nil
 }
 
 func (s *Server) GetBook(ctx context.Context, request *catalogv1.GetBookRequest) (*catalogv1.GetBookResponse, error) {
-	if !actorFromProto(request.Actor).CanRead() {
+	actor := actorFromProto(request.Actor)
+	requestID := requestIDFromMetadata(ctx)
+	if !actor.CanRead() {
+		s.diagnostics.OperationRejected("get_book", requestID, actor, "unauthorized_actor")
 		return nil, status.Error(codes.PermissionDenied, "actor is not authorized")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	book, err := s.service.GetBook(ctx, request.BookId)
 	if err != nil {
+		s.diagnostics.OperationRejected("get_book", requestID, actor, uploadFailureReason(err))
 		return nil, mapError(err)
 	}
+	s.diagnostics.GetCompleted(requestID, actor, book.ID)
 	return &catalogv1.GetBookResponse{Book: bookProto(book)}, nil
+}
+
+func uploadFailureReason(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "request_cancelled"
+	case errors.Is(err, catalog.ErrInvalidMetadata):
+		return "invalid_metadata"
+	case errors.Is(err, catalog.ErrUnauthorizedActor):
+		return "unauthorized_actor"
+	case errors.Is(err, catalog.ErrInvalidPDF):
+		return "invalid_pdf"
+	case errors.Is(err, catalog.ErrInvalidStream), errors.Is(err, io.EOF):
+		return "invalid_stream"
+	case errors.Is(err, catalog.ErrUploadTooLarge):
+		return "upload_too_large"
+	case errors.Is(err, catalog.ErrUploadCapacity):
+		return "upload_capacity_exhausted"
+	case errors.Is(err, catalog.ErrInvalidPagination):
+		return "invalid_pagination"
+	case errors.Is(err, catalog.ErrNotFound):
+		return "not_found"
+	default:
+		return "persistence_unavailable"
+	}
 }
 
 func actorFromProto(actor *catalogv1.Actor) catalog.Actor {

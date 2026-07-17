@@ -130,13 +130,16 @@ func TestUploadBookPreservesObjectAfterAmbiguousCommittedCreate(t *testing.T) {
 			return "fixed-id", nil
 		},
 	})
-	_, err := service.UploadBook(context.Background(), UploadInput{
+	book, err := service.UploadBook(context.Background(), UploadInput{
 		Metadata: BookMetadata{Title: "Title", Author: "Author", Year: 2026},
 		Actor:    Actor{UserID: "actor", Role: "librarian", Status: "active"},
 		Reader:   bytes.NewBufferString("%PDF-1.7\nbody"),
 	})
-	if err == nil {
-		t.Fatal("expected persistence error")
+	if err != nil {
+		t.Fatalf("UploadBook() error = %v", err)
+	}
+	if book.ID != "fixed-id" {
+		t.Fatalf("book ID = %q", book.ID)
 	}
 	if len(objects.objects) != 1 {
 		t.Fatalf("objects = %d, want preserved object", len(objects.objects))

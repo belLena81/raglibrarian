@@ -174,7 +174,11 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 	if err = s.repository.Create(ctx, book, event); err != nil {
 		lookupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if _, lookupErr := s.repository.Get(lookupCtx, book.ID); errors.Is(lookupErr, ErrNotFound) {
+		persisted, lookupErr := s.repository.Get(lookupCtx, book.ID)
+		if lookupErr == nil {
+			return persisted, nil
+		}
+		if errors.Is(lookupErr, ErrNotFound) {
 			s.deleteObject(objectReference)
 		}
 		return Book{}, errors.New("catalog persistence unavailable")

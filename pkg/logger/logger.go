@@ -92,7 +92,7 @@ func humanizeMessage(message string) string {
 var allowedFieldNames = map[string]struct{}{
 	"request_id": {}, "method": {}, "route": {}, "route_template": {}, "status": {}, "outcome": {}, "duration": {}, "duration_ms": {},
 	"response_bytes": {}, "operation": {}, "code": {}, "grpc_code": {}, "stage": {}, "reason": {}, "reason_code": {}, "error_code": {},
-	"stack_fingerprint": {},
+	"stack_fingerprint": {}, "actor_id": {}, "book_id": {}, "checksum_sha256": {}, "byte_size": {}, "tag_count": {}, "page_size": {}, "result_count": {}, "role": {}, "account_status": {},
 }
 
 func safeFieldSuffix(fields []zapcore.Field) string {
@@ -143,6 +143,8 @@ var (
 	requestIDPattern   = regexp.MustCompile(`^[a-f0-9]{32}$`)
 	routePattern       = regexp.MustCompile(`^/[A-Za-z0-9_{}./-]{1,160}$`)
 	fingerprintPattern = regexp.MustCompile(`^[a-f0-9]{16,128}$`)
+	opaqueIDPattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+	checksumPattern    = regexp.MustCompile(`^[a-f0-9]{64}$`)
 )
 
 func validDiagnosticField(key string, fieldType zapcore.FieldType, value string) bool {
@@ -162,6 +164,16 @@ func validDiagnosticField(key string, fieldType zapcore.FieldType, value string)
 		return integerField(fieldType) && parseBoundedInt(value, 0, 1<<53-1)
 	case "stack_fingerprint":
 		return fieldType == zapcore.StringType && fingerprintPattern.MatchString(value)
+	case "actor_id", "book_id":
+		return fieldType == zapcore.StringType && opaqueIDPattern.MatchString(value)
+	case "checksum_sha256":
+		return fieldType == zapcore.StringType && checksumPattern.MatchString(value)
+	case "byte_size", "tag_count", "page_size", "result_count":
+		return integerField(fieldType) && parseBoundedInt(value, 0, 1<<53-1)
+	case "role":
+		return fieldType == zapcore.StringType && (value == "admin" || value == "librarian" || value == "reader")
+	case "account_status":
+		return fieldType == zapcore.StringType && (value == "active" || value == "pending" || value == "rejected")
 	case "outcome", "operation", "stage", "reason", "reason_code", "error_code":
 		return fieldType == zapcore.StringType && allowedDiagnosticValue(key, value)
 	case "code", "grpc_code":
@@ -180,6 +192,7 @@ var allowedDiagnosticValues = map[string]map[string]struct{}{
 		"register": {}, "verify_email": {}, "resend_verification": {}, "password_reset_request": {}, "password_reset_verify": {}, "password_reset_complete": {},
 		"login": {}, "refresh": {}, "logout": {}, "validate_session": {}, "get_setup_status": {}, "create_admin": {}, "list_pending_librarians": {},
 		"approve_librarian": {}, "reject_librarian": {}, "watch_pending_librarians": {},
+		"upload_book": {}, "list_books": {}, "get_book": {},
 	},
 	"stage": {
 		"session_cleanup": {}, "verification_cleanup": {}, "rejected_cleanup": {}, "email_claim": {}, "email_mark": {}, "email_retry": {}, "email_exhausted": {},
@@ -189,6 +202,7 @@ var allowedDiagnosticValues = map[string]map[string]struct{}{
 		"unknown_failure": {}, "config_required_missing": {}, "config_verify_key_invalid": {}, "config_trusted_proxy_cidrs_invalid": {}, "config_refresh_cookie_policy_invalid": {},
 		"config_run_as_identity_invalid": {}, "token_verifier_initialization_failed": {}, "internal_tls_files_unreadable": {}, "internal_tls_material_invalid": {},
 		"privilege_drop_failed": {}, "identity_client_initialization_failed": {}, "http_listen_failed": {}, "http_serve_failed": {}, "http_shutdown_failed": {},
+		"invalid_metadata": {}, "unauthorized_actor": {}, "invalid_pdf": {}, "invalid_stream": {}, "upload_too_large": {}, "upload_capacity_exhausted": {}, "object_storage_unavailable": {}, "object_receipt_mismatch": {}, "persistence_unavailable": {}, "request_cancelled": {}, "not_found": {}, "invalid_pagination": {},
 	},
 	"error_code": {
 		"request_id_generation_failed": {}, "internal_panic": {},
