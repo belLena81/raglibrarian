@@ -113,12 +113,13 @@ func (r *PostgresBookRepository) Get(ctx context.Context, id string) (catalog.Bo
 	return book, nil
 }
 
-// ClaimOutbox leases up to 25 due rows. A lease makes concurrent workers safe.
+// ClaimOutbox leases one due row. Processing one record at a time preserves a
+// clear durable boundary between broker confirmation and publication marking.
 func (r *PostgresBookRepository) ClaimOutbox(ctx context.Context, now time.Time, lease time.Duration) ([]PendingOutboxEvent, error) {
 	rows, err := r.pool.Query(ctx, `WITH candidates AS (
         SELECT event_id FROM catalog.outbox
         WHERE published_at IS NULL AND next_attempt_at <= $1 AND (leased_until IS NULL OR leased_until < $1)
-        ORDER BY next_attempt_at,event_id FOR UPDATE SKIP LOCKED LIMIT 25
+        ORDER BY next_attempt_at,event_id FOR UPDATE SKIP LOCKED LIMIT 1
     )
     UPDATE catalog.outbox AS outbox SET leased_until=$2
     FROM candidates WHERE outbox.event_id=candidates.event_id
@@ -127,7 +128,7 @@ func (r *PostgresBookRepository) ClaimOutbox(ctx context.Context, now time.Time,
 		return nil, fmt.Errorf("catalog: claim outbox: %w", err)
 	}
 	defer rows.Close()
-	events := make([]PendingOutboxEvent, 0, 25)
+	events := make([]PendingOutboxEvent, 0, 1)
 	for rows.Next() {
 		var event PendingOutboxEvent
 		if err = rows.Scan(&event.ID, &event.Type, &event.Payload, &event.Attempts); err != nil {

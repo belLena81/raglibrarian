@@ -4,10 +4,9 @@
 The eventual product will ingest books, retrieve evidence, and return answers
 with traceable book, chapter, page, and passage citations.
 
-The repository currently implements **Milestone 2**: secure Identity RBAC,
-email verification, singleton-admin bootstrap, and librarian approval. It does
-not yet ingest files, query Qdrant, call an LLM, or return real retrieval
-results.
+The repository implements Milestone 2 and has an in-progress Milestone 3
+Catalog upload/publication slice. It does not ingest files, query Qdrant, call
+an LLM, or return real retrieval results.
 
 ## Architecture decision
 
@@ -25,8 +24,8 @@ client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
   route composition. It owns no business database or evolving aggregate.
 - **identity-service** owns credentials, users, roles, and its `identity`
   Postgres schema. It is the only service that signs access tokens.
-- **catalog-service** is an independently deployable mTLS gRPC boundary. It
-  exposes standard health and `Catalog.Check`; book metadata is its future responsibility.
+- **catalog-service** owns book metadata, original PDF objects, processing
+  status, and its transactional publication outbox.
 - Internal gRPC ports and Postgres are private in Compose. Service-to-service
   calls use TLS 1.3 with client certificates.
 - Future ingestion, indexing, retrieval, and answer generation are added in
@@ -66,13 +65,15 @@ race, contract, integration, and security checks pass.
 | Real query/retrieval | Not implemented | `/query` is authenticated and returns `501`; it never fabricates citations. |
 | Sessions, refresh tokens, revocation | Implemented | Refresh tokens rotate in an `HttpOnly`, `SameSite=Strict` cookie; logout/replay invalidates the server-side session family. |
 | Abuse controls | Implemented | Bounded in-process trusted-client-aware limits protect registration, verification, setup, login, and refresh. |
-| File upload, ingestion, vectors, LLM | Not implemented | Future additive services. |
+| Catalog PDF upload/list/get | In progress | Role-gated upload, pagination, MinIO persistence, and outbox foundations exist; the remaining durability/security gates are not complete. |
+| Ingestion, vectors, LLM | Not implemented | Future additive services. |
 
 ## Delivery roadmap
 
-Milestone 2 is complete. It provides secure singleton-admin bootstrap, verified
-reader registration, pending librarian registration, authoritative live-role
-checks, and admin approval/rejection. Book upload remains outside this milestone.
+Milestone 2 is complete. Milestone 3 is in progress: it adds role-gated PDF
+upload, Catalog persistence, MinIO storage, deterministic pagination, and an
+outbox foundation. It must not be considered delivered until the routed-publish
+confirmation, reconciliation, metrics, and integration/privacy gates pass.
 
 The canonical service-by-service roadmap, data ownership, Lambda/worker
 deployment policy, contracts, and acceptance gates are in

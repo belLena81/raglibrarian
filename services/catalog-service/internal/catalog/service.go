@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"hash/crc32"
 	"io"
 	"sort"
 	"time"
@@ -49,8 +50,14 @@ type BookRepository interface {
 }
 
 type OriginalObjectStore interface {
-	Put(context.Context, string, io.Reader) error
+	Put(context.Context, string, io.Reader) (ObjectReceipt, error)
 	Delete(context.Context, string) error
+}
+
+// ObjectReceipt is the server-confirmed result of storing an original.
+type ObjectReceipt struct {
+	Size           int64
+	ChecksumCRC32C string
 }
 
 type OutboxEvent struct {
@@ -126,13 +133,18 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 	}
 	objectReference := "originals/" + key + ".pdf"
 	reader := &boundedPDFReader{reader: io.MultiReader(bytes.NewReader(prefix), input.Reader), remaining: s.maxBytes, hash: sha256.New()}
-	if err = s.objects.Put(ctx, objectReference, reader); err != nil {
+	receipt, err := s.objects.Put(ctx, objectReference, reader)
+	if err != nil {
 		s.deleteObject(objectReference)
 		return Book{}, sanitizeUploadError(err)
 	}
 	if err = reader.finish(); err != nil {
 		s.deleteObject(objectReference)
 		return Book{}, err
+	}
+	if receipt.Size != reader.size || receipt.ChecksumCRC32C == "" {
+		s.deleteObject(objectReference)
+		return Book{}, errors.New("object storage receipt mismatch")
 	}
 	now := s.now()
 	bookID, err := s.newID()
@@ -160,7 +172,11 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 	}
 	event := OutboxEvent{ID: eventID, Type: "catalog.book.uploaded.v1", OccurredAt: now, Payload: payload}
 	if err = s.repository.Create(ctx, book, event); err != nil {
-		_ = s.objects.Delete(context.Background(), objectReference)
+		lookupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, lookupErr := s.repository.Get(lookupCtx, book.ID); errors.Is(lookupErr, ErrNotFound) {
+			s.deleteObject(objectReference)
+		}
 		return Book{}, errors.New("catalog persistence unavailable")
 	}
 	return book, nil
@@ -343,13 +359,16 @@ type MemoryObjectStore struct{ objects map[string][]byte }
 func NewMemoryObjectStore() *MemoryObjectStore {
 	return &MemoryObjectStore{objects: map[string][]byte{}}
 }
-func (s *MemoryObjectStore) Put(_ context.Context, key string, reader io.Reader) error {
+func (s *MemoryObjectStore) Put(_ context.Context, key string, reader io.Reader) (ObjectReceipt, error) {
 	data, err := io.ReadAll(reader)
 	if err != nil {
-		return err
+		return ObjectReceipt{}, err
 	}
 	s.objects[key] = data
-	return nil
+	checksum := crc32.Checksum(data, crc32.MakeTable(crc32.Castagnoli))
+	return ObjectReceipt{Size: int64(len(data)), ChecksumCRC32C: base64.StdEncoding.EncodeToString([]byte{
+		byte(checksum >> 24), byte(checksum >> 16), byte(checksum >> 8), byte(checksum),
+	})}, nil
 }
 func (s *MemoryObjectStore) Delete(_ context.Context, key string) error {
 	delete(s.objects, key)

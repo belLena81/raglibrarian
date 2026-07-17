@@ -19,6 +19,7 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/process"
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	"github.com/belLena81/raglibrarian/services/catalog-service/config"
+	"github.com/belLena81/raglibrarian/services/catalog-service/diagnostic"
 	cataloggrpc "github.com/belLena81/raglibrarian/services/catalog-service/grpc"
 	"github.com/belLena81/raglibrarian/services/catalog-service/internal/catalog"
 	"github.com/belLena81/raglibrarian/services/catalog-service/outbox"
@@ -26,7 +27,10 @@ import (
 )
 
 // Run composes and manages the Catalog process lifecycle.
-func Run(ctx context.Context, cfg config.Config) error {
+func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorder) error {
+	if diagnostics == nil {
+		return errors.New("catalog diagnostics are required")
+	}
 	pool, err := pgxpool.New(ctx, cfg.DSN)
 	if err != nil {
 		return fmt.Errorf("database connection: %w", err)
@@ -37,7 +41,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	if err = pool.Ping(pingCtx); err != nil {
 		return fmt.Errorf("database unavailable: %w", err)
 	}
-	minioClient, err := minio.New(cfg.MinIOEndpoint, &minio.Options{Creds: credentials.NewStaticV4(cfg.MinIOAccessKey, cfg.MinIOSecretKey, ""), Secure: false})
+	minioClient, err := minio.New(cfg.MinIOEndpoint, &minio.Options{Creds: credentials.NewStaticV4(cfg.MinIOAccessKey, cfg.MinIOSecretKey, ""), Secure: false, TrailingHeaders: true})
 	if err != nil {
 		return fmt.Errorf("object storage configuration: %w", err)
 	}
@@ -82,7 +86,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	grpc_health_v1.RegisterHealthServer(server, healthServer)
 	publisher := outbox.NewReconnectingPublisher(cfg.RabbitURI)
 	defer func() { _ = publisher.Close() }()
-	go outbox.Run(ctx, bookRepository, publisher)
+	go outbox.Run(ctx, bookRepository, publisher, diagnostics)
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()

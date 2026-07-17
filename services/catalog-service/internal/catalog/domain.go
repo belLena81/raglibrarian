@@ -14,9 +14,11 @@ const (
 	maxTagLength    = 64
 )
 
-var ErrInvalidMetadata = errors.New("invalid book metadata")
-
-var ErrUnauthorizedActor = errors.New("unauthorized actor")
+var (
+	ErrInvalidMetadata   = errors.New("invalid book metadata")
+	ErrUnauthorizedActor = errors.New("unauthorized actor")
+	ErrInvalidTransition = errors.New("invalid book status transition")
+)
 
 // BookStatus records the Catalog-owned publication lifecycle.
 type BookStatus string
@@ -68,6 +70,45 @@ type Book struct {
 	Checksum         [32]byte
 	ByteSize         int64
 	ActorID          string
+}
+
+// TransitionTo validates and applies a Catalog-owned lifecycle transition.
+// Upload is the only Milestone 3 writer and creates pending books; later
+// consumers must use the same transition table when reporting processing facts.
+func (b *Book) TransitionTo(next BookStatus) error {
+	if !validTransition(b.ProcessingStatus, next) {
+		return ErrInvalidTransition
+	}
+	b.ProcessingStatus = next
+	return nil
+}
+
+func validTransition(current, next BookStatus) bool {
+	if current == next {
+		return false
+	}
+	if next == BookStatusDeleting {
+		switch current {
+		case BookStatusPending, BookStatusProcessing, BookStatusIndexed, BookStatusFailed, BookStatusReindexing:
+			return true
+		default:
+			return false
+		}
+	}
+	switch current {
+	case BookStatusPending:
+		return next == BookStatusProcessing
+	case BookStatusProcessing:
+		return next == BookStatusIndexed || next == BookStatusFailed
+	case BookStatusIndexed:
+		return next == BookStatusReindexing
+	case BookStatusReindexing:
+		return next == BookStatusIndexed || next == BookStatusFailed
+	case BookStatusDeleting:
+		return next == BookStatusDeleted
+	default:
+		return false
+	}
 }
 
 func ValidateMetadata(metadata BookMetadata) error {

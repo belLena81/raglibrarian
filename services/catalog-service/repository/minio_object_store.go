@@ -23,15 +23,23 @@ func NewMinIOObjectStore(client *minio.Client, bucket string) *MinIOObjectStore 
 	return &MinIOObjectStore{client: client, bucket: bucket}
 }
 
-func (s *MinIOObjectStore) Put(ctx context.Context, key string, reader io.Reader) error {
-	_, err := s.client.PutObject(ctx, s.bucket, key, reader, -1, minio.PutObjectOptions{
-		ContentType:    "application/pdf",
-		SendContentMd5: false,
+func (s *MinIOObjectStore) Put(ctx context.Context, key string, reader io.Reader) (catalog.ObjectReceipt, error) {
+	receipt, err := s.client.PutObject(ctx, s.bucket, key, reader, -1, minio.PutObjectOptions{
+		ContentType: "application/pdf",
+		PartSize:    5 << 20,
+		Checksum:    minio.ChecksumCRC32C,
 	})
 	if err != nil {
-		return fmt.Errorf("put original: %w", err)
+		return catalog.ObjectReceipt{}, fmt.Errorf("put original: %w", err)
 	}
-	return nil
+	stored, err := s.client.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{Checksum: true})
+	if err != nil {
+		return catalog.ObjectReceipt{}, fmt.Errorf("verify original: %w", err)
+	}
+	if stored.Size != receipt.Size || receipt.ChecksumCRC32C == "" || stored.ChecksumCRC32C != receipt.ChecksumCRC32C {
+		return catalog.ObjectReceipt{}, fmt.Errorf("verify original: receipt mismatch")
+	}
+	return catalog.ObjectReceipt{Size: stored.Size, ChecksumCRC32C: stored.ChecksumCRC32C}, nil
 }
 
 func (s *MinIOObjectStore) Delete(ctx context.Context, key string) error {

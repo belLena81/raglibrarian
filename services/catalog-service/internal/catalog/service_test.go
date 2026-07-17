@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"testing"
 	"time"
 )
@@ -103,6 +104,68 @@ func TestUploadBookEnforcesSizeLimit(t *testing.T) {
 	if !errors.Is(err, ErrUploadTooLarge) {
 		t.Fatalf("error = %v", err)
 	}
+}
+
+func TestUploadBookDeletesObjectWhenStorageReceiptDoesNotMatch(t *testing.T) {
+	objects := &receiptMismatchObjectStore{objects: NewMemoryObjectStore()}
+	service := NewService(NewMemoryRepository(), objects, 1024)
+	_, err := service.UploadBook(context.Background(), UploadInput{
+		Metadata: BookMetadata{Title: "Title", Author: "Author", Year: 2026},
+		Actor:    Actor{UserID: "actor", Role: "librarian", Status: "active"},
+		Reader:   bytes.NewBufferString("%PDF-1.7\nbody"),
+	})
+	if err == nil {
+		t.Fatal("expected receipt mismatch")
+	}
+	if len(objects.objects.objects) != 0 {
+		t.Fatalf("objects = %d", len(objects.objects.objects))
+	}
+}
+
+func TestUploadBookPreservesObjectAfterAmbiguousCommittedCreate(t *testing.T) {
+	objects := NewMemoryObjectStore()
+	service := NewServiceWithOptions(&ambiguousCreateRepository{}, objects, ServiceOptions{
+		MaxBytes: 1024,
+		NewID: func() (string, error) {
+			return "fixed-id", nil
+		},
+	})
+	_, err := service.UploadBook(context.Background(), UploadInput{
+		Metadata: BookMetadata{Title: "Title", Author: "Author", Year: 2026},
+		Actor:    Actor{UserID: "actor", Role: "librarian", Status: "active"},
+		Reader:   bytes.NewBufferString("%PDF-1.7\nbody"),
+	})
+	if err == nil {
+		t.Fatal("expected persistence error")
+	}
+	if len(objects.objects) != 1 {
+		t.Fatalf("objects = %d, want preserved object", len(objects.objects))
+	}
+}
+
+type ambiguousCreateRepository struct{}
+
+func (ambiguousCreateRepository) Create(context.Context, Book, OutboxEvent) error {
+	return errors.New("connection lost after commit")
+}
+
+func (ambiguousCreateRepository) List(context.Context, int, string) ([]Book, string, error) {
+	return nil, "", nil
+}
+
+func (ambiguousCreateRepository) Get(context.Context, string) (Book, error) {
+	return Book{ID: "fixed-id"}, nil
+}
+
+type receiptMismatchObjectStore struct{ objects *MemoryObjectStore }
+
+func (s *receiptMismatchObjectStore) Put(ctx context.Context, key string, reader io.Reader) (ObjectReceipt, error) {
+	receipt, err := s.objects.Put(ctx, key, reader)
+	return ObjectReceipt{Size: receipt.Size + 1}, err
+}
+
+func (s *receiptMismatchObjectStore) Delete(ctx context.Context, key string) error {
+	return s.objects.Delete(ctx, key)
 }
 
 func TestListBooksRejectsMalformedCursorAsPagination(t *testing.T) {

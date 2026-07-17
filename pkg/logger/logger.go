@@ -6,6 +6,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -31,7 +34,7 @@ func NewWithWriter(writer io.Writer) (*zap.Logger, error) {
 	if writer == nil {
 		return nil, fmt.Errorf("logger: writer is required")
 	}
-	core := &activityCore{level: level, writer: writer}
+	core := &activityCore{level: level, writer: writer, mu: &sync.Mutex{}}
 	return zap.New(core, zap.AddCaller()), nil
 }
 
@@ -47,12 +50,17 @@ func Must(service string) *zap.Logger {
 type activityCore struct {
 	level  zapcore.Level
 	writer io.Writer
-	mu     sync.Mutex
+	fields []zapcore.Field
+	mu     *sync.Mutex
 }
 
 func (c *activityCore) Enabled(level zapcore.Level) bool { return level >= c.level }
 
-func (c *activityCore) With([]zapcore.Field) zapcore.Core { return c }
+func (c *activityCore) With(fields []zapcore.Field) zapcore.Core {
+	clone := *c
+	clone.fields = append(append([]zapcore.Field(nil), c.fields...), fields...)
+	return &clone
+}
 
 func (c *activityCore) Check(entry zapcore.Entry, checked *zapcore.CheckedEntry) *zapcore.CheckedEntry {
 	if c.Enabled(entry.Level) {
@@ -61,16 +69,150 @@ func (c *activityCore) Check(entry zapcore.Entry, checked *zapcore.CheckedEntry)
 	return checked
 }
 
-func (c *activityCore) Write(entry zapcore.Entry, _ []zapcore.Field) error {
+func (c *activityCore) Write(entry zapcore.Entry, fields []zapcore.Field) error {
 	caller := "unknown:0"
 	if entry.Caller.Defined {
 		caller = filepath.Base(entry.Caller.File) + fmt.Sprintf(":%d", entry.Caller.Line)
 	}
-	line := fmt.Sprintf("[%s]%s %s : %s\n", entry.Level.String(), entry.Time.UTC().Format("2006-01-02T15:04:05.000Z"), caller, logLine(entry.Message, 4096))
+	message := logLine(entry.Message, 4096)
+	if suffix := safeFieldSuffix(append(append([]zapcore.Field(nil), c.fields...), fields...)); suffix != "" {
+		message += suffix
+	}
+	line := fmt.Sprintf("[%s]%s %s : %s\n", entry.Level.String(), entry.Time.UTC().Format("2006-01-02T15:04:05.000Z"), caller, message)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_, err := io.WriteString(c.writer, line)
 	return err
+}
+
+var allowedFieldNames = map[string]struct{}{
+	"request_id": {}, "method": {}, "route": {}, "route_template": {}, "status": {}, "outcome": {}, "duration": {}, "duration_ms": {},
+	"response_bytes": {}, "operation": {}, "code": {}, "grpc_code": {}, "stage": {}, "reason": {}, "reason_code": {}, "error_code": {},
+	"stack_fingerprint": {},
+}
+
+func safeFieldSuffix(fields []zapcore.Field) string {
+	values := make(map[string]string, len(fields))
+	for _, field := range fields {
+		if _, allowed := allowedFieldNames[field.Key]; !allowed {
+			continue
+		}
+		value, ok := safeFieldValue(field)
+		if ok {
+			values[field.Key] = value
+		}
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var result strings.Builder
+	for _, key := range keys {
+		result.WriteByte(' ')
+		result.WriteString(key)
+		result.WriteByte('=')
+		result.WriteString(values[key])
+	}
+	return result.String()
+}
+
+func safeFieldValue(field zapcore.Field) (string, bool) {
+	var value string
+	switch field.Type {
+	case zapcore.StringType:
+		value = field.String
+	case zapcore.Int64Type, zapcore.Int32Type, zapcore.Int16Type, zapcore.Int8Type:
+		value = strconv.FormatInt(field.Integer, 10)
+	case zapcore.Uint64Type, zapcore.Uint32Type, zapcore.Uint16Type, zapcore.Uint8Type:
+		value = strconv.FormatUint(uint64(field.Integer), 10)
+	default:
+		return "", false
+	}
+	if !validDiagnosticField(field.Key, field.Type, value) {
+		return "", false
+	}
+	return value, true
+}
+
+var (
+	requestIDPattern   = regexp.MustCompile(`^[a-f0-9]{32}$`)
+	routePattern       = regexp.MustCompile(`^/[A-Za-z0-9_{}./-]{1,160}$`)
+	fingerprintPattern = regexp.MustCompile(`^[a-f0-9]{16,128}$`)
+)
+
+func validDiagnosticField(key string, fieldType zapcore.FieldType, value string) bool {
+	if len(value) > 256 || value == "" || strings.ContainsAny(value, " =\t\r\n") {
+		return false
+	}
+	switch key {
+	case "request_id":
+		return fieldType == zapcore.StringType && requestIDPattern.MatchString(value)
+	case "method":
+		return fieldType == zapcore.StringType && (value == "GET" || value == "POST" || value == "PUT" || value == "PATCH" || value == "DELETE" || value == "HEAD" || value == "OPTIONS")
+	case "route", "route_template":
+		return fieldType == zapcore.StringType && routePattern.MatchString(value)
+	case "status":
+		return integerField(fieldType) && parseBoundedInt(value, 100, 599)
+	case "duration", "duration_ms", "response_bytes":
+		return integerField(fieldType) && parseBoundedInt(value, 0, 1<<53-1)
+	case "stack_fingerprint":
+		return fieldType == zapcore.StringType && fingerprintPattern.MatchString(value)
+	case "outcome", "operation", "stage", "reason", "reason_code", "error_code":
+		return fieldType == zapcore.StringType && allowedDiagnosticValue(key, value)
+	case "code", "grpc_code":
+		return fieldType == zapcore.StringType && validGRPCCode(value)
+	default:
+		return false
+	}
+}
+
+var allowedDiagnosticValues = map[string]map[string]struct{}{
+	"outcome": {
+		"success": {}, "client_error": {}, "server_error": {}, "response_aborted": {}, "not_implemented": {}, "invalid_token": {},
+		"invalid_registration": {}, "invalid_credentials": {}, "dependency_unavailable": {},
+	},
+	"operation": {
+		"register": {}, "verify_email": {}, "resend_verification": {}, "password_reset_request": {}, "password_reset_verify": {}, "password_reset_complete": {},
+		"login": {}, "refresh": {}, "logout": {}, "validate_session": {}, "get_setup_status": {}, "create_admin": {}, "list_pending_librarians": {},
+		"approve_librarian": {}, "reject_librarian": {}, "watch_pending_librarians": {},
+	},
+	"stage": {
+		"session_cleanup": {}, "verification_cleanup": {}, "rejected_cleanup": {}, "email_claim": {}, "email_mark": {}, "email_retry": {}, "email_exhausted": {},
+	},
+	"reason": {},
+	"reason_code": {
+		"unknown_failure": {}, "config_required_missing": {}, "config_verify_key_invalid": {}, "config_trusted_proxy_cidrs_invalid": {}, "config_refresh_cookie_policy_invalid": {},
+		"config_run_as_identity_invalid": {}, "token_verifier_initialization_failed": {}, "internal_tls_files_unreadable": {}, "internal_tls_material_invalid": {},
+		"privilege_drop_failed": {}, "identity_client_initialization_failed": {}, "http_listen_failed": {}, "http_serve_failed": {}, "http_shutdown_failed": {},
+	},
+	"error_code": {
+		"request_id_generation_failed": {}, "internal_panic": {},
+	},
+}
+
+func allowedDiagnosticValue(key, value string) bool {
+	_, allowed := allowedDiagnosticValues[key][value]
+	return allowed
+}
+
+func integerField(fieldType zapcore.FieldType) bool {
+	return fieldType == zapcore.Int64Type || fieldType == zapcore.Int32Type || fieldType == zapcore.Int16Type || fieldType == zapcore.Int8Type ||
+		fieldType == zapcore.Uint64Type || fieldType == zapcore.Uint32Type || fieldType == zapcore.Uint16Type || fieldType == zapcore.Uint8Type
+}
+
+func parseBoundedInt(value string, minimum, maximum int64) bool {
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	return err == nil && parsed >= minimum && parsed <= maximum
+}
+
+func validGRPCCode(value string) bool {
+	switch value {
+	case "OK", "Canceled", "Unknown", "InvalidArgument", "DeadlineExceeded", "NotFound", "AlreadyExists", "PermissionDenied", "ResourceExhausted", "FailedPrecondition", "Aborted", "OutOfRange", "Unimplemented", "Internal", "Unavailable", "DataLoss", "Unauthenticated":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *activityCore) Sync() error { return nil }

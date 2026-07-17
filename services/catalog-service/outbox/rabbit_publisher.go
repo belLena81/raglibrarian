@@ -12,9 +12,10 @@ import (
 
 // RabbitPublisher enables confirms and rejects unroutable mandatory messages.
 type RabbitPublisher struct {
-	channel *amqp091.Channel
-	returns <-chan amqp091.Return
-	mu      sync.Mutex
+	channel       *amqp091.Channel
+	returns       <-chan amqp091.Return
+	confirmations <-chan amqp091.Confirmation
+	mu            sync.Mutex
 }
 
 func NewRabbitPublisher(channel *amqp091.Channel) (*RabbitPublisher, error) {
@@ -25,38 +26,74 @@ func NewRabbitPublisher(channel *amqp091.Channel) (*RabbitPublisher, error) {
 		return nil, err
 	}
 	return &RabbitPublisher{
-		channel: channel,
-		returns: channel.NotifyReturn(make(chan amqp091.Return, 16)),
+		channel:       channel,
+		returns:       channel.NotifyReturn(make(chan amqp091.Return, 1)),
+		confirmations: channel.NotifyPublish(make(chan amqp091.Confirmation, 1)),
 	}, nil
 }
 
 func (p *RabbitPublisher) PublishWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, message amqp091.Publishing) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	confirmation, err := p.channel.PublishWithDeferredConfirmWithContext(ctx, exchange, key, mandatory, immediate, message)
-	if err != nil {
+	expectedTag := p.channel.GetNextPublishSeqNo()
+	if err := p.channel.PublishWithContext(ctx, exchange, key, mandatory, immediate, message); err != nil {
 		return err
 	}
-	if confirmation == nil {
-		return errors.New("broker confirmation unavailable")
-	}
-	ack, err := confirmation.WaitContext(ctx)
-	if err != nil || !ack {
-		return errors.New("broker did not confirm message")
-	}
-	// RabbitMQ may deliver a mandatory return before or just after its ACK. With
-	// one in-flight publish, every buffered return can be correlated safely.
+	return p.awaitRoutedConfirmation(ctx, expectedTag, message.MessageId)
+}
+
+// awaitRoutedConfirmation consumes return and confirmation notifications from
+// the same single-inflight channel. amqp091-go dispatches basic.return before
+// a later basic.ack on that channel; draining returns before accepting the ACK
+// keeps an unroutable message from being marked published.
+func (p *RabbitPublisher) awaitRoutedConfirmation(ctx context.Context, expectedTag uint64, messageID string) error {
 	for {
+		if returned, ok := p.drainReturn(messageID); !ok {
+			return errors.New("broker return channel closed")
+		} else if returned {
+			return errors.New("broker returned mandatory message")
+		}
 		select {
-		case returned, ok := <-p.returns:
+		case _, ok := <-p.returns:
 			if !ok {
 				return errors.New("broker return channel closed")
 			}
-			if returned.MessageId == message.MessageId {
+			return errors.New("broker returned mandatory message")
+		case confirmation, ok := <-p.confirmations:
+			if !ok {
+				return errors.New("broker confirmation channel closed")
+			}
+			if confirmation.DeliveryTag != expectedTag {
+				return errors.New("broker confirmation order invalid")
+			}
+			if !confirmation.Ack {
+				return errors.New("broker did not confirm message")
+			}
+			if returned, ok := p.drainReturn(messageID); !ok {
+				return errors.New("broker return channel closed")
+			} else if returned {
 				return errors.New("broker returned mandatory message")
 			}
-		default:
 			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (p *RabbitPublisher) drainReturn(messageID string) (returned bool, open bool) {
+	for {
+		select {
+		case _, ok := <-p.returns:
+			if !ok {
+				return false, false
+			}
+			// A single-inflight channel must never receive a return for another
+			// message. Reject it rather than silently accepting a protocol-order
+			// violation and potentially marking the current event published.
+			return true, true
+		default:
+			return false, true
 		}
 	}
 }

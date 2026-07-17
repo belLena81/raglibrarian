@@ -501,14 +501,27 @@ func (r *PostgresIdentityRepository) VerifyPasswordReset(ctx context.Context, fi
 	var expires time.Time
 	var attempts int
 	err = tx.QueryRow(ctx, `SELECT code_hash,expires_at,attempts FROM identity.password_reset_challenges WHERE email_fingerprint=$1 AND consumed_at IS NULL FOR UPDATE`, fingerprint).Scan(&stored, &expires, &attempts)
-	if errors.Is(err, pgx.ErrNoRows) || err == nil && (expires.Before(now) || attempts >= 5 || !hmacEqual(stored, codeHash)) {
-		if err == nil {
-			_, _ = tx.Exec(ctx, `UPDATE identity.password_reset_challenges SET attempts=attempts+1 WHERE email_fingerprint=$1`, fingerprint)
-		}
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrInvalidPasswordReset
 	}
 	if err != nil {
 		return nil, fmt.Errorf("password reset: lock challenge: %w", err)
+	}
+	if !expires.After(now) || attempts >= 5 {
+		return nil, domain.ErrInvalidPasswordReset
+	}
+	if !hmacEqual(stored, codeHash) {
+		// The row lock serializes guesses. Persist the failed attempt before
+		// returning so concurrent requests cannot bypass the five-attempt cap.
+		if _, err = tx.Exec(ctx, `UPDATE identity.password_reset_challenges
+			SET attempts=attempts+1
+			WHERE email_fingerprint=$1 AND attempts < 5`, fingerprint); err != nil {
+			return nil, fmt.Errorf("password reset: record failed verify: %w", err)
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("password reset: commit failed verify: %w", err)
+		}
+		return nil, domain.ErrInvalidPasswordReset
 	}
 	_, err = tx.Exec(ctx, `UPDATE identity.password_reset_challenges SET attempts=attempts+1,grant_hash=$2,grant_expires_at=$3 WHERE email_fingerprint=$1`, fingerprint, grantHash, now.Add(10*time.Minute))
 	if err != nil {

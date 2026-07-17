@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 
 	"github.com/belLena81/raglibrarian/pkg/logger"
 )
@@ -20,6 +21,28 @@ func TestNew_DevelopmentMode(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.NotNil(t, log)
+}
+
+func TestNewWithWriterRetainsOnlySafeFieldsInSortedOrder(t *testing.T) {
+	var output bytes.Buffer
+	log, err := logger.NewWithWriter(&output)
+	require.NoError(t, err)
+
+	log.With(
+		zap.String("request_id", "0123456789abcdef0123456789abcdef"),
+		zap.String("ignored", "not-recorded"),
+	).Info("request completed",
+		zap.Int("status", 201),
+		zap.String("route", "/books/{bookID}"),
+		zap.String("error_code", "person@example.test"),
+		zap.Error(assert.AnError),
+	)
+
+	line := output.String()
+	assert.Contains(t, line, " request_id=0123456789abcdef0123456789abcdef route=/books/{bookID} status=201")
+	assert.NotContains(t, line, "person@example.test")
+	assert.NotContains(t, line, "not-recorded")
+	assert.NotContains(t, line, "assert.AnError")
 }
 
 func TestNewWithWriterUsesFixedSingleLineFormat(t *testing.T) {
