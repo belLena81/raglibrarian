@@ -5,6 +5,19 @@ umask 077
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root_dir"
 
+regenerate_bootstrap_code=false
+case "${1:-}" in
+  "")
+    ;;
+  --regenerate-bootstrap-code)
+    regenerate_bootstrap_code=true
+    ;;
+  *)
+    echo "usage: $0 [--regenerate-bootstrap-code]" >&2
+    exit 1
+    ;;
+esac
+
 for command in docker npm curl; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "$command is required for a local run" >&2
@@ -50,8 +63,12 @@ if [[ ! -r "$secret_dir/catalog_migration_password" || ! -r "$secret_dir/catalog
 fi
 
 if [[ ! -r "$secret_dir/identity_bootstrap_verifier" ]]; then
-  echo "Create the local admin bootstrap verifier (interactive):"
+  echo "Creating a local admin bootstrap verifier (interactive)."
+  echo "The one-time bootstrap code is printed below; store it now."
   make bootstrap-verifier
+  echo "Use the code only with /setup/admin, then remove the verifier after setup."
+elif [[ "$regenerate_bootstrap_code" == false ]]; then
+  echo "Admin bootstrap verifier already exists; its code cannot be displayed or recovered."
 fi
 
 if [[ ! -r "$cert_dir/ca.crt" ]]; then
@@ -79,7 +96,7 @@ for service in edge-api identity-service catalog-service; do
   fi
 
   rm -f "$service_pid_file"
-  nohup docker compose logs --no-color --timestamps --follow "$service" >>"$service_log_file" 2>&1 &
+  nohup docker compose logs --no-color --follow "$service" >>"$service_log_file" 2>&1 &
   echo "$!" >"$service_pid_file"
 done
 
@@ -100,13 +117,31 @@ else
   )
 fi
 
-for _ in {1..30}; do
-  if curl --fail --silent --show-error http://127.0.0.1:8080/readyz >/dev/null; then
-    break
+wait_for_backend() {
+  for _ in {1..30}; do
+    if curl --fail --silent --show-error http://127.0.0.1:8080/readyz >/dev/null; then
+      return
+    fi
+    sleep 1
+  done
+  curl --fail --silent --show-error http://127.0.0.1:8080/readyz >/dev/null
+}
+
+wait_for_backend
+
+if [[ "$regenerate_bootstrap_code" == true ]]; then
+  setup_status="$(curl --fail --silent --show-error http://127.0.0.1:8080/setup/status)"
+  if [[ "$setup_status" != '{"required":true}' ]]; then
+    echo "Bootstrap is unavailable because an administrator is already configured." >&2
+    exit 1
   fi
-  sleep 1
-done
-curl --fail --silent --show-error http://127.0.0.1:8080/readyz >/dev/null
+  rm -f "$secret_dir/identity_bootstrap_verifier"
+  echo "Creating a replacement local admin bootstrap verifier (interactive)."
+  echo "The one-time bootstrap code is printed below; store it now."
+  make bootstrap-verifier
+  docker compose up -d --force-recreate identity-service
+  wait_for_backend
+fi
 
 echo "Backend ready: http://127.0.0.1:8080"
 echo "UI:            http://127.0.0.1:5173"

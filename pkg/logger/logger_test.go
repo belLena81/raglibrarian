@@ -50,7 +50,7 @@ func TestNewWithWriterUsesFixedSingleLineFormat(t *testing.T) {
 	log, err := logger.NewWithWriter(&output)
 	require.NoError(t, err)
 	log.Info("upload accepted\nwithout a second line")
-	assert.Regexp(t, regexp.MustCompile(`^\[info\]\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z logger_test\.go:\d+ : upload accepted\?without a second line\n$`), output.String())
+	assert.Regexp(t, regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z INFO  logger_test\.go:\d+: upload accepted\?without a second line\n$`), output.String())
 }
 
 func TestNewWithWriterReplacesTerminalControls(t *testing.T) {

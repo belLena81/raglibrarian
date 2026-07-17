@@ -78,11 +78,15 @@ func (c *activityCore) Write(entry zapcore.Entry, fields []zapcore.Field) error 
 	if suffix := safeFieldSuffix(append(append([]zapcore.Field(nil), c.fields...), fields...)); suffix != "" {
 		message += suffix
 	}
-	line := fmt.Sprintf("[%s]%s %s : %s\n", entry.Level.String(), entry.Time.UTC().Format("2006-01-02T15:04:05.000Z"), caller, message)
+	line := fmt.Sprintf("%s %-5s %s: %s\n", entry.Time.UTC().Format("2006-01-02T15:04:05.000Z"), strings.ToUpper(entry.Level.String()), caller, humanizeMessage(message))
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_, err := io.WriteString(c.writer, line)
 	return err
+}
+
+func humanizeMessage(message string) string {
+	return strings.ReplaceAll(message, ".", " ")
 }
 
 var allowedFieldNames = map[string]struct{}{
