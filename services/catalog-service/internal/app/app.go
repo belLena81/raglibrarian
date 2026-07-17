@@ -117,12 +117,9 @@ func (r catalogReadiness) CheckReady(ctx context.Context) error {
 	if err := r.pool.Ping(ctx); err != nil {
 		return err
 	}
-	exists, err := r.objects.BucketExists(ctx, r.bucket)
-	if err != nil {
+	_, err := r.objects.StatObject(ctx, r.bucket, "originals/.readiness", minio.StatObjectOptions{})
+	if err != nil && minio.ToErrorResponse(err).Code != "NoSuchKey" {
 		return err
-	}
-	if !exists {
-		return errors.New("catalog bucket unavailable")
 	}
 	return nil
 }

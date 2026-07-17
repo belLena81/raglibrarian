@@ -59,7 +59,11 @@ func deliverEmailBatch(ctx context.Context, outbox port.EmailOutbox, opener port
 	for _, delivery := range deliveries {
 		email, token, openErr := opener.OpenVerification(delivery)
 		if openErr == nil {
-			openErr = sender.SendVerification(ctx, email, token)
+			if delivery.MessageType == "password_reset_code" {
+				openErr = sender.SendPasswordReset(ctx, email, token)
+			} else {
+				openErr = sender.SendVerification(ctx, email, token)
+			}
 		}
 		if openErr == nil {
 			if markErr := outbox.Delivered(ctx, delivery.ID, time.Now().UTC()); markErr != nil {

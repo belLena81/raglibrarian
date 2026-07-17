@@ -73,19 +73,44 @@ func (c *Client) ResendVerification(ctx context.Context, email string) error {
 }
 
 // Login delegates credential verification.
-func (c *Client) Login(ctx context.Context, email, password string) (authflow.Session, error) {
+func (c *Client) Login(ctx context.Context, email, password, role string) (authflow.Session, error) {
 	ctx, cancel := rpcContext(ctx)
 	defer cancel()
-	response, err := c.rpc.Login(ctx, &identityv1.LoginRequest{Email: email, Password: password})
+	response, err := c.rpc.Login(ctx, &identityv1.LoginRequest{Email: email, Password: password, Role: role})
 	if err != nil {
 		return authflow.Session{}, mapCredentialError(err)
 	}
 	return authflow.Session{
-		AccessToken:  response.AccessToken,
-		RefreshToken: response.RefreshToken,
-		SessionID:    response.SessionId,
-		Role:         response.Role,
+		AccessToken:    response.AccessToken,
+		RefreshToken:   response.RefreshToken,
+		SessionID:      response.SessionId,
+		Role:           response.Role,
+		AvailableRoles: response.AvailableRoles,
 	}, nil
+}
+func (c *Client) RequestPasswordReset(ctx context.Context, email string) error {
+	ctx, cancel := rpcContext(ctx)
+	defer cancel()
+	_, err := c.rpc.RequestPasswordReset(ctx, &identityv1.PasswordResetRequest{Email: email})
+	return mapDependencyError(err)
+}
+func (c *Client) VerifyPasswordReset(ctx context.Context, email, code string) (string, []string, error) {
+	ctx, cancel := rpcContext(ctx)
+	defer cancel()
+	response, err := c.rpc.VerifyPasswordReset(ctx, &identityv1.PasswordResetVerifyRequest{Email: email, Code: code})
+	if err != nil {
+		return "", nil, authflow.ErrInvalidCredentials
+	}
+	return response.ResetGrant, response.AvailableRoles, nil
+}
+func (c *Client) CompletePasswordReset(ctx context.Context, grant, role, password string) error {
+	ctx, cancel := rpcContext(ctx)
+	defer cancel()
+	_, err := c.rpc.CompletePasswordReset(ctx, &identityv1.PasswordResetCompleteRequest{ResetGrant: grant, Role: role, Password: password})
+	if err != nil {
+		return authflow.ErrInvalidCredentials
+	}
+	return nil
 }
 
 // Refresh rotates an opaque refresh token.
@@ -217,6 +242,8 @@ func mapRegisterError(err error) error {
 		return nil
 	}
 	switch status.Code(err) {
+	case codes.AlreadyExists:
+		return authflow.ErrRoleAlreadyExists
 	case codes.InvalidArgument:
 		return authflow.ErrInvalidRegistration
 	default:

@@ -34,7 +34,7 @@ func (f fakeHealth) Watch(context.Context, *grpc_health_v1.HealthCheckRequest, .
 }
 
 func TestRegisterErrorMapping(t *testing.T) {
-	assert.ErrorIs(t, mapRegisterError(status.Error(codes.AlreadyExists, "")), authflow.ErrUnavailable)
+	assert.ErrorIs(t, mapRegisterError(status.Error(codes.AlreadyExists, "")), authflow.ErrRoleAlreadyExists)
 	assert.ErrorIs(t, mapRegisterError(status.Error(codes.InvalidArgument, "")), authflow.ErrInvalidRegistration)
 	assert.ErrorIs(t, mapRegisterError(status.Error(codes.Unavailable, "")), authflow.ErrUnavailable)
 }

@@ -73,8 +73,14 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	policy := grpcauth.Policy{Service: "identity.v1.IdentityService", DNSName: "edge-api"}
 	server := grpc.NewServer(
 		grpc.Creds(credentials),
-		grpc.UnaryInterceptor(grpcauth.UnaryServerInterceptor(policy)),
-		grpc.StreamInterceptor(grpcauth.StreamServerInterceptor(policy)),
+		grpc.ChainUnaryInterceptor(
+			grpcauth.UnaryServerInterceptor(policy),
+			diagnostics.UnaryServerInterceptor,
+		),
+		grpc.ChainStreamInterceptor(
+			grpcauth.StreamServerInterceptor(policy),
+			diagnostics.StreamServerInterceptor,
+		),
 	)
 	sessions := repository.NewPostgresSessionRepository(pool)
 	users := repository.NewPostgresUserRepository(pool)
@@ -91,10 +97,11 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		return fmt.Errorf("email adapter unavailable: %w", err)
 	}
 	verificationService := usecase.NewVerificationService(identityStore, passwords, protector, protector, systemIDs{}, systemClock{})
+	passwordResetService := usecase.NewPasswordResetService(identityStore, passwords, protector, protector, systemIDs{}, systemClock{}, cfg.PasswordResetKey)
 	bootstrapService := usecase.NewBootstrapService(identityStore, passwords, protector, systemIDs{}, systemClock{}, cfg.BootstrapVerifier)
 	approvalService := usecase.NewApprovalService(identityStore, systemClock{})
 	notifications := repository.NewPostgresNotifications(pool)
-	identityv1.RegisterIdentityServiceServer(server, identitygrpc.NewServer(verificationService, sessionService, bootstrapService, approvalService, notifications))
+	identityv1.RegisterIdentityServiceServer(server, identitygrpc.NewServer(verificationService, sessionService, passwordResetService, bootstrapService, approvalService, notifications))
 	healthServer := health.NewServer()
 	grpc_health_v1.RegisterHealthServer(server, healthServer)
 	backgroundCtx, stopBackground := context.WithCancel(ctx)

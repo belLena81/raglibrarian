@@ -31,8 +31,15 @@ func (f *fakeAuthUseCase) Register(context.Context, string, string, string, stri
 }
 func (f *fakeAuthUseCase) VerifyEmail(context.Context, string) error        { return nil }
 func (f *fakeAuthUseCase) ResendVerification(context.Context, string) error { return nil }
-func (f *fakeAuthUseCase) Login(context.Context, string, string) (authflow.Session, error) {
+func (f *fakeAuthUseCase) Login(context.Context, string, string, string) (authflow.Session, error) {
 	return authflow.Session{AccessToken: "access", RefreshToken: "refresh", Role: "reader"}, f.loginErr
+}
+func (*fakeAuthUseCase) RequestPasswordReset(context.Context, string) error { return nil }
+func (*fakeAuthUseCase) VerifyPasswordReset(context.Context, string, string) (string, []string, error) {
+	return "grant", []string{"reader"}, nil
+}
+func (*fakeAuthUseCase) CompletePasswordReset(context.Context, string, string, string) error {
+	return nil
 }
 func (f *fakeAuthUseCase) Refresh(context.Context, string) (authflow.Session, error) {
 	f.refreshCalls++
@@ -57,6 +64,10 @@ func TestRegisterMapsStableApplicationErrors(t *testing.T) {
 	invalid := post(t, newHandler(t, &fakeAuthUseCase{registerErr: authflow.ErrInvalidRegistration}).Register, body)
 	assert.Equal(t, http.StatusUnprocessableEntity, invalid.Code)
 	assert.Contains(t, invalid.Body.String(), `"code":"invalid_registration"`)
+	duplicate := post(t, newHandler(t, &fakeAuthUseCase{registerErr: authflow.ErrRoleAlreadyExists}).Register, body)
+	assert.Equal(t, http.StatusConflict, duplicate.Code)
+	assert.Contains(t, duplicate.Body.String(), `"code":"role_already_exists"`)
+	assert.Contains(t, duplicate.Body.String(), "Reader already exists")
 	assert.Equal(t, http.StatusServiceUnavailable, post(t, newHandler(t, &fakeAuthUseCase{registerErr: authflow.ErrUnavailable}).Register, body).Code)
 }
 

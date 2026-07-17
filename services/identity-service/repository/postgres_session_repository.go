@@ -89,9 +89,8 @@ func (r *PostgresSessionRepository) Rotate(
 		email      string
 		role       string
 		userStatus string
-		verifiedAt time.Time
 	)
-	err = tx.QueryRow(ctx, `SELECT s.id,s.user_id,s.family_id,s.expires_at,s.revoked_at,t.id,t.consumed_at,u.id,u.display_name,u.email,u.role,u.status,u.email_verified_at FROM identity.refresh_tokens t JOIN identity.sessions s ON s.id=t.session_id JOIN identity.users u ON u.id=s.user_id WHERE t.token_hash=$1 AND u.status='active' AND u.email_verified_at IS NOT NULL FOR UPDATE OF t,s,u`, tokenHash).Scan(
+	err = tx.QueryRow(ctx, `SELECT s.id,s.user_id,s.family_id,s.expires_at,s.revoked_at,t.id,t.consumed_at,u.id,u.display_name,u.email,u.role,u.status FROM identity.refresh_tokens t JOIN identity.sessions s ON s.id=t.session_id JOIN identity.users u ON u.id=s.user_id WHERE t.token_hash=$1 AND u.status='active' FOR UPDATE OF t,s,u`, tokenHash).Scan(
 		&session.ID,
 		&session.UserID,
 		&session.FamilyID,
@@ -104,7 +103,6 @@ func (r *PostgresSessionRepository) Rotate(
 		&email,
 		&role,
 		&userStatus,
-		&verifiedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return port.ErrRefreshTokenInvalid
@@ -129,7 +127,7 @@ func (r *PostgresSessionRepository) Rotate(
 	if revokedAt.Valid {
 		return port.ErrRefreshTokenInvalid
 	}
-	if domain.Status(userStatus) != domain.StatusActive || verifiedAt.IsZero() {
+	if domain.Status(userStatus) != domain.StatusActive {
 		return port.ErrRefreshTokenInvalid
 	}
 
@@ -140,7 +138,7 @@ func (r *PostgresSessionRepository) Rotate(
 		Email:      email,
 		Role:       domain.Role(role),
 		Status:     domain.Status(userStatus),
-		VerifiedAt: verifiedAt,
+		VerifiedAt: time.Time{},
 	}
 	if err = prepare(principal); err != nil {
 		return fmt.Errorf("session: prepare rotation: %w", err)
@@ -178,7 +176,7 @@ func (r *PostgresSessionRepository) ValidatePrincipal(ctx context.Context, userI
 	err := r.pool.QueryRow(ctx, `SELECT u.id,u.display_name,u.email,u.role,u.status,s.id
 		FROM identity.sessions s JOIN identity.users u ON u.id=s.user_id
 		WHERE s.id=$1 AND s.user_id=$2 AND s.revoked_at IS NULL AND s.expires_at>$3
-		  AND u.status='active' AND u.email_verified_at IS NOT NULL`, sessionID, userID, now).Scan(
+		  AND u.status='active'`, sessionID, userID, now).Scan(
 		&principal.UserID, &principal.Name, &principal.Email, &principal.Role, &principal.Status, &principal.SessionID,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	minBytes   = 12
+	minBytes   = 6
 	maxBytes   = 72
 	bcryptCost = 12
 )

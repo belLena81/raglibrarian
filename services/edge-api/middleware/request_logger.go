@@ -52,12 +52,19 @@ func RequestLogger(diagnostics requestDiagnostics) func(http.Handler) http.Handl
 				if state.hasOutcome {
 					outcome = state.outcome
 				}
+				if isSuccessfulHealthProbe(r, status) {
+					return
+				}
 				diagnostics.RequestCompleted(r, status, outcome, time.Since(start), ww.BytesWritten())
 			}()
 
 			next.ServeHTTP(ww, r)
 		})
 	}
+}
+
+func isSuccessfulHealthProbe(r *http.Request, status int) bool {
+	return r.Method == http.MethodGet && status < http.StatusBadRequest && (r.URL.Path == "/healthz" || r.URL.Path == "/readyz")
 }
 
 func requestOutcome(status int) diagnostic.RequestOutcome {

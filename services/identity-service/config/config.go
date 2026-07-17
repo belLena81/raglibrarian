@@ -28,6 +28,7 @@ type Config struct {
 	SigningKeyID      string
 	FingerprintKey    []byte
 	OutboxKey         []byte
+	PasswordResetKey  []byte
 	OutboxKeyID       string
 	BootstrapVerifier []byte
 	BcryptConcurrency int
@@ -52,6 +53,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	outboxKey, err := readHexSecret("IDENTITY_EMAIL_OUTBOX_KEY_FILE", 32)
+	if err != nil {
+		return Config{}, err
+	}
+	passwordResetKey, err := readHexSecret("IDENTITY_PASSWORD_RESET_HMAC_KEY_FILE", 32)
 	if err != nil {
 		return Config{}, err
 	}
@@ -92,7 +97,7 @@ func Load() (Config, error) {
 	}
 	return Config{
 		Address: optional("IDENTITY_GRPC_ADDR", ":50051"), DSN: dsn,
-		SigningKey: signingKey, FingerprintKey: fingerprintKey, OutboxKey: outboxKey,
+		SigningKey: signingKey, FingerprintKey: fingerprintKey, OutboxKey: outboxKey, PasswordResetKey: passwordResetKey,
 		SigningKeyID:      optional("IDENTITY_SIGNING_KEY_ID", "local-v1"),
 		OutboxKeyID:       optional("IDENTITY_EMAIL_OUTBOX_KEY_ID", "local-v1"),
 		BootstrapVerifier: bootstrapVerifier, BcryptConcurrency: concurrency,

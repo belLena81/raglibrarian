@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -27,6 +29,106 @@ func NewPostgresIdentityRepository(pool *pgxpool.Pool) *PostgresIdentityReposito
 	return &PostgresIdentityRepository{pool: pool}
 }
 
+// CreateActiveReader creates a reader account without an email-verification
+// step while preserving a generic duplicate-email result. A stale reader
+// verification created by an earlier local build is removed so the reader can
+// retry registration under the current policy.
+func (r *PostgresIdentityRepository) CreateActiveReader(ctx context.Context, user domain.User) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("registration: begin reader: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err = lockRegistrationRole(ctx, tx, user.EmailFingerprint(), user.Role()); err != nil {
+		return err
+	}
+
+	var exists bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS (
+        SELECT 1 FROM identity.users WHERE (email=$1 OR email_fingerprint=$2) AND role='reader'
+    )`, user.Email(), user.EmailFingerprint()).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("registration: check reader: %w", err)
+	}
+	if exists {
+		return domain.ErrRoleAlreadyExists
+	}
+
+	_, err = tx.Exec(ctx, `DELETE FROM identity.registration_verifications
+        WHERE email_fingerprint=$1 AND role='reader' AND consumed_at IS NULL`, user.EmailFingerprint())
+	if err != nil {
+		return fmt.Errorf("registration: discard stale reader verification: %w", err)
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO identity.users
+        (id,display_name,email,email_fingerprint,password_hash,role,status,email_verified_at,created_at)
+		VALUES ($1,$2,$3,$4,$5,'reader','active',NULL,$6)
+		ON CONFLICT (email, role) DO NOTHING`,
+		user.ID(), user.Name(), user.Email(), user.EmailFingerprint(), user.PasswordHash(),
+		user.CreatedAt(),
+	)
+	if err != nil {
+		return fmt.Errorf("registration: insert reader: %w", err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("registration: commit reader: %w", err)
+	}
+	return nil
+}
+
+// CreatePendingLibrarian creates a librarian account that requires an
+// administrator decision. It replaces stale verification records from the
+// previous email-verification workflow without exposing duplicate accounts.
+func (r *PostgresIdentityRepository) CreatePendingLibrarian(ctx context.Context, user domain.User) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("registration: begin librarian: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err = lockRegistrationRole(ctx, tx, user.EmailFingerprint(), user.Role()); err != nil {
+		return err
+	}
+
+	var existingStatus string
+	err = tx.QueryRow(ctx, `SELECT status FROM identity.users
+        WHERE (email=$1 OR email_fingerprint=$2) AND role='librarian' FOR UPDATE`, user.Email(), user.EmailFingerprint()).Scan(&existingStatus)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("registration: check librarian: %w", err)
+	}
+	if err == nil {
+		if existingStatus != string(domain.StatusRejected) {
+			return domain.ErrRoleAlreadyExists
+		}
+		_, err = tx.Exec(ctx, `UPDATE identity.users SET display_name=$1, password_hash=$2, status='pending', reviewed_by=NULL, reviewed_at=NULL, created_at=$3
+            WHERE (email=$4 OR email_fingerprint=$5) AND role='librarian'`, user.Name(), user.PasswordHash(), user.CreatedAt(), user.Email(), user.EmailFingerprint())
+		if err != nil {
+			return fmt.Errorf("registration: reapply librarian: %w", err)
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return fmt.Errorf("registration: commit librarian reapplication: %w", err)
+		}
+		return nil
+	}
+	_, err = tx.Exec(ctx, `DELETE FROM identity.registration_verifications
+        WHERE email_fingerprint=$1 AND consumed_at IS NULL`, user.EmailFingerprint())
+	if err != nil {
+		return fmt.Errorf("registration: discard stale verification: %w", err)
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO identity.users
+        (id,display_name,email,email_fingerprint,password_hash,role,status,email_verified_at,created_at)
+		VALUES ($1,$2,$3,$4,$5,'librarian','pending',NULL,$6)
+		ON CONFLICT (email, role) DO NOTHING`,
+		user.ID(), user.Name(), user.Email(), user.EmailFingerprint(), user.PasswordHash(),
+		user.CreatedAt(),
+	)
+	if err != nil {
+		return fmt.Errorf("registration: insert librarian: %w", err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("registration: commit librarian: %w", err)
+	}
+	return nil
+}
+
 // CreateOrIgnore atomically creates a registration and its encrypted outbox
 // message while preserving a generic duplicate-email result.
 func (r *PostgresIdentityRepository) CreateOrIgnore(ctx context.Context, registration port.VerificationRegistration, email port.SealedEmail) error {
@@ -35,6 +137,9 @@ func (r *PostgresIdentityRepository) CreateOrIgnore(ctx context.Context, registr
 		return fmt.Errorf("verification: begin registration: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err = lockRegistrationEmail(ctx, tx, registration.EmailFingerprint); err != nil {
+		return err
+	}
 
 	var exists bool
 	err = tx.QueryRow(ctx, `SELECT EXISTS (
@@ -67,6 +172,24 @@ func (r *PostgresIdentityRepository) CreateOrIgnore(ctx context.Context, registr
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return fmt.Errorf("verification: commit registration: %w", err)
+	}
+	return nil
+}
+
+// lockRegistrationEmail serializes registration attempts for one fingerprint
+// across active users and pending verification records.
+func lockRegistrationEmail(ctx context.Context, tx pgx.Tx, fingerprint []byte) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, hex.EncodeToString(fingerprint))
+	if err != nil {
+		return fmt.Errorf("registration: lock email: %w", err)
+	}
+	return nil
+}
+
+func lockRegistrationRole(ctx context.Context, tx pgx.Tx, fingerprint []byte, role domain.Role) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, hex.EncodeToString(fingerprint)+":"+string(role))
+	if err != nil {
+		return fmt.Errorf("registration: lock role: %w", err)
 	}
 	return nil
 }
@@ -330,19 +453,133 @@ func (r *PostgresIdentityRepository) CleanupRejected(ctx context.Context, before
 	return result.RowsAffected(), nil
 }
 
+// RequestPasswordReset creates or replaces a reset challenge only for an
+// address that currently has an active account. Its boolean result is kept
+// internal so the public API can remain enumeration resistant.
+func (r *PostgresIdentityRepository) RequestPasswordReset(ctx context.Context, fingerprint, codeHash []byte, expiresAt time.Time, message port.SealedEmail) (bool, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("password reset: begin request: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var exists bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM identity.users WHERE email_fingerprint=$1 AND status='active')`, fingerprint).Scan(&exists); err != nil {
+		return false, fmt.Errorf("password reset: find active: %w", err)
+	}
+	if !exists {
+		if err = tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	now := time.Now().UTC()
+	result, err := tx.Exec(ctx, `INSERT INTO identity.password_reset_challenges (email_fingerprint,code_hash,expires_at,last_sent_at,created_at)
+        VALUES ($1,$2,$3,$4,$4)
+		ON CONFLICT (email_fingerprint) DO UPDATE SET code_hash=EXCLUDED.code_hash,expires_at=EXCLUDED.expires_at,attempts=0,last_sent_at=EXCLUDED.last_sent_at,grant_hash=NULL,grant_expires_at=NULL,consumed_at=NULL
+		WHERE identity.password_reset_challenges.last_sent_at <= EXCLUDED.last_sent_at - interval '60 seconds'`, fingerprint, codeHash, expiresAt, now)
+	if err != nil {
+		return false, fmt.Errorf("password reset: store challenge: %w", err)
+	}
+	if result.RowsAffected() == 1 {
+		if err = insertEmailOutbox(ctx, tx, message); err != nil {
+			return false, err
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("password reset: commit request: %w", err)
+	}
+	return true, nil
+}
+
+func (r *PostgresIdentityRepository) VerifyPasswordReset(ctx context.Context, fingerprint, codeHash, grantHash []byte, now time.Time) ([]domain.Role, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("password reset: begin verify: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var stored []byte
+	var expires time.Time
+	var attempts int
+	err = tx.QueryRow(ctx, `SELECT code_hash,expires_at,attempts FROM identity.password_reset_challenges WHERE email_fingerprint=$1 AND consumed_at IS NULL FOR UPDATE`, fingerprint).Scan(&stored, &expires, &attempts)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && (expires.Before(now) || attempts >= 5 || !hmacEqual(stored, codeHash)) {
+		if err == nil {
+			_, _ = tx.Exec(ctx, `UPDATE identity.password_reset_challenges SET attempts=attempts+1 WHERE email_fingerprint=$1`, fingerprint)
+		}
+		return nil, domain.ErrInvalidPasswordReset
+	}
+	if err != nil {
+		return nil, fmt.Errorf("password reset: lock challenge: %w", err)
+	}
+	_, err = tx.Exec(ctx, `UPDATE identity.password_reset_challenges SET attempts=attempts+1,grant_hash=$2,grant_expires_at=$3 WHERE email_fingerprint=$1`, fingerprint, grantHash, now.Add(10*time.Minute))
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT role FROM identity.users WHERE email_fingerprint=$1 AND status='active' ORDER BY role`, fingerprint)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	roles := []domain.Role{}
+	for rows.Next() {
+		var role string
+		if err = rows.Scan(&role); err != nil {
+			return nil, err
+		}
+		roles = append(roles, domain.Role(role))
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return roles, nil
+}
+
+func (r *PostgresIdentityRepository) CompletePasswordReset(ctx context.Context, grantHash []byte, role domain.Role, passwordHash string, now time.Time) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("password reset: begin complete: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var fingerprint []byte
+	err = tx.QueryRow(ctx, `SELECT email_fingerprint FROM identity.password_reset_challenges WHERE grant_hash=$1 AND grant_expires_at>$2 AND consumed_at IS NULL FOR UPDATE`, grantHash, now).Scan(&fingerprint)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrInvalidPasswordReset
+	}
+	if err != nil {
+		return err
+	}
+	var userID string
+	err = tx.QueryRow(ctx, `UPDATE identity.users SET password_hash=$1 WHERE email_fingerprint=$2 AND role=$3 AND status='active' RETURNING id`, passwordHash, fingerprint, string(role)).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrInvalidPasswordReset
+	}
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE identity.sessions SET revoked_at=$1 WHERE user_id=$2 AND revoked_at IS NULL`, now, userID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE identity.password_reset_challenges SET consumed_at=$1 WHERE email_fingerprint=$2`, now, fingerprint); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func hmacEqual(a, b []byte) bool { return len(a) == len(b) && subtle.ConstantTimeCompare(a, b) == 1 }
+
 func scanIdentityUser(row pgx.Row) (domain.User, error) {
 	var (
 		id, name, roleValue, statusValue string
 		email, passwordHash              pgtype.Text
 		fingerprint                      []byte
-		verifiedAt, createdAt            time.Time
+		verifiedAt                       pgtype.Timestamptz
+		createdAt                        time.Time
 		reviewedBy                       pgtype.Text
 		reviewedAt                       pgtype.Timestamptz
 	)
 	if err := row.Scan(&id, &name, &email, &passwordHash, &fingerprint, &roleValue, &statusValue, &verifiedAt, &createdAt, &reviewedBy, &reviewedAt); err != nil {
 		return domain.User{}, fmt.Errorf("identity: scan user: %w", err)
 	}
-	return domain.RehydrateUser(id, name, email.String, passwordHash.String, fingerprint, domain.Role(roleValue), domain.Status(statusValue), verifiedAt, createdAt, reviewedBy.String, reviewedAt.Time), nil
+	return domain.RehydrateUser(id, name, email.String, passwordHash.String, fingerprint, domain.Role(roleValue), domain.Status(statusValue), verifiedAt.Time, createdAt, reviewedBy.String, reviewedAt.Time), nil
 }
 
 func isUniqueViolation(err error) bool {
@@ -365,7 +602,7 @@ func (r *PostgresIdentityRepository) Claim(ctx context.Context, now time.Time, l
 	UPDATE identity.email_outbox o
 	SET leased_until=$3,attempts=attempts+1
 	FROM candidates c WHERE o.id=c.id
-	RETURNING o.id,o.key_id,o.nonce,o.ciphertext,o.attempts`, now, limit, now.Add(lease))
+	RETURNING o.id,o.message_type,o.key_id,o.nonce,o.ciphertext,o.attempts`, now, limit, now.Add(lease))
 	if err != nil {
 		return nil, fmt.Errorf("email outbox: claim: %w", err)
 	}
@@ -373,7 +610,7 @@ func (r *PostgresIdentityRepository) Claim(ctx context.Context, now time.Time, l
 	var deliveries []port.EmailDelivery
 	for rows.Next() {
 		var delivery port.EmailDelivery
-		if err = rows.Scan(&delivery.ID, &delivery.KeyID, &delivery.Nonce, &delivery.Ciphertext, &delivery.Attempts); err != nil {
+		if err = rows.Scan(&delivery.ID, &delivery.MessageType, &delivery.KeyID, &delivery.Nonce, &delivery.Ciphertext, &delivery.Attempts); err != nil {
 			return nil, fmt.Errorf("email outbox: scan claim: %w", err)
 		}
 		deliveries = append(deliveries, delivery)

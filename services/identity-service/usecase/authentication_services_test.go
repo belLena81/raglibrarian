@@ -30,6 +30,16 @@ func (r *fakeUsers) FindByEmail(_ context.Context, email string) (domain.User, e
 	return user, nil
 }
 
+func (r *fakeUsers) FindByEmailRoles(_ context.Context, email string) ([]domain.User, error) {
+	users := make([]domain.User, 0, 3)
+	for _, user := range r.users {
+		if user.Email() == email {
+			users = append(users, user)
+		}
+	}
+	return users, nil
+}
+
 type memorySessions struct {
 	mu        sync.Mutex
 	sessions  map[string]port.Session

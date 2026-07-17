@@ -9,6 +9,9 @@ service IdentityService {
   rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse);
   rpc ResendVerification(ResendVerificationRequest) returns (ResendVerificationResponse);
   rpc Login(LoginRequest) returns (LoginResponse);
+  rpc RequestPasswordReset(PasswordResetRequest) returns (PasswordResetRequestResponse);
+  rpc VerifyPasswordReset(PasswordResetVerifyRequest) returns (PasswordResetVerifyResponse);
+  rpc CompletePasswordReset(PasswordResetCompleteRequest) returns (PasswordResetCompleteResponse);
   rpc Refresh(RefreshRequest) returns (RefreshResponse);
   rpc ValidateSession(ValidateSessionRequest) returns (ValidateSessionResponse);
   rpc Logout(LogoutRequest) returns (LogoutResponse);
@@ -30,6 +33,7 @@ message RegisterRequest {
 message LoginRequest {
   string email = 1;
   string password = 2;
+  string role = 3;
 }
 
 message RegisterResponse {
@@ -52,7 +56,15 @@ message LoginResponse {
   string role = 2;
   string refresh_token = 3;
   string session_id = 4;
+  repeated string available_roles = 5;
 }
+
+message PasswordResetRequest { string email = 1; }
+message PasswordResetRequestResponse { bool accepted = 1; }
+message PasswordResetVerifyRequest { string email = 1; string code = 2; }
+message PasswordResetVerifyResponse { string reset_grant = 1; repeated string available_roles = 2; }
+message PasswordResetCompleteRequest { string reset_grant = 1; string role = 2; string password = 3; }
+message PasswordResetCompleteResponse {}
 
 message RefreshRequest {
   string refresh_token = 1;

@@ -22,10 +22,11 @@ const dummyPasswordHash = "$2a$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2
 
 // AuthResult is the internal result of creating or rotating a session.
 type AuthResult struct {
-	AccessToken  string
-	RefreshToken string
-	SessionID    string
-	Role         domain.Role
+	AccessToken    string
+	RefreshToken   string
+	SessionID      string
+	Role           domain.Role
+	AvailableRoles []domain.Role
 }
 
 // PasswordHasher validates and hashes newly registered passwords.

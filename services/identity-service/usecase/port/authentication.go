@@ -47,6 +47,13 @@ type UserReader interface {
 	FindByEmail(context.Context, string) (domain.User, error)
 }
 
+// RoleAccountReader supplies at most one account for each supported role. The
+// bounded result lets authentication keep password work independent of how
+// many accounts share an address.
+type RoleAccountReader interface {
+	FindByEmailRoles(context.Context, string) ([]domain.User, error)
+}
+
 // SessionStore owns session creation, one-time refresh rotation, validation,
 // and revocation for the session use case.
 type SessionStore interface {

@@ -21,6 +21,17 @@ func TestNewVerifiedUserBuildsActiveReader(t *testing.T) {
 	assert.Equal(t, domain.RoleReader, user.Role())
 }
 
+func TestNewUnverifiedUserDoesNotAssertEmailOwnership(t *testing.T) {
+	now := time.Now().UTC()
+	user, err := domain.NewUnverifiedUser(
+		"reader-1", "Reader", "reader@example.com", make([]byte, 32), "hash",
+		domain.RoleReader, domain.StatusActive, now,
+	)
+	require.NoError(t, err)
+	assert.True(t, user.VerifiedAt().IsZero())
+	assert.True(t, user.CanAuthenticate())
+}
+
 func TestPendingLibrarianHasOneFinalDecision(t *testing.T) {
 	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
 	user, err := domain.NewVerifiedUser(

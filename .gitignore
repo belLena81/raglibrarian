@@ -20,6 +20,9 @@ profile.cov
 # Generated local development credentials
 .dev/
 
+# Local Docker service logs captured by scripts/run-local.sh
+_logs/
+
 # Generated Go protobuf bindings
 pkg/proto/**/*.pb.go
 

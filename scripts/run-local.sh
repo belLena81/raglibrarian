@@ -32,6 +32,10 @@ elif [[ ! -r "$secret_dir/catalog_minio_access_key" ]]; then
   make dev-secrets-m3
 fi
 
+if [[ ! -r "$secret_dir/catalog_migration_password" || ! -r "$secret_dir/catalog_runtime_password" || ! -r "$secret_dir/catalog_migration_pgpass" || ! -r "$secret_dir/catalog_runtime_dsn" ]]; then
+  make dev-secrets-catalog-db
+fi
+
 if [[ ! -r "$secret_dir/identity_bootstrap_verifier" ]]; then
   echo "Create the local admin bootstrap verifier (interactive):"
   make bootstrap-verifier
@@ -48,6 +52,23 @@ fi
 
 make compose-config
 docker compose up -d --build --wait --wait-timeout 180
+
+log_pid_dir=.dev/log-pids
+mkdir -p "$log_pid_dir"
+for service in edge-api identity-service catalog-service; do
+  service_log_dir="_logs/$service"
+  service_log_file="$service_log_dir/service.log"
+  service_pid_file="$log_pid_dir/$service.pid"
+  mkdir -p "$service_log_dir"
+
+  if [[ -r "$service_pid_file" ]] && kill -0 "$(cat "$service_pid_file")" 2>/dev/null; then
+    continue
+  fi
+
+  rm -f "$service_pid_file"
+  nohup docker compose logs --no-color --timestamps --follow "$service" >>"$service_log_file" 2>&1 &
+  echo "$!" >"$service_pid_file"
+done
 
 if [[ ! -d ui/node_modules ]]; then
   npm --prefix ui ci
@@ -77,5 +98,6 @@ curl --fail --silent --show-error http://127.0.0.1:8080/readyz >/dev/null
 echo "Backend ready: http://127.0.0.1:8080"
 echo "UI:            http://127.0.0.1:5173"
 echo "Mailpit:       http://127.0.0.1:${MAILPIT_UI_PORT:-8025}"
+echo "Backend logs:  $root_dir/_logs/{edge-api,identity-service,catalog-service}/service.log"
 echo "Stop backend with: docker compose down"
-echo "Stop UI with:      kill \$(cat $ui_pid_file)"
+echo "Stop local stack:  bash ./scripts/stop-local.sh"

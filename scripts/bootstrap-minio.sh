@@ -10,6 +10,9 @@ mc anonymous set none local/original-books
 policy=$(mktemp)
 trap 'rm -f "$policy"' EXIT
 printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:PutObject","s3:GetObject","s3:DeleteObject"],"Resource":["arn:aws:s3:::original-books/originals/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::original-books"],"Condition":{"StringLike":{"s3:prefix":["originals/*"]}}}]}' > "$policy"
+if mc admin user info local "$access_key" >/dev/null 2>&1; then
+  mc admin policy detach local catalog-originals --user "$access_key" >/dev/null 2>&1 || true
+fi
 if mc admin policy info local catalog-originals >/dev/null 2>&1; then
   mc admin policy remove local catalog-originals
 fi

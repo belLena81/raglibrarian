@@ -1,10 +1,13 @@
 package main
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base32"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"syscall"
 
@@ -15,18 +18,19 @@ const domain = "raglibrarian/admin-bootstrap/v1\x00"
 
 var standardInput = syscall.Stdin
 
+var randomReader io.Reader = rand.Reader
+
 func main() {
 	output := flag.String("out", "", "verifier output path")
 	flag.Parse()
-	if *output == "" || !term.IsTerminal(standardInput) {
+	if *output == "" || !term.IsTerminal(standardInput) || !term.IsTerminal(int(os.Stderr.Fd())) {
 		fail()
 	}
-	_, _ = fmt.Fprint(os.Stderr, "Bootstrap code: ")
-	code, err := term.ReadPassword(standardInput)
-	_, _ = fmt.Fprintln(os.Stderr)
-	if err != nil || len(code) != 32 {
+	code, err := generateCode()
+	if err != nil {
 		fail()
 	}
+	displayCode := string(code)
 	sum := sha256.Sum256(append([]byte(domain), code...))
 	for index := range code {
 		code[index] = 0
@@ -53,7 +57,16 @@ func main() {
 		_ = os.Remove(*output)
 		fail()
 	}
+	_, _ = fmt.Fprintf(os.Stderr, "Bootstrap code (store it now; it cannot be recovered): %s\n", displayCode)
 	_, _ = fmt.Fprintln(os.Stderr, "Verifier created")
+}
+
+func generateCode() ([]byte, error) {
+	raw := make([]byte, 20)
+	if _, err := io.ReadFull(randomReader, raw); err != nil {
+		return nil, err
+	}
+	return []byte(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw)), nil
 }
 
 func fail() {

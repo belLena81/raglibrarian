@@ -35,30 +35,70 @@ func NewSessionService(
 	return &SessionService{users: users, sessions: sessions, issuer: issuer, passwords: passwords, clock: clock, sessionTTL: sessionTTL}
 }
 
-// Login verifies normalized credentials without revealing account existence.
-func (s *SessionService) Login(ctx context.Context, email, plaintext string) (AuthResult, error) {
+// Login verifies all three possible role hashes before deciding whether role
+// selection is necessary. This keeps the bcrypt work fixed for every request.
+func (s *SessionService) Login(ctx context.Context, email, plaintext string, selectedRoles ...string) (AuthResult, error) {
+	selectedRole := ""
+	if len(selectedRoles) > 0 {
+		selectedRole = selectedRoles[0]
+	}
 	email = normalizeEmail(email)
 	if !validEmail(email) {
+		for range []domain.Role{domain.RoleAdmin, domain.RoleLibrarian, domain.RoleReader} {
+			_ = s.passwords.Compare(ctx, dummyPasswordHash, plaintext)
+		}
 		return AuthResult{}, domain.ErrInvalidCredentials
 	}
-	user, err := s.users.FindByEmail(ctx, email)
+	roleReader, ok := s.users.(port.RoleAccountReader)
+	if !ok {
+		return AuthResult{}, fmt.Errorf("login: role account reader unsupported")
+	}
+	users, err := roleReader.FindByEmailRoles(ctx, email)
 	if err != nil {
-		_ = s.passwords.Compare(ctx, dummyPasswordHash, plaintext)
-		if errors.Is(err, domain.ErrUserNotFound) {
-			return AuthResult{}, domain.ErrInvalidCredentials
-		}
 		return AuthResult{}, fmt.Errorf("login: find user: %w", err)
 	}
-	if err = s.passwords.Compare(ctx, user.PasswordHash(), plaintext); err != nil {
-		if errors.Is(err, domain.ErrInvalidCredentials) {
+	byRole := make(map[domain.Role]domain.User, len(users))
+	for _, user := range users {
+		byRole[user.Role()] = user
+	}
+	matches := make([]domain.User, 0, 3)
+	for _, role := range []domain.Role{domain.RoleAdmin, domain.RoleLibrarian, domain.RoleReader} {
+		user, present := byRole[role]
+		hash := dummyPasswordHash
+		if present {
+			hash = user.PasswordHash()
+		}
+		compareErr := s.passwords.Compare(ctx, hash, plaintext)
+		if compareErr != nil && !errors.Is(compareErr, domain.ErrInvalidCredentials) {
+			return AuthResult{}, fmt.Errorf("login: compare password: %w", compareErr)
+		}
+		if present && compareErr == nil && user.CanAuthenticate() {
+			matches = append(matches, user)
+		}
+	}
+	if selectedRole != "" {
+		role := domain.Role(selectedRole)
+		if !role.IsValid() {
 			return AuthResult{}, domain.ErrInvalidCredentials
 		}
-		return AuthResult{}, fmt.Errorf("login: compare password: %w", err)
-	}
-	if !user.CanAuthenticate() {
+		for _, user := range matches {
+			if user.Role() == role {
+				return s.createSession(ctx, user)
+			}
+		}
 		return AuthResult{}, domain.ErrInvalidCredentials
 	}
-	return s.createSession(ctx, user)
+	if len(matches) == 1 {
+		return s.createSession(ctx, matches[0])
+	}
+	if len(matches) > 1 {
+		roles := make([]domain.Role, 0, len(matches))
+		for _, user := range matches {
+			roles = append(roles, user.Role())
+		}
+		return AuthResult{AvailableRoles: roles}, nil
+	}
+	return AuthResult{}, domain.ErrInvalidCredentials
 }
 
 // Refresh rotates a one-time refresh token. All fallible principal loading and

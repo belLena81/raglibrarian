@@ -40,12 +40,25 @@ func (workflowProtector) Fingerprint(string) []byte { return make([]byte, 32) }
 func (workflowProtector) SealVerification(id, _, _ string) (port.SealedEmail, error) {
 	return port.SealedEmail{ID: id, MessageType: "verify_registration", KeyID: "key-v1", Nonce: []byte("nonce"), Ciphertext: []byte("ciphertext")}, nil
 }
+func (workflowProtector) SealPasswordReset(id, _, _ string) (port.SealedEmail, error) {
+	return port.SealedEmail{ID: id, MessageType: "password_reset_code", KeyID: "key-v1", Nonce: []byte("nonce"), Ciphertext: []byte("ciphertext")}, nil
+}
 
 type workflowVerificationStore struct {
 	registration port.VerificationRegistration
 	email        port.SealedEmail
+	reader       domain.User
+	librarian    domain.User
 }
 
+func (s *workflowVerificationStore) CreateActiveReader(_ context.Context, user domain.User) error {
+	s.reader = user
+	return nil
+}
+func (s *workflowVerificationStore) CreatePendingLibrarian(_ context.Context, user domain.User) error {
+	s.librarian = user
+	return nil
+}
 func (s *workflowVerificationStore) CreateOrIgnore(_ context.Context, registration port.VerificationRegistration, email port.SealedEmail) error {
 	s.registration, s.email = registration, email
 	return nil
@@ -60,7 +73,7 @@ func (*workflowVerificationStore) CleanupExpired(context.Context, time.Time) (in
 	return 0, nil
 }
 
-func TestVerificationRegistrationProducesPendingWorkWithoutSession(t *testing.T) {
+func TestLibrarianRegistrationCreatesPendingAccountWithoutVerification(t *testing.T) {
 	store := &workflowVerificationStore{}
 	passwords := &workflowPasswords{}
 	ids := &workflowIDs{}
@@ -69,13 +82,34 @@ func TestVerificationRegistrationProducesPendingWorkWithoutSession(t *testing.T)
 
 	err := service.Register(context.Background(), " Librarian ", " LIBRARIAN@EXAMPLE.TEST ", "password-1234", domain.RoleLibrarian)
 	require.NoError(t, err)
-	assert.Equal(t, "Librarian", store.registration.Name)
-	assert.Equal(t, "librarian@example.test", store.registration.Email)
-	assert.Equal(t, domain.RoleLibrarian, store.registration.Role)
-	assert.Equal(t, now.Add(30*time.Minute), store.registration.ExpiresAt)
-	assert.Len(t, store.registration.TokenHash, 32)
+	assert.Equal(t, "Librarian", store.librarian.Name())
+	assert.Equal(t, "librarian@example.test", store.librarian.Email())
+	assert.Equal(t, domain.RoleLibrarian, store.librarian.Role())
+	assert.Equal(t, domain.StatusPending, store.librarian.Status())
+	assert.True(t, store.librarian.VerifiedAt().IsZero())
 	assert.Equal(t, 1, passwords.hashCalls)
-	assert.NotEmpty(t, store.email.Ciphertext)
+	assert.Empty(t, store.registration.ID)
+	assert.Empty(t, store.email.Ciphertext)
+	assert.Empty(t, store.reader.ID())
+}
+
+func TestReaderRegistrationCreatesActiveAccountWithoutVerification(t *testing.T) {
+	store := &workflowVerificationStore{}
+	passwords := &workflowPasswords{}
+	ids := &workflowIDs{}
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	service := NewVerificationService(store, passwords, workflowProtector{}, workflowProtector{}, ids, fixedClock{now: now})
+
+	err := service.Register(context.Background(), " Reader ", " READER@EXAMPLE.TEST ", "password-1234", domain.RoleReader)
+	require.NoError(t, err)
+	assert.Equal(t, "Reader", store.reader.Name())
+	assert.Equal(t, "reader@example.test", store.reader.Email())
+	assert.Equal(t, domain.RoleReader, store.reader.Role())
+	assert.Equal(t, domain.StatusActive, store.reader.Status())
+	assert.True(t, store.reader.VerifiedAt().IsZero())
+	assert.Empty(t, store.registration.ID)
+	assert.Empty(t, store.email.Ciphertext)
+	assert.Equal(t, 1, passwords.hashCalls)
 }
 
 type workflowBootstrapStore struct {

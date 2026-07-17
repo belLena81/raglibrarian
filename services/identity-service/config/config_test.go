@@ -24,6 +24,7 @@ func setRequired(t *testing.T) {
 	t.Setenv("IDENTITY_SIGNING_KEY_FILE", secret("signing", hex.EncodeToString(make([]byte, 64))))
 	t.Setenv("IDENTITY_EMAIL_FINGERPRINT_KEY_FILE", secret("fingerprint", hex.EncodeToString(make([]byte, 32))))
 	t.Setenv("IDENTITY_EMAIL_OUTBOX_KEY_FILE", secret("outbox", hex.EncodeToString(make([]byte, 32))))
+	t.Setenv("IDENTITY_PASSWORD_RESET_HMAC_KEY_FILE", secret("password-reset", hex.EncodeToString(make([]byte, 32))))
 	t.Setenv("IDENTITY_SMTP_PASSWORD_FILE", secret("smtp", "fixture-password"))
 	t.Setenv("INTERNAL_TLS_CA_FILE", "/ca")
 	t.Setenv("IDENTITY_TLS_CERT_FILE", "/cert")

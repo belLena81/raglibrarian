@@ -89,6 +89,15 @@ func (p *Protector) SealVerification(messageID, email, token string) (port.Seale
 	}, nil
 }
 
+func (p *Protector) SealPasswordReset(messageID, email, code string) (port.SealedEmail, error) {
+	sealed, err := p.SealVerification(messageID, email, code)
+	if err != nil {
+		return port.SealedEmail{}, err
+	}
+	sealed.MessageType = "password_reset_code"
+	return sealed, nil
+}
+
 // OpenVerification authenticates and decrypts one leased verification message.
 func (p *Protector) OpenVerification(delivery port.EmailDelivery) (string, string, error) {
 	if delivery.KeyID != p.keyID || delivery.ID == "" {

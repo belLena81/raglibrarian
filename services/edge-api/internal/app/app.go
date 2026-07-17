@@ -57,6 +57,10 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	if err != nil {
 		return tlsFailure(err)
 	}
+	catalogCredentials, err := internaltls.ClientCredentials(cfg.TLS, "catalog-service")
+	if err != nil {
+		return tlsFailure(err)
+	}
 	if err = process.DropPrivileges(cfg.RunAs); err != nil {
 		return appFailure(ErrPrivilegeDrop, err)
 	}
@@ -65,10 +69,6 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		return appFailure(ErrIdentityClientInitialization, err)
 	}
 	defer func() { _ = connection.Close() }()
-	catalogCredentials, err := internaltls.ClientCredentials(cfg.TLS, "catalog-service")
-	if err != nil {
-		return tlsFailure(err)
-	}
 	catalogConnection, err := grpc.NewClient(cfg.CatalogAddress, grpc.WithTransportCredentials(catalogCredentials))
 	if err != nil {
 		return appFailure(ErrIdentityClientInitialization, err)

@@ -23,9 +23,14 @@ type fakeIdentity struct{}
 func (fakeIdentity) Register(context.Context, string, string, string, string) error { return nil }
 func (fakeIdentity) VerifyEmail(context.Context, string) error                      { return nil }
 func (fakeIdentity) ResendVerification(context.Context, string) error               { return nil }
-func (fakeIdentity) Login(context.Context, string, string) (authflow.Session, error) {
+func (fakeIdentity) Login(context.Context, string, string, string) (authflow.Session, error) {
 	return authflow.Session{}, nil
 }
+func (fakeIdentity) RequestPasswordReset(context.Context, string) error { return nil }
+func (fakeIdentity) VerifyPasswordReset(context.Context, string, string) (string, []string, error) {
+	return "", nil, nil
+}
+func (fakeIdentity) CompletePasswordReset(context.Context, string, string, string) error { return nil }
 func (fakeIdentity) Refresh(context.Context, string) (authflow.Session, error) {
 	return authflow.Session{}, authflow.ErrInvalidCredentials
 }

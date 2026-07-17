@@ -34,6 +34,25 @@ client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
   portable worker without becoming another microservice. Contracts remain
   versioned and additive. See the local architecture decision record in `docs/`.
 
+## Agentic workflow and quality standards
+
+Agents follow the repository roles and handoffs in [AGENTS.md](AGENTS.md).
+Keep the UI lightweight: it owns presentation, form state, and simple client
+validation only. Go services make all business, authorization, lifecycle, and
+security decisions; the UI treats backend responses as authoritative.
+
+We keep changes simple and focused. Each package and service has one clear
+responsibility, dependencies point inward, and bounded contexts communicate
+through explicit versioned contracts. Prefer low coupling, small additive
+changes, and idiomatic readable Go over abstractions added for hypothetical
+future needs.
+
+Development follows clean architecture, DDD, and TDD: domain/application code
+does not depend on transport or infrastructure, persistence stays with its
+owning service, and work proceeds red-green-refactor with focused automated
+tests. A change is ready only after its applicable formatting, lint, vet,
+race, contract, integration, and security checks pass.
+
 ## Current implementation state
 
 | Capability | State | Notes |

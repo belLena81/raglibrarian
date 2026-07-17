@@ -4,7 +4,7 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-generate build run-edge-api run-identity run-catalog dev local-run local-stop tidy e2e migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets dev-secrets-m3 bootstrap-verifier compose-config ui-check ui-audit secret-scan dockerfile-lint image-build image-scan security-check full-gates integration-gates smtp-url
+.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-generate build run-edge-api run-identity run-catalog dev local-run local-stop tidy e2e migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 bootstrap-verifier compose-config ui-check ui-audit secret-scan dockerfile-lint image-build image-scan security-check full-gates integration-gates smtp-url
 
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
 HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
@@ -124,6 +124,7 @@ stack-up: _require_root
 		exit 1; \
 	}
 	@test -r "$${SECRET_DIR:-.dev/secrets}/identity_runtime_dsn" || { echo "development secrets are missing; run make dev-secrets"; exit 1; }
+	@test -r "$${SECRET_DIR:-.dev/secrets}/catalog_migration_password" && test -r "$${SECRET_DIR:-.dev/secrets}/catalog_runtime_password" && test -r "$${SECRET_DIR:-.dev/secrets}/catalog_migration_pgpass" && test -r "$${SECRET_DIR:-.dev/secrets}/catalog_runtime_dsn" || { echo "Catalog database development secrets are missing; run make dev-secrets-catalog-db"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/catalog_minio_access_key" || { echo "MinIO/RabbitMQ development secrets are missing; run make dev-secrets-m3"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/identity_bootstrap_verifier" || { echo "bootstrap verifier is missing; run make bootstrap-verifier"; exit 1; }
 	@docker compose up -d --build
@@ -189,6 +190,10 @@ keygen: _require_root
 
 dev-secrets: _require_root
 	bash ./scripts/generate-dev-secrets.sh
+
+dev-secrets-catalog-db: _require_root
+	@echo "Generating Catalog database development credentials..."
+	bash ./scripts/generate-catalog-database-dev-secrets.sh
 
 dev-secrets-m3: _require_root
 	@echo "Generating MinIO and RabbitMQ development credentials..."

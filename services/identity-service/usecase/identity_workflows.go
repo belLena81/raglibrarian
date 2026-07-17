@@ -46,17 +46,20 @@ func NewVerificationService(
 	return &VerificationService{store: store, passwords: passwords, sealer: sealer, fingerprints: fingerprints, ids: ids, clock: clock}
 }
 
-// Register validates an account request and atomically schedules its encrypted
-// verification email.
+// Register validates an account request. Readers become active immediately;
+// librarians become pending until an administrator approves them.
 func (s *VerificationService) Register(ctx context.Context, name, email, plaintext string, role domain.Role) error {
 	name = strings.TrimSpace(name)
 	email = normalizeEmail(email)
-	if role != domain.RoleReader && role != domain.RoleLibrarian {
+	statuses := map[domain.Role]domain.Status{
+		domain.RoleReader:    domain.StatusActive,
+		domain.RoleLibrarian: domain.StatusPending,
+	}
+	accountStatus, ok := statuses[role]
+	if !ok {
 		return domain.ErrInvalidRole
 	}
-	if _, err := domain.NewVerifiedUser("validation", name, email, nil, "validation", role, map[domain.Role]domain.Status{
-		domain.RoleReader: domain.StatusActive, domain.RoleLibrarian: domain.StatusPending,
-	}[role], s.clock.Now(), s.clock.Now()); err != nil {
+	if _, err := domain.NewUnverifiedUser("validation", name, email, nil, "validation", role, accountStatus, s.clock.Now()); err != nil {
 		return err
 	}
 	if err := s.passwords.Validate(plaintext); err != nil {
@@ -66,22 +69,16 @@ func (s *VerificationService) Register(ctx context.Context, name, email, plainte
 	if err != nil {
 		return err
 	}
-	token, tokenHash, err := newOpaqueToken()
-	if err != nil {
-		return err
-	}
 	now := s.clock.Now().UTC()
-	messageID := s.ids.NewID()
-	sealed, err := s.sealer.SealVerification(messageID, email, token)
+	fingerprint := s.fingerprints.Fingerprint(email)
+	user, err := domain.NewUnverifiedUser(s.ids.NewID(), name, email, fingerprint, hash, role, accountStatus, now)
 	if err != nil {
 		return err
 	}
-	sealed.CreatedAt = now
-	return s.store.CreateOrIgnore(ctx, port.VerificationRegistration{
-		ID: s.ids.NewID(), TokenHash: tokenHash, Name: name, Email: email,
-		EmailFingerprint: s.fingerprints.Fingerprint(email), PasswordHash: hash,
-		Role: role, ExpiresAt: now.Add(verificationTTL), CreatedAt: now,
-	}, sealed)
+	if role == domain.RoleReader {
+		return s.store.CreateActiveReader(ctx, user)
+	}
+	return s.store.CreatePendingLibrarian(ctx, user)
 }
 
 // Resend rotates verification material subject to repository-enforced cooldown

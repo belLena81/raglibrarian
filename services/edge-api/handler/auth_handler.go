@@ -35,12 +35,27 @@ type ResendVerificationRequest struct {
 type LoginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+	Role     string `json:"role"`
+}
+type PasswordResetRequest struct {
+	Email string `json:"email"`
+}
+type PasswordResetVerifyRequest struct {
+	Email string `json:"email"`
+	Code  string `json:"code"`
+}
+type PasswordResetCompleteRequest struct {
+	ResetGrant string `json:"reset_grant"`
+	Role       string `json:"role"`
+	Password   string `json:"password"`
 }
 
 // AuthResponse is returned by /register and /login on success.
 type AuthResponse struct {
-	Token string `json:"token"`
-	Role  string `json:"role"`
+	Token                 string   `json:"token,omitempty"`
+	Role                  string   `json:"role,omitempty"`
+	RoleSelectionRequired bool     `json:"role_selection_required,omitempty"`
+	AvailableRoles        []string `json:"available_roles,omitempty"`
 }
 
 // MeResponse is returned by GET /auth/me.
@@ -86,12 +101,62 @@ type AuthUseCase interface {
 	Register(context.Context, string, string, string, string) error
 	VerifyEmail(context.Context, string) error
 	ResendVerification(context.Context, string) error
-	Login(context.Context, string, string) (authflow.Session, error)
+	Login(context.Context, string, string, string) (authflow.Session, error)
+	RequestPasswordReset(context.Context, string) error
+	VerifyPasswordReset(context.Context, string, string) (string, []string, error)
+	CompletePasswordReset(context.Context, string, string, string) error
 	Refresh(context.Context, string) (authflow.Session, error)
 	Logout(context.Context, string) error
 }
 
-// Register handles privacy-preserving verification-required registration.
+func (h *AuthHandler) RequestPasswordReset(w http.ResponseWriter, r *http.Request) {
+	var req PasswordResetRequest
+	if decodeJSONBody(w, r, &req) != nil {
+		writeIdentityError(w, r, http.StatusBadRequest, "invalid_request", "invalid request")
+		return
+	}
+	if h.uc.RequestPasswordReset(r.Context(), req.Email) != nil {
+		writeIdentityError(w, r, http.StatusServiceUnavailable, "identity_unavailable", "identity service unavailable")
+		return
+	}
+	setPrivateNoStore(w)
+	writeAuthJSON(w, http.StatusAccepted, struct {
+		Accepted bool `json:"accepted"`
+	}{true})
+}
+func (h *AuthHandler) VerifyPasswordReset(w http.ResponseWriter, r *http.Request) {
+	var req PasswordResetVerifyRequest
+	if decodeJSONBody(w, r, &req) != nil {
+		writeIdentityError(w, r, http.StatusBadRequest, "invalid_request", "invalid request")
+		return
+	}
+	grant, roles, err := h.uc.VerifyPasswordReset(r.Context(), req.Email, req.Code)
+	if err != nil {
+		writeIdentityError(w, r, http.StatusBadRequest, "invalid_reset_code", "invalid reset code")
+		return
+	}
+	setPrivateNoStore(w)
+	writeAuthJSON(w, http.StatusOK, struct {
+		ResetGrant     string   `json:"reset_grant"`
+		AvailableRoles []string `json:"available_roles"`
+	}{grant, roles})
+}
+func (h *AuthHandler) CompletePasswordReset(w http.ResponseWriter, r *http.Request) {
+	var req PasswordResetCompleteRequest
+	if decodeJSONBody(w, r, &req) != nil {
+		writeIdentityError(w, r, http.StatusBadRequest, "invalid_request", "invalid request")
+		return
+	}
+	if err := h.uc.CompletePasswordReset(r.Context(), req.ResetGrant, req.Role, req.Password); err != nil {
+		writeIdentityError(w, r, http.StatusBadRequest, "invalid_password_reset", "invalid password reset")
+		return
+	}
+	setPrivateNoStore(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Register handles privacy-preserving registration. Readers become active
+// immediately; librarians require administrator approval.
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var req RegisterRequest
 	if err := decodeJSONBody(w, r, &req); err != nil {
@@ -102,6 +167,17 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	err := h.uc.Register(r.Context(), req.Name, req.Email, req.Password, req.Role)
 	if err != nil {
 		h.diagnostics.RegistrationFailed(r, authErrorOutcome(err))
+		if errors.Is(err, authflow.ErrRoleAlreadyExists) {
+			message := "An account with this role already exists for this email; please log in."
+			if req.Role == "reader" {
+				message = "Reader already exists for this email; please log in."
+			}
+			if req.Role == "librarian" {
+				message = "Librarian already exists for this email; please log in."
+			}
+			writeIdentityError(w, r, http.StatusConflict, "role_already_exists", message)
+			return
+		}
 		if errors.Is(err, authflow.ErrInvalidRegistration) {
 			writeIdentityError(w, r, http.StatusUnprocessableEntity, "invalid_registration", "registration is invalid")
 			return
@@ -194,7 +270,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tokens, err := h.uc.Login(r.Context(), req.Email, req.Password)
+	tokens, err := h.uc.Login(r.Context(), req.Email, req.Password, req.Role)
 	if err != nil {
 		h.diagnostics.LoginFailed(r, authErrorOutcome(err))
 		if errors.Is(err, authflow.ErrInvalidCredentials) {
@@ -205,6 +281,11 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(tokens.AvailableRoles) > 0 {
+		setPrivateNoStore(w)
+		writeAuthJSON(w, http.StatusOK, AuthResponse{RoleSelectionRequired: true, AvailableRoles: tokens.AvailableRoles})
+		return
+	}
 	h.setRefreshCookie(w, tokens.RefreshToken)
 	writeAuthJSON(w, http.StatusOK, AuthResponse{Token: tokens.AccessToken, Role: tokens.Role})
 }

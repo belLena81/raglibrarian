@@ -27,10 +27,15 @@ type VerificationUseCase interface {
 
 // SessionUseCase defines authentication-session operations exposed over gRPC.
 type SessionUseCase interface {
-	Login(context.Context, string, string) (usecase.AuthResult, error)
+	Login(context.Context, string, string, ...string) (usecase.AuthResult, error)
 	Refresh(context.Context, string) (usecase.AuthResult, error)
 	ValidateSession(context.Context, string, string) error
 	Logout(context.Context, string) error
+}
+type PasswordResetUseCase interface {
+	Request(context.Context, string) error
+	Verify(context.Context, string, string) (string, []domain.Role, error)
+	Complete(context.Context, string, string, string) error
 }
 
 // PrincipalSessionUseCase resolves a session against current account state.
@@ -56,17 +61,18 @@ type Server struct {
 	identityv1.UnimplementedIdentityServiceServer
 	verification  VerificationUseCase
 	sessions      SessionUseCase
+	passwordReset PasswordResetUseCase
 	bootstrap     BootstrapUseCase
 	approval      ApprovalUseCase
 	notifications port.PendingNotifications
 }
 
 // NewServer constructs the complete Identity gRPC adapter.
-func NewServer(verification VerificationUseCase, sessions SessionUseCase, bootstrap BootstrapUseCase, approval ApprovalUseCase, notifications port.PendingNotifications) *Server {
-	if verification == nil || sessions == nil || bootstrap == nil || approval == nil || notifications == nil {
+func NewServer(verification VerificationUseCase, sessions SessionUseCase, passwordReset PasswordResetUseCase, bootstrap BootstrapUseCase, approval ApprovalUseCase, notifications port.PendingNotifications) *Server {
+	if verification == nil || sessions == nil || passwordReset == nil || bootstrap == nil || approval == nil || notifications == nil {
 		panic("grpc: identity use cases are required")
 	}
-	return &Server{verification: verification, sessions: sessions, bootstrap: bootstrap, approval: approval, notifications: notifications}
+	return &Server{verification: verification, sessions: sessions, passwordReset: passwordReset, bootstrap: bootstrap, approval: approval, notifications: notifications}
 }
 
 // Register accepts a new account registration without disclosing whether its
@@ -132,11 +138,56 @@ func (s *Server) Login(ctx context.Context, req *identityv1.LoginRequest) (*iden
 	if req == nil || req.Email == "" || req.Password == "" {
 		return nil, status.Error(codes.InvalidArgument, "invalid credentials")
 	}
-	result, err := s.sessions.Login(ctx, req.Email, req.Password)
+	result, err := s.sessions.Login(ctx, req.Email, req.Password, req.Role)
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &identityv1.LoginResponse{AccessToken: result.AccessToken, RefreshToken: result.RefreshToken, SessionId: result.SessionID, Role: string(result.Role)}, nil
+	response := &identityv1.LoginResponse{AccessToken: result.AccessToken, RefreshToken: result.RefreshToken, SessionId: result.SessionID, Role: string(result.Role)}
+	for _, role := range result.AvailableRoles {
+		response.AvailableRoles = append(response.AvailableRoles, string(role))
+	}
+	return response, nil
+}
+
+func (s *Server) RequestPasswordReset(ctx context.Context, req *identityv1.PasswordResetRequest) (*identityv1.PasswordResetRequestResponse, error) {
+	ctx, cancel, _ := authenticatedOperation(ctx)
+	defer cancel()
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid request")
+	}
+	if err := s.passwordReset.Request(ctx, req.Email); err != nil {
+		return nil, toStatus(err)
+	}
+	return &identityv1.PasswordResetRequestResponse{Accepted: true}, nil
+}
+
+func (s *Server) VerifyPasswordReset(ctx context.Context, req *identityv1.PasswordResetVerifyRequest) (*identityv1.PasswordResetVerifyResponse, error) {
+	ctx, cancel, _ := authenticatedOperation(ctx)
+	defer cancel()
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid request")
+	}
+	grant, roles, err := s.passwordReset.Verify(ctx, req.Email, req.Code)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid reset code")
+	}
+	response := &identityv1.PasswordResetVerifyResponse{ResetGrant: grant}
+	for _, role := range roles {
+		response.AvailableRoles = append(response.AvailableRoles, string(role))
+	}
+	return response, nil
+}
+
+func (s *Server) CompletePasswordReset(ctx context.Context, req *identityv1.PasswordResetCompleteRequest) (*identityv1.PasswordResetCompleteResponse, error) {
+	ctx, cancel, _ := authenticatedOperation(ctx)
+	defer cancel()
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid request")
+	}
+	if err := s.passwordReset.Complete(ctx, req.ResetGrant, req.Role, req.Password); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid password reset")
+	}
+	return &identityv1.PasswordResetCompleteResponse{}, nil
 }
 
 // Refresh rotates a refresh token and issues fresh session credentials.
@@ -393,6 +444,8 @@ func toStatus(err error) error {
 		return status.Error(codes.Unauthenticated, "invalid credentials")
 	case errors.Is(err, domain.ErrForbidden):
 		return status.Error(codes.PermissionDenied, "forbidden")
+	case errors.Is(err, domain.ErrRoleAlreadyExists):
+		return status.Error(codes.AlreadyExists, "role already exists")
 	case errors.Is(err, domain.ErrBootstrapComplete), errors.Is(err, domain.ErrConflict):
 		return status.Error(codes.FailedPrecondition, "state conflict")
 	default:

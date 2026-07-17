@@ -34,6 +34,8 @@ type SealedEmail struct {
 // VerificationStore persists registration verification state and lifecycle
 // transitions atomically.
 type VerificationStore interface {
+	CreateActiveReader(context.Context, domain.User) error
+	CreatePendingLibrarian(context.Context, domain.User) error
 	CreateOrIgnore(context.Context, VerificationRegistration, SealedEmail) error
 	RotateForResend(context.Context, string, []byte, time.Time, time.Time, SealedEmail) error
 	Consume(context.Context, []byte, string, time.Time) (domain.User, error)
@@ -43,6 +45,7 @@ type VerificationStore interface {
 // EmailSealer protects verification-message contents before persistence.
 type EmailSealer interface {
 	SealVerification(messageID, email, token string) (SealedEmail, error)
+	SealPasswordReset(messageID, email, code string) (SealedEmail, error)
 }
 
 // Fingerprinter derives a stable pseudonymous lookup key for an email address.
@@ -87,11 +90,12 @@ type PrincipalStore interface {
 
 // EmailDelivery contains one leased encrypted outbox message.
 type EmailDelivery struct {
-	ID         string
-	KeyID      string
-	Nonce      []byte
-	Ciphertext []byte
-	Attempts   int
+	ID          string
+	MessageType string
+	KeyID       string
+	Nonce       []byte
+	Ciphertext  []byte
+	Attempts    int
 }
 
 // EmailOutbox leases messages and records retry-safe delivery outcomes.
@@ -104,6 +108,7 @@ type EmailOutbox interface {
 // EmailSender delivers a verification token to its intended recipient.
 type EmailSender interface {
 	SendVerification(context.Context, string, string) error
+	SendPasswordReset(context.Context, string, string) error
 }
 
 // EmailOpener authenticates and decrypts an outbox delivery.
@@ -114,4 +119,10 @@ type EmailOpener interface {
 // PendingNotifications emits invalidations when pending-librarian state changes.
 type PendingNotifications interface {
 	Watch(context.Context) (<-chan struct{}, error)
+}
+
+type PasswordResetStore interface {
+	RequestPasswordReset(context.Context, []byte, []byte, time.Time, SealedEmail) (bool, error)
+	VerifyPasswordReset(context.Context, []byte, []byte, []byte, time.Time) ([]domain.Role, error)
+	CompletePasswordReset(context.Context, []byte, domain.Role, string, time.Time) error
 }

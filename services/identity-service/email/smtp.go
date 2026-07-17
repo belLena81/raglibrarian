@@ -45,7 +45,15 @@ func NewSMTPSender(config Config) (*SMTPSender, error) {
 
 // SendVerification sends one bounded verification message to recipient.
 func (s *SMTPSender) SendVerification(ctx context.Context, recipient, token string) error {
-	if recipient == "" || token == "" || strings.ContainsAny(recipient, "\r\n") {
+	return s.send(ctx, recipient, "Verify your raglibrarian registration", "Open this link to verify your registration:\r\n"+strings.TrimRight(s.config.VerifyURL, "#")+"#"+token)
+}
+
+func (s *SMTPSender) SendPasswordReset(ctx context.Context, recipient, code string) error {
+	return s.send(ctx, recipient, "Reset your raglibrarian password", "Your password reset code is:\r\n"+code+"\r\n\r\nIt expires in 10 minutes.")
+}
+
+func (s *SMTPSender) send(ctx context.Context, recipient, subject, body string) error {
+	if recipient == "" || body == "" || strings.ContainsAny(recipient, "\r\n") {
 		return ErrDeliveryFailed
 	}
 	operationCtx, cancel := context.WithTimeout(ctx, smtpOperationTimeout)
@@ -86,10 +94,7 @@ func (s *SMTPSender) SendVerification(ctx context.Context, recipient, token stri
 	if err != nil {
 		return ErrDeliveryFailed
 	}
-	message := fmt.Sprintf(
-		"From: %s\r\nTo: %s\r\nSubject: Verify your raglibrarian registration\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nOpen this link to verify your registration:\r\n%s#%s\r\n",
-		s.config.From, recipient, strings.TrimRight(s.config.VerifyURL, "#"), token,
-	)
+	message := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s\r\n", s.config.From, recipient, subject, body)
 	if _, err = wc.Write([]byte(message)); err != nil {
 		_ = wc.Close()
 		return ErrDeliveryFailed

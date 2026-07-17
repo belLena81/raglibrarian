@@ -1,6 +1,5 @@
 x-service-hardening: &service-hardening
   read_only: true
-  init: true
   security_opt:
     - no-new-privileges:true
   cap_drop:
@@ -134,6 +133,9 @@ services:
   minio-bootstrap:
     <<: *job-hardening
     image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    entrypoint: ["/bin/sh"]
+    environment:
+      MC_CONFIG_DIR: /tmp/.mc
     secrets:
       - minio_root_user
       - minio_root_password
@@ -150,10 +152,11 @@ services:
 
   rabbitmq:
     image: rabbitmq:4.1.0-management-alpine
+    entrypoint: ["/bin/sh", "/usr/local/bin/bootstrap-rabbitmq"]
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
-      - ${SECRET_DIR:-./.dev/secrets}/rabbitmq_definitions.json:/etc/rabbitmq/definitions.json:ro
-      - ${SECRET_DIR:-./.dev/secrets}/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ${SECRET_DIR:-./.dev/secrets}/rabbitmq_definitions.json:/bootstrap/rabbitmq_definitions.json:ro
+      - ./scripts/bootstrap-rabbitmq.sh:/usr/local/bin/bootstrap-rabbitmq:ro
     networks:
       - catalog-broker
     healthcheck:
@@ -173,6 +176,7 @@ services:
       IDENTITY_EMAIL_OUTBOX_KEY_FILE: /run/secrets/identity_email_outbox_key
       IDENTITY_EMAIL_OUTBOX_KEY_ID: local-v1
       IDENTITY_EMAIL_FINGERPRINT_KEY_FILE: /run/secrets/identity_email_fingerprint_key
+      IDENTITY_PASSWORD_RESET_HMAC_KEY_FILE: /run/secrets/identity_password_reset_hmac_key
       IDENTITY_SMTP_PASSWORD_FILE: /run/secrets/identity_smtp_password
       IDENTITY_SMTP_ADDR: mailpit:1025
       IDENTITY_SMTP_SERVER_NAME: mailpit
@@ -193,6 +197,7 @@ services:
       - internal_ca
       - identity_tls_cert
       - identity_tls_key
+      - identity_password_reset_hmac_key
       - identity_runtime_dsn
       - identity_signing_key
       - identity_bootstrap_verifier
@@ -418,6 +423,8 @@ secrets:
     file: ${SECRET_DIR:-./.dev/secrets}/identity_email_outbox_key
   identity_email_fingerprint_key:
     file: ${SECRET_DIR:-./.dev/secrets}/identity_email_fingerprint_key
+  identity_password_reset_hmac_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/identity_password_reset_hmac_key
   identity_smtp_password:
     file: ${SECRET_DIR:-./.dev/secrets}/identity_smtp_password
   internal_ca:

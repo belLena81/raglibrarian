@@ -10,21 +10,23 @@ import (
 // Identity domain errors are stable values used by application and transport
 // layers to map failures without inspecting sensitive details.
 var (
-	ErrEmptyEmail          = errors.New("user: email must not be empty")
-	ErrInvalidEmail        = errors.New("user: email format is invalid")
-	ErrEmptyName           = errors.New("user: name must not be empty")
-	ErrEmptyPasswordHash   = errors.New("user: password hash must not be empty")
-	ErrInvalidRole         = errors.New("user: role is invalid")
-	ErrInvalidStatus       = errors.New("user: status is invalid")
-	ErrInvalidTransition   = errors.New("user: status transition is invalid")
-	ErrUserNotFound        = errors.New("user: not found")
-	ErrInvalidPassword     = errors.New("user: password is invalid")
-	ErrInvalidCredentials  = errors.New("auth: invalid credentials")
-	ErrInvalidVerification = errors.New("verification: token is invalid or expired")
-	ErrInvalidBootstrap    = errors.New("bootstrap: request is invalid")
-	ErrBootstrapComplete   = errors.New("bootstrap: administrator already exists")
-	ErrForbidden           = errors.New("authorization: forbidden")
-	ErrConflict            = errors.New("identity: state conflict")
+	ErrEmptyEmail           = errors.New("user: email must not be empty")
+	ErrInvalidEmail         = errors.New("user: email format is invalid")
+	ErrEmptyName            = errors.New("user: name must not be empty")
+	ErrEmptyPasswordHash    = errors.New("user: password hash must not be empty")
+	ErrInvalidRole          = errors.New("user: role is invalid")
+	ErrInvalidStatus        = errors.New("user: status is invalid")
+	ErrInvalidTransition    = errors.New("user: status transition is invalid")
+	ErrUserNotFound         = errors.New("user: not found")
+	ErrInvalidPassword      = errors.New("user: password is invalid")
+	ErrInvalidCredentials   = errors.New("auth: invalid credentials")
+	ErrInvalidVerification  = errors.New("verification: token is invalid or expired")
+	ErrInvalidBootstrap     = errors.New("bootstrap: request is invalid")
+	ErrBootstrapComplete    = errors.New("bootstrap: administrator already exists")
+	ErrForbidden            = errors.New("authorization: forbidden")
+	ErrConflict             = errors.New("identity: state conflict")
+	ErrRoleAlreadyExists    = errors.New("identity: role already exists for email")
+	ErrInvalidPasswordReset = errors.New("password reset: invalid or expired")
 )
 
 // Role defines an account's authorization category.
@@ -73,9 +75,33 @@ type User struct {
 	reviewedAt       time.Time
 }
 
-// NewVerifiedUser validates and creates a user with explicit verification and
-// lifecycle state.
+// NewVerifiedUser validates and creates a user whose email ownership was
+// verified at the supplied time.
 func NewVerifiedUser(
+	id, name, email string,
+	fingerprint []byte,
+	passwordHash string,
+	role Role,
+	status Status,
+	verifiedAt, createdAt time.Time,
+) (User, error) {
+	return newUser(id, name, email, fingerprint, passwordHash, role, status, verifiedAt, createdAt)
+}
+
+// NewUnverifiedUser validates and creates a user without asserting ownership
+// of the supplied email address.
+func NewUnverifiedUser(
+	id, name, email string,
+	fingerprint []byte,
+	passwordHash string,
+	role Role,
+	status Status,
+	createdAt time.Time,
+) (User, error) {
+	return newUser(id, name, email, fingerprint, passwordHash, role, status, time.Time{}, createdAt)
+}
+
+func newUser(
 	id, name, email string,
 	fingerprint []byte,
 	passwordHash string,
@@ -197,7 +223,8 @@ func (u User) ReviewedBy() string { return u.reviewedBy }
 func (u User) ReviewedAt() time.Time { return u.reviewedAt }
 
 // CanAuthenticate reports whether the account may establish or use sessions.
-func (u User) CanAuthenticate() bool { return u.status == StatusActive && !u.verifiedAt.IsZero() }
+// Email verification is intentionally independent from account activation.
+func (u User) CanAuthenticate() bool { return u.status == StatusActive }
 
 // Principal is current session-bound identity and authorization state.
 type Principal struct {

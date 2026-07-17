@@ -63,7 +63,7 @@ func TestRequestLogger_2xx_LoggedAtInfoLevel(t *testing.T) {
 	mw := qmiddleware.RequestLogger(log)
 	handler := wrapWithRequestID(mw(makeHandler(http.StatusOK)))
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/query/", nil)
 	httptest.NewRecorder()
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -114,7 +114,7 @@ func TestRequestLogger_ContainsMandatoryFields(t *testing.T) {
 	mw := qmiddleware.RequestLogger(log)
 	handler := wrapWithRequestID(mw(makeHandler(http.StatusOK)))
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/query/", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -128,6 +128,29 @@ func TestRequestLogger_ContainsMandatoryFields(t *testing.T) {
 		assert.Contains(t, fieldNames, required, "missing field: %s", required)
 	}
 	assert.Len(t, fieldNames, 7)
+}
+
+func TestRequestLogger_SkipsSuccessfulHealthProbes(t *testing.T) {
+	log, logs := newObservedLogger()
+	mw := qmiddleware.RequestLogger(log)
+	handler := wrapWithRequestID(mw(makeHandler(http.StatusOK)))
+
+	for _, path := range []string{"/healthz", "/readyz"} {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
+	}
+
+	assert.Zero(t, logs.Len())
+}
+
+func TestRequestLogger_LogsFailedHealthProbes(t *testing.T) {
+	log, logs := newObservedLogger()
+	mw := qmiddleware.RequestLogger(log)
+	handler := wrapWithRequestID(mw(makeHandler(http.StatusServiceUnavailable)))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+	assert.Equal(t, 1, logs.Len())
+	assert.Equal(t, zapcore.ErrorLevel, logs.All()[0].Level)
 }
 
 func TestRequestLogger_StatusField_MatchesResponse(t *testing.T) {

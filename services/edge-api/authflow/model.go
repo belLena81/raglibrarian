@@ -11,15 +11,17 @@ var (
 	ErrForbidden           = errors.New("operation forbidden")
 	ErrConflict            = errors.New("identity state conflict")
 	ErrInvalidVerification = errors.New("verification is invalid")
+	ErrRoleAlreadyExists   = errors.New("role already exists")
 )
 
 // Session is returned by an Identity session action. It has no JSON tags so a
 // refresh token cannot accidentally become an HTTP response DTO.
 type Session struct {
-	AccessToken  string
-	RefreshToken string
-	SessionID    string
-	Role         string
+	AccessToken    string
+	RefreshToken   string
+	SessionID      string
+	Role           string
+	AvailableRoles []string
 }
 
 // Principal contains current Identity-owned authorization facts. Edge may
