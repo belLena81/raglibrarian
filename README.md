@@ -120,6 +120,20 @@ Refresh credentials are browser-only and never appear in JSON. The cookie is
 `Secure` by default; set `EDGE_INSECURE_REFRESH_COOKIE=true` only while using
 plain HTTP for local development. This is not a production setting.
 
+## Catalog object-storage operation
+
+Catalog connects to MinIO with HTTPS by default. Set
+`CATALOG_MINIO_ENDPOINT` to `host[:port]` only; schemes, paths, credentials,
+queries, and fragments are rejected. `CATALOG_MINIO_INSECURE` accepts only
+`true` or `false` and defaults to `false`.
+
+For a private deployment CA, set `CATALOG_MINIO_CA_FILE` to a read-only PEM
+bundle containing CA certificates. It becomes Catalog's exclusive trust root;
+normal hostname validation and TLS 1.2+ remain required. Do not set a CA file
+with insecure mode. The Compose `true` setting is an isolated local-development
+exception only; production deployments must use HTTPS and either system roots
+or a mounted private CA.
+
 ## Repository layout
 
 ```text

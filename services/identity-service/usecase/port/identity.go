@@ -34,8 +34,6 @@ type SealedEmail struct {
 // VerificationStore persists registration verification state and lifecycle
 // transitions atomically.
 type VerificationStore interface {
-	CreateActiveReader(context.Context, domain.User) error
-	CreatePendingLibrarian(context.Context, domain.User) error
 	CreateOrIgnore(context.Context, VerificationRegistration, SealedEmail) error
 	RotateForResend(context.Context, string, []byte, time.Time, time.Time, SealedEmail) error
 	Consume(context.Context, []byte, string, time.Time) (domain.User, error)

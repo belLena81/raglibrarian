@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
@@ -49,4 +50,28 @@ func (s *MinIOObjectStore) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+func (s *MinIOObjectStore) ListCompleted(ctx context.Context, prefix, cursor string, limit int) ([]catalog.StoredObject, string, error) {
+	if prefix != "originals/" || limit < 1 || limit > 100 {
+		return nil, "", errors.New("invalid reconciliation listing boundary")
+	}
+	objects := make([]catalog.StoredObject, 0, limit)
+	for object := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{
+		Prefix:     prefix,
+		Recursive:  true,
+		MaxKeys:    limit,
+		StartAfter: cursor,
+	}) {
+		if object.Err != nil {
+			return nil, "", fmt.Errorf("list original objects: %w", object.Err)
+		}
+		objects = append(objects, catalog.StoredObject{Reference: object.Key, Size: object.Size, LastModified: object.LastModified})
+	}
+	next := ""
+	if len(objects) == limit {
+		next = objects[len(objects)-1].Reference
+	}
+	return objects, next, nil
+}
+
 var _ catalog.OriginalObjectStore = (*MinIOObjectStore)(nil)
+var _ catalog.ReconciliationObjectStore = (*MinIOObjectStore)(nil)

@@ -29,108 +29,9 @@ func NewPostgresIdentityRepository(pool *pgxpool.Pool) *PostgresIdentityReposito
 	return &PostgresIdentityRepository{pool: pool}
 }
 
-// CreateActiveReader creates a reader account without an email-verification
-// step while preserving a generic duplicate-email result. A stale reader
-// verification created by an earlier local build is removed so the reader can
-// retry registration under the current policy.
-func (r *PostgresIdentityRepository) CreateActiveReader(ctx context.Context, user domain.User) error {
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("registration: begin reader: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err = lockRegistrationRole(ctx, tx, user.EmailFingerprint(), user.Role()); err != nil {
-		return err
-	}
-
-	var exists bool
-	err = tx.QueryRow(ctx, `SELECT EXISTS (
-        SELECT 1 FROM identity.users WHERE (email=$1 OR email_fingerprint=$2) AND role='reader'
-    )`, user.Email(), user.EmailFingerprint()).Scan(&exists)
-	if err != nil {
-		return fmt.Errorf("registration: check reader: %w", err)
-	}
-	if exists {
-		return domain.ErrRoleAlreadyExists
-	}
-
-	_, err = tx.Exec(ctx, `DELETE FROM identity.registration_verifications
-        WHERE email_fingerprint=$1 AND role='reader' AND consumed_at IS NULL`, user.EmailFingerprint())
-	if err != nil {
-		return fmt.Errorf("registration: discard stale reader verification: %w", err)
-	}
-	_, err = tx.Exec(ctx, `INSERT INTO identity.users
-        (id,display_name,email,email_fingerprint,password_hash,role,status,email_verified_at,created_at)
-		VALUES ($1,$2,$3,$4,$5,'reader','active',NULL,$6)
-		ON CONFLICT (email, role) DO NOTHING`,
-		user.ID(), user.Name(), user.Email(), user.EmailFingerprint(), user.PasswordHash(),
-		user.CreatedAt(),
-	)
-	if err != nil {
-		return fmt.Errorf("registration: insert reader: %w", err)
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return fmt.Errorf("registration: commit reader: %w", err)
-	}
-	return nil
-}
-
-// CreatePendingLibrarian creates a librarian account that requires an
-// administrator decision. It replaces stale verification records from the
-// previous email-verification workflow without exposing duplicate accounts.
-func (r *PostgresIdentityRepository) CreatePendingLibrarian(ctx context.Context, user domain.User) error {
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("registration: begin librarian: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err = lockRegistrationRole(ctx, tx, user.EmailFingerprint(), user.Role()); err != nil {
-		return err
-	}
-
-	var existingStatus string
-	err = tx.QueryRow(ctx, `SELECT status FROM identity.users
-        WHERE (email=$1 OR email_fingerprint=$2) AND role='librarian' FOR UPDATE`, user.Email(), user.EmailFingerprint()).Scan(&existingStatus)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("registration: check librarian: %w", err)
-	}
-	if err == nil {
-		if existingStatus != string(domain.StatusRejected) {
-			return domain.ErrRoleAlreadyExists
-		}
-		_, err = tx.Exec(ctx, `UPDATE identity.users SET display_name=$1, password_hash=$2, status='pending', reviewed_by=NULL, reviewed_at=NULL, created_at=$3
-            WHERE (email=$4 OR email_fingerprint=$5) AND role='librarian'`, user.Name(), user.PasswordHash(), user.CreatedAt(), user.Email(), user.EmailFingerprint())
-		if err != nil {
-			return fmt.Errorf("registration: reapply librarian: %w", err)
-		}
-		if err = tx.Commit(ctx); err != nil {
-			return fmt.Errorf("registration: commit librarian reapplication: %w", err)
-		}
-		return nil
-	}
-	_, err = tx.Exec(ctx, `DELETE FROM identity.registration_verifications
-        WHERE email_fingerprint=$1 AND consumed_at IS NULL`, user.EmailFingerprint())
-	if err != nil {
-		return fmt.Errorf("registration: discard stale verification: %w", err)
-	}
-	_, err = tx.Exec(ctx, `INSERT INTO identity.users
-        (id,display_name,email,email_fingerprint,password_hash,role,status,email_verified_at,created_at)
-		VALUES ($1,$2,$3,$4,$5,'librarian','pending',NULL,$6)
-		ON CONFLICT (email, role) DO NOTHING`,
-		user.ID(), user.Name(), user.Email(), user.EmailFingerprint(), user.PasswordHash(),
-		user.CreatedAt(),
-	)
-	if err != nil {
-		return fmt.Errorf("registration: insert librarian: %w", err)
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return fmt.Errorf("registration: commit librarian: %w", err)
-	}
-	return nil
-}
-
 // CreateOrIgnore atomically creates a registration and its encrypted outbox
-// message while preserving a generic duplicate-email result.
+// message while preserving a generic duplicate-role result. Only one pending
+// ownership challenge may exist for an email at a time.
 func (r *PostgresIdentityRepository) CreateOrIgnore(ctx context.Context, registration port.VerificationRegistration, email port.SealedEmail) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -141,16 +42,27 @@ func (r *PostgresIdentityRepository) CreateOrIgnore(ctx context.Context, registr
 		return err
 	}
 
-	var exists bool
-	err = tx.QueryRow(ctx, `SELECT EXISTS (
-        SELECT 1 FROM identity.users WHERE email=$1 OR email_fingerprint=$2
-        UNION ALL
-        SELECT 1 FROM identity.registration_verifications WHERE email_fingerprint=$2 AND consumed_at IS NULL
-    )`, registration.Email, registration.EmailFingerprint).Scan(&exists)
-	if err != nil {
-		return fmt.Errorf("verification: check registration: %w", err)
+	var existingStatus string
+	err = tx.QueryRow(ctx, `SELECT status FROM identity.users
+        WHERE (email=$1 OR email_fingerprint=$2) AND role=$3`,
+		registration.Email, registration.EmailFingerprint, string(registration.Role),
+	).Scan(&existingStatus)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("verification: check role: %w", err)
 	}
-	if exists {
+	if err == nil && !(registration.Role == domain.RoleLibrarian && existingStatus == string(domain.StatusRejected)) {
+		return tx.Commit(ctx)
+	}
+
+	var pending bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS (
+        SELECT 1 FROM identity.registration_verifications
+        WHERE email_fingerprint=$1 AND consumed_at IS NULL
+    )`, registration.EmailFingerprint).Scan(&pending)
+	if err != nil {
+		return fmt.Errorf("verification: check pending registration: %w", err)
+	}
+	if pending {
 		return tx.Commit(ctx)
 	}
 	result, err := tx.Exec(ctx, `INSERT INTO identity.registration_verifications
@@ -182,14 +94,6 @@ func lockRegistrationEmail(ctx context.Context, tx pgx.Tx, fingerprint []byte) e
 	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, hex.EncodeToString(fingerprint))
 	if err != nil {
 		return fmt.Errorf("registration: lock email: %w", err)
-	}
-	return nil
-}
-
-func lockRegistrationRole(ctx context.Context, tx pgx.Tx, fingerprint []byte, role domain.Role) error {
-	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, hex.EncodeToString(fingerprint)+":"+string(role))
-	if err != nil {
-		return fmt.Errorf("registration: lock role: %w", err)
 	}
 	return nil
 }
@@ -266,17 +170,34 @@ func (r *PostgresIdentityRepository) Consume(ctx context.Context, tokenHash []by
 	if err != nil {
 		return domain.User{}, domain.ErrInvalidVerification
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO identity.users
-        (id,display_name,email,email_fingerprint,password_hash,role,status,email_verified_at,created_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		user.ID(), user.Name(), user.Email(), user.EmailFingerprint(), user.PasswordHash(),
-		string(user.Role()), string(user.Status()), user.VerifiedAt(), user.CreatedAt(),
-	)
-	if err != nil {
-		if isUniqueViolation(err) {
-			return domain.User{}, domain.ErrInvalidVerification
+	if role == domain.RoleLibrarian {
+		var existingID string
+		var verifiedAt time.Time
+		existingErr := tx.QueryRow(ctx, `SELECT id,email_verified_at FROM identity.users
+            WHERE (email=$1 OR email_fingerprint=$2) AND role='librarian' AND status='rejected'
+            FOR UPDATE`, email, fingerprint).Scan(&existingID, &verifiedAt)
+		if existingErr != nil && !errors.Is(existingErr, pgx.ErrNoRows) {
+			return domain.User{}, fmt.Errorf("verification: check reapplication: %w", existingErr)
 		}
-		return domain.User{}, fmt.Errorf("verification: insert user: %w", err)
+		if existingErr == nil {
+			user, err = domain.NewVerifiedUser(existingID, name, email, fingerprint, passwordHash, role, status, verifiedAt, createdAt)
+			if err != nil {
+				return domain.User{}, domain.ErrInvalidVerification
+			}
+			_, err = tx.Exec(ctx, `UPDATE identity.users
+                SET display_name=$1,password_hash=$2,status='pending',reviewed_by=NULL,reviewed_at=NULL,created_at=$3
+                WHERE id=$4`, user.Name(), user.PasswordHash(), user.CreatedAt(), existingID)
+			if err != nil {
+				return domain.User{}, fmt.Errorf("verification: reapply librarian: %w", err)
+			}
+		} else {
+			err = insertVerifiedUser(ctx, tx, user)
+		}
+	} else {
+		err = insertVerifiedUser(ctx, tx, user)
+	}
+	if err != nil {
+		return domain.User{}, err
 	}
 	_, err = tx.Exec(ctx, `UPDATE identity.registration_verifications SET consumed_at=$1 WHERE id=$2`, now, verificationID)
 	if err != nil {
@@ -286,6 +207,22 @@ func (r *PostgresIdentityRepository) Consume(ctx context.Context, tokenHash []by
 		return domain.User{}, fmt.Errorf("verification: commit consume: %w", err)
 	}
 	return user, nil
+}
+
+func insertVerifiedUser(ctx context.Context, tx pgx.Tx, user domain.User) error {
+	_, err := tx.Exec(ctx, `INSERT INTO identity.users
+        (id,display_name,email,email_fingerprint,password_hash,role,status,email_verified_at,created_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		user.ID(), user.Name(), user.Email(), user.EmailFingerprint(), user.PasswordHash(),
+		string(user.Role()), string(user.Status()), user.VerifiedAt(), user.CreatedAt(),
+	)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return domain.ErrInvalidVerification
+		}
+		return fmt.Errorf("verification: insert user: %w", err)
+	}
+	return nil
 }
 
 // CleanupExpired removes verification registrations older than the retention cutoff.

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/process"
@@ -21,10 +23,14 @@ type Config struct {
 	MinIOAccessKey    string
 	MinIOSecretKey    string
 	MinIOBucket       string
+	MinIOInsecure     bool
+	MinIOCAFile       string
 	RabbitURI         string
 	MaxUploadBytes    int64
 	UploadConcurrency int
 	MetricsAddress    string
+	ReconcileInterval time.Duration
+	OrphanGracePeriod time.Duration
 	TLS               internaltls.Files
 	RunAs             process.Identity
 }
@@ -74,6 +80,17 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if err = validateMinIOEndpoint(endpoint); err != nil {
+		return Config{}, err
+	}
+	minioInsecure, err := strictBool("CATALOG_MINIO_INSECURE", false)
+	if err != nil {
+		return Config{}, err
+	}
+	minioCAFile := os.Getenv("CATALOG_MINIO_CA_FILE")
+	if minioInsecure && minioCAFile != "" {
+		return Config{}, fmt.Errorf("CATALOG_MINIO_CA_FILE cannot be used with insecure object storage")
+	}
 	bucket, err := required("CATALOG_MINIO_BUCKET")
 	if err != nil {
 		return Config{}, err
@@ -86,11 +103,49 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	metricsAddress, err := privateMetricsAddress(optional("CATALOG_METRICS_ADDR", ":9092"))
+	metricsAddress, err := privateMetricsAddress(optional("CATALOG_METRICS_ADDR", "127.0.0.1:9092"))
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{Address: optional("CATALOG_GRPC_ADDR", ":50052"), DSN: dsn, MinIOEndpoint: endpoint, MinIOAccessKey: minioAccessKey, MinIOSecretKey: minioSecretKey, MinIOBucket: bucket, RabbitURI: rabbitURI, MaxUploadBytes: maxUploadBytes, UploadConcurrency: uploadConcurrency, MetricsAddress: metricsAddress, TLS: internaltls.Files{CA: ca, Certificate: cert, Key: key}, RunAs: process.Identity{UID: uid, GID: gid}}, nil
+	reconcileInterval, err := boundedDuration("CATALOG_RECONCILE_INTERVAL", time.Minute, 24*time.Hour, 15*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	orphanGracePeriod, err := boundedDuration("CATALOG_ORPHAN_GRACE_PERIOD", 5*time.Minute, 7*24*time.Hour, time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	return Config{Address: optional("CATALOG_GRPC_ADDR", ":50052"), DSN: dsn, MinIOEndpoint: endpoint, MinIOAccessKey: minioAccessKey, MinIOSecretKey: minioSecretKey, MinIOBucket: bucket, MinIOInsecure: minioInsecure, MinIOCAFile: minioCAFile, RabbitURI: rabbitURI, MaxUploadBytes: maxUploadBytes, UploadConcurrency: uploadConcurrency, MetricsAddress: metricsAddress, ReconcileInterval: reconcileInterval, OrphanGracePeriod: orphanGracePeriod, TLS: internaltls.Files{CA: ca, Certificate: cert, Key: key}, RunAs: process.Identity{UID: uid, GID: gid}}, nil
+}
+
+func strictBool(key string, fallback bool) (bool, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	if value != "true" && value != "false" {
+		return false, fmt.Errorf("%s must be true or false", key)
+	}
+	return value == "true", nil
+}
+
+func boundedDuration(key string, minimum, maximum, fallback time.Duration) (time.Duration, error) {
+	value, err := time.ParseDuration(optional(key, fallback.String()))
+	if err != nil || value < minimum || value > maximum {
+		return 0, fmt.Errorf("%s must be between %s and %s", key, minimum, maximum)
+	}
+	return value, nil
+}
+
+func validateMinIOEndpoint(endpoint string) error {
+	if endpoint == "" || strings.Contains(endpoint, "://") || strings.ContainsAny(endpoint, "/?#@") {
+		return fmt.Errorf("CATALOG_MINIO_ENDPOINT must contain only a host and optional port")
+	}
+	parsed, err := url.Parse("https://" + endpoint)
+	if err != nil || parsed.Host != endpoint || parsed.Hostname() == "" || parsed.User != nil || parsed.Path != "" {
+		return fmt.Errorf("CATALOG_MINIO_ENDPOINT must contain only a host and optional port")
+	}
+	return nil
 }
 
 func boundedInt64(key string, fallback, maximum int64) (int64, error) {
@@ -114,7 +169,7 @@ func privateMetricsAddress(value string) (string, error) {
 	if err != nil || port == "" {
 		return "", fmt.Errorf("CATALOG_METRICS_ADDR is invalid")
 	}
-	if host == "" || host == "localhost" {
+	if host == "localhost" {
 		return value, nil
 	}
 	ip := net.ParseIP(host)

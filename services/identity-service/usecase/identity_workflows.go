@@ -46,8 +46,8 @@ func NewVerificationService(
 	return &VerificationService{store: store, passwords: passwords, sealer: sealer, fingerprints: fingerprints, ids: ids, clock: clock}
 }
 
-// Register validates an account request. Readers become active immediately;
-// librarians become pending until an administrator approves them.
+// Register validates an account request and schedules a single-use ownership
+// verification. Account creation occurs only when that token is consumed.
 func (s *VerificationService) Register(ctx context.Context, name, email, plaintext string, role domain.Role) error {
 	name = strings.TrimSpace(name)
 	email = normalizeEmail(email)
@@ -70,15 +70,28 @@ func (s *VerificationService) Register(ctx context.Context, name, email, plainte
 		return err
 	}
 	now := s.clock.Now().UTC()
-	fingerprint := s.fingerprints.Fingerprint(email)
-	user, err := domain.NewUnverifiedUser(s.ids.NewID(), name, email, fingerprint, hash, role, accountStatus, now)
+	token, tokenHash, err := newOpaqueToken()
 	if err != nil {
 		return err
 	}
-	if role == domain.RoleReader {
-		return s.store.CreateActiveReader(ctx, user)
+	registration := port.VerificationRegistration{
+		ID:               s.ids.NewID(),
+		TokenHash:        tokenHash,
+		Name:             name,
+		Email:            email,
+		EmailFingerprint: s.fingerprints.Fingerprint(email),
+		PasswordHash:     hash,
+		Role:             role,
+		ExpiresAt:        now.Add(verificationTTL),
+		CreatedAt:        now,
 	}
-	return s.store.CreatePendingLibrarian(ctx, user)
+	messageID := s.ids.NewID()
+	sealed, err := s.sealer.SealVerification(messageID, email, token)
+	if err != nil {
+		return err
+	}
+	sealed.CreatedAt = now
+	return s.store.CreateOrIgnore(ctx, registration, sealed)
 }
 
 // Resend rotates verification material subject to repository-enforced cooldown

@@ -25,7 +25,6 @@ var (
 	ErrBootstrapComplete    = errors.New("bootstrap: administrator already exists")
 	ErrForbidden            = errors.New("authorization: forbidden")
 	ErrConflict             = errors.New("identity: state conflict")
-	ErrRoleAlreadyExists    = errors.New("identity: role already exists for email")
 	ErrInvalidPasswordReset = errors.New("password reset: invalid or expired")
 )
 

@@ -169,7 +169,7 @@ func (s *Server) VerifyPasswordReset(ctx context.Context, req *identityv1.Passwo
 	}
 	grant, roles, err := s.passwordReset.Verify(ctx, req.Email, req.Code)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, "invalid reset code")
+		return nil, toStatus(err)
 	}
 	response := &identityv1.PasswordResetVerifyResponse{ResetGrant: grant}
 	for _, role := range roles {
@@ -185,7 +185,7 @@ func (s *Server) CompletePasswordReset(ctx context.Context, req *identityv1.Pass
 		return nil, status.Error(codes.InvalidArgument, "invalid request")
 	}
 	if err := s.passwordReset.Complete(ctx, req.ResetGrant, req.Role, req.Password); err != nil {
-		return nil, status.Error(codes.InvalidArgument, "invalid password reset")
+		return nil, toStatus(err)
 	}
 	return &identityv1.PasswordResetCompleteResponse{}, nil
 }
@@ -432,6 +432,10 @@ func authenticatedOperation(ctx context.Context) (context.Context, context.Cance
 
 func toStatus(err error) error {
 	switch {
+	case errors.Is(err, context.Canceled):
+		return status.Error(codes.Canceled, "operation canceled")
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, "operation timed out")
 	case errors.Is(err, domain.ErrInvalidEmail), errors.Is(err, domain.ErrEmptyEmail),
 		errors.Is(err, domain.ErrEmptyName), errors.Is(err, domain.ErrInvalidRole),
 		errors.Is(err, domain.ErrInvalidPassword):
@@ -440,12 +444,12 @@ func toStatus(err error) error {
 		return status.Error(codes.Unauthenticated, "setup unavailable")
 	case errors.Is(err, domain.ErrInvalidVerification):
 		return status.Error(codes.InvalidArgument, "invalid verification")
+	case errors.Is(err, domain.ErrInvalidPasswordReset):
+		return status.Error(codes.InvalidArgument, "invalid password reset")
 	case errors.Is(err, domain.ErrInvalidCredentials):
 		return status.Error(codes.Unauthenticated, "invalid credentials")
 	case errors.Is(err, domain.ErrForbidden):
 		return status.Error(codes.PermissionDenied, "forbidden")
-	case errors.Is(err, domain.ErrRoleAlreadyExists):
-		return status.Error(codes.AlreadyExists, "role already exists")
 	case errors.Is(err, domain.ErrBootstrapComplete), errors.Is(err, domain.ErrConflict):
 		return status.Error(codes.FailedPrecondition, "state conflict")
 	default:

@@ -132,7 +132,11 @@ func (h *AuthHandler) VerifyPasswordReset(w http.ResponseWriter, r *http.Request
 	}
 	grant, roles, err := h.uc.VerifyPasswordReset(r.Context(), req.Email, req.Code)
 	if err != nil {
-		writeIdentityError(w, r, http.StatusBadRequest, "invalid_reset_code", "invalid reset code")
+		if errors.Is(err, authflow.ErrInvalidPasswordReset) {
+			writeIdentityError(w, r, http.StatusBadRequest, "invalid_reset_code", "invalid reset code")
+			return
+		}
+		writeIdentityError(w, r, http.StatusServiceUnavailable, "identity_unavailable", "identity service unavailable")
 		return
 	}
 	setPrivateNoStore(w)
@@ -148,15 +152,18 @@ func (h *AuthHandler) CompletePasswordReset(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if err := h.uc.CompletePasswordReset(r.Context(), req.ResetGrant, req.Role, req.Password); err != nil {
-		writeIdentityError(w, r, http.StatusBadRequest, "invalid_password_reset", "invalid password reset")
+		if errors.Is(err, authflow.ErrInvalidPasswordReset) {
+			writeIdentityError(w, r, http.StatusBadRequest, "invalid_password_reset", "invalid password reset")
+			return
+		}
+		writeIdentityError(w, r, http.StatusServiceUnavailable, "identity_unavailable", "identity service unavailable")
 		return
 	}
 	setPrivateNoStore(w)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Register handles privacy-preserving registration. Readers become active
-// immediately; librarians require administrator approval.
+// Register handles privacy-preserving, verification-required registration.
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var req RegisterRequest
 	if err := decodeJSONBody(w, r, &req); err != nil {
@@ -167,17 +174,6 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	err := h.uc.Register(r.Context(), req.Name, req.Email, req.Password, req.Role)
 	if err != nil {
 		h.diagnostics.RegistrationFailed(r, authErrorOutcome(err))
-		if errors.Is(err, authflow.ErrRoleAlreadyExists) {
-			message := "An account with this role already exists for this email; please log in."
-			if req.Role == "reader" {
-				message = "Reader already exists for this email; please log in."
-			}
-			if req.Role == "librarian" {
-				message = "Librarian already exists for this email; please log in."
-			}
-			writeIdentityError(w, r, http.StatusConflict, "role_already_exists", message)
-			return
-		}
 		if errors.Is(err, authflow.ErrInvalidRegistration) {
 			writeIdentityError(w, r, http.StatusUnprocessableEntity, "invalid_registration", "registration is invalid")
 			return

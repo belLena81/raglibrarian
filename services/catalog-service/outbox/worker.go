@@ -29,6 +29,7 @@ type publisher interface {
 // event ID, object reference, payload, or broker/database error text.
 type Recorder interface {
 	OutboxClaimFailed()
+	OutboxPublishFailed()
 	OutboxRetryFailed()
 	OutboxMarkFailed()
 }
@@ -59,6 +60,7 @@ func Run(ctx context.Context, store store, publisher publisher, recorder Recorde
 				})
 				cancel()
 				if err != nil {
+					recorder.OutboxPublishFailed()
 					if retryErr := store.RetryOutbox(ctx, event.ID, now.UTC(), event.Attempts); retryErr != nil {
 						recorder.OutboxRetryFailed()
 					}

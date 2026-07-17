@@ -28,6 +28,12 @@ type PendingOutboxEvent struct {
 	Attempts int
 }
 
+// OutboxBacklog is the safe aggregate state used for fixed-label metrics.
+type OutboxBacklog struct {
+	Pending         int64
+	OldestAgeSecond int64
+}
+
 func NewPostgresBookRepository(pool *pgxpool.Pool) *PostgresBookRepository {
 	if pool == nil {
 		panic("repository: pgx pool is required")
@@ -111,6 +117,42 @@ func (r *PostgresBookRepository) Get(ctx context.Context, id string) (catalog.Bo
 		return catalog.Book{}, fmt.Errorf("catalog: get book: %w", err)
 	}
 	return book, nil
+}
+
+func (r *PostgresBookRepository) ReferencesExist(ctx context.Context, references []string) (map[string]bool, error) {
+	result := make(map[string]bool, len(references))
+	for _, reference := range references {
+		result[reference] = false
+	}
+	if len(references) == 0 {
+		return result, nil
+	}
+	rows, err := r.pool.Query(ctx, `SELECT object_reference FROM catalog.books WHERE object_reference = ANY($1)`, references)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: lookup object references: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var reference string
+		if err = rows.Scan(&reference); err != nil {
+			return nil, fmt.Errorf("catalog: scan object reference: %w", err)
+		}
+		result[reference] = true
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("catalog: object reference rows: %w", err)
+	}
+	return result, nil
+}
+
+func (r *PostgresBookRepository) OutboxBacklog(ctx context.Context, now time.Time) (OutboxBacklog, error) {
+	var backlog OutboxBacklog
+	err := r.pool.QueryRow(ctx, `SELECT COUNT(*), COALESCE(EXTRACT(EPOCH FROM ($1 - MIN(occurred_at))), 0)
+        FROM catalog.outbox WHERE published_at IS NULL`, now).Scan(&backlog.Pending, &backlog.OldestAgeSecond)
+	if err != nil {
+		return OutboxBacklog{}, fmt.Errorf("catalog: outbox backlog: %w", err)
+	}
+	return backlog, nil
 }
 
 // ClaimOutbox leases one due row. Processing one record at a time preserves a

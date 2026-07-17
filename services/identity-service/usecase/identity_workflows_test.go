@@ -47,18 +47,8 @@ func (workflowProtector) SealPasswordReset(id, _, _ string) (port.SealedEmail, e
 type workflowVerificationStore struct {
 	registration port.VerificationRegistration
 	email        port.SealedEmail
-	reader       domain.User
-	librarian    domain.User
 }
 
-func (s *workflowVerificationStore) CreateActiveReader(_ context.Context, user domain.User) error {
-	s.reader = user
-	return nil
-}
-func (s *workflowVerificationStore) CreatePendingLibrarian(_ context.Context, user domain.User) error {
-	s.librarian = user
-	return nil
-}
 func (s *workflowVerificationStore) CreateOrIgnore(_ context.Context, registration port.VerificationRegistration, email port.SealedEmail) error {
 	s.registration, s.email = registration, email
 	return nil
@@ -73,7 +63,7 @@ func (*workflowVerificationStore) CleanupExpired(context.Context, time.Time) (in
 	return 0, nil
 }
 
-func TestLibrarianRegistrationCreatesPendingAccountWithoutVerification(t *testing.T) {
+func TestLibrarianRegistrationCreatesVerificationBeforeAccount(t *testing.T) {
 	store := &workflowVerificationStore{}
 	passwords := &workflowPasswords{}
 	ids := &workflowIDs{}
@@ -82,18 +72,17 @@ func TestLibrarianRegistrationCreatesPendingAccountWithoutVerification(t *testin
 
 	err := service.Register(context.Background(), " Librarian ", " LIBRARIAN@EXAMPLE.TEST ", "password-1234", domain.RoleLibrarian)
 	require.NoError(t, err)
-	assert.Equal(t, "Librarian", store.librarian.Name())
-	assert.Equal(t, "librarian@example.test", store.librarian.Email())
-	assert.Equal(t, domain.RoleLibrarian, store.librarian.Role())
-	assert.Equal(t, domain.StatusPending, store.librarian.Status())
-	assert.True(t, store.librarian.VerifiedAt().IsZero())
+	assert.Equal(t, "Librarian", store.registration.Name)
+	assert.Equal(t, "librarian@example.test", store.registration.Email)
+	assert.Equal(t, domain.RoleLibrarian, store.registration.Role)
+	assert.Len(t, store.registration.TokenHash, sha256.Size)
+	assert.Equal(t, now.Add(verificationTTL), store.registration.ExpiresAt)
 	assert.Equal(t, 1, passwords.hashCalls)
-	assert.Empty(t, store.registration.ID)
-	assert.Empty(t, store.email.Ciphertext)
-	assert.Empty(t, store.reader.ID())
+	assert.NotEmpty(t, store.email.Ciphertext)
+	assert.Equal(t, now, store.email.CreatedAt)
 }
 
-func TestReaderRegistrationCreatesActiveAccountWithoutVerification(t *testing.T) {
+func TestReaderRegistrationCreatesVerificationBeforeAccount(t *testing.T) {
 	store := &workflowVerificationStore{}
 	passwords := &workflowPasswords{}
 	ids := &workflowIDs{}
@@ -102,13 +91,11 @@ func TestReaderRegistrationCreatesActiveAccountWithoutVerification(t *testing.T)
 
 	err := service.Register(context.Background(), " Reader ", " READER@EXAMPLE.TEST ", "password-1234", domain.RoleReader)
 	require.NoError(t, err)
-	assert.Equal(t, "Reader", store.reader.Name())
-	assert.Equal(t, "reader@example.test", store.reader.Email())
-	assert.Equal(t, domain.RoleReader, store.reader.Role())
-	assert.Equal(t, domain.StatusActive, store.reader.Status())
-	assert.True(t, store.reader.VerifiedAt().IsZero())
-	assert.Empty(t, store.registration.ID)
-	assert.Empty(t, store.email.Ciphertext)
+	assert.Equal(t, "Reader", store.registration.Name)
+	assert.Equal(t, "reader@example.test", store.registration.Email)
+	assert.Equal(t, domain.RoleReader, store.registration.Role)
+	assert.Len(t, store.registration.TokenHash, sha256.Size)
+	assert.NotEmpty(t, store.email.Ciphertext)
 	assert.Equal(t, 1, passwords.hashCalls)
 }
 

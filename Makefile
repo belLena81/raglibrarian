@@ -159,8 +159,10 @@ e2e: _require_root
 
 .PHONY: contract-test
 contract-test: _require_root
-	docker compose --profile test build contract-tests
-	docker compose --profile test run --rm contract-tests
+	@project=raglibrarian-contract-test; \
+	trap 'COMPOSE_PROJECT_NAME=$$project docker compose --profile test down -v --remove-orphans' EXIT; \
+	COMPOSE_PROJECT_NAME=$$project docker compose --profile test build contract-tests && \
+	COMPOSE_PROJECT_NAME=$$project docker compose --profile test run --rm contract-tests
 
 # ── Database ──────────────────────────────────────────────────────────────────
 # Uses psql directly — no migrate CLI dependency.
@@ -227,6 +229,7 @@ compose-config: _require_root
 
 ui-check: _require_root
 	npm --prefix ui ci
+	npm --prefix ui test
 	npm --prefix ui run lint
 	npm --prefix ui run type-check
 	npm --prefix ui run build

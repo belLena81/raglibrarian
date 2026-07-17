@@ -5,13 +5,13 @@ import "errors"
 
 // Stable Edge authentication failures used across handlers and adapters.
 var (
-	ErrInvalidCredentials  = errors.New("invalid credentials")
-	ErrInvalidRegistration = errors.New("invalid registration")
-	ErrUnavailable         = errors.New("identity service unavailable")
-	ErrForbidden           = errors.New("operation forbidden")
-	ErrConflict            = errors.New("identity state conflict")
-	ErrInvalidVerification = errors.New("verification is invalid")
-	ErrRoleAlreadyExists   = errors.New("role already exists")
+	ErrInvalidCredentials   = errors.New("invalid credentials")
+	ErrInvalidRegistration  = errors.New("invalid registration")
+	ErrUnavailable          = errors.New("identity service unavailable")
+	ErrForbidden            = errors.New("operation forbidden")
+	ErrConflict             = errors.New("identity state conflict")
+	ErrInvalidVerification  = errors.New("verification is invalid")
+	ErrInvalidPasswordReset = errors.New("password reset is invalid")
 )
 
 // Session is returned by an Identity session action. It has no JSON tags so a

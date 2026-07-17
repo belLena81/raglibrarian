@@ -22,8 +22,8 @@ import (
 )
 
 type fakeAuthUseCase struct {
-	registerErr, loginErr, refreshErr error
-	refreshCalls                      int
+	registerErr, loginErr, refreshErr, verifyResetErr, completeResetErr error
+	refreshCalls                                                        int
 }
 
 func (f *fakeAuthUseCase) Register(context.Context, string, string, string, string) error {
@@ -35,11 +35,11 @@ func (f *fakeAuthUseCase) Login(context.Context, string, string, string) (authfl
 	return authflow.Session{AccessToken: "access", RefreshToken: "refresh", Role: "reader"}, f.loginErr
 }
 func (*fakeAuthUseCase) RequestPasswordReset(context.Context, string) error { return nil }
-func (*fakeAuthUseCase) VerifyPasswordReset(context.Context, string, string) (string, []string, error) {
-	return "grant", []string{"reader"}, nil
+func (f *fakeAuthUseCase) VerifyPasswordReset(context.Context, string, string) (string, []string, error) {
+	return "grant", []string{"reader"}, f.verifyResetErr
 }
-func (*fakeAuthUseCase) CompletePasswordReset(context.Context, string, string, string) error {
-	return nil
+func (f *fakeAuthUseCase) CompletePasswordReset(context.Context, string, string, string) error {
+	return f.completeResetErr
 }
 func (f *fakeAuthUseCase) Refresh(context.Context, string) (authflow.Session, error) {
 	f.refreshCalls++
@@ -64,11 +64,25 @@ func TestRegisterMapsStableApplicationErrors(t *testing.T) {
 	invalid := post(t, newHandler(t, &fakeAuthUseCase{registerErr: authflow.ErrInvalidRegistration}).Register, body)
 	assert.Equal(t, http.StatusUnprocessableEntity, invalid.Code)
 	assert.Contains(t, invalid.Body.String(), `"code":"invalid_registration"`)
-	duplicate := post(t, newHandler(t, &fakeAuthUseCase{registerErr: authflow.ErrRoleAlreadyExists}).Register, body)
-	assert.Equal(t, http.StatusConflict, duplicate.Code)
-	assert.Contains(t, duplicate.Body.String(), `"code":"role_already_exists"`)
-	assert.Contains(t, duplicate.Body.String(), "Reader already exists")
 	assert.Equal(t, http.StatusServiceUnavailable, post(t, newHandler(t, &fakeAuthUseCase{registerErr: authflow.ErrUnavailable}).Register, body).Code)
+}
+
+func TestPasswordResetDistinguishesInvalidStateFromOutage(t *testing.T) {
+	verifyBody := `{"email":"reader@example.com","code":"123456"}`
+	invalidVerify := post(t, newHandler(t, &fakeAuthUseCase{verifyResetErr: authflow.ErrInvalidPasswordReset}).VerifyPasswordReset, verifyBody)
+	assert.Equal(t, http.StatusBadRequest, invalidVerify.Code)
+	assert.Contains(t, invalidVerify.Body.String(), `"code":"invalid_reset_code"`)
+	outageVerify := post(t, newHandler(t, &fakeAuthUseCase{verifyResetErr: authflow.ErrUnavailable}).VerifyPasswordReset, verifyBody)
+	assert.Equal(t, http.StatusServiceUnavailable, outageVerify.Code)
+	assert.Contains(t, outageVerify.Body.String(), `"code":"identity_unavailable"`)
+
+	completeBody := `{"reset_grant":"grant","role":"reader","password":"password-1234"}`
+	invalidComplete := post(t, newHandler(t, &fakeAuthUseCase{completeResetErr: authflow.ErrInvalidPasswordReset}).CompletePasswordReset, completeBody)
+	assert.Equal(t, http.StatusBadRequest, invalidComplete.Code)
+	assert.Contains(t, invalidComplete.Body.String(), `"code":"invalid_password_reset"`)
+	outageComplete := post(t, newHandler(t, &fakeAuthUseCase{completeResetErr: authflow.ErrUnavailable}).CompletePasswordReset, completeBody)
+	assert.Equal(t, http.StatusServiceUnavailable, outageComplete.Code)
+	assert.Contains(t, outageComplete.Body.String(), `"code":"identity_unavailable"`)
 }
 
 func TestLoginDistinguishesInvalidCredentialsFromOutage(t *testing.T) {

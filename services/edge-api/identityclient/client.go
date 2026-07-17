@@ -99,7 +99,7 @@ func (c *Client) VerifyPasswordReset(ctx context.Context, email, code string) (s
 	defer cancel()
 	response, err := c.rpc.VerifyPasswordReset(ctx, &identityv1.PasswordResetVerifyRequest{Email: email, Code: code})
 	if err != nil {
-		return "", nil, authflow.ErrInvalidCredentials
+		return "", nil, mapPasswordResetError(err)
 	}
 	return response.ResetGrant, response.AvailableRoles, nil
 }
@@ -107,10 +107,7 @@ func (c *Client) CompletePasswordReset(ctx context.Context, grant, role, passwor
 	ctx, cancel := rpcContext(ctx)
 	defer cancel()
 	_, err := c.rpc.CompletePasswordReset(ctx, &identityv1.PasswordResetCompleteRequest{ResetGrant: grant, Role: role, Password: password})
-	if err != nil {
-		return authflow.ErrInvalidCredentials
-	}
-	return nil
+	return mapPasswordResetError(err)
 }
 
 // Refresh rotates an opaque refresh token.
@@ -243,12 +240,22 @@ func mapRegisterError(err error) error {
 	}
 	switch status.Code(err) {
 	case codes.AlreadyExists:
-		return authflow.ErrRoleAlreadyExists
+		return nil
 	case codes.InvalidArgument:
 		return authflow.ErrInvalidRegistration
 	default:
 		return authflow.ErrUnavailable
 	}
+}
+
+func mapPasswordResetError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if status.Code(err) == codes.InvalidArgument {
+		return authflow.ErrInvalidPasswordReset
+	}
+	return authflow.ErrUnavailable
 }
 
 func mapDependencyError(err error) error {
