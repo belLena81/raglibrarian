@@ -26,12 +26,12 @@ func (f *fakeRPC) Register(context.Context, *identityv1.RegisterRequest, ...grpc
 	return &identityv1.RegisterResponse{Accepted: true}, f.registerErr
 }
 
-func (f *fakeRPC) VerifyPasswordReset(context.Context, *identityv1.PasswordResetVerifyRequest, ...grpc.CallOption) (*identityv1.PasswordResetVerifyResponse, error) {
-	return &identityv1.PasswordResetVerifyResponse{ResetGrant: "grant", AvailableRoles: []string{"reader"}}, f.verifyResetErr
+func (f *fakeRPC) VerifyPasswordReset(context.Context, *identityv1.VerifyPasswordResetRequest, ...grpc.CallOption) (*identityv1.VerifyPasswordResetResponse, error) {
+	return &identityv1.VerifyPasswordResetResponse{ResetGrant: "grant", AvailableRoles: []string{"reader"}}, f.verifyResetErr
 }
 
-func (f *fakeRPC) CompletePasswordReset(context.Context, *identityv1.PasswordResetCompleteRequest, ...grpc.CallOption) (*identityv1.PasswordResetCompleteResponse, error) {
-	return &identityv1.PasswordResetCompleteResponse{}, f.completeResetErr
+func (f *fakeRPC) CompletePasswordReset(context.Context, *identityv1.CompletePasswordResetRequest, ...grpc.CallOption) (*identityv1.CompletePasswordResetResponse, error) {
+	return &identityv1.CompletePasswordResetResponse{}, f.completeResetErr
 }
 
 type fakeHealth struct {

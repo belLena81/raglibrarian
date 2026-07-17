@@ -50,7 +50,7 @@ func (r *PostgresIdentityRepository) CreateOrIgnore(ctx context.Context, registr
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("verification: check role: %w", err)
 	}
-	if err == nil && !(registration.Role == domain.RoleLibrarian && existingStatus == string(domain.StatusRejected)) {
+	if err == nil && (registration.Role != domain.RoleLibrarian || existingStatus != string(domain.StatusRejected)) {
 		return tx.Commit(ctx)
 	}
 

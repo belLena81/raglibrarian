@@ -63,8 +63,9 @@ func TestLoadPrivateCAPool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadPrivateCAPool(): %v", err)
 	}
-	if len(pool.Subjects()) != 1 {
-		t.Fatalf("subjects = %d", len(pool.Subjects()))
+	subjects := pool.Subjects() //nolint:staticcheck // The pool is private and created with x509.NewCertPool.
+	if len(subjects) != 1 {
+		t.Fatalf("subjects = %d", len(subjects))
 	}
 
 	invalidPath := filepath.Join(directory, "invalid.pem")

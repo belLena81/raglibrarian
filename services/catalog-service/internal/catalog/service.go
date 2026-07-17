@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -162,7 +163,8 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 	}
 	payload, err := proto.Marshal(&catalogv1.BookUploadedV1{
 		EventId: eventID, BookId: book.ID, Title: book.Metadata.Title, Author: book.Metadata.Author,
-		Year: int32(book.Metadata.Year), Tags: append([]string(nil), book.Metadata.Tags...),
+		Year:            int32(book.Metadata.Year), // #nosec G115 -- ValidateMetadata bounds valid years to int32.
+		Tags:            append([]string(nil), book.Metadata.Tags...),
 		ObjectReference: book.ObjectReference, Sha256: book.Checksum[:], ByteSize: book.ByteSize,
 		MediaType: "application/pdf", ActorId: input.Actor.UserID, CorrelationId: input.CorrelationID,
 		OccurredAt: timestamppb.New(now), CausationId: input.CorrelationID, Producer: "catalog-service",
@@ -375,9 +377,9 @@ func (s *MemoryObjectStore) Put(_ context.Context, key string, reader io.Reader)
 	}
 	s.objects[key] = data
 	checksum := crc32.Checksum(data, crc32.MakeTable(crc32.Castagnoli))
-	return ObjectReceipt{Size: int64(len(data)), ChecksumCRC32C: base64.StdEncoding.EncodeToString([]byte{
-		byte(checksum >> 24), byte(checksum >> 16), byte(checksum >> 8), byte(checksum),
-	})}, nil
+	checksumBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(checksumBytes, checksum)
+	return ObjectReceipt{Size: int64(len(data)), ChecksumCRC32C: base64.StdEncoding.EncodeToString(checksumBytes)}, nil
 }
 func (s *MemoryObjectStore) Delete(_ context.Context, key string) error {
 	delete(s.objects, key)

@@ -9,9 +9,9 @@ service IdentityService {
   rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse);
   rpc ResendVerification(ResendVerificationRequest) returns (ResendVerificationResponse);
   rpc Login(LoginRequest) returns (LoginResponse);
-  rpc RequestPasswordReset(PasswordResetRequest) returns (PasswordResetRequestResponse);
-  rpc VerifyPasswordReset(PasswordResetVerifyRequest) returns (PasswordResetVerifyResponse);
-  rpc CompletePasswordReset(PasswordResetCompleteRequest) returns (PasswordResetCompleteResponse);
+  rpc RequestPasswordReset(RequestPasswordResetRequest) returns (RequestPasswordResetResponse);
+  rpc VerifyPasswordReset(VerifyPasswordResetRequest) returns (VerifyPasswordResetResponse);
+  rpc CompletePasswordReset(CompletePasswordResetRequest) returns (CompletePasswordResetResponse);
   rpc Refresh(RefreshRequest) returns (RefreshResponse);
   rpc ValidateSession(ValidateSessionRequest) returns (ValidateSessionResponse);
   rpc Logout(LogoutRequest) returns (LogoutResponse);
@@ -59,12 +59,12 @@ message LoginResponse {
   repeated string available_roles = 5;
 }
 
-message PasswordResetRequest { string email = 1; }
-message PasswordResetRequestResponse { bool accepted = 1; }
-message PasswordResetVerifyRequest { string email = 1; string code = 2; }
-message PasswordResetVerifyResponse { string reset_grant = 1; repeated string available_roles = 2; }
-message PasswordResetCompleteRequest { string reset_grant = 1; string role = 2; string password = 3; }
-message PasswordResetCompleteResponse {}
+message RequestPasswordResetRequest { string email = 1; }
+message RequestPasswordResetResponse { bool accepted = 1; }
+message VerifyPasswordResetRequest { string email = 1; string code = 2; }
+message VerifyPasswordResetResponse { string reset_grant = 1; repeated string available_roles = 2; }
+message CompletePasswordResetRequest { string reset_grant = 1; string role = 2; string password = 3; }
+message CompletePasswordResetResponse {}
 
 message RefreshRequest {
   string refresh_token = 1;

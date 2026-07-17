@@ -91,13 +91,13 @@ func (c *Client) Login(ctx context.Context, email, password, role string) (authf
 func (c *Client) RequestPasswordReset(ctx context.Context, email string) error {
 	ctx, cancel := rpcContext(ctx)
 	defer cancel()
-	_, err := c.rpc.RequestPasswordReset(ctx, &identityv1.PasswordResetRequest{Email: email})
+	_, err := c.rpc.RequestPasswordReset(ctx, &identityv1.RequestPasswordResetRequest{Email: email})
 	return mapDependencyError(err)
 }
 func (c *Client) VerifyPasswordReset(ctx context.Context, email, code string) (string, []string, error) {
 	ctx, cancel := rpcContext(ctx)
 	defer cancel()
-	response, err := c.rpc.VerifyPasswordReset(ctx, &identityv1.PasswordResetVerifyRequest{Email: email, Code: code})
+	response, err := c.rpc.VerifyPasswordReset(ctx, &identityv1.VerifyPasswordResetRequest{Email: email, Code: code})
 	if err != nil {
 		return "", nil, mapPasswordResetError(err)
 	}
@@ -106,7 +106,7 @@ func (c *Client) VerifyPasswordReset(ctx context.Context, email, code string) (s
 func (c *Client) CompletePasswordReset(ctx context.Context, grant, role, password string) error {
 	ctx, cancel := rpcContext(ctx)
 	defer cancel()
-	_, err := c.rpc.CompletePasswordReset(ctx, &identityv1.PasswordResetCompleteRequest{ResetGrant: grant, Role: role, Password: password})
+	_, err := c.rpc.CompletePasswordReset(ctx, &identityv1.CompletePasswordResetRequest{ResetGrant: grant, Role: role, Password: password})
 	return mapPasswordResetError(err)
 }
 

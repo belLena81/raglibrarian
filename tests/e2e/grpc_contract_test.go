@@ -113,7 +113,9 @@ func TestGRPCDeadlineIsHonored(t *testing.T) {
 
 func TestCatalogMetricsReachableOnlyWithinBackendNetwork(t *testing.T) {
 	requireContractTests(t)
-	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://catalog-service:9092/metrics", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://catalog-service:9092/metrics", nil)
 	require.NoError(t, err)
 	response, err := http.DefaultClient.Do(request)
 	require.NoError(t, err)

@@ -190,7 +190,7 @@ func (r *chunkReader) Read(target []byte) (int, error) {
 			return 0, err
 		}
 		chunk := request.GetChunk()
-		if chunk == nil || len(chunk) == 0 || len(chunk) > catalog.ChunkSize || request.GetMetadata() != nil {
+		if len(chunk) == 0 || len(chunk) > catalog.ChunkSize || request.GetMetadata() != nil {
 			return 0, catalog.ErrInvalidStream
 		}
 		r.buffer = bytes.NewReader(chunk)
@@ -199,7 +199,7 @@ func (r *chunkReader) Read(target []byte) (int, error) {
 }
 
 func bookProto(book catalog.Book) *catalogv1.Book {
-	return &catalogv1.Book{Id: book.ID, Title: book.Metadata.Title, Author: book.Metadata.Author, Year: int32(book.Metadata.Year), Tags: append([]string(nil), book.Metadata.Tags...), ProcessingStatus: string(book.ProcessingStatus), CreatedAt: timestamppb.New(book.CreatedAt)}
+	return &catalogv1.Book{Id: book.ID, Title: book.Metadata.Title, Author: book.Metadata.Author, Year: int32(book.Metadata.Year), Tags: append([]string(nil), book.Metadata.Tags...), ProcessingStatus: string(book.ProcessingStatus), CreatedAt: timestamppb.New(book.CreatedAt)} // #nosec G115 -- Catalog validates years before persistence.
 }
 
 func mapError(err error) error {

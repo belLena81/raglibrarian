@@ -13,7 +13,6 @@ import (
 )
 
 const passwordResetTTL = 10 * time.Minute
-const passwordResetGrantTTL = 10 * time.Minute
 
 type PasswordResetService struct {
 	store        port.PasswordResetStore

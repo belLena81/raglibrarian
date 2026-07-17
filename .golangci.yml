@@ -47,6 +47,12 @@ linters:
 
   exclusions:
     rules:
+      # The existing packages are internally consumed adapters with extensive
+      # type names but no GoDoc baseline. Keep behavioural and security lint
+      # enabled while GoDoc is added incrementally with API changes.
+      - text: "exported:"
+        linters:
+          - revive
       # Test files: hardcoded keys and unchecked errors are intentional.
       - path: "_test\\.go"
         linters:

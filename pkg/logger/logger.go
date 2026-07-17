@@ -129,7 +129,7 @@ func safeFieldValue(field zapcore.Field) (string, bool) {
 	case zapcore.Int64Type, zapcore.Int32Type, zapcore.Int16Type, zapcore.Int8Type:
 		value = strconv.FormatInt(field.Integer, 10)
 	case zapcore.Uint64Type, zapcore.Uint32Type, zapcore.Uint16Type, zapcore.Uint8Type:
-		value = strconv.FormatUint(uint64(field.Integer), 10)
+		value = strconv.FormatUint(uint64(field.Integer), 10) // #nosec G115 -- zap stores unsigned integer bits in Integer.
 	default:
 		return "", false
 	}

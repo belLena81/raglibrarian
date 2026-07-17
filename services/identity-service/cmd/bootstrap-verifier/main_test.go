@@ -18,7 +18,7 @@ func TestGenerateCodeReturnsBase32Code(t *testing.T) {
 		t.Fatalf("code length = %d, want 32", len(code))
 	}
 	for _, character := range code {
-		if !(character >= 'A' && character <= 'Z') && !(character >= '2' && character <= '7') {
+		if (character < 'A' || character > 'Z') && (character < '2' || character > '7') {
 			t.Fatalf("code contains non-base32 character %q", character)
 		}
 	}

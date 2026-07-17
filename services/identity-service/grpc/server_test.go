@@ -43,9 +43,9 @@ func TestPasswordResetRPCPreservesDependencyFailures(t *testing.T) {
 		completeErr: context.DeadlineExceeded,
 	}}
 
-	_, err := server.VerifyPasswordReset(context.Background(), &identityv1.PasswordResetVerifyRequest{Email: "reader@example.test", Code: "123456"})
+	_, err := server.VerifyPasswordReset(context.Background(), &identityv1.VerifyPasswordResetRequest{Email: "reader@example.test", Code: "123456"})
 	assert.Equal(t, codes.Internal, status.Code(err))
-	_, err = server.CompletePasswordReset(context.Background(), &identityv1.PasswordResetCompleteRequest{ResetGrant: "grant", Role: "reader", Password: "password-1234"})
+	_, err = server.CompletePasswordReset(context.Background(), &identityv1.CompletePasswordResetRequest{ResetGrant: "grant", Role: "reader", Password: "password-1234"})
 	assert.Equal(t, codes.DeadlineExceeded, status.Code(err))
 }
 
@@ -55,9 +55,9 @@ func TestPasswordResetRPCMapsOnlyInvalidResetToInvalidArgument(t *testing.T) {
 		completeErr: domain.ErrInvalidPasswordReset,
 	}}
 
-	_, err := server.VerifyPasswordReset(context.Background(), &identityv1.PasswordResetVerifyRequest{Email: "reader@example.test", Code: "123456"})
+	_, err := server.VerifyPasswordReset(context.Background(), &identityv1.VerifyPasswordResetRequest{Email: "reader@example.test", Code: "123456"})
 	assert.Equal(t, codes.InvalidArgument, status.Code(err))
-	_, err = server.CompletePasswordReset(context.Background(), &identityv1.PasswordResetCompleteRequest{ResetGrant: "grant", Role: "reader", Password: "password-1234"})
+	_, err = server.CompletePasswordReset(context.Background(), &identityv1.CompletePasswordResetRequest{ResetGrant: "grant", Role: "reader", Password: "password-1234"})
 	assert.Equal(t, codes.InvalidArgument, status.Code(err))
 }
 

@@ -40,7 +40,7 @@ func (c *Client) UploadBook(ctx context.Context, metadata handler.BookMetadata, 
 	if err != nil {
 		return handler.Book{}, err
 	}
-	if err = stream.Send(&catalogv1.UploadBookRequest{Frame: &catalogv1.UploadBookRequest_Metadata{Metadata: &catalogv1.UploadBookMetadata{Title: metadata.Title, Author: metadata.Author, Year: int32(metadata.Year), Tags: metadata.Tags, Actor: actorProto(actor)}}}); err != nil {
+	if err = stream.Send(&catalogv1.UploadBookRequest{Frame: &catalogv1.UploadBookRequest_Metadata{Metadata: &catalogv1.UploadBookMetadata{Title: metadata.Title, Author: metadata.Author, Year: int32(metadata.Year), Tags: metadata.Tags, Actor: actorProto(actor)}}}); err != nil { // #nosec G115 -- handler validation bounds valid years.
 		return handler.Book{}, err
 	}
 	buffer := make([]byte, 64<<10)
@@ -75,7 +75,7 @@ func validRequestID(value string) bool {
 func (c *Client) ListBooks(ctx context.Context, size int, token string, actor handler.CatalogActor) (handler.BookPage, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	response, err := c.service.ListBooks(ctx, &catalogv1.ListBooksRequest{PageSize: int32(size), PageToken: token, Actor: actorProto(actor)})
+	response, err := c.service.ListBooks(ctx, &catalogv1.ListBooksRequest{PageSize: int32(size), PageToken: token, Actor: actorProto(actor)}) // #nosec G115 -- handler validation limits page size to 100.
 	if err != nil {
 		return handler.BookPage{}, mapError(err)
 	}

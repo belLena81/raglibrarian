@@ -52,8 +52,12 @@ func (r *Recorder) OutboxMarkFailed() {
 }
 
 func (r *Recorder) ReconciliationCompleted(scanned, deleted int) {
-	r.reconcileScanned.Add(uint64(scanned))
-	r.reconcileDeleted.Add(uint64(deleted))
+	if scanned > 0 {
+		r.reconcileScanned.Add(uint64(scanned))
+	}
+	if deleted > 0 {
+		r.reconcileDeleted.Add(uint64(deleted))
+	}
 }
 
 func (r *Recorder) ReconciliationFailed() { r.reconcileFailures.Add(1) }

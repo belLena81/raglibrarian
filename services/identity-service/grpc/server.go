@@ -149,7 +149,7 @@ func (s *Server) Login(ctx context.Context, req *identityv1.LoginRequest) (*iden
 	return response, nil
 }
 
-func (s *Server) RequestPasswordReset(ctx context.Context, req *identityv1.PasswordResetRequest) (*identityv1.PasswordResetRequestResponse, error) {
+func (s *Server) RequestPasswordReset(ctx context.Context, req *identityv1.RequestPasswordResetRequest) (*identityv1.RequestPasswordResetResponse, error) {
 	ctx, cancel, _ := authenticatedOperation(ctx)
 	defer cancel()
 	if req == nil {
@@ -158,10 +158,10 @@ func (s *Server) RequestPasswordReset(ctx context.Context, req *identityv1.Passw
 	if err := s.passwordReset.Request(ctx, req.Email); err != nil {
 		return nil, toStatus(err)
 	}
-	return &identityv1.PasswordResetRequestResponse{Accepted: true}, nil
+	return &identityv1.RequestPasswordResetResponse{Accepted: true}, nil
 }
 
-func (s *Server) VerifyPasswordReset(ctx context.Context, req *identityv1.PasswordResetVerifyRequest) (*identityv1.PasswordResetVerifyResponse, error) {
+func (s *Server) VerifyPasswordReset(ctx context.Context, req *identityv1.VerifyPasswordResetRequest) (*identityv1.VerifyPasswordResetResponse, error) {
 	ctx, cancel, _ := authenticatedOperation(ctx)
 	defer cancel()
 	if req == nil {
@@ -171,14 +171,14 @@ func (s *Server) VerifyPasswordReset(ctx context.Context, req *identityv1.Passwo
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	response := &identityv1.PasswordResetVerifyResponse{ResetGrant: grant}
+	response := &identityv1.VerifyPasswordResetResponse{ResetGrant: grant}
 	for _, role := range roles {
 		response.AvailableRoles = append(response.AvailableRoles, string(role))
 	}
 	return response, nil
 }
 
-func (s *Server) CompletePasswordReset(ctx context.Context, req *identityv1.PasswordResetCompleteRequest) (*identityv1.PasswordResetCompleteResponse, error) {
+func (s *Server) CompletePasswordReset(ctx context.Context, req *identityv1.CompletePasswordResetRequest) (*identityv1.CompletePasswordResetResponse, error) {
 	ctx, cancel, _ := authenticatedOperation(ctx)
 	defer cancel()
 	if req == nil {
@@ -187,7 +187,7 @@ func (s *Server) CompletePasswordReset(ctx context.Context, req *identityv1.Pass
 	if err := s.passwordReset.Complete(ctx, req.ResetGrant, req.Role, req.Password); err != nil {
 		return nil, toStatus(err)
 	}
-	return &identityv1.PasswordResetCompleteResponse{}, nil
+	return &identityv1.CompletePasswordResetResponse{}, nil
 }
 
 // Refresh rotates a refresh token and issues fresh session credentials.

@@ -23,7 +23,7 @@ var randomReader io.Reader = rand.Reader
 func main() {
 	output := flag.String("out", "", "verifier output path")
 	flag.Parse()
-	if *output == "" || !term.IsTerminal(standardInput) || !term.IsTerminal(int(os.Stderr.Fd())) {
+	if *output == "" || !term.IsTerminal(standardInput) || !term.IsTerminal(int(os.Stderr.Fd())) { // #nosec G115 -- OS file descriptors fit Go int on supported targets.
 		fail()
 	}
 	code, err := generateCode()
