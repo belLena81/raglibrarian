@@ -32,6 +32,19 @@ elif [[ ! -r "$secret_dir/catalog_minio_access_key" ]]; then
   make dev-secrets-m3
 fi
 
+# Additive development secrets must not force a destructive local reset. This
+# key is independent of existing credentials and is created only when absent.
+if [[ ! -r "$secret_dir/identity_password_reset_hmac_key" ]]; then
+  command -v openssl >/dev/null 2>&1 || {
+    echo "openssl is required to create the password-reset development secret" >&2
+    exit 1
+  }
+  umask 077
+  openssl rand -hex 32 > "$secret_dir/identity_password_reset_hmac_key"
+  chmod 400 "$secret_dir/identity_password_reset_hmac_key"
+  echo "Created missing password-reset development secret."
+fi
+
 if [[ ! -r "$secret_dir/catalog_migration_password" || ! -r "$secret_dir/catalog_runtime_password" || ! -r "$secret_dir/catalog_migration_pgpass" || ! -r "$secret_dir/catalog_runtime_dsn" ]]; then
   make dev-secrets-catalog-db
 fi
