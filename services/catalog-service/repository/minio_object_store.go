@@ -33,16 +33,22 @@ func (s *MinIOObjectStore) Put(ctx context.Context, key string, reader io.Reader
 	})
 	if err != nil {
 		s.cleanupFailedPut(key)
-		return catalog.ObjectReceipt{}, fmt.Errorf("put original: %w", err)
+		if ctx.Err() != nil {
+			return catalog.ObjectReceipt{}, ctx.Err()
+		}
+		return catalog.ObjectReceipt{}, fmt.Errorf("put original: %w", catalog.ErrObjectStorageUnavailable)
 	}
 	stored, err := s.client.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{Checksum: true})
 	if err != nil {
 		s.cleanupFailedPut(key)
-		return catalog.ObjectReceipt{}, fmt.Errorf("verify original: %w", err)
+		if ctx.Err() != nil {
+			return catalog.ObjectReceipt{}, ctx.Err()
+		}
+		return catalog.ObjectReceipt{}, fmt.Errorf("verify original: %w", catalog.ErrObjectStorageUnavailable)
 	}
 	if stored.Size != receipt.Size || receipt.ChecksumCRC32C == "" || stored.ChecksumCRC32C != receipt.ChecksumCRC32C {
 		s.cleanupFailedPut(key)
-		return catalog.ObjectReceipt{}, fmt.Errorf("verify original: receipt mismatch")
+		return catalog.ObjectReceipt{}, fmt.Errorf("verify original: %w", catalog.ErrObjectReceiptMismatch)
 	}
 	return catalog.ObjectReceipt{Size: stored.Size, ChecksumCRC32C: stored.ChecksumCRC32C}, nil
 }
@@ -68,8 +74,10 @@ func (s *MinIOObjectStore) ListCompleted(ctx context.Context, prefix, cursor str
 	if prefix != "originals/" || limit < 1 || limit > 100 {
 		return nil, "", errors.New("invalid reconciliation listing boundary")
 	}
+	listingCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	objects := make([]catalog.StoredObject, 0, limit)
-	for object := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{
+	for object := range s.client.ListObjectsIter(listingCtx, s.bucket, minio.ListObjectsOptions{
 		Prefix:     prefix,
 		Recursive:  true,
 		MaxKeys:    limit,
@@ -79,12 +87,15 @@ func (s *MinIOObjectStore) ListCompleted(ctx context.Context, prefix, cursor str
 			return nil, "", fmt.Errorf("list original objects: %w", object.Err)
 		}
 		objects = append(objects, catalog.StoredObject{Reference: object.Key, Size: object.Size, LastModified: object.LastModified})
+		if len(objects) == limit {
+			cancel()
+			return objects, objects[len(objects)-1].Reference, nil
+		}
 	}
-	next := ""
-	if len(objects) == limit {
-		next = objects[len(objects)-1].Reference
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
 	}
-	return objects, next, nil
+	return objects, "", nil
 }
 
 var _ catalog.OriginalObjectStore = (*MinIOObjectStore)(nil)

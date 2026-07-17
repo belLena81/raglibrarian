@@ -22,7 +22,7 @@ func TestCatalogBounds(t *testing.T) {
 }
 
 func TestPrivateMetricsAddress(t *testing.T) {
-	for _, address := range []string{"127.0.0.1:9092", "10.0.0.10:9092", "[::1]:9092"} {
+	for _, address := range []string{"127.0.0.1:9092", "0.0.0.0:9092", "10.0.0.10:9092", "[::1]:9092", "[::]:9092"} {
 		if _, err := privateMetricsAddress(address); err != nil {
 			t.Errorf("privateMetricsAddress(%q): %v", address, err)
 		}

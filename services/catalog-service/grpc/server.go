@@ -155,6 +155,10 @@ func uploadFailureReason(err error) string {
 		return "upload_too_large"
 	case errors.Is(err, catalog.ErrUploadCapacity):
 		return "upload_capacity_exhausted"
+	case errors.Is(err, catalog.ErrObjectStorageUnavailable):
+		return "object_storage_unavailable"
+	case errors.Is(err, catalog.ErrObjectReceiptMismatch):
+		return "object_receipt_mismatch"
 	case errors.Is(err, catalog.ErrInvalidPagination):
 		return "invalid_pagination"
 	case errors.Is(err, catalog.ErrNotFound):

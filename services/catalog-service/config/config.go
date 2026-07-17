@@ -173,7 +173,7 @@ func privateMetricsAddress(value string) (string, error) {
 		return value, nil
 	}
 	ip := net.ParseIP(host)
-	if ip == nil || (!ip.IsLoopback() && !ip.IsPrivate()) {
+	if ip == nil || (!ip.IsUnspecified() && !ip.IsLoopback() && !ip.IsPrivate()) {
 		return "", fmt.Errorf("CATALOG_METRICS_ADDR must use a private address")
 	}
 	return value, nil

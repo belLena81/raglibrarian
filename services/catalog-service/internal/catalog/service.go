@@ -27,12 +27,14 @@ const (
 )
 
 var (
-	ErrInvalidPDF        = errors.New("invalid PDF")
-	ErrInvalidPagination = errors.New("invalid pagination")
-	ErrUploadTooLarge    = errors.New("upload too large")
-	ErrUploadCapacity    = errors.New("upload capacity exhausted")
-	ErrNotFound          = errors.New("book not found")
-	ErrInvalidStream     = errors.New("invalid upload stream")
+	ErrInvalidPDF               = errors.New("invalid PDF")
+	ErrInvalidPagination        = errors.New("invalid pagination")
+	ErrUploadTooLarge           = errors.New("upload too large")
+	ErrUploadCapacity           = errors.New("upload capacity exhausted")
+	ErrObjectStorageUnavailable = errors.New("object storage unavailable")
+	ErrObjectReceiptMismatch    = errors.New("object storage receipt mismatch")
+	ErrNotFound                 = errors.New("book not found")
+	ErrInvalidStream            = errors.New("invalid upload stream")
 )
 
 // UploadInput carries only trusted actor data and immutable metadata.
@@ -144,7 +146,7 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 	}
 	if receipt.Size != reader.size || receipt.ChecksumCRC32C == "" {
 		s.deleteObject(objectReference)
-		return Book{}, errors.New("object storage receipt mismatch")
+		return Book{}, ErrObjectReceiptMismatch
 	}
 	now := s.now()
 	bookID, err := s.newID()
@@ -269,7 +271,10 @@ func sanitizeUploadError(err error) error {
 	if errors.Is(err, ErrUploadTooLarge) {
 		return ErrUploadTooLarge
 	}
-	return errors.New("object storage unavailable")
+	if errors.Is(err, ErrObjectReceiptMismatch) {
+		return ErrObjectReceiptMismatch
+	}
+	return ErrObjectStorageUnavailable
 }
 
 func generatedID() (string, error) {

@@ -6,7 +6,10 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"io"
+	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,6 +109,30 @@ func TestGRPCDeadlineIsHonored(t *testing.T) {
 	defer cancel()
 	_, err := catalogv1.NewCatalogServiceClient(conn).Check(ctx, &catalogv1.CheckRequest{})
 	assert.Equal(t, codes.DeadlineExceeded, status.Code(err))
+}
+
+func TestCatalogMetricsReachableOnlyWithinBackendNetwork(t *testing.T) {
+	requireContractTests(t)
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://catalog-service:9092/metrics", nil)
+	require.NoError(t, err)
+	response, err := http.DefaultClient.Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	require.NoError(t, err)
+	output := string(body)
+	for _, series := range []string{
+		"catalog_outbox_claim_failures_total ",
+		"catalog_reconciliation_scanned_total ",
+		"catalog_postgres_ready ",
+		"catalog_minio_ready ",
+	} {
+		assert.Contains(t, output, series)
+	}
+	for _, forbidden := range []string{"{", "originals/", "actor", "request", "error", "title", "author"} {
+		assert.NotContains(t, strings.ToLower(output), forbidden)
+	}
 }
 
 func requireContractTests(t *testing.T) {

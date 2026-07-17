@@ -62,6 +62,47 @@ func TestMinIOObjectStoreCleansFailedMultipartUploads(t *testing.T) {
 	})
 }
 
+func TestMinIOObjectStoreListsBoundedContinuation(t *testing.T) {
+	if os.Getenv("CATALOG_MINIO_INTEGRATION") != "true" {
+		t.Skip("CATALOG_MINIO_INTEGRATION is required")
+	}
+
+	client := integrationMinIOClient(t)
+	bucket := os.Getenv("CATALOG_MINIO_BUCKET")
+	store := NewMinIOObjectStore(client, bucket)
+	prefix := "originals/zz-listing-" + randomSuffix(t) + "/"
+	keys := []string{prefix + "a.pdf", prefix + "b.pdf", prefix + "c.pdf"}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	for _, key := range keys {
+		if _, err := client.PutObject(ctx, bucket, key, strings.NewReader("x"), 1, minio.PutObjectOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cleanupCancel()
+		for _, key := range keys {
+			_ = client.RemoveObject(cleanupCtx, bucket, key, minio.RemoveObjectOptions{})
+		}
+	})
+
+	first, cursor, err := store.ListCompleted(ctx, "originals/", prefix, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 2 || first[0].Reference != keys[0] || first[1].Reference != keys[1] || cursor != keys[1] {
+		t.Fatalf("first page = %#v, cursor = %q", first, cursor)
+	}
+	second, _, err := store.ListCompleted(ctx, "originals/", cursor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) == 0 || second[0].Reference != keys[2] {
+		t.Fatalf("second page = %#v, cursor = %q", second, cursor)
+	}
+}
+
 func integrationMinIOClient(t *testing.T) *minio.Client {
 	t.Helper()
 	endpoint := os.Getenv("CATALOG_MINIO_ENDPOINT")

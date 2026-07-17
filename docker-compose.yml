@@ -222,6 +222,7 @@ services:
     build: { context: ., args: { SERVICE: catalog-service } }
     environment:
       CATALOG_GRPC_ADDR: ":50052"
+      CATALOG_METRICS_ADDR: "0.0.0.0:9092"
       CATALOG_POSTGRES_DSN_FILE: /run/secrets/catalog_runtime_dsn
       CATALOG_MINIO_ENDPOINT: minio:9000
       # Plain HTTP is an explicit local-only exception on the isolated storage network.
@@ -253,6 +254,8 @@ services:
       # keep them off the shared backend network until TLS is provisioned.
       - catalog-storage
       - catalog-broker
+    expose:
+      - "9092"
     depends_on:
       catalog-migrate:
         condition: service_completed_successfully

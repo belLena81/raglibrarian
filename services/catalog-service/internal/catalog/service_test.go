@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 )
@@ -114,11 +116,48 @@ func TestUploadBookDeletesObjectWhenStorageReceiptDoesNotMatch(t *testing.T) {
 		Actor:    Actor{UserID: "actor", Role: "librarian", Status: "active"},
 		Reader:   bytes.NewBufferString("%PDF-1.7\nbody"),
 	})
-	if err == nil {
-		t.Fatal("expected receipt mismatch")
+	if !errors.Is(err, ErrObjectReceiptMismatch) {
+		t.Fatalf("error = %v", err)
 	}
 	if len(objects.objects.objects) != 0 {
 		t.Fatalf("objects = %d", len(objects.objects.objects))
+	}
+}
+
+func TestSanitizeUploadErrorPreservesStorageSentinels(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		err  error
+		want error
+	}{
+		{name: "receipt mismatch", err: fmt.Errorf("wrapped: %w", ErrObjectReceiptMismatch), want: ErrObjectReceiptMismatch},
+		{name: "storage unavailable", err: fmt.Errorf("wrapped: %w", ErrObjectStorageUnavailable), want: ErrObjectStorageUnavailable},
+		{name: "unknown storage error", err: errors.New("minio object originals/private.pdf unavailable"), want: ErrObjectStorageUnavailable},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := sanitizeUploadError(testCase.err); !errors.Is(got, testCase.want) {
+				t.Fatalf("sanitizeUploadError() = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestUploadBookCompensatesAndSanitizesStorageUnavailable(t *testing.T) {
+	objects := &unavailableObjectStore{}
+	service := NewService(NewMemoryRepository(), objects, 1024)
+	_, err := service.UploadBook(context.Background(), UploadInput{
+		Metadata: BookMetadata{Title: "Title", Author: "Author", Year: 2026},
+		Actor:    Actor{UserID: "actor", Role: "librarian", Status: "active"},
+		Reader:   bytes.NewBufferString("%PDF-1.7\nbody"),
+	})
+	if !errors.Is(err, ErrObjectStorageUnavailable) {
+		t.Fatalf("error = %v", err)
+	}
+	if !objects.deleted {
+		t.Fatal("storage failure was not compensated")
+	}
+	if strings.Contains(err.Error(), "originals/") {
+		t.Fatal("storage error exposed object reference")
 	}
 }
 
@@ -169,6 +208,17 @@ func (s *receiptMismatchObjectStore) Put(ctx context.Context, key string, reader
 
 func (s *receiptMismatchObjectStore) Delete(ctx context.Context, key string) error {
 	return s.objects.Delete(ctx, key)
+}
+
+type unavailableObjectStore struct{ deleted bool }
+
+func (s *unavailableObjectStore) Put(context.Context, string, io.Reader) (ObjectReceipt, error) {
+	return ObjectReceipt{}, fmt.Errorf("minio originals/private.pdf: %w", ErrObjectStorageUnavailable)
+}
+
+func (s *unavailableObjectStore) Delete(context.Context, string) error {
+	s.deleted = true
+	return nil
 }
 
 func TestListBooksRejectsMalformedCursorAsPagination(t *testing.T) {
