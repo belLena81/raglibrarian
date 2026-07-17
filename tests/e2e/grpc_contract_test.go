@@ -58,6 +58,47 @@ func TestGRPCIdentityRejectsUnknownClientCertificate(t *testing.T) {
 	assert.Equal(t, codes.PermissionDenied, status.Code(err))
 }
 
+func TestGRPCCatalogRejectsNonEdgeClientCertificates(t *testing.T) {
+	requireContractTests(t)
+	target := envOr("CATALOG_GRPC_ADDR", "catalog-service:50052")
+	for _, certificate := range []struct {
+		name    string
+		certEnv string
+		keyEnv  string
+	}{
+		{name: "catalog service", certEnv: "CATALOG_TLS_CERT_FILE", keyEnv: "CATALOG_TLS_KEY_FILE"},
+		{name: "unknown client", certEnv: "UNKNOWN_TLS_CERT_FILE", keyEnv: "UNKNOWN_TLS_KEY_FILE"},
+	} {
+		t.Run(certificate.name, func(t *testing.T) {
+			conn := dialMTLS(t, target, "catalog-service", certificate.certEnv, certificate.keyEnv)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			_, err := catalogv1.NewCatalogServiceClient(conn).ListBooks(ctx, &catalogv1.ListBooksRequest{})
+
+			assert.Equal(t, codes.PermissionDenied, status.Code(err))
+		})
+	}
+}
+
+func TestGRPCCatalogEnforcesForwardedActorPolicy(t *testing.T) {
+	requireContractTests(t)
+	conn := dialMTLS(t, envOr("CATALOG_GRPC_ADDR", "catalog-service:50052"), "catalog-service", "EDGE_TLS_CERT_FILE", "EDGE_TLS_KEY_FILE")
+	client := catalogv1.NewCatalogServiceClient(conn)
+
+	for _, request := range []*catalogv1.ListBooksRequest{
+		{Actor: &catalogv1.Actor{UserId: "reader", Role: "reader", Status: "pending"}},
+		{Actor: &catalogv1.Actor{UserId: "librarian", Role: "librarian", Status: "inactive"}},
+		{Actor: &catalogv1.Actor{UserId: "unknown", Role: "unknown", Status: "active"}},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := client.ListBooks(ctx, request)
+		cancel()
+
+		assert.Equal(t, codes.PermissionDenied, status.Code(err))
+	}
+}
+
 func TestGRPCDeadlineIsHonored(t *testing.T) {
 	requireContractTests(t)
 	conn := dialMTLS(t, envOr("CATALOG_GRPC_ADDR", "catalog-service:50052"), "catalog-service", "EDGE_TLS_CERT_FILE", "EDGE_TLS_KEY_FILE")

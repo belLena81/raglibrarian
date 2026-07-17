@@ -111,6 +111,9 @@ func mapError(err error) error {
 	if status.Code(err) == codes.NotFound {
 		return handler.ErrBookNotFound
 	}
+	if status.Code(err) == codes.PermissionDenied {
+		return handler.ErrBookUnauthorized
+	}
 	if status.Code(err) == codes.ResourceExhausted && status.Convert(err).Message() == "upload capacity exhausted" {
 		return handler.ErrBookCapacityExhausted
 	}

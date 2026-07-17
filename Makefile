@@ -4,7 +4,7 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-generate build run-edge-api run-identity run-catalog dev local-run local-stop tidy e2e migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 bootstrap-verifier compose-config ui-check ui-audit secret-scan dockerfile-lint image-build image-scan security-check full-gates integration-gates smtp-url
+.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-generate build run-edge-api run-identity run-catalog dev local-run local-stop tidy e2e contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 bootstrap-verifier compose-config ui-check ui-audit secret-scan dockerfile-lint image-build image-scan security-check full-gates integration-gates smtp-url
 
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
 HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
@@ -163,6 +163,14 @@ contract-test: _require_root
 	trap 'COMPOSE_PROJECT_NAME=$$project docker compose --profile test down -v --remove-orphans' EXIT; \
 	COMPOSE_PROJECT_NAME=$$project docker compose --profile test build contract-tests && \
 	COMPOSE_PROJECT_NAME=$$project docker compose --profile test run --rm contract-tests
+
+minio-runtime-test: _require_root
+	@project=raglibrarian-minio-runtime-test; \
+	trap 'COMPOSE_PROJECT_NAME=$$project docker compose --profile minio-runtime-test down -v --remove-orphans' EXIT; \
+	COMPOSE_PROJECT_NAME=$$project docker compose --profile minio-runtime-test build catalog-minio-runtime-tests && \
+	COMPOSE_PROJECT_NAME=$$project docker compose --profile minio-runtime-test up -d --wait minio && \
+	COMPOSE_PROJECT_NAME=$$project docker compose --profile minio-runtime-test run --rm minio-bootstrap && \
+	COMPOSE_PROJECT_NAME=$$project docker compose --profile minio-runtime-test run --rm catalog-minio-runtime-tests
 
 # ── Database ──────────────────────────────────────────────────────────────────
 # Uses psql directly — no migrate CLI dependency.

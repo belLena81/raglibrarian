@@ -121,16 +121,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	}()
 	go func() {
 		defer workers.Done()
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				updateHealth()
-			}
-		}
+		runHealthUpdates(workerCtx, time.Second, updateHealth)
 	}()
 	go func() {
 		defer workers.Done()

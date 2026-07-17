@@ -24,7 +24,8 @@ RUN apk add --no-cache protobuf protobuf-dev \
 
 FROM builder AS contract-tests
 RUN go -C /src/tests/e2e mod download \
-    && go -C /src/services/identity-service mod download
+    && go -C /src/services/identity-service mod download \
+    && go -C /src/services/catalog-service mod download
 ENTRYPOINT ["/bin/sh", "-ec"]
 CMD ["go -C /src/tests/e2e test -v -tags=e2e -run '^TestGRPC' ./... && go -C /src/services/identity-service test -v -tags=integration ./repository && go -C /src/services/identity-service test -v -tags=integration ./migrations"]
 

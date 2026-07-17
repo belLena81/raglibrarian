@@ -336,8 +336,6 @@ services:
       args: { SERVICE: edge-api }
     environment:
       IDENTITY_GRPC_ADDR: identity-service:50051
-      IDENTITY_POSTGRES_DSN_FILE: /run/secrets/identity_runtime_dsn
-      IDENTITY_MIGRATION_POSTGRES_DSN_FILE: /run/secrets/identity_migration_dsn
       CATALOG_GRPC_ADDR: catalog-service:50052
       GRPC_CONTRACT_TESTS: "true"
       EDGE_VERIFY_KEY_FILE: /run/secrets/edge_verify_key
@@ -350,8 +348,6 @@ services:
       UNKNOWN_TLS_KEY_FILE: /run/secrets/unknown_tls_key
       GOCACHE: /tmp/go-build
     secrets:
-      - identity_runtime_dsn
-      - identity_migration_dsn
       - edge_verify_key
       - internal_ca
       - edge_tls_cert
@@ -367,6 +363,32 @@ services:
         condition: service_healthy
       catalog-service:
         condition: service_healthy
+
+  catalog-minio-runtime-tests:
+    <<: *job-hardening
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=1g
+    profiles: ["minio-runtime-test"]
+    build:
+      context: .
+      target: contract-tests
+      args: { SERVICE: catalog-service }
+    environment:
+      CATALOG_MINIO_INTEGRATION: "true"
+      CATALOG_MINIO_ENDPOINT: minio:9000
+      CATALOG_MINIO_BUCKET: original-books
+      CATALOG_MINIO_ACCESS_KEY_FILE: /run/secrets/catalog_minio_access_key
+      CATALOG_MINIO_SECRET_KEY_FILE: /run/secrets/catalog_minio_secret_key
+      GOCACHE: /tmp/go-build
+    secrets:
+      - catalog_minio_access_key
+      - catalog_minio_secret_key
+    networks:
+      - catalog-storage
+    depends_on:
+      minio-bootstrap:
+        condition: service_completed_successfully
+    command: ["go -C /src/services/catalog-service test -v -tags=miniointegration ./repository"]
 
 volumes:
   postgres_data:

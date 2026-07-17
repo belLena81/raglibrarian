@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 
@@ -31,16 +32,29 @@ func (s *MinIOObjectStore) Put(ctx context.Context, key string, reader io.Reader
 		Checksum:    minio.ChecksumCRC32C,
 	})
 	if err != nil {
+		s.cleanupFailedPut(key)
 		return catalog.ObjectReceipt{}, fmt.Errorf("put original: %w", err)
 	}
 	stored, err := s.client.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{Checksum: true})
 	if err != nil {
+		s.cleanupFailedPut(key)
 		return catalog.ObjectReceipt{}, fmt.Errorf("verify original: %w", err)
 	}
 	if stored.Size != receipt.Size || receipt.ChecksumCRC32C == "" || stored.ChecksumCRC32C != receipt.ChecksumCRC32C {
+		s.cleanupFailedPut(key)
 		return catalog.ObjectReceipt{}, fmt.Errorf("verify original: receipt mismatch")
 	}
 	return catalog.ObjectReceipt{Size: stored.Size, ChecksumCRC32C: stored.ChecksumCRC32C}, nil
+}
+
+// cleanupFailedPut uses its own bounded context because the upload context can
+// already be cancelled when a multipart reader fails. Object keys are generated
+// per upload, so cleanup cannot affect another request's object.
+func (s *MinIOObjectStore) cleanupFailedPut(key string) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = s.client.RemoveIncompleteUpload(cleanupCtx, s.bucket, key)
+	_ = s.client.RemoveObject(cleanupCtx, s.bucket, key, minio.RemoveObjectOptions{})
 }
 
 func (s *MinIOObjectStore) Delete(ctx context.Context, key string) error {

@@ -159,6 +159,7 @@ func (h *BooksHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 var ErrBookNotFound = errors.New("book not found")
+var ErrBookUnauthorized = errors.New("book actor is not authorized")
 var ErrBookTooLarge = errors.New("book upload too large")
 var ErrBookUnsupportedMediaType = errors.New("unsupported book media type")
 var ErrBookCapacityExhausted = errors.New("book upload capacity exhausted")
@@ -171,6 +172,8 @@ func mapBookError(err error) (int, string, string) {
 		return http.StatusUnsupportedMediaType, "unsupported_media_type", "unsupported media type"
 	case errors.Is(err, ErrBookCapacityExhausted):
 		return http.StatusTooManyRequests, "upload_capacity_exhausted", "upload capacity exhausted"
+	case errors.Is(err, ErrBookUnauthorized):
+		return http.StatusForbidden, "book_forbidden", "book forbidden"
 	case errors.Is(err, ErrInvalidBookRequest):
 		return http.StatusBadRequest, "invalid_upload", "invalid upload"
 	default:

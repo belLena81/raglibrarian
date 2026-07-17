@@ -18,7 +18,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"regexp"
@@ -64,6 +66,17 @@ type errorResponse struct {
 	RequestID string `json:"request_id"`
 }
 
+type book struct {
+	ID               string `json:"id"`
+	Title            string `json:"title"`
+	Author           string `json:"author"`
+	ProcessingStatus string `json:"processing_status"`
+}
+
+type bookPage struct {
+	Books []book `json:"books"`
+}
+
 func baseURL() string {
 	if value := os.Getenv("E2E_BASE_URL"); value != "" {
 		return strings.TrimRight(value, "/")
@@ -94,6 +107,35 @@ func request(t *testing.T, method, path string, body any, token string) *http.Re
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	return resp
+}
+
+func uploadBook(t *testing.T, token string) *http.Response {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	metadataHeader := textproto.MIMEHeader{}
+	metadataHeader.Set("Content-Disposition", `form-data; name="metadata"`)
+	metadataHeader.Set("Content-Type", "application/json")
+	metadataPart, err := writer.CreatePart(metadataHeader)
+	require.NoError(t, err)
+	_, err = metadataPart.Write([]byte("{\"title\":\"E2E Catalog Book\",\"author\":\"E2E Author\",\"year\":2026,\"tags\":[\"e2e\"]}"))
+	require.NoError(t, err)
+	fileHeader := textproto.MIMEHeader{}
+	fileHeader.Set("Content-Disposition", `form-data; name="file"; filename="book.pdf"`)
+	fileHeader.Set("Content-Type", "application/pdf")
+	filePart, err := writer.CreatePart(fileHeader)
+	require.NoError(t, err)
+	_, err = filePart.Write([]byte("%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n"))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL()+"/books", &body)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	return resp
@@ -576,6 +618,41 @@ func TestMilestone2IdentityLifecycle(t *testing.T) {
 		actual := getMe(t, approvedSession.Token)
 		assert.Equal(t, "librarian", actual.Role)
 		assert.Equal(t, "active", actual.Status)
+
+		t.Run("catalog workflow stays behind Edge and Catalog role policy", func(t *testing.T) {
+			uploaded := uploadBook(t, approvedSession.Token)
+			requireStatus(t, http.StatusCreated, uploaded)
+			assertPrivateNoStore(t, uploaded)
+			var created book
+			decodeJSON(t, uploaded, &created)
+			require.NotEmpty(t, created.ID)
+			assert.Equal(t, "E2E Catalog Book", created.Title)
+			assert.Equal(t, "pending", created.ProcessingStatus)
+
+			readerEmail := uniqueEmail("catalog-reader")
+			register(t, "Catalog Reader", readerEmail, "reader")
+			verifyEmail(t, readerEmail)
+			readerSession := login(t, readerEmail)
+
+			forbidden := uploadBook(t, readerSession.Token)
+			requireStatus(t, http.StatusForbidden, forbidden)
+			requireSanitizedError(t, forbidden)
+
+			listed := request(t, http.MethodGet, "/books?page_size=1", nil, readerSession.Token)
+			requireStatus(t, http.StatusOK, listed)
+			assertPrivateNoStore(t, listed)
+			var page bookPage
+			decodeJSON(t, listed, &page)
+			require.NotEmpty(t, page.Books)
+
+			got := request(t, http.MethodGet, "/books/"+url.PathEscape(created.ID), nil, readerSession.Token)
+			requireStatus(t, http.StatusOK, got)
+			assertPrivateNoStore(t, got)
+			var fetched book
+			decodeJSON(t, got, &fetched)
+			assert.Equal(t, created.ID, fetched.ID)
+			assert.Equal(t, created.Title, fetched.Title)
+		})
 
 		rejectedLogin := request(t, http.MethodPost, "/auth/login", map[string]string{
 			"email": rejectedEmail, "password": validPassword,
