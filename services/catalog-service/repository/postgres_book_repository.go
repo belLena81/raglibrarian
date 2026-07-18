@@ -215,6 +215,11 @@ func scanBook(row rowScanner) (catalog.Book, error) {
 }
 
 type cursor struct {
+	CreatedAt time.Time
+	ID        string
+}
+
+type cursorToken struct {
 	Version   int    `json:"v"`
 	CreatedAt string `json:"created_at"`
 	ID        string `json:"id"`
@@ -225,17 +230,18 @@ func decodeCursor(token string) (cursor, error) {
 	if err != nil {
 		return cursor{}, err
 	}
-	var value cursor
+	var value cursorToken
 	if err = json.Unmarshal(raw, &value); err != nil || value.Version != 1 || value.ID == "" {
 		return cursor{}, errors.New("invalid cursor")
 	}
-	if _, err = time.Parse(time.RFC3339Nano, value.CreatedAt); err != nil {
+	createdAt, err := time.Parse(time.RFC3339Nano, value.CreatedAt)
+	if err != nil {
 		return cursor{}, err
 	}
-	return value, nil
+	return cursor{CreatedAt: createdAt, ID: value.ID}, nil
 }
 
 func encodeCursor(book catalog.Book) string {
-	raw, _ := json.Marshal(cursor{Version: 1, CreatedAt: book.CreatedAt.UTC().Format(time.RFC3339Nano), ID: book.ID})
+	raw, _ := json.Marshal(cursorToken{Version: 1, CreatedAt: book.CreatedAt.UTC().Format(time.RFC3339Nano), ID: book.ID})
 	return base64.RawURLEncoding.EncodeToString(raw)
 }

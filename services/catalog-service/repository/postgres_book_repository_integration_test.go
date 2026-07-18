@@ -3,6 +3,7 @@
 package repository
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -13,6 +14,64 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestListPaginatesBooksWithSharedTimestamp(t *testing.T) {
+	if os.Getenv("CATALOG_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set CATALOG_POSTGRES_INTEGRATION=true inside the Compose test network")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	dsn := readCatalogIntegrationSecret(t, "CATALOG_POSTGRES_DSN_FILE")
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect catalog database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	prefix := randomIntegrationID(t)
+	bookIDs := []string{prefix + "-a", prefix + "-b", prefix + "-c"}
+	createdAt := time.Date(2100, time.January, 1, 0, 0, 0, 123456000, time.UTC)
+	for _, bookID := range bookIDs {
+		_, err = pool.Exec(ctx, `INSERT INTO catalog.books
+            (id,title,author,year,tags,processing_status,created_at,object_reference,checksum,byte_size,media_type,actor_id)
+            VALUES ($1,'Pagination fixture','Catalog integration',2026,ARRAY['pagination'],'indexed',$2,$3,$4,1,'application/pdf','integration-test')`,
+			bookID, createdAt, "books/"+bookID+".pdf", bytes.Repeat([]byte{1}, 32))
+		if err != nil {
+			t.Fatalf("insert book fixture %q: %v", bookID, err)
+		}
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if _, cleanupErr := pool.Exec(cleanupCtx, "DELETE FROM catalog.books WHERE id=ANY($1)", bookIDs); cleanupErr != nil {
+			t.Errorf("delete book fixtures: %v", cleanupErr)
+		}
+	})
+
+	repository := NewPostgresBookRepository(pool)
+	firstPage, nextPageToken, err := repository.List(ctx, 2, "")
+	if err != nil {
+		t.Fatalf("list first page: %v", err)
+	}
+	if len(firstPage) != 2 || firstPage[0].ID != bookIDs[2] || firstPage[1].ID != bookIDs[1] {
+		t.Fatalf("first page = %#v, want IDs [%s %s]", firstPage, bookIDs[2], bookIDs[1])
+	}
+	if nextPageToken == "" {
+		t.Fatal("first page token is empty")
+	}
+
+	secondPage, finalPageToken, err := repository.List(ctx, 2, nextPageToken)
+	if err != nil {
+		t.Fatalf("list second page: %v", err)
+	}
+	if len(secondPage) != 1 || secondPage[0].ID != bookIDs[0] {
+		t.Fatalf("second page = %#v, want ID [%s]", secondPage, bookIDs[0])
+	}
+	if finalPageToken != "" {
+		t.Fatalf("final page token = %q, want empty", finalPageToken)
+	}
+}
 
 func TestOutboxBacklogScansFractionalOldestAge(t *testing.T) {
 	if os.Getenv("CATALOG_POSTGRES_INTEGRATION") != "true" {
