@@ -342,6 +342,7 @@ services:
       IDENTITY_POSTGRES_DSN_FILE: /run/secrets/identity_runtime_dsn
       IDENTITY_MIGRATION_POSTGRES_DSN_FILE: /run/secrets/identity_migration_dsn
       CATALOG_OUTBOX_INTEGRATION: "true"
+      CATALOG_POSTGRES_INTEGRATION: "true"
       CATALOG_POSTGRES_DSN_FILE: /run/secrets/catalog_runtime_dsn
       CATALOG_RABBITMQ_URI_FILE: /run/secrets/catalog_rabbitmq_uri
       CATALOG_GRPC_ADDR: catalog-service:50052

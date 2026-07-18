@@ -123,4 +123,5 @@ type PasswordResetStore interface {
 	RequestPasswordReset(context.Context, []byte, []byte, time.Time, SealedEmail) (bool, error)
 	VerifyPasswordReset(context.Context, []byte, []byte, []byte, time.Time) ([]domain.Role, error)
 	CompletePasswordReset(context.Context, []byte, domain.Role, string, time.Time) error
+	CleanupPasswordResetChallenges(context.Context, time.Time) (int64, error)
 }

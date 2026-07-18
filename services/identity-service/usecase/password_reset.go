@@ -81,6 +81,11 @@ func (s *PasswordResetService) Complete(ctx context.Context, grant, roleValue, p
 	return s.store.CompletePasswordReset(ctx, s.mac("grant", grant), role, hash, s.clock.Now().UTC())
 }
 
+// Cleanup removes password-reset challenges that can no longer be used.
+func (s *PasswordResetService) Cleanup(ctx context.Context) (int64, error) {
+	return s.store.CleanupPasswordResetChallenges(ctx, s.clock.Now().UTC())
+}
+
 func (s *PasswordResetService) mac(kind, value string) []byte {
 	h := hmac.New(sha256.New, s.key)
 	_, _ = h.Write([]byte("raglibrarian/password-reset/" + kind + "/v1\x00"))

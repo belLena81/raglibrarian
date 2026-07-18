@@ -40,7 +40,7 @@ func (c *Client) UploadBook(ctx context.Context, metadata handler.BookMetadata, 
 	if err != nil {
 		return handler.Book{}, err
 	}
-	if err = stream.Send(&catalogv1.UploadBookRequest{Frame: &catalogv1.UploadBookRequest_Metadata{Metadata: &catalogv1.UploadBookMetadata{Title: metadata.Title, Author: metadata.Author, Year: int32(metadata.Year), Tags: metadata.Tags, Actor: actorProto(actor)}}}); err != nil { // #nosec G115 -- handler validation bounds valid years.
+	if err = stream.Send(&catalogv1.UploadBookRequest{Frame: &catalogv1.UploadBookRequest_Metadata{Metadata: &catalogv1.UploadBookMetadata{Title: metadata.Title, Author: metadata.Author, Year: metadata.Year, Tags: metadata.Tags, Actor: actorProto(actor)}}}); err != nil {
 		return handler.Book{}, err
 	}
 	buffer := make([]byte, 64<<10)

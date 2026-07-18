@@ -29,7 +29,7 @@ var ErrInvalidPagination = errors.New("invalid pagination")
 type BookMetadata struct {
 	Title  string   `json:"title"`
 	Author string   `json:"author"`
-	Year   int      `json:"year"`
+	Year   int32    `json:"year"`
 	Tags   []string `json:"tags"`
 }
 type Book struct {
@@ -196,6 +196,9 @@ func decodeBookMetadata(reader io.Reader, metadata *BookMetadata) error {
 		return ErrInvalidBookRequest
 	}
 	if strings.TrimSpace(metadata.Title) == "" || strings.TrimSpace(metadata.Author) == "" {
+		return ErrInvalidBookRequest
+	}
+	if metadata.Year < 0 || int64(metadata.Year) > int64(time.Now().UTC().Year()+1) {
 		return ErrInvalidBookRequest
 	}
 	return nil

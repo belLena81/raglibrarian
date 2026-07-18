@@ -108,7 +108,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	defer stopBackground()
 	go monitorDatabaseHealth(backgroundCtx, pool, healthServer)
 	go cleanupExpiredSessions(backgroundCtx, sessions, diagnostics)
-	go cleanupIdentityState(backgroundCtx, verificationService, approvalService, diagnostics)
+	go cleanupIdentityState(backgroundCtx, verificationService, approvalService, passwordResetService, diagnostics)
 	go deliverVerificationEmails(backgroundCtx, identityStore, protector, sender, diagnostics)
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.Serve(listener) }()

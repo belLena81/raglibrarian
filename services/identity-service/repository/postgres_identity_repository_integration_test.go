@@ -166,3 +166,58 @@ func TestPostgresIdentityRepositoryCleanupRejectedErasesIdentity(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, identityFields)
 }
+
+func TestPostgresIdentityRepositoryCleanupPasswordResetChallengesKeepsUsableChallenges(t *testing.T) {
+	dsn := integrationDSN(t)
+	if dsn == "" {
+		t.Skip("IDENTITY_POSTGRES_DSN is required for integration tests")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	fingerprints := [][]byte{
+		integrationFingerprint("expired-" + uuid.NewString()),
+		integrationFingerprint("consumed-" + uuid.NewString()),
+		integrationFingerprint("active-code-" + uuid.NewString()),
+		integrationFingerprint("active-grant-" + uuid.NewString()),
+	}
+	t.Cleanup(func() {
+		for _, fingerprint := range fingerprints {
+			_, _ = pool.Exec(context.Background(), `DELETE FROM identity.password_reset_challenges WHERE email_fingerprint=$1`, fingerprint)
+		}
+	})
+
+	insertChallenge := func(fingerprint []byte, expiresAt time.Time, grantExpiresAt *time.Time, consumedAt *time.Time) {
+		_, insertErr := pool.Exec(ctx, `
+			INSERT INTO identity.password_reset_challenges
+				(email_fingerprint, code_hash, expires_at, last_sent_at, grant_hash, grant_expires_at, consumed_at, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $4)
+		`, fingerprint, integrationFingerprint(uuid.NewString()), expiresAt, now, integrationFingerprint(uuid.NewString()), grantExpiresAt, consumedAt)
+		require.NoError(t, insertErr)
+	}
+	expired := now.Add(-time.Minute)
+	active := now.Add(time.Minute)
+	insertChallenge(fingerprints[0], expired, nil, nil)
+	insertChallenge(fingerprints[1], active, &active, &expired)
+	insertChallenge(fingerprints[2], active, &expired, nil)
+	insertChallenge(fingerprints[3], expired, &active, nil)
+
+	repository := NewPostgresIdentityRepository(pool)
+	cleaned, err := repository.CleanupPasswordResetChallenges(ctx, now)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), cleaned)
+
+	for _, fingerprint := range fingerprints[:2] {
+		var count int
+		require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM identity.password_reset_challenges WHERE email_fingerprint=$1`, fingerprint).Scan(&count))
+		require.Zero(t, count)
+	}
+	for _, fingerprint := range fingerprints[2:] {
+		var count int
+		require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM identity.password_reset_challenges WHERE email_fingerprint=$1`, fingerprint).Scan(&count))
+		require.Equal(t, 1, count)
+	}
+}

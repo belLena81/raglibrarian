@@ -81,3 +81,14 @@ func TestStreamServerInterceptorLogsAllowlistedOperationOnly(t *testing.T) {
 	assert.Equal(t, "Unavailable", logs.All()[0].ContextMap()["code"])
 	assert.NotContains(t, logs.All()[0].Message, "sensitive")
 }
+
+func TestWorkerFailedLogsPasswordResetCleanupStageOnly(t *testing.T) {
+	core, logs := observer.New(zapcore.WarnLevel)
+	recorder := New(zap.New(core))
+
+	recorder.WorkerFailed(StagePasswordResetCleanup)
+
+	require.Len(t, logs.All(), 1)
+	assert.Equal(t, "worker.operation.failed", logs.All()[0].Message)
+	assert.Equal(t, "password_reset_cleanup", logs.All()[0].ContextMap()["stage"])
+}

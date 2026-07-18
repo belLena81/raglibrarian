@@ -124,16 +124,15 @@ type rejectedCleaner interface {
 	CleanupRejected(context.Context) (int64, error)
 }
 
-func cleanupIdentityState(ctx context.Context, verifications verificationCleaner, rejected rejectedCleaner, diagnostics *diagnostic.Recorder) {
+type passwordResetCleaner interface {
+	Cleanup(context.Context) (int64, error)
+}
+
+func cleanupIdentityState(ctx context.Context, verifications verificationCleaner, rejected rejectedCleaner, passwordResets passwordResetCleaner, diagnostics *diagnostic.Recorder) {
 	cleanup := func() {
 		cleanupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		if _, err := verifications.Cleanup(cleanupCtx); err != nil {
-			diagnostics.WorkerFailed(diagnostic.StageVerificationCleanup)
-		}
-		if _, err := rejected.CleanupRejected(cleanupCtx); err != nil {
-			diagnostics.WorkerFailed(diagnostic.StageRejectedCleanup)
-		}
+		cleanupIdentityStateOnce(cleanupCtx, verifications, rejected, passwordResets, diagnostics)
 	}
 	cleanup()
 	ticker := time.NewTicker(time.Hour)
@@ -145,5 +144,17 @@ func cleanupIdentityState(ctx context.Context, verifications verificationCleaner
 		case <-ticker.C:
 			cleanup()
 		}
+	}
+}
+
+func cleanupIdentityStateOnce(ctx context.Context, verifications verificationCleaner, rejected rejectedCleaner, passwordResets passwordResetCleaner, diagnostics *diagnostic.Recorder) {
+	if _, err := verifications.Cleanup(ctx); err != nil {
+		diagnostics.WorkerFailed(diagnostic.StageVerificationCleanup)
+	}
+	if _, err := rejected.CleanupRejected(ctx); err != nil {
+		diagnostics.WorkerFailed(diagnostic.StageRejectedCleanup)
+	}
+	if _, err := passwordResets.Cleanup(ctx); err != nil {
+		diagnostics.WorkerFailed(diagnostic.StagePasswordResetCleanup)
 	}
 }

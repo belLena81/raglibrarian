@@ -27,7 +27,7 @@ RUN go -C /src/tests/e2e mod download \
     && go -C /src/services/identity-service mod download \
     && go -C /src/services/catalog-service mod download
 ENTRYPOINT ["/bin/sh", "-ec"]
-CMD ["grep -q '[^[:space:]]' \"$IDENTITY_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$IDENTITY_MIGRATION_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$CATALOG_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$CATALOG_RABBITMQ_URI_FILE\" && go -C /src/tests/e2e test -v -tags=e2e -run '^TestGRPC' ./... && go -C /src/services/identity-service test -v -tags=integration ./repository && go -C /src/services/identity-service test -v -tags=integration ./migrations && go -C /src/services/catalog-service test -v -tags=integration ./outbox"]
+CMD ["grep -q '[^[:space:]]' \"$IDENTITY_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$IDENTITY_MIGRATION_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$CATALOG_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$CATALOG_RABBITMQ_URI_FILE\" && go -C /src/tests/e2e test -count=1 -v -tags=e2e -run '^TestGRPC' ./... && go -C /src/services/identity-service test -count=1 -v -tags=integration ./repository && go -C /src/services/identity-service test -count=1 -v -tags=integration ./migrations && go -C /src/services/catalog-service test -count=1 -v -tags=integration ./repository && go -C /src/services/catalog-service test -count=1 -v -tags=integration ./outbox"]
 
 FROM gcr.io/distroless/static:nonroot
 COPY --from=builder /bin/service /service

@@ -514,6 +514,18 @@ func (r *PostgresIdentityRepository) CompletePasswordReset(ctx context.Context, 
 	return tx.Commit(ctx)
 }
 
+// CleanupPasswordResetChallenges removes consumed challenges and challenges
+// whose verification code and any issued reset grant have both expired.
+func (r *PostgresIdentityRepository) CleanupPasswordResetChallenges(ctx context.Context, now time.Time) (int64, error) {
+	result, err := r.pool.Exec(ctx, `DELETE FROM identity.password_reset_challenges
+		WHERE consumed_at IS NOT NULL
+			OR (expires_at <= $1 AND (grant_expires_at IS NULL OR grant_expires_at <= $1))`, now)
+	if err != nil {
+		return 0, fmt.Errorf("password reset: cleanup challenges: %w", err)
+	}
+	return result.RowsAffected(), nil
+}
+
 func hmacEqual(a, b []byte) bool { return len(a) == len(b) && subtle.ConstantTimeCompare(a, b) == 1 }
 
 func scanIdentityUser(row pgx.Row) (domain.User, error) {

@@ -147,7 +147,7 @@ func (r *PostgresBookRepository) ReferencesExist(ctx context.Context, references
 
 func (r *PostgresBookRepository) OutboxBacklog(ctx context.Context, now time.Time) (OutboxBacklog, error) {
 	var backlog OutboxBacklog
-	err := r.pool.QueryRow(ctx, `SELECT COUNT(*), COALESCE(EXTRACT(EPOCH FROM ($1 - MIN(occurred_at))), 0)
+	err := r.pool.QueryRow(ctx, `SELECT COUNT(*), COALESCE(FLOOR(EXTRACT(EPOCH FROM ($1 - MIN(occurred_at))))::bigint, 0::bigint)
         FROM catalog.outbox WHERE published_at IS NULL`, now).Scan(&backlog.Pending, &backlog.OldestAgeSecond)
 	if err != nil {
 		return OutboxBacklog{}, fmt.Errorf("catalog: outbox backlog: %w", err)

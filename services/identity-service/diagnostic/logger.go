@@ -15,13 +15,14 @@ type Stage string
 
 // Identity worker stages permitted in structured diagnostics.
 const (
-	StageSessionCleanup      Stage = "session_cleanup"
-	StageVerificationCleanup Stage = "verification_cleanup"
-	StageRejectedCleanup     Stage = "rejected_cleanup"
-	StageEmailClaim          Stage = "email_claim"
-	StageEmailMark           Stage = "email_mark"
-	StageEmailRetry          Stage = "email_retry"
-	StageEmailExhausted      Stage = "email_exhausted"
+	StageSessionCleanup       Stage = "session_cleanup"
+	StageVerificationCleanup  Stage = "verification_cleanup"
+	StageRejectedCleanup      Stage = "rejected_cleanup"
+	StagePasswordResetCleanup Stage = "password_reset_cleanup"
+	StageEmailClaim           Stage = "email_claim"
+	StageEmailMark            Stage = "email_mark"
+	StageEmailRetry           Stage = "email_retry"
+	StageEmailExhausted       Stage = "email_exhausted"
 )
 
 // Recorder emits allowlisted Identity lifecycle and worker diagnostics.
@@ -104,7 +105,7 @@ func (r *Recorder) WorkerCompleted(stage Stage) {
 
 func (s Stage) valid() bool {
 	switch s {
-	case StageSessionCleanup, StageVerificationCleanup, StageRejectedCleanup,
+	case StageSessionCleanup, StageVerificationCleanup, StageRejectedCleanup, StagePasswordResetCleanup,
 		StageEmailClaim, StageEmailMark, StageEmailRetry, StageEmailExhausted:
 		return true
 	default:
