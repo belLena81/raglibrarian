@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -142,10 +143,15 @@ func (h *BooksHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"books": page.Books, "next_page_token": page.NextPageToken})
 }
 func (h *BooksHandler) Get(w http.ResponseWriter, r *http.Request) {
+	bookID := chi.URLParam(r, "book_id")
+	if !validBookID(bookID) {
+		writeBookError(w, r, http.StatusBadRequest, "invalid_book_id", "invalid book ID")
+		return
+	}
 	principal, _ := middleware.PrincipalFromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	book, err := h.catalog.GetBook(ctx, chi.URLParam(r, "book_id"), catalogActor(principal))
+	book, err := h.catalog.GetBook(ctx, bookID, catalogActor(principal))
 	if err != nil {
 		if errors.Is(err, ErrBookNotFound) {
 			writeBookError(w, r, http.StatusNotFound, "book_not_found", "book not found")
@@ -156,6 +162,14 @@ func (h *BooksHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store, private")
 	writeJSON(w, http.StatusOK, book)
+}
+
+func validBookID(value string) bool {
+	if len(value) != 22 {
+		return false
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	return err == nil && len(decoded) == 16 && base64.RawURLEncoding.EncodeToString(decoded) == value
 }
 
 var ErrBookNotFound = errors.New("book not found")

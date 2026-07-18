@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	grpcmetadata "google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -30,10 +32,11 @@ func (c *Client) CheckReady(ctx context.Context) error {
 }
 
 func (c *Client) UploadBook(ctx context.Context, metadata handler.BookMetadata, actor handler.CatalogActor, correlationID string, reader io.Reader) (handler.Book, error) {
-	if !validRequestID(correlationID) {
+	var err error
+	ctx, err = withRequestID(ctx, correlationID)
+	if err != nil {
 		return handler.Book{}, handler.ErrInvalidBookRequest
 	}
-	ctx = grpcmetadata.AppendToOutgoingContext(ctx, "x-request-id", correlationID)
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	stream, err := c.service.UploadBook(ctx)
@@ -41,14 +44,14 @@ func (c *Client) UploadBook(ctx context.Context, metadata handler.BookMetadata, 
 		return handler.Book{}, err
 	}
 	if err = stream.Send(&catalogv1.UploadBookRequest{Frame: &catalogv1.UploadBookRequest_Metadata{Metadata: &catalogv1.UploadBookMetadata{Title: metadata.Title, Author: metadata.Author, Year: metadata.Year, Tags: metadata.Tags, Actor: actorProto(actor)}}}); err != nil {
-		return handler.Book{}, err
+		return receiveUploadResult(stream, err)
 	}
 	buffer := make([]byte, 64<<10)
 	for {
 		n, readErr := reader.Read(buffer)
 		if n > 0 {
 			if err = stream.Send(&catalogv1.UploadBookRequest{Frame: &catalogv1.UploadBookRequest_Chunk{Chunk: append([]byte(nil), buffer[:n]...)}}); err != nil {
-				return handler.Book{}, err
+				return receiveUploadResult(stream, err)
 			}
 		}
 		if errors.Is(readErr, io.EOF) {
@@ -57,6 +60,13 @@ func (c *Client) UploadBook(ctx context.Context, metadata handler.BookMetadata, 
 		if readErr != nil {
 			return handler.Book{}, readErr
 		}
+	}
+	return receiveUploadResult(stream, nil)
+}
+
+func receiveUploadResult(stream grpc.ClientStreamingClient[catalogv1.UploadBookRequest, catalogv1.UploadBookResponse], sendErr error) (handler.Book, error) {
+	if sendErr != nil && !errors.Is(sendErr, io.EOF) {
+		return handler.Book{}, mapError(sendErr)
 	}
 	response, err := stream.CloseAndRecv()
 	if err != nil {
@@ -72,7 +82,23 @@ func validRequestID(value string) bool {
 	decoded, err := hex.DecodeString(value)
 	return err == nil && len(decoded) == 16
 }
+
+func withRequestID(ctx context.Context, requestID string) (context.Context, error) {
+	if !validRequestID(requestID) {
+		return ctx, handler.ErrInvalidBookRequest
+	}
+	metadata, _ := grpcmetadata.FromOutgoingContext(ctx)
+	metadata = metadata.Copy()
+	metadata.Set("x-request-id", requestID)
+	return grpcmetadata.NewOutgoingContext(ctx, metadata), nil
+}
+
 func (c *Client) ListBooks(ctx context.Context, size int, token string, actor handler.CatalogActor) (handler.BookPage, error) {
+	var err error
+	ctx, err = withRequestID(ctx, chimiddleware.GetReqID(ctx))
+	if err != nil {
+		return handler.BookPage{}, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	response, err := c.service.ListBooks(ctx, &catalogv1.ListBooksRequest{PageSize: int32(size), PageToken: token, Actor: actorProto(actor)}) // #nosec G115 -- handler validation limits page size to 100.
@@ -86,6 +112,11 @@ func (c *Client) ListBooks(ctx context.Context, size int, token string, actor ha
 	return handler.BookPage{Books: books, NextPageToken: response.NextPageToken}, nil
 }
 func (c *Client) GetBook(ctx context.Context, id string, actor handler.CatalogActor) (handler.Book, error) {
+	var err error
+	ctx, err = withRequestID(ctx, chimiddleware.GetReqID(ctx))
+	if err != nil {
+		return handler.Book{}, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	response, err := c.service.GetBook(ctx, &catalogv1.GetBookRequest{BookId: id, Actor: actorProto(actor)})

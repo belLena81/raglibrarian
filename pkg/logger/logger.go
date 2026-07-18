@@ -195,7 +195,7 @@ var allowedDiagnosticValues = map[string]map[string]struct{}{
 		"upload_book": {}, "list_books": {}, "get_book": {},
 	},
 	"stage": {
-		"session_cleanup": {}, "verification_cleanup": {}, "rejected_cleanup": {}, "email_claim": {}, "email_mark": {}, "email_retry": {}, "email_exhausted": {},
+		"session_cleanup": {}, "verification_cleanup": {}, "rejected_cleanup": {}, "password_reset_cleanup": {}, "email_claim": {}, "email_mark": {}, "email_retry": {}, "email_exhausted": {},
 	},
 	"reason": {},
 	"reason_code": {

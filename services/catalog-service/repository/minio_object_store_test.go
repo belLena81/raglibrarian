@@ -2,15 +2,78 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+
+	"github.com/belLena81/raglibrarian/services/catalog-service/internal/catalog"
 )
+
+func TestMinIOObjectStorePutSanitizesReaderErrorsAfterCleanup(t *testing.T) {
+	privateReaderError := errors.New("private reader detail")
+	tests := []struct {
+		name       string
+		readerErr  error
+		wantErr    error
+		rejectErr  error
+		rejectText string
+	}{
+		{name: "oversized upload", readerErr: catalog.ErrUploadTooLarge, wantErr: catalog.ErrUploadTooLarge, rejectErr: catalog.ErrObjectStorageUnavailable},
+		{name: "unknown reader failure", readerErr: privateReaderError, wantErr: catalog.ErrObjectStorageUnavailable, rejectErr: privateReaderError, rejectText: privateReaderError.Error()},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var incompleteUploadCleanup atomic.Bool
+			var completedObjectCleanup atomic.Bool
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				switch {
+				case request.URL.Query().Has("location"):
+					_, _ = response.Write([]byte("<LocationConstraint xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">us-east-1</LocationConstraint>"))
+				case request.Method == http.MethodPost && request.URL.Query().Has("uploads"):
+					response.Header().Set("Content-Type", "application/xml")
+					_, _ = response.Write([]byte("<InitiateMultipartUploadResult><Bucket>original-books</Bucket><Key>originals/failed.pdf</Key><UploadId>upload-1</UploadId></InitiateMultipartUploadResult>"))
+				case request.Method == http.MethodDelete && request.URL.Query().Has("uploadId"):
+					response.WriteHeader(http.StatusNoContent)
+				case request.Method == http.MethodGet && request.URL.Query().Has("uploads"):
+					incompleteUploadCleanup.Store(true)
+					response.Header().Set("Content-Type", "application/xml")
+					_, _ = response.Write([]byte("<ListMultipartUploadsResult><Bucket>original-books</Bucket><Prefix>originals/failed.pdf</Prefix><MaxUploads>1000</MaxUploads><IsTruncated>false</IsTruncated></ListMultipartUploadsResult>"))
+				case request.Method == http.MethodDelete:
+					completedObjectCleanup.Store(true)
+					response.WriteHeader(http.StatusNoContent)
+				default:
+					t.Errorf("unexpected MinIO request: %s %s", request.Method, request.URL.String())
+					http.Error(response, "unexpected request", http.StatusInternalServerError)
+				}
+			}))
+			defer server.Close()
+
+			_, err := testMinIOStore(t, server).Put(context.Background(), "originals/failed.pdf", failingPutReader{err: test.readerErr})
+
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("error = %v, want %v", err, test.wantErr)
+			}
+			if errors.Is(err, test.rejectErr) {
+				t.Fatalf("error = %v, unexpectedly matches %v", err, test.rejectErr)
+			}
+			if test.rejectText != "" && strings.Contains(err.Error(), test.rejectText) {
+				t.Fatalf("error = %v, leaked private reader detail", err)
+			}
+			if !incompleteUploadCleanup.Load() || !completedObjectCleanup.Load() {
+				t.Fatal("failed upload did not attempt both incomplete and completed object cleanup")
+			}
+		})
+	}
+}
 
 func TestMinIOObjectStoreListCompletedHonorsLimit(t *testing.T) {
 	requests := 0
@@ -94,8 +157,9 @@ func testMinIOStore(t *testing.T, server *httptest.Server) *MinIOObjectStore {
 		t.Fatal(err)
 	}
 	client, err := minio.New(endpoint.Host, &minio.Options{
-		Creds:  credentials.NewStaticV4("access", "secret", ""),
-		Secure: false,
+		Creds:           credentials.NewStaticV4("access", "secret", ""),
+		Secure:          false,
+		TrailingHeaders: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -114,4 +178,13 @@ func writeListResponse(response http.ResponseWriter, keys []string, truncated bo
 		_, _ = response.Write([]byte("<Contents><Key>" + key + "</Key><LastModified>2026-07-17T00:00:00.000Z</LastModified><ETag>\"etag\"</ETag><Size>1</Size><StorageClass>STANDARD</StorageClass></Contents>"))
 	}
 	_, _ = response.Write([]byte("</ListBucketResult>"))
+}
+
+type failingPutReader struct {
+	err error
+}
+
+func (r failingPutReader) Read(target []byte) (int, error) {
+	target[0] = 'x'
+	return 1, r.err
 }

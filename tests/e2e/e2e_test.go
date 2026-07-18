@@ -638,6 +638,12 @@ func TestMilestone2IdentityLifecycle(t *testing.T) {
 			requireStatus(t, http.StatusForbidden, forbidden)
 			requireSanitizedError(t, forbidden)
 
+			invalidBookID := request(t, http.MethodGet, "/books/not-a-book-id", nil, readerSession.Token)
+			requireStatus(t, http.StatusBadRequest, invalidBookID)
+			invalidBookIDError := requireSanitizedError(t, invalidBookID)
+			assert.Equal(t, "invalid_book_id", invalidBookIDError.Code)
+			assert.Equal(t, invalidBookID.Header.Get("X-Request-ID"), invalidBookIDError.RequestID)
+
 			listed := request(t, http.MethodGet, "/books?page_size=1", nil, readerSession.Token)
 			requireStatus(t, http.StatusOK, listed)
 			assertPrivateNoStore(t, listed)

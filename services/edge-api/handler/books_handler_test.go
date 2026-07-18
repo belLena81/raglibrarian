@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
+
 	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
 	"github.com/belLena81/raglibrarian/services/edge-api/middleware"
@@ -149,4 +152,90 @@ func TestListMapsCatalogPaginationErrorToBadRequest(t *testing.T) {
 	if got := recorder.Body.String(); got == "" || !strings.Contains(got, "invalid_pagination") {
 		t.Fatalf("body = %s", got)
 	}
+}
+
+type bookLookupCatalog struct {
+	getCalls int
+	bookID   string
+}
+
+func (*bookLookupCatalog) UploadBook(context.Context, handler.BookMetadata, handler.CatalogActor, string, io.Reader) (handler.Book, error) {
+	return handler.Book{}, errors.New("unexpected upload")
+}
+
+func (*bookLookupCatalog) ListBooks(context.Context, int, string, handler.CatalogActor) (handler.BookPage, error) {
+	return handler.BookPage{}, errors.New("unexpected list")
+}
+
+func (c *bookLookupCatalog) GetBook(_ context.Context, bookID string, _ handler.CatalogActor) (handler.Book, error) {
+	c.getCalls++
+	c.bookID = bookID
+	return handler.Book{ID: bookID}, nil
+}
+
+func (*bookLookupCatalog) CheckReady(context.Context) error { return nil }
+
+const booksTestRequestID = "0123456789abcdef0123456789abcdef"
+
+func TestGetRejectsInvalidBookIDBeforeCallingCatalog(t *testing.T) {
+	tests := []struct {
+		name   string
+		bookID string
+	}{
+		{name: "empty", bookID: ""},
+		{name: "short", bookID: "short"},
+		{name: "oversized", bookID: strings.Repeat("A", 4096)},
+		{name: "invalid character", bookID: "AAAAAAAAAAAAAAAAAAAAA!"},
+		{name: "non canonical", bookID: "AAAAAAAAAAAAAAAAAAAAAB"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			catalog := &bookLookupCatalog{}
+			h := handler.NewBooksHandler(catalog)
+			request := bookGetRequest(test.bookID)
+			recorder := httptest.NewRecorder()
+
+			h.Get(recorder, request)
+
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+			}
+			if !strings.Contains(recorder.Body.String(), `"code":"invalid_book_id"`) || !strings.Contains(recorder.Body.String(), `"request_id":"`+booksTestRequestID+`"`) {
+				t.Fatalf("body = %s, want sanitized invalid_book_id with request ID", recorder.Body.String())
+			}
+			if cacheControl := recorder.Header().Get("Cache-Control"); !strings.Contains(cacheControl, "no-store") || !strings.Contains(cacheControl, "private") {
+				t.Fatalf("Cache-Control = %q, want private no-store", cacheControl)
+			}
+			if catalog.getCalls != 0 {
+				t.Fatalf("Catalog get calls = %d, want 0", catalog.getCalls)
+			}
+		})
+	}
+}
+
+func TestGetForwardsCanonicalBookID(t *testing.T) {
+	const bookID = "AAAAAAAAAAAAAAAAAAAAAA"
+	catalog := &bookLookupCatalog{}
+	h := handler.NewBooksHandler(catalog)
+	recorder := httptest.NewRecorder()
+
+	h.Get(recorder, bookGetRequest(bookID))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if catalog.getCalls != 1 || catalog.bookID != bookID {
+		t.Fatalf("Catalog get = calls %d, ID %q; want one call with %q", catalog.getCalls, catalog.bookID, bookID)
+	}
+}
+
+func bookGetRequest(bookID string) *http.Request {
+	request := httptest.NewRequest(http.MethodGet, "/books/lookup", nil)
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("book_id", bookID)
+	ctx := context.WithValue(request.Context(), chi.RouteCtxKey, routeContext)
+	ctx = context.WithValue(ctx, chimiddleware.RequestIDKey, booksTestRequestID)
+	ctx = middleware.WithClaims(ctx, auth.Claims{UserID: "reader", Role: auth.RoleReader})
+	return request.WithContext(ctx)
 }

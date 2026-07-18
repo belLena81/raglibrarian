@@ -36,6 +36,9 @@ func (s *MinIOObjectStore) Put(ctx context.Context, key string, reader io.Reader
 		if ctx.Err() != nil {
 			return catalog.ObjectReceipt{}, ctx.Err()
 		}
+		if errors.Is(err, catalog.ErrUploadTooLarge) {
+			return catalog.ObjectReceipt{}, fmt.Errorf("put original: %w", catalog.ErrUploadTooLarge)
+		}
 		return catalog.ObjectReceipt{}, fmt.Errorf("put original: %w", catalog.ErrObjectStorageUnavailable)
 	}
 	stored, err := s.client.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{Checksum: true})

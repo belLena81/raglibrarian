@@ -3,13 +3,17 @@ package catalogclient
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	grpcmetadata "google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
@@ -81,5 +85,157 @@ func TestMapErrorMapsCatalogAuthorizationFailure(t *testing.T) {
 
 	if err != handler.ErrBookUnauthorized {
 		t.Fatalf("mapError() = %v, want %v", err, handler.ErrBookUnauthorized)
+	}
+}
+
+type catalogClientStub struct {
+	catalogv1.CatalogServiceClient
+	upload func(context.Context, ...grpc.CallOption) (grpc.ClientStreamingClient[catalogv1.UploadBookRequest, catalogv1.UploadBookResponse], error)
+	list   func(context.Context, *catalogv1.ListBooksRequest, ...grpc.CallOption) (*catalogv1.ListBooksResponse, error)
+	get    func(context.Context, *catalogv1.GetBookRequest, ...grpc.CallOption) (*catalogv1.GetBookResponse, error)
+}
+
+func (s *catalogClientStub) UploadBook(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[catalogv1.UploadBookRequest, catalogv1.UploadBookResponse], error) {
+	return s.upload(ctx, opts...)
+}
+
+func (s *catalogClientStub) ListBooks(ctx context.Context, request *catalogv1.ListBooksRequest, opts ...grpc.CallOption) (*catalogv1.ListBooksResponse, error) {
+	return s.list(ctx, request, opts...)
+}
+
+func (s *catalogClientStub) GetBook(ctx context.Context, request *catalogv1.GetBookRequest, opts ...grpc.CallOption) (*catalogv1.GetBookResponse, error) {
+	return s.get(ctx, request, opts...)
+}
+
+type earlyClosedUploadStream struct {
+	grpc.ClientStream
+	sends      int
+	closeCalls int
+	failAt     int
+	sendErr    error
+	terminal   error
+}
+
+func (s *earlyClosedUploadStream) Send(*catalogv1.UploadBookRequest) error {
+	s.sends++
+	if s.sends == s.failAt {
+		return s.sendErr
+	}
+	return nil
+}
+
+func (s *earlyClosedUploadStream) CloseAndRecv() (*catalogv1.UploadBookResponse, error) {
+	s.closeCalls++
+	return nil, s.terminal
+}
+
+func TestUploadBookRecoversTerminalStatusAfterSendEOF(t *testing.T) {
+	tests := []struct {
+		name     string
+		failAt   int
+		terminal error
+		want     error
+	}{
+		{name: "oversized upload after metadata send", failAt: 1, terminal: status.Error(codes.ResourceExhausted, "upload too large"), want: handler.ErrBookTooLarge},
+		{name: "capacity exhausted after chunk send", failAt: 2, terminal: status.Error(codes.ResourceExhausted, "upload capacity exhausted"), want: handler.ErrBookCapacityExhausted},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stream := &earlyClosedUploadStream{failAt: test.failAt, sendErr: io.EOF, terminal: test.terminal}
+			service := &catalogClientStub{upload: func(context.Context, ...grpc.CallOption) (grpc.ClientStreamingClient[catalogv1.UploadBookRequest, catalogv1.UploadBookResponse], error) {
+				return stream, nil
+			}}
+
+			_, err := New(service).UploadBook(context.Background(), handler.BookMetadata{}, handler.CatalogActor{}, testRequestID, bytes.NewBufferString("%PDF"))
+
+			if !errors.Is(err, test.want) {
+				t.Fatalf("UploadBook() error = %v, want %v", err, test.want)
+			}
+			if stream.closeCalls != 1 {
+				t.Fatalf("CloseAndRecv calls = %d, want 1", stream.closeCalls)
+			}
+		})
+	}
+}
+
+func TestUploadBookMapsNonEOFSendStatusWithoutClosingAgain(t *testing.T) {
+	stream := &earlyClosedUploadStream{failAt: 1, sendErr: status.Error(codes.PermissionDenied, "actor is not authorized")}
+	service := &catalogClientStub{upload: func(context.Context, ...grpc.CallOption) (grpc.ClientStreamingClient[catalogv1.UploadBookRequest, catalogv1.UploadBookResponse], error) {
+		return stream, nil
+	}}
+
+	_, err := New(service).UploadBook(context.Background(), handler.BookMetadata{}, handler.CatalogActor{}, testRequestID, bytes.NewBufferString("%PDF"))
+
+	if !errors.Is(err, handler.ErrBookUnauthorized) {
+		t.Fatalf("UploadBook() error = %v, want %v", err, handler.ErrBookUnauthorized)
+	}
+	if stream.closeCalls != 0 {
+		t.Fatalf("CloseAndRecv calls = %d, want 0", stream.closeCalls)
+	}
+}
+
+func TestCatalogReadsForwardValidatedRequestID(t *testing.T) {
+	var listRequestIDs []string
+	var getRequestIDs []string
+	service := &catalogClientStub{
+		list: func(ctx context.Context, _ *catalogv1.ListBooksRequest, _ ...grpc.CallOption) (*catalogv1.ListBooksResponse, error) {
+			metadata, _ := grpcmetadata.FromOutgoingContext(ctx)
+			listRequestIDs = metadata.Get("x-request-id")
+			return &catalogv1.ListBooksResponse{}, nil
+		},
+		get: func(ctx context.Context, _ *catalogv1.GetBookRequest, _ ...grpc.CallOption) (*catalogv1.GetBookResponse, error) {
+			metadata, _ := grpcmetadata.FromOutgoingContext(ctx)
+			getRequestIDs = metadata.Get("x-request-id")
+			return &catalogv1.GetBookResponse{Book: &catalogv1.Book{}}, nil
+		},
+	}
+	ctx := grpcmetadata.NewOutgoingContext(context.Background(), grpcmetadata.Pairs(
+		"x-request-id", "stale-request-id",
+		"x-request-id", "duplicate-request-id",
+	))
+	ctx = context.WithValue(ctx, chimiddleware.RequestIDKey, testRequestID)
+	client := New(service)
+
+	if _, err := client.ListBooks(ctx, 25, "", handler.CatalogActor{}); err != nil {
+		t.Fatalf("ListBooks() error = %v", err)
+	}
+	if _, err := client.GetBook(ctx, "AAAAAAAAAAAAAAAAAAAAAA", handler.CatalogActor{}); err != nil {
+		t.Fatalf("GetBook() error = %v", err)
+	}
+	if len(listRequestIDs) != 1 || listRequestIDs[0] != testRequestID {
+		t.Fatalf("ListBooks request IDs = %q, want [%q]", listRequestIDs, testRequestID)
+	}
+	if len(getRequestIDs) != 1 || getRequestIDs[0] != testRequestID {
+		t.Fatalf("GetBook request IDs = %q, want [%q]", getRequestIDs, testRequestID)
+	}
+}
+
+func TestCatalogReadsRejectInvalidInternalRequestIDBeforeRPC(t *testing.T) {
+	listCalls := 0
+	getCalls := 0
+	service := &catalogClientStub{
+		list: func(context.Context, *catalogv1.ListBooksRequest, ...grpc.CallOption) (*catalogv1.ListBooksResponse, error) {
+			listCalls++
+			return &catalogv1.ListBooksResponse{}, nil
+		},
+		get: func(context.Context, *catalogv1.GetBookRequest, ...grpc.CallOption) (*catalogv1.GetBookResponse, error) {
+			getCalls++
+			return &catalogv1.GetBookResponse{}, nil
+		},
+	}
+
+	for _, requestID := range []string{"", strings.Repeat("a", 31), strings.Repeat("A", 32), strings.Repeat("z", 32)} {
+		ctx := context.WithValue(context.Background(), chimiddleware.RequestIDKey, requestID)
+		client := New(service)
+		if _, err := client.ListBooks(ctx, 25, "", handler.CatalogActor{}); !errors.Is(err, handler.ErrInvalidBookRequest) {
+			t.Fatalf("ListBooks() with request ID %q error = %v, want invalid request", requestID, err)
+		}
+		if _, err := client.GetBook(ctx, "AAAAAAAAAAAAAAAAAAAAAA", handler.CatalogActor{}); !errors.Is(err, handler.ErrInvalidBookRequest) {
+			t.Fatalf("GetBook() with request ID %q error = %v, want invalid request", requestID, err)
+		}
+	}
+	if listCalls != 0 || getCalls != 0 {
+		t.Fatalf("Catalog read calls = list %d, get %d; want zero", listCalls, getCalls)
 	}
 }

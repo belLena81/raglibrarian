@@ -45,6 +45,20 @@ func TestNewWithWriterRetainsOnlySafeFieldsInSortedOrder(t *testing.T) {
 	assert.NotContains(t, line, "assert.AnError")
 }
 
+func TestNewWithWriterAllowsOnlyKnownPasswordResetCleanupStage(t *testing.T) {
+	var output bytes.Buffer
+	log, err := logger.NewWithWriter(&output)
+	require.NoError(t, err)
+
+	log.Warn("worker.operation.failed", zap.String("stage", "password_reset_cleanup"))
+	assert.Contains(t, output.String(), "worker operation failed stage=password_reset_cleanup")
+
+	output.Reset()
+	log.Warn("worker.operation.failed", zap.String("stage", "future_cleanup"))
+	assert.Contains(t, output.String(), "worker operation failed")
+	assert.NotContains(t, output.String(), "stage=")
+}
+
 func TestNewWithWriterUsesFixedSingleLineFormat(t *testing.T) {
 	var output bytes.Buffer
 	log, err := logger.NewWithWriter(&output)
