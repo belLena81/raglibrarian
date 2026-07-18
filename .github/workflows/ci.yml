@@ -98,6 +98,8 @@ jobs:
           docker compose up -d --build --wait --wait-timeout 180
       - name: Run live mTLS service contracts
         run: make contract-test
+      - name: Verify MinIO multipart cleanup
+        run: make minio-runtime-test
       - name: Run black-box tests
         run: |
           E2E_BOOTSTRAP_CODE="$(cat .dev/secrets/e2e_bootstrap_code)" \

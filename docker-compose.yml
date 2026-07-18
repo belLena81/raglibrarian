@@ -339,6 +339,11 @@ services:
       args: { SERVICE: edge-api }
     environment:
       IDENTITY_GRPC_ADDR: identity-service:50051
+      IDENTITY_POSTGRES_DSN_FILE: /run/secrets/identity_runtime_dsn
+      IDENTITY_MIGRATION_POSTGRES_DSN_FILE: /run/secrets/identity_migration_dsn
+      CATALOG_OUTBOX_INTEGRATION: "true"
+      CATALOG_POSTGRES_DSN_FILE: /run/secrets/catalog_runtime_dsn
+      CATALOG_RABBITMQ_URI_FILE: /run/secrets/catalog_rabbitmq_uri
       CATALOG_GRPC_ADDR: catalog-service:50052
       GRPC_CONTRACT_TESTS: "true"
       EDGE_VERIFY_KEY_FILE: /run/secrets/edge_verify_key
@@ -351,6 +356,10 @@ services:
       UNKNOWN_TLS_KEY_FILE: /run/secrets/unknown_tls_key
       GOCACHE: /tmp/go-build
     secrets:
+      - identity_runtime_dsn
+      - identity_migration_dsn
+      - catalog_runtime_dsn
+      - catalog_rabbitmq_uri
       - edge_verify_key
       - internal_ca
       - edge_tls_cert
@@ -361,10 +370,13 @@ services:
       - unknown_tls_key
     networks:
       - backend
+      - catalog-broker
     depends_on:
       identity-service:
         condition: service_healthy
       catalog-service:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
 
   catalog-minio-runtime-tests:

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -62,6 +64,97 @@ func TestUploadBookRejectsInactiveOrReaderActor(t *testing.T) {
 			t.Fatalf("actor %+v error = %v", actor, err)
 		}
 	}
+}
+
+func TestUploadBookCapacityIncludesReadersBlockedBeforeFirstByte(t *testing.T) {
+	service := NewServiceWithOptions(NewMemoryRepository(), NewMemoryObjectStore(), ServiceOptions{
+		MaxBytes:          1024,
+		UploadConcurrency: 1,
+	})
+	firstReader := newBlockedReader("%PDF-1.7\nfirst")
+	firstResult := make(chan error, 1)
+	t.Cleanup(func() {
+		firstReader.unblock()
+	})
+	go func() {
+		_, err := service.UploadBook(context.Background(), validUploadInput(firstReader))
+		firstResult <- err
+	}()
+
+	select {
+	case <-firstReader.started:
+	case <-time.After(time.Second):
+		t.Fatal("first upload did not start reading")
+	}
+	secondReader := &countingReader{reader: strings.NewReader("%PDF-1.7\nsecond")}
+	_, err := service.UploadBook(context.Background(), validUploadInput(secondReader))
+	if !errors.Is(err, ErrUploadCapacity) {
+		t.Fatalf("second upload error = %v, want %v", err, ErrUploadCapacity)
+	}
+	if reads := secondReader.reads.Load(); reads != 0 {
+		t.Fatalf("second reader reads = %d, want 0", reads)
+	}
+
+	firstReader.unblock()
+	select {
+	case err = <-firstResult:
+		if err != nil {
+			t.Fatalf("first upload error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first upload did not complete after reader release")
+	}
+	if _, err = service.UploadBook(context.Background(), validUploadInput(strings.NewReader("%PDF-1.7\nthird"))); err != nil {
+		t.Fatalf("upload after release error = %v", err)
+	}
+}
+
+func validUploadInput(reader io.Reader) UploadInput {
+	return UploadInput{
+		Metadata: BookMetadata{Title: "Title", Author: "Author", Year: 2026},
+		Actor:    Actor{UserID: "actor", Role: "librarian", Status: "active"},
+		Reader:   reader,
+	}
+}
+
+type blockedReader struct {
+	reader   io.Reader
+	started  chan struct{}
+	release  chan struct{}
+	once     sync.Once
+	released sync.Once
+}
+
+func (r *blockedReader) unblock() {
+	r.released.Do(func() {
+		close(r.release)
+	})
+}
+
+func newBlockedReader(body string) *blockedReader {
+	return &blockedReader{
+		reader:  strings.NewReader(body),
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (r *blockedReader) Read(buffer []byte) (int, error) {
+	r.once.Do(func() {
+		close(r.started)
+		<-r.release
+	})
+	return r.reader.Read(buffer)
+}
+
+type countingReader struct {
+	reader io.Reader
+	reads  atomic.Int32
+}
+
+func (r *countingReader) Read(buffer []byte) (int, error) {
+	r.reads.Add(1)
+	return r.reader.Read(buffer)
 }
 
 func TestMemoryRepositoryUsesNewestFirstTimestampAndIDCursor(t *testing.T) {

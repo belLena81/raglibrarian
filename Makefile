@@ -160,9 +160,9 @@ e2e: _require_root
 .PHONY: contract-test
 contract-test: _require_root
 	@project=raglibrarian-contract-test; \
-	trap 'COMPOSE_PROJECT_NAME=$$project docker compose --profile test down -v --remove-orphans' EXIT; \
-	COMPOSE_PROJECT_NAME=$$project docker compose --profile test build contract-tests && \
-	COMPOSE_PROJECT_NAME=$$project docker compose --profile test run --rm contract-tests
+	trap 'MAILPIT_UI_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile test down -v --remove-orphans' EXIT; \
+	MAILPIT_UI_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile test build identity-service catalog-service contract-tests && \
+	MAILPIT_UI_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile test run --rm contract-tests
 
 minio-runtime-test: _require_root
 	@project=raglibrarian-minio-runtime-test; \
@@ -268,7 +268,7 @@ full-gates: fmt-check vet lint test test-race arch-check vuln proto-check compos
 
 integration-gates: compose-config
 	docker compose up -d --build --wait --wait-timeout 180
-	$(MAKE) contract-test e2e
+	$(MAKE) contract-test minio-runtime-test e2e
 
 smtp-url:
 	@echo "Mailpit is available only on http://127.0.0.1:$${MAILPIT_UI_PORT:-8025}"

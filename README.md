@@ -4,9 +4,9 @@
 The eventual product will ingest books, retrieve evidence, and return answers
 with traceable book, chapter, page, and passage citations.
 
-The repository implements Milestone 2 and has an in-progress Milestone 3
-Catalog upload/publication slice. It does not ingest files, query Qdrant, call
-an LLM, or return real retrieval results.
+The repository implements Milestones 2 and 3, including the Catalog
+upload/publication slice. It does not extract or chunk files, query Qdrant,
+call an LLM, or return real retrieval results.
 
 ## Architecture decision
 
@@ -17,7 +17,7 @@ than first being placed in the public API and extracted later.
 ```text
 client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
                          |
-                         +-- mTLS gRPC --> catalog-service (health + Check scaffold)
+                         +-- mTLS gRPC --> catalog-service (upload/list/get)
 ```
 
 - **edge-api** owns public HTTP, request validation, token verification, and
@@ -65,15 +65,16 @@ race, contract, integration, and security checks pass.
 | Real query/retrieval | Not implemented | `/query` is authenticated and returns `501`; it never fabricates citations. |
 | Sessions, refresh tokens, revocation | Implemented | Refresh tokens rotate in an `HttpOnly`, `SameSite=Strict` cookie; logout/replay invalidates the server-side session family. |
 | Abuse controls | Implemented | Bounded in-process trusted-client-aware limits protect registration, verification, setup, login, and refresh. |
-| Catalog PDF upload/list/get | In progress | Role-gated upload, pagination, MinIO persistence, and outbox foundations exist; the remaining durability/security gates are not complete. |
+| Catalog PDF upload/list/get | Implemented | Role-gated streaming upload, deterministic pagination, private MinIO persistence, durable publication, reconciliation, and fixed-label metrics. |
 | Ingestion, vectors, LLM | Not implemented | Future additive services. |
 
 ## Delivery roadmap
 
-Milestone 2 is complete. Milestone 3 is in progress: it adds role-gated PDF
-upload, Catalog persistence, MinIO storage, deterministic pagination, and an
-outbox foundation. It must not be considered delivered until the routed-publish
-confirmation, reconciliation, metrics, and integration/privacy gates pass.
+Milestones 2 and 3 are complete. Milestone 3 adds role-gated PDF upload,
+Catalog persistence, MinIO storage, deterministic pagination, routed publisher
+confirmation, durable outbox retry, reconciliation, and private fixed-label
+metrics. Contract coverage verifies PostgreSQL migrations and repositories,
+broker-loss recovery, mTLS policy, and the complete Edge workflow.
 
 The canonical service-by-service roadmap, data ownership, Lambda/worker
 deployment policy, contracts, and acceptance gates are in
@@ -199,7 +200,8 @@ make vet         # per-module go vet
 make lint        # golangci-lint per module
 make vuln        # govulncheck per module
 make proto-check # Buf contract lint
-make contract-test # live Identity/Catalog mTLS and database contracts
+make contract-test # live mTLS, database, and broker-recovery contracts
+make minio-runtime-test # live object-storage cleanup and pagination contracts
 make ui-check    # UI install, lint, type-check, and production build
 make security-check # secret, Dockerfile, and service-image scans
 make full-gates  # complete local static, test, UI, and security gate

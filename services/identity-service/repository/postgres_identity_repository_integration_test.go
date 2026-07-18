@@ -86,7 +86,7 @@ func TestPostgresIdentityRepositoryRejectedLibrarianReappliesOnlyAfterVerificati
 	email := fmt.Sprintf("reapplication-%s@example.test", suffix)
 	fingerprint := integrationFingerprint(suffix)
 	userID := uuid.NewString()
-	verifiedAt := time.Now().UTC().Add(-24 * time.Hour)
+	verifiedAt := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Microsecond)
 	_, err = pool.Exec(ctx, `INSERT INTO identity.users
         (id,display_name,email,email_fingerprint,password_hash,role,status,email_verified_at,reviewed_by,reviewed_at,created_at)
         VALUES ($1,'Rejected',$2,$3,'old-hash','librarian','rejected',$4,$5,$6,$4)`,
@@ -128,7 +128,7 @@ func TestPostgresIdentityRepositoryRejectedLibrarianReappliesOnlyAfterVerificati
 	var persistedVerifiedAt time.Time
 	require.NoError(t, pool.QueryRow(ctx, `SELECT reviewed_by,email_verified_at FROM identity.users WHERE id=$1`, userID).Scan(&reviewedBy, &persistedVerifiedAt))
 	require.Nil(t, reviewedBy)
-	require.Equal(t, verifiedAt, persistedVerifiedAt)
+	require.Equal(t, verifiedAt, persistedVerifiedAt.UTC())
 }
 
 func TestPostgresIdentityRepositoryCleanupRejectedErasesIdentity(t *testing.T) {

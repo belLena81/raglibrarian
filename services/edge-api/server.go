@@ -59,7 +59,9 @@ func NewRouter(
 		verificationLimit := middleware.FixedWindowRateLimit(30, time.Hour, 10000)
 		loginLimit := middleware.FixedWindowRateLimit(30, time.Minute, 10000)
 		resendLimit := middleware.FixedWindowRateLimit(5, time.Hour, 10000)
-		resetLimit := middleware.FixedWindowRateLimit(5, time.Hour, 10000)
+		resetRequestLimit := middleware.FixedWindowRateLimit(5, time.Hour, 10000)
+		resetVerifyLimit := middleware.FixedWindowRateLimit(5, time.Hour, 10000)
+		resetCompleteLimit := middleware.FixedWindowRateLimit(5, time.Hour, 10000)
 		router.Group(func(router chi.Router) {
 			router.Use(registrationLimit)
 			router.Post("/register", authHandler.Register)
@@ -77,9 +79,15 @@ func NewRouter(
 			router.Post("/verification/resend", authHandler.ResendVerification)
 		})
 		router.Group(func(router chi.Router) {
-			router.Use(resetLimit)
+			router.Use(resetRequestLimit)
 			router.Post("/password-reset/request", authHandler.RequestPasswordReset)
+		})
+		router.Group(func(router chi.Router) {
+			router.Use(resetVerifyLimit)
 			router.Post("/password-reset/verify", authHandler.VerifyPasswordReset)
+		})
+		router.Group(func(router chi.Router) {
+			router.Use(resetCompleteLimit)
 			router.Post("/password-reset/complete", authHandler.CompletePasswordReset)
 		})
 		router.Post("/refresh", authHandler.Refresh)

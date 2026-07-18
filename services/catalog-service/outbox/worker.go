@@ -47,29 +47,34 @@ func Run(ctx context.Context, store store, publisher publisher, recorder Recorde
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			events, err := store.ClaimOutbox(ctx, now.UTC(), 30*time.Second)
-			if err != nil {
-				recorder.OutboxClaimFailed()
-				continue
+			publishPending(ctx, store, publisher, recorder, now)
+		}
+	}
+}
+
+func publishPending(ctx context.Context, store store, publisher publisher, recorder Recorder, now time.Time) {
+	now = now.UTC()
+	events, err := store.ClaimOutbox(ctx, now, 30*time.Second)
+	if err != nil {
+		recorder.OutboxClaimFailed()
+		return
+	}
+	for _, event := range events {
+		publishCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err = publisher.PublishWithContext(publishCtx, exchange, routingKey, true, false, amqp091.Publishing{
+			ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent,
+			MessageId: event.ID, Type: event.Type, Body: event.Payload,
+		})
+		cancel()
+		if err != nil {
+			recorder.OutboxPublishFailed()
+			if retryErr := store.RetryOutbox(ctx, event.ID, now, event.Attempts); retryErr != nil {
+				recorder.OutboxRetryFailed()
 			}
-			for _, event := range events {
-				publishCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				err = publisher.PublishWithContext(publishCtx, exchange, routingKey, true, false, amqp091.Publishing{
-					ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent,
-					MessageId: event.ID, Type: event.Type, Body: event.Payload,
-				})
-				cancel()
-				if err != nil {
-					recorder.OutboxPublishFailed()
-					if retryErr := store.RetryOutbox(ctx, event.ID, now.UTC(), event.Attempts); retryErr != nil {
-						recorder.OutboxRetryFailed()
-					}
-					continue
-				}
-				if markErr := store.MarkPublished(ctx, event.ID, now.UTC()); markErr != nil {
-					recorder.OutboxMarkFailed()
-				}
-			}
+			continue
+		}
+		if markErr := store.MarkPublished(ctx, event.ID, now); markErr != nil {
+			recorder.OutboxMarkFailed()
 		}
 	}
 }

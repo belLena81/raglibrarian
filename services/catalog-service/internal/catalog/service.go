@@ -120,15 +120,15 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 	if input.Actor.UserID != "" && !input.Actor.CanUpload() {
 		return Book{}, ErrUnauthorizedActor
 	}
-	prefix := make([]byte, 5)
-	if _, err := io.ReadFull(input.Reader, prefix); err != nil || string(prefix) != "%PDF-" {
-		return Book{}, ErrInvalidPDF
-	}
 	select {
 	case s.uploads <- struct{}{}:
 		defer func() { <-s.uploads }()
 	default:
 		return Book{}, ErrUploadCapacity
+	}
+	prefix := make([]byte, 5)
+	if _, err := io.ReadFull(input.Reader, prefix); err != nil || string(prefix) != "%PDF-" {
+		return Book{}, ErrInvalidPDF
 	}
 	key, err := s.newID()
 	if err != nil {

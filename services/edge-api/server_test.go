@@ -1,6 +1,7 @@
 package edgeapi_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"net/http"
@@ -84,6 +85,85 @@ func TestRouterPanicsWithoutSessionValidator(t *testing.T) {
 	assert.Panics(t, func() {
 		edgeapi.NewRouter(handler.NewQueryHandler(diagnostics), handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{}), handler.NewHealthHandler(identity), handler.NewSetupHandler(identity), handler.NewAdminHandler(identity, handler.NewPendingHub(10)), verifier, nil, diagnostics, edgeapi.RouterConfig{})
 	})
+}
+
+func TestPasswordResetStagesHaveIndependentRateLimits(t *testing.T) {
+	identity := &passwordResetIdentity{verifyErrors: []error{
+		authflow.ErrInvalidPasswordReset,
+		authflow.ErrInvalidPasswordReset,
+		authflow.ErrInvalidPasswordReset,
+		nil,
+	}}
+	router := newTestRouter(t, identity)
+
+	assertPostStatus(t, router, "/auth/password-reset/request", `{"email":"reader@example.test"}`, http.StatusAccepted)
+	for range 3 {
+		assertPostStatus(t, router, "/auth/password-reset/verify", `{"email":"reader@example.test","code":"wrong"}`, http.StatusBadRequest)
+	}
+	assertPostStatus(t, router, "/auth/password-reset/verify", `{"email":"reader@example.test","code":"123456"}`, http.StatusOK)
+	assertPostStatus(t, router, "/auth/password-reset/complete", `{"reset_grant":"grant","role":"reader","password":"password-1234"}`, http.StatusNoContent)
+
+	stages := []struct {
+		name       string
+		path       string
+		body       string
+		wantStatus int
+	}{
+		{name: "request", path: "/auth/password-reset/request", body: `{"email":"reader@example.test"}`, wantStatus: http.StatusAccepted},
+		{name: "verify", path: "/auth/password-reset/verify", body: `{"email":"reader@example.test","code":"123456"}`, wantStatus: http.StatusOK},
+		{name: "complete", path: "/auth/password-reset/complete", body: `{"reset_grant":"grant","role":"reader","password":"password-1234"}`, wantStatus: http.StatusNoContent},
+	}
+	for _, stage := range stages {
+		t.Run(stage.name, func(t *testing.T) {
+			router := newTestRouter(t, &passwordResetIdentity{})
+			for range 5 {
+				assertPostStatus(t, router, stage.path, stage.body, stage.wantStatus)
+			}
+			assertPostStatus(t, router, stage.path, stage.body, http.StatusTooManyRequests)
+		})
+	}
+}
+
+type passwordResetIdentity struct {
+	fakeIdentity
+	verifyErrors []error
+	verifyCalls  int
+}
+
+func (i *passwordResetIdentity) VerifyPasswordReset(context.Context, string, string) (string, []string, error) {
+	if i.verifyCalls >= len(i.verifyErrors) {
+		return "grant", []string{"reader"}, nil
+	}
+	err := i.verifyErrors[i.verifyCalls]
+	i.verifyCalls++
+	return "grant", []string{"reader"}, err
+}
+
+func newTestRouter(t *testing.T, identity *passwordResetIdentity) http.Handler {
+	t.Helper()
+	verifier, err := testVerifier()
+	require.NoError(t, err)
+	diagnostics := diagnostic.New(zaptest.NewLogger(t))
+	return edgeapi.NewRouter(
+		handler.NewQueryHandler(diagnostics),
+		handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: true}),
+		handler.NewHealthHandler(identity),
+		handler.NewSetupHandler(identity),
+		handler.NewAdminHandler(identity, handler.NewPendingHub(10)),
+		verifier,
+		identity,
+		diagnostics,
+		edgeapi.RouterConfig{},
+	)
+}
+
+func assertPostStatus(t *testing.T, router http.Handler, path, body string, want int) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+	assert.Equal(t, want, recorder.Code, "%s response: %s", path, recorder.Body.String())
 }
 
 func testVerifier() (*auth.Verifier, error) {
