@@ -71,14 +71,14 @@ race, contract, integration, and security checks pass.
 | Sessions, refresh tokens, revocation | Implemented | Refresh tokens rotate in an `HttpOnly`, `SameSite=Strict` cookie; logout/replay invalidates the server-side session family. |
 | Abuse controls | Implemented | Bounded in-process trusted-client-aware limits protect registration, verification, setup, login, and refresh. |
 | Catalog PDF upload/list/get | Implemented | Role-gated streaming upload, deterministic pagination, private MinIO persistence, durable publication, reconciliation, and fixed-label metrics. |
-| PDF ingestion and live status | Implemented | Event-driven, idempotent worker/Lambda adapters, sandboxed streamed extraction, deterministic chunk artifacts, Catalog status projection, and authenticated SSE with polling reconciliation. |
+| PDF ingestion and live status | Release candidate | Event-driven, idempotent worker/Lambda adapters, sandboxed streamed extraction, deterministic chunk artifacts, Catalog status projection, and authenticated SSE with polling reconciliation; protected AWS staging validation remains required. |
 | Vectors, retrieval, LLM | Not implemented | Future additive services. |
 
 ## Delivery roadmap
 
-Milestones 2 and 3 are complete. Milestone 4 is implemented and passes the
-local quality and contract gates; AWS SAM/staging and controlled restart/DLQ
-acceptance remain release gates. Milestone 4 adds asynchronous PDF
+Milestones 2 and 3 are complete. Milestone 4 is a release candidate; protected
+AWS staging plus controlled restart/DLQ acceptance remain release gates.
+Milestone 4 adds asynchronous PDF
 extraction and deterministic chunk manifests through one application shared by
 worker and Lambda adapters. Catalog projects monotonic processing state, while
 Edge gives authenticated clients low-latency SSE hints backed by authoritative
@@ -218,6 +218,7 @@ make vuln        # govulncheck per module
 make proto-check # Buf contract lint
 make proto-breaking # reject protobuf changes that break main
 make dev-secrets-test # fresh and additive local-secret upgrade regressions
+make m4-worker-recovery-test # controlled local worker-down recovery contract
 make contract-test # live mTLS, database, and broker-recovery contracts
 make minio-runtime-test # live object-storage cleanup and pagination contracts
 make ui-check    # UI install, lint, type-check, and production build

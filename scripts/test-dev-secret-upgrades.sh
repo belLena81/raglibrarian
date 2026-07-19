@@ -41,6 +41,18 @@ assert_complete_and_private() {
       exit 1
     }
   done
+  jq -e '
+    [.permissions[] | select(.user == "ingestion_e2e")] == [{
+      user: "ingestion_e2e",
+      vhost: "/",
+      configure: "^$",
+      write: "^raglibrarian\\.events\\.v1$",
+      read: "^ingestion\\.book-uploaded\\.dlq\\.v1$"
+    }]
+  ' "$dir/rabbitmq_definitions.json" >/dev/null || {
+    echo "ingestion_e2e RabbitMQ permissions exceed the release-test boundary" >&2
+    exit 1
+  }
 }
 
 # Fresh checkout: the normal generator must produce the complete M4 set.

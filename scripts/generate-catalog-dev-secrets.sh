@@ -55,7 +55,7 @@ jq --arg edge2 "$edge_password_2" --arg ingestion_e2e "$ingestion_e2e_password" 
   .users = ([.users[] | if .name == "edge_status" then .name = "edge_status_1" else . end] + [{name:"edge_status_2",password:$edge2,tags:""},{name:"ingestion_e2e",password:$ingestion_e2e,tags:""}]) |
   .permissions = ([.permissions[] | if .user == "edge_status" then .user = "edge_status_1" | .configure = "^edge\\.book-status\\.local\\.1$" | .write = "^edge\\.book-status\\.local\\.1$" | .read = "^(raglibrarian\\.edge-status\\.v1|edge\\.book-status\\.local\\.1)$" else . end] + [
     {user:"edge_status_2",vhost:"/",configure:"^edge\\.book-status\\.local\\.2$",write:"^edge\\.book-status\\.local\\.2$",read:"^(raglibrarian\\.edge-status\\.v1|edge\\.book-status\\.local\\.2)$"}
-  ] + [{user:"ingestion_e2e",vhost:"/",configure:"^$",write:"^raglibrarian\\.events\\.v1$",read:"^$"}]) |
+  ] + [{user:"ingestion_e2e",vhost:"/",configure:"^$",write:"^raglibrarian\\.events\\.v1$",read:"^ingestion\\.book-uploaded\\.dlq\\.v1$"}]) |
   .queues = ([.queues[] | select(.name != "edge.book-status.local") | .arguments +=
     (if (.name | endswith("dlq.v1")) then {"x-message-ttl":604800000,"x-max-length-bytes":268435456,"x-overflow":"reject-publish"}
      elif (.name == "ingestion.book-uploaded.v1" or .name == "catalog.book-processing.v1") then {"x-delivery-limit":5,"x-max-length-bytes":268435456,"x-overflow":"reject-publish"}

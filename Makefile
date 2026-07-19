@@ -4,7 +4,7 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion dev local-run local-stop tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-e2e m4-performance-smoke m4-sse-load m4-soak contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-test bootstrap-verifier compose-config sam-validate sam-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-scan security-check full-gates integration-gates smtp-url
+.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion dev local-run local-stop tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-worker-recovery-test m4-e2e m4-performance-smoke m4-sse-load m4-soak contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-test bootstrap-verifier compose-config sam-validate sam-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-scan security-check full-gates integration-gates smtp-url
 
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
 HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
@@ -14,6 +14,8 @@ TRIVY_IMAGE := aquasec/trivy:0.69.2
 SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-ingestion-lambda:local raglibrarian-ingestion-dispatcher-lambda:local raglibrarian-ingestion-cleanup-lambda:local
 M4_E2E_INGESTION_POSTGRES_DSN_FILE ?= $(CURDIR)/.dev/secrets/ingestion_e2e_dsn
 M4_E2E_MINIO_ENDPOINT ?= 127.0.0.1:9000
+M4_E2E_MINIO_INSECURE ?= true
+M4_E2E_MINIO_CA_FILE ?=
 M4_E2E_MINIO_ACCESS_KEY_FILE ?= $(CURDIR)/.dev/secrets/ingestion_e2e_minio_access_key
 M4_E2E_MINIO_SECRET_KEY_FILE ?= $(CURDIR)/.dev/secrets/ingestion_e2e_minio_secret_key
 M4_E2E_MINIO_ARTIFACT_BUCKET ?= ingestion-artifacts
@@ -185,16 +187,71 @@ m4-integration-test: _require_root
 	chmod 700 "$$token_dir"; \
 	trap 'rm -f "$$token_dir/access" "$$token_dir/revocable"; rmdir "$$token_dir"' EXIT; \
 	E2E_M4_ACCESS_TOKEN_OUT="$$token_dir/access" E2E_M4_REVOCABLE_TOKEN_OUT="$$token_dir/revocable" $(MAKE) e2e; \
-	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE="$$token_dir/revocable" $(MAKE) m4-e2e
+	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE="$$token_dir/revocable" $(MAKE) m4-e2e; \
+	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" $(MAKE) m4-worker-recovery-test
+
+# This gate deliberately controls only the local Compose worker. The E2E test
+# owns upload/status assertions and coordinates through two owner-only markers;
+# no production control endpoint or shell-command injection seam is introduced.
+m4-worker-recovery-test: m4-fixtures
+	@set -eu; \
+	control_dir="$$(mktemp -d /tmp/raglibrarian-m4-recovery.XXXXXX)"; \
+	chmod 700 "$$control_dir"; \
+	test ! -L "$$control_dir"; \
+	test "$$(stat -c '%a' "$$control_dir")" = 700; \
+	test "$$(stat -c '%u' "$$control_dir")" = "$$(id -u)"; \
+	test_pid=''; \
+	cleanup() { \
+		if test -n "$$test_pid" && kill -0 "$$test_pid" 2>/dev/null; then kill "$$test_pid" 2>/dev/null || true; wait "$$test_pid" 2>/dev/null || true; fi; \
+		docker compose up -d --no-deps --wait --wait-timeout 120 ingestion-service >/dev/null 2>&1 || true; \
+		rm -f "$$control_dir/upload-accepted" "$$control_dir/worker-restarted" "$$control_dir"/.worker-restarted.*; \
+		rmdir "$$control_dir" 2>/dev/null || true; \
+	}; \
+	trap cleanup EXIT INT TERM; \
+	docker compose stop --timeout 30 ingestion-service; \
+	(cd tests/e2e && \
+		M4_E2E_RECOVERY_CONTROL_DIR="$$control_dir" \
+		M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" \
+		M4_E2E_EDGE_BASE_URLS="$(M4_E2E_EDGE_BASE_URLS)" \
+		M4_E2E_PUBLIC_ORIGIN="$(M4_E2E_PUBLIC_ORIGIN)" \
+		M4_E2E_INGESTION_POSTGRES_DSN_FILE="$(M4_E2E_INGESTION_POSTGRES_DSN_FILE)" \
+		M4_E2E_MINIO_ENDPOINT="$(M4_E2E_MINIO_ENDPOINT)" \
+		M4_E2E_MINIO_INSECURE=true \
+		M4_E2E_MINIO_ACCESS_KEY_FILE="$(M4_E2E_MINIO_ACCESS_KEY_FILE)" \
+		M4_E2E_MINIO_SECRET_KEY_FILE="$(M4_E2E_MINIO_SECRET_KEY_FILE)" \
+		M4_E2E_MINIO_ARTIFACT_BUCKET="$(M4_E2E_MINIO_ARTIFACT_BUCKET)" \
+		go test -count=1 -v -timeout 10m -tags 'e2e m4' -run '^TestM4WorkerDownRecovery$$' ./...) & \
+	test_pid=$$!; \
+	found=false; \
+	for attempt in $$(seq 1 120); do \
+		if test -f "$$control_dir/upload-accepted"; then found=true; break; fi; \
+		if ! kill -0 "$$test_pid" 2>/dev/null; then wait "$$test_pid"; exit 1; fi; \
+		sleep 1; \
+	done; \
+	test "$$found" = true || { echo 'worker recovery test did not signal an accepted upload' >&2; exit 1; }; \
+	test ! -L "$$control_dir"; \
+	test "$$(stat -c '%a' "$$control_dir")" = 700; \
+	test "$$(stat -c '%u' "$$control_dir")" = "$$(id -u)"; \
+	test ! -L "$$control_dir/upload-accepted"; \
+	test "$$(stat -c '%a' "$$control_dir/upload-accepted")" = 600; \
+	test "$$(stat -c '%u' "$$control_dir/upload-accepted")" = "$$(id -u)"; \
+	test "$$(wc -l < "$$control_dir/upload-accepted")" -eq 1; \
+	grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$$' "$$control_dir/upload-accepted"; \
+	docker compose up -d --no-deps --wait --wait-timeout 120 ingestion-service; \
+	restarted_tmp="$$(mktemp "$$control_dir/.worker-restarted.XXXXXX")"; \
+	chmod 600 "$$restarted_tmp"; \
+	mv "$$restarted_tmp" "$$control_dir/worker-restarted"; \
+	wait "$$test_pid"; \
+	test_pid=''
 
 m4-fixtures: _require_root
 	go run ./tests/fixtures/ingestion/generate.go -out "$(M4_E2E_FIXTURE_DIR)"
 
 m4-e2e: m4-fixtures
-	cd tests/e2e && M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" M4_E2E_EDGE_BASE_URLS="$(M4_E2E_EDGE_BASE_URLS)" M4_E2E_PUBLIC_ORIGIN="$(M4_E2E_PUBLIC_ORIGIN)" M4_E2E_INGESTION_POSTGRES_DSN_FILE="$(M4_E2E_INGESTION_POSTGRES_DSN_FILE)" M4_E2E_MINIO_ENDPOINT="$(M4_E2E_MINIO_ENDPOINT)" M4_E2E_MINIO_INSECURE=true M4_E2E_MINIO_ACCESS_KEY_FILE="$(M4_E2E_MINIO_ACCESS_KEY_FILE)" M4_E2E_MINIO_SECRET_KEY_FILE="$(M4_E2E_MINIO_SECRET_KEY_FILE)" M4_E2E_MINIO_ARTIFACT_BUCKET="$(M4_E2E_MINIO_ARTIFACT_BUCKET)" M4_E2E_RABBITMQ_URI_FILE="$(M4_E2E_RABBITMQ_URI_FILE)" go test -count=1 -v -tags 'e2e m4' ./...
+	cd tests/e2e && M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" M4_E2E_EDGE_BASE_URLS="$(M4_E2E_EDGE_BASE_URLS)" M4_E2E_PUBLIC_ORIGIN="$(M4_E2E_PUBLIC_ORIGIN)" M4_E2E_INGESTION_POSTGRES_DSN_FILE="$(M4_E2E_INGESTION_POSTGRES_DSN_FILE)" M4_E2E_MINIO_ENDPOINT="$(M4_E2E_MINIO_ENDPOINT)" M4_E2E_MINIO_INSECURE="$(M4_E2E_MINIO_INSECURE)" M4_E2E_MINIO_CA_FILE="$(M4_E2E_MINIO_CA_FILE)" M4_E2E_MINIO_ACCESS_KEY_FILE="$(M4_E2E_MINIO_ACCESS_KEY_FILE)" M4_E2E_MINIO_SECRET_KEY_FILE="$(M4_E2E_MINIO_SECRET_KEY_FILE)" M4_E2E_MINIO_ARTIFACT_BUCKET="$(M4_E2E_MINIO_ARTIFACT_BUCKET)" M4_E2E_RABBITMQ_URI_FILE="$(M4_E2E_RABBITMQ_URI_FILE)" go test -count=1 -v -tags 'e2e m4' ./...
 
 m4-performance-smoke: m4-fixtures
-	cd tests/e2e && M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" M4_E2E_EDGE_BASE_URLS="$(M4_E2E_EDGE_BASE_URLS)" M4_E2E_PUBLIC_ORIGIN="$(M4_E2E_PUBLIC_ORIGIN)" M4_E2E_INGESTION_POSTGRES_DSN_FILE="$(M4_E2E_INGESTION_POSTGRES_DSN_FILE)" M4_E2E_MINIO_ENDPOINT="$(M4_E2E_MINIO_ENDPOINT)" M4_E2E_MINIO_INSECURE=true M4_E2E_MINIO_ACCESS_KEY_FILE="$(M4_E2E_MINIO_ACCESS_KEY_FILE)" M4_E2E_MINIO_SECRET_KEY_FILE="$(M4_E2E_MINIO_SECRET_KEY_FILE)" M4_E2E_MINIO_ARTIFACT_BUCKET="$(M4_E2E_MINIO_ARTIFACT_BUCKET)" M4_PERFORMANCE_PROFILE="$${M4_PERFORMANCE_PROFILE:-m4-slo-v1}" go test -count=1 -v -timeout "$${M4_PERFORMANCE_TIMEOUT:-20m}" -tags 'e2e m4' -run '^TestM4Performance' ./...
+	cd tests/e2e && M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" M4_E2E_EDGE_BASE_URLS="$(M4_E2E_EDGE_BASE_URLS)" M4_E2E_PUBLIC_ORIGIN="$(M4_E2E_PUBLIC_ORIGIN)" M4_E2E_INGESTION_POSTGRES_DSN_FILE="$(M4_E2E_INGESTION_POSTGRES_DSN_FILE)" M4_E2E_MINIO_ENDPOINT="$(M4_E2E_MINIO_ENDPOINT)" M4_E2E_MINIO_INSECURE="$(M4_E2E_MINIO_INSECURE)" M4_E2E_MINIO_CA_FILE="$(M4_E2E_MINIO_CA_FILE)" M4_E2E_MINIO_ACCESS_KEY_FILE="$(M4_E2E_MINIO_ACCESS_KEY_FILE)" M4_E2E_MINIO_SECRET_KEY_FILE="$(M4_E2E_MINIO_SECRET_KEY_FILE)" M4_E2E_MINIO_ARTIFACT_BUCKET="$(M4_E2E_MINIO_ARTIFACT_BUCKET)" M4_PERFORMANCE_PROFILE="$${M4_PERFORMANCE_PROFILE:-m4-slo-v1}" go test -count=1 -v -timeout "$${M4_PERFORMANCE_TIMEOUT:-20m}" -tags 'e2e m4' -run '^TestM4Performance' ./...
 
 m4-sse-load: _require_root
 	cd tests/e2e && go test -count=1 -v -timeout "$${M4_SSE_LOAD_TIMEOUT:-20m}" -tags 'e2e m4 m4_load' -run '^TestM4SSEConnectionCapIsEnforced$$' ./...

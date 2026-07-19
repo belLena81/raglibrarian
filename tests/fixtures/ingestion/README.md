@@ -46,7 +46,22 @@ production public route. The M4 Compose test stack provides:
 - `M4_E2E_MINIO_CA_FILE` for a private CA, or `M4_E2E_MINIO_INSECURE=true` only
   for the isolated local Compose network;
 - `M4_E2E_RABBITMQ_URI_FILE`, scoped to publishing an idempotent replay to the
-  existing Catalog upload exchange.
+  existing Catalog upload exchange and consuming only
+  `ingestion.book-uploaded.dlq.v1`. The poison-message contract acknowledges
+  only its unique synthetic message and requeues unrelated dead letters.
+
+The worker-recovery contract is intentionally controlled outside the test
+process. Set `M4_E2E_RECOVERY_CONTROL_DIR` to a dedicated absolute, non-symlink
+directory owned by the test user with mode `0700`, then run only
+`TestM4WorkerDownRecovery` while orchestration keeps `ingestion-service`
+stopped. The test uploads `minimal.pdf` and atomically creates a regular mode
+`0600` marker named `upload-accepted` containing exactly the generated book ID
+and a newline. Orchestration validates that marker without logging its content,
+restarts the worker, and atomically creates an empty regular mode `0600` marker
+named `worker-restarted`. The test then verifies terminal projection plus
+singular inbox, job, artifact-set, and deterministic manifest state. Both sides
+bound their waits and remove only these two markers. Neither side puts a token,
+credential, document body, or diagnostic output in the control directory.
 
 Omitting an optional private inspection credential skips only its dependent
 artifact or replay assertion. It does not skip the ordinary upload, processing,

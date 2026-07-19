@@ -6,9 +6,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -241,13 +244,90 @@ func TestM4RetryReplayKeepsManifestByteIdentical(t *testing.T) {
 
 func TestM4PoisonEnvelopeDoesNotBlockFollowingUpload(t *testing.T) {
 	environment := loadM4Environment(t, false)
-	publishM4UploadedEnvelope(t, "00000000-0000-4000-8000-0000000000ff", []byte("synthetic malformed protobuf"))
+	eventID := randomM4MessageID(t, "m4-poison-")
+	payload := []byte("m4 synthetic malformed protobuf")
+	publishM4UploadedEnvelope(t, eventID, payload)
+	poison := waitForM4DeadLetter(t, eventID, 30*time.Second)
+	assertM4DeadLetterConfidentiality(t, poison, payload)
 	book := uploadM4Fixture(t, environment.edgeURLs[0], environment.accessToken, environment.fixtureDir, "minimal.pdf")
 	book = waitForM4Status(t, environment, environment.edgeURLs[0], book.ID, func(current m4Book) bool {
 		return current.ProcessingStage == "chunks_ready"
 	})
 	assert.Equal(t, "processing", book.ProcessingStatus)
 	assert.Empty(t, book.ProcessingFailureCategory)
+}
+
+func TestM4DeadLetterDiagnosticScannerFindsNestedSensitiveValues(t *testing.T) {
+	forbidden := [][]byte{[]byte("%pdf-"), []byte("m4_canary_"), []byte("postgres://")}
+	safe := amqp091.Table{"x-death": []any{amqp091.Table{"reason": "rejected", "queue": "ingestion.book-uploaded.v1"}}}
+	assert.False(t, m4TableContainsForbiddenDiagnostic(safe, forbidden))
+	exposed := amqp091.Table{"diagnostic": []any{amqp091.Table{"detail": "M4_CANARY_SYNTHETIC"}}}
+	assert.True(t, m4TableContainsForbiddenDiagnostic(exposed, forbidden))
+}
+
+func TestM4DeadLetterMismatchUsesContentFreeDiagnosticAfterScanning(t *testing.T) {
+	delivery := amqp091.Delivery{Body: []byte{0xde, 0xad, 0xbe, 0xef}}
+	failure := m4DeadLetterConfidentialityFailure(delivery, []byte("expected bounded poison"))
+	assert.Equal(t, "M4 dead-letter body did not match the bounded poison envelope", failure)
+	assert.NotContains(t, failure, string(delivery.Body))
+
+	delivery.Body = []byte("%PDF-private synthetic bytes")
+	failure = m4DeadLetterConfidentialityFailure(delivery, []byte("different expected value"))
+	assert.Equal(t, "M4 dead-letter message exposed raw PDF content, a canary, or sensitive diagnostics", failure)
+}
+
+func TestM4RecoveryMarkerAcceptsOnlyCanonicalBookIDs(t *testing.T) {
+	assert.True(t, isCanonicalM4BookID("00000000-0000-4000-8000-000000000001"))
+	assert.False(t, isCanonicalM4BookID("00000000-0000-4000-8000-000000000001\nworker-restarted"))
+	assert.False(t, isCanonicalM4BookID("00000000-0000-4000-8000-00000000000G"))
+}
+
+func TestM4RecoveryMarkerHandshakeUsesPrivateAtomicFiles(t *testing.T) {
+	controlDir := t.TempDir()
+	require.NoError(t, os.Chmod(controlDir, 0o700))
+	uploadAccepted := filepath.Join(controlDir, "upload-accepted")
+	bookID := "00000000-0000-4000-8000-000000000001"
+	writeM4RecoveryMarker(t, controlDir, uploadAccepted, []byte(bookID+"\n"))
+	info, err := os.Lstat(uploadAccepted)
+	require.NoError(t, err)
+	assert.True(t, info.Mode().IsRegular())
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	contents, err := os.ReadFile(uploadAccepted) // #nosec G304 -- test-owned temporary marker.
+	require.NoError(t, err)
+	assert.Equal(t, bookID+"\n", string(contents))
+
+	workerRestarted := filepath.Join(controlDir, "worker-restarted")
+	writeM4RecoveryMarker(t, controlDir, workerRestarted, nil)
+	waitForM4WorkerRestarted(t, controlDir, workerRestarted, time.Second)
+}
+
+func TestM4WorkerDownRecovery(t *testing.T) {
+	controlDir := loadM4RecoveryControlDir(t)
+	uploadAccepted := filepath.Join(controlDir, "upload-accepted")
+	workerRestarted := filepath.Join(controlDir, "worker-restarted")
+	removeM4RecoveryMarker(t, uploadAccepted)
+	removeM4RecoveryMarker(t, workerRestarted)
+	defer removeM4RecoveryMarker(t, uploadAccepted)
+	defer removeM4RecoveryMarker(t, workerRestarted)
+
+	environment := loadM4Environment(t, false)
+	requireM4ArtifactReader(t)
+	book := uploadM4Fixture(t, environment.edgeURLs[0], environment.accessToken, environment.fixtureDir, "minimal.pdf")
+	if !isCanonicalM4BookID(book.ID) {
+		t.Fatal("M4 recovery upload returned a non-canonical book ID")
+	}
+	writeM4RecoveryMarker(t, controlDir, uploadAccepted, []byte(book.ID+"\n"))
+	waitForM4WorkerRestarted(t, controlDir, workerRestarted, environment.timeout)
+
+	book = waitForM4Status(t, environment, environment.edgeURLs[0], book.ID, func(current m4Book) bool {
+		return current.ProcessingStage == "chunks_ready"
+	})
+	assert.Equal(t, "processing", book.ProcessingStatus)
+	assert.Empty(t, book.ProcessingFailureCategory)
+	assertM4SingularDurableState(t, book.ID)
+	first := fetchM4Manifest(t, book.ID)
+	second := fetchM4Manifest(t, book.ID)
+	assert.Equal(t, sha256.Sum256(first), sha256.Sum256(second), "recovery changed deterministic manifest bytes")
 }
 
 func TestM4CanaryIsConfinedToPrivilegedArtifacts(t *testing.T) {
@@ -725,6 +805,158 @@ func requiredM4PathOrSkip(t *testing.T, key string) string {
 	return value
 }
 
+func loadM4RecoveryControlDir(t *testing.T) string {
+	t.Helper()
+	value := strings.TrimSpace(os.Getenv("M4_E2E_RECOVERY_CONTROL_DIR"))
+	if value == "" {
+		t.Skip("M4_E2E_RECOVERY_CONTROL_DIR is required for the externally orchestrated worker recovery test")
+	}
+	if !filepath.IsAbs(value) {
+		t.Fatal("M4_E2E_RECOVERY_CONTROL_DIR must be an absolute path")
+	}
+	info, err := os.Lstat(value)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
+		t.Fatal("M4_E2E_RECOVERY_CONTROL_DIR must be a non-symlink mode-0700 directory")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != uint32(os.Geteuid()) {
+		t.Fatal("M4_E2E_RECOVERY_CONTROL_DIR must be owned by the test process user")
+	}
+	return filepath.Clean(value)
+}
+
+func removeM4RecoveryMarker(t *testing.T, path string) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return
+		}
+		t.Fatal("M4 recovery marker could not be inspected")
+	}
+	if info.IsDir() {
+		t.Fatal("M4 recovery marker path unexpectedly contains a directory")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal("M4 stale recovery marker could not be removed")
+	}
+}
+
+func writeM4RecoveryMarker(t *testing.T, controlDir, target string, contents []byte) {
+	t.Helper()
+	if _, err := os.Lstat(target); err == nil || !os.IsNotExist(err) {
+		t.Fatal("M4 recovery marker already exists")
+	}
+	temporary, err := os.CreateTemp(controlDir, ".upload-accepted-*")
+	if err != nil {
+		t.Fatal("M4 recovery marker temporary file could not be created")
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if err = temporary.Chmod(0o600); err == nil {
+		_, err = temporary.Write(contents)
+	}
+	if err == nil {
+		err = temporary.Sync()
+	}
+	closeErr := temporary.Close()
+	if err != nil || closeErr != nil {
+		t.Fatal("M4 recovery marker could not be written atomically")
+	}
+	if err = os.Rename(temporaryPath, target); err != nil {
+		t.Fatal("M4 recovery marker could not be published atomically")
+	}
+}
+
+func waitForM4WorkerRestarted(t *testing.T, controlDir, marker string, timeout time.Duration) {
+	t.Helper()
+	controlInfo, err := os.Lstat(controlDir)
+	if err != nil {
+		t.Fatal("M4 recovery control directory became unavailable")
+	}
+	controlStat, ok := controlInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("M4 recovery control directory ownership could not be verified")
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		file, openErr := os.OpenFile(marker, os.O_RDONLY|syscall.O_NOFOLLOW, 0) // #nosec G304 -- marker is inside the validated owner-only control directory.
+		if openErr != nil {
+			if os.IsNotExist(openErr) {
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			t.Fatal("M4 worker-restarted marker could not be opened without following links")
+		}
+		info, inspectErr := file.Stat()
+		if inspectErr != nil {
+			_ = file.Close()
+			t.Fatal("M4 worker-restarted marker could not be inspected")
+		}
+		stat, validStat := info.Sys().(*syscall.Stat_t)
+		if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || !validStat || stat.Uid != controlStat.Uid {
+			_ = file.Close()
+			t.Fatal("M4 worker-restarted marker must be a regular non-symlink mode-0600 owner file")
+		}
+		contents, readErr := io.ReadAll(io.LimitReader(file, 1))
+		closeErr := file.Close()
+		if readErr != nil || closeErr != nil || len(contents) != 0 {
+			t.Fatal("M4 worker-restarted marker must be empty")
+		}
+		return
+	}
+	t.Fatal("M4 worker-restarted marker did not arrive before its deadline")
+}
+
+func isCanonicalM4BookID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for index, character := range value {
+		switch index {
+		case 8, 13, 18, 23:
+			if character != '-' {
+				return false
+			}
+		default:
+			if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func assertM4SingularDurableState(t *testing.T, bookID string) {
+	t.Helper()
+	environment := loadM4ArtifactEnvironment(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, environment.dsn)
+	if err != nil {
+		t.Fatal("M4 recovery database connection configuration is invalid")
+	}
+	defer pool.Close()
+	var inboxCount, completedInboxCount, jobCount, completedJobCount, artifactSetCount, committedArtifactSetCount int64
+	err = pool.QueryRow(ctx, `SELECT
+		(SELECT COUNT(*) FROM ingestion.inbox WHERE business_key=$1),
+		(SELECT COUNT(*) FROM ingestion.inbox WHERE business_key=$1 AND completed_at IS NOT NULL),
+		(SELECT COUNT(*) FROM ingestion.jobs WHERE book_id=$1),
+		(SELECT COUNT(*) FROM ingestion.jobs WHERE book_id=$1 AND state='completed'),
+		(SELECT COUNT(*) FROM ingestion.artifact_sets a JOIN ingestion.jobs j ON j.id=a.job_id WHERE j.book_id=$1),
+		(SELECT COUNT(*) FROM ingestion.artifact_sets a JOIN ingestion.jobs j ON j.id=a.job_id WHERE j.book_id=$1 AND a.committed_at IS NOT NULL)`, bookID).
+		Scan(&inboxCount, &completedInboxCount, &jobCount, &completedJobCount, &artifactSetCount, &committedArtifactSetCount)
+	if err != nil {
+		t.Fatal("M4 recovery durable state could not be inspected")
+	}
+	assert.Equal(t, int64(1), inboxCount, "recovery created duplicate inbox state")
+	assert.Equal(t, int64(1), completedInboxCount, "recovery did not complete its singular inbox state")
+	assert.Equal(t, int64(1), jobCount, "recovery created duplicate job state")
+	assert.Equal(t, int64(1), completedJobCount, "recovery did not complete its singular job state")
+	assert.Equal(t, int64(1), artifactSetCount, "recovery created duplicate artifact state")
+	assert.Equal(t, int64(1), committedArtifactSetCount, "recovery did not commit its singular artifact state")
+}
+
 func readM4SecretFile(t *testing.T, path string, maximumBytes int64) string {
 	t.Helper()
 	file, err := os.Open(path) // #nosec G304 -- explicit test-only secret path.
@@ -807,6 +1039,135 @@ func publishM4UploadedEnvelope(t *testing.T, eventID string, payload []byte) {
 			t.Fatal("M4 replay confirmation timed out")
 		}
 	}
+}
+
+func randomM4MessageID(t *testing.T, prefix string) string {
+	t.Helper()
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		t.Fatal("M4 test message ID generation failed")
+	}
+	return prefix + hex.EncodeToString(random)
+}
+
+func waitForM4DeadLetter(t *testing.T, eventID string, timeout time.Duration) amqp091.Delivery {
+	t.Helper()
+	uriFile := requiredM4PathOrSkip(t, "M4_E2E_RABBITMQ_URI_FILE")
+	uri := readM4SecretFile(t, uriFile, 4096)
+	connection, err := amqp091.DialConfig(uri, amqp091.Config{Dial: amqp091.DefaultDial(5 * time.Second)})
+	if err != nil {
+		t.Fatal("M4 dead-letter broker connection failed")
+	}
+	defer connection.Close()
+	channel, err := connection.Channel()
+	if err != nil {
+		t.Fatal("M4 dead-letter broker channel failed")
+	}
+	defer channel.Close()
+	if err = channel.Qos(256, 0, false); err != nil {
+		t.Fatal("M4 dead-letter consumer bound could not be configured")
+	}
+	consumer := randomM4MessageID(t, "m4-dlq-")
+	deliveries, err := channel.Consume("ingestion.book-uploaded.dlq.v1", consumer, false, false, false, false, nil)
+	if err != nil {
+		t.Fatal("M4 dead-letter queue could not be consumed")
+	}
+	defer func() { _ = channel.Cancel(consumer, false) }()
+	unrelated := make([]amqp091.Delivery, 0)
+	defer func() {
+		for _, delivery := range unrelated {
+			if err := delivery.Nack(false, true); err != nil {
+				t.Error("M4 unrelated dead-letter message could not be requeued")
+			}
+		}
+	}()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		select {
+		case delivery, open := <-deliveries:
+			if !open {
+				t.Fatal("M4 dead-letter consumer closed before the expected message arrived")
+			}
+			if delivery.MessageId != eventID {
+				unrelated = append(unrelated, delivery)
+				if len(unrelated) >= 256 {
+					t.Fatal("M4 dead-letter queue contained too many unrelated messages")
+				}
+				continue
+			}
+			if err := delivery.Ack(false); err != nil {
+				t.Fatal("M4 expected dead-letter message could not be acknowledged")
+			}
+			return delivery
+		case <-deadline.C:
+			t.Fatal("M4 expected dead-letter message did not arrive before its deadline")
+		}
+	}
+}
+
+func assertM4DeadLetterConfidentiality(t *testing.T, delivery amqp091.Delivery, original []byte) {
+	t.Helper()
+	if failure := m4DeadLetterConfidentialityFailure(delivery, original); failure != "" {
+		t.Fatal(failure)
+	}
+}
+
+func m4DeadLetterConfidentialityFailure(delivery amqp091.Delivery, original []byte) string {
+	forbidden := [][]byte{
+		[]byte("%pdf-"),
+		[]byte("m4_canary_"),
+		[]byte("authorization:"),
+		[]byte("bearer "),
+		[]byte("password="),
+		[]byte("postgres://"),
+		[]byte("amqp://"),
+		[]byte("dsn="),
+	}
+	if m4ContainsForbiddenDiagnostic(delivery.Body, forbidden) || m4TableContainsForbiddenDiagnostic(delivery.Headers, forbidden) {
+		return "M4 dead-letter message exposed raw PDF content, a canary, or sensitive diagnostics"
+	}
+	if !bytes.Equal(original, delivery.Body) {
+		return "M4 dead-letter body did not match the bounded poison envelope"
+	}
+	return ""
+}
+
+func m4TableContainsForbiddenDiagnostic(table amqp091.Table, forbidden [][]byte) bool {
+	for key, value := range table {
+		if m4ContainsForbiddenDiagnostic([]byte(key), forbidden) || m4ValueContainsForbiddenDiagnostic(value, forbidden) {
+			return true
+		}
+	}
+	return false
+}
+
+func m4ValueContainsForbiddenDiagnostic(value any, forbidden [][]byte) bool {
+	switch typed := value.(type) {
+	case string:
+		return m4ContainsForbiddenDiagnostic([]byte(typed), forbidden)
+	case []byte:
+		return m4ContainsForbiddenDiagnostic(typed, forbidden)
+	case amqp091.Table:
+		return m4TableContainsForbiddenDiagnostic(typed, forbidden)
+	case []any:
+		for _, item := range typed {
+			if m4ValueContainsForbiddenDiagnostic(item, forbidden) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func m4ContainsForbiddenDiagnostic(value []byte, forbidden [][]byte) bool {
+	lower := bytes.ToLower(value)
+	for _, pattern := range forbidden {
+		if bytes.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeM4Manifest(t *testing.T, contents []byte, bookID string) *ingestionv1.ChunkManifestV1 {

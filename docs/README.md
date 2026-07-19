@@ -213,8 +213,8 @@ Acceptance:
 
 **Owning service:** Ingestion.
 
-**Status:** implemented; AWS SAM/staging and controlled restart/DLQ acceptance
-remain release gates.
+**Status:** release candidate; protected AWS staging and controlled restart/DLQ
+acceptance must pass before this milestone can be marked complete.
 
 **Outcome:** every accepted PDF progresses to processing and then either
 produces traceable chunks or displays a deterministic failure status.

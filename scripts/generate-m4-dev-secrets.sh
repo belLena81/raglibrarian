@@ -59,7 +59,7 @@ jq --arg catalog_consume "$catalog_consume_password" --arg ingestion "$ingestion
   .permissions = ([.permissions[] | if .user == "catalog_publisher" then .write = "^(raglibrarian\\.events\\.v1|raglibrarian\\.edge-status\\.v1)$" else . end] + [
     {user:"catalog_ingestion",vhost:"/",configure:"^$",write:"^$",read:"^catalog\\.book-processing\\.v1$"},
     {user:"ingestion_worker",vhost:"/",configure:"^$",write:"^(raglibrarian\\.ingestion\\.events\\.v1|raglibrarian\\.ingestion\\.retry\\.v1)$",read:"^ingestion\\.book-uploaded\\.v1$"},
-    {user:"ingestion_e2e",vhost:"/",configure:"^$",write:"^raglibrarian\\.events\\.v1$",read:"^$"},
+    {user:"ingestion_e2e",vhost:"/",configure:"^$",write:"^raglibrarian\\.events\\.v1$",read:"^ingestion\\.book-uploaded\\.dlq\\.v1$"},
     {user:"edge_status_1",vhost:"/",configure:"^edge\\.book-status\\.local\\.1$",write:"^edge\\.book-status\\.local\\.1$",read:"^(raglibrarian\\.edge-status\\.v1|edge\\.book-status\\.local\\.1)$"},
     {user:"edge_status_2",vhost:"/",configure:"^edge\\.book-status\\.local\\.2$",write:"^edge\\.book-status\\.local\\.2$",read:"^(raglibrarian\\.edge-status\\.v1|edge\\.book-status\\.local\\.2)$"}
   ]) |

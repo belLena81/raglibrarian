@@ -141,6 +141,7 @@ func (h *PendingHub) subscribe(sessionID, ip string) (<-chan struct{}, func(), b
 type AdminHandler struct {
 	identity AdminUseCase
 	hub      *PendingHub
+	timing   sseTiming
 }
 
 // NewAdminHandler constructs an administrator handler with required dependencies.
@@ -242,6 +243,20 @@ func (h *AdminHandler) Events(w http.ResponseWriter, r *http.Request) {
 		writeIdentityError(w, r, http.StatusForbidden, "forbidden", "forbidden")
 		return
 	}
+	claims, ok := edgemiddleware.ClaimsFromContext(r.Context())
+	if !ok || claims.ExpiresAt.IsZero() {
+		writeIdentityError(w, r, http.StatusForbidden, "forbidden", "forbidden")
+		return
+	}
+	timing := h.timing.withDefaults()
+	streamDuration := time.Until(claims.ExpiresAt)
+	if streamDuration <= 0 {
+		writeIdentityError(w, r, http.StatusForbidden, "forbidden", "forbidden")
+		return
+	}
+	if streamDuration > timing.maximumDuration {
+		streamDuration = timing.maximumDuration
+	}
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		ip = "unknown"
@@ -252,8 +267,8 @@ func (h *AdminHandler) Events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer remove()
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	stream, err := newSSEWriter(w, timing)
+	if err != nil {
 		writeIdentityError(w, r, http.StatusInternalServerError, "stream_unavailable", "stream unavailable")
 		return
 	}
@@ -261,14 +276,15 @@ func (h *AdminHandler) Events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store, private")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-	heartbeat := time.NewTicker(15 * time.Second)
-	revalidate := time.NewTicker(15 * time.Second)
-	maximum := time.NewTimer(5 * time.Minute)
+	if err = stream.flushHeaders(); err != nil {
+		return
+	}
+	heartbeat := time.NewTicker(timing.heartbeatInterval)
+	revalidate := time.NewTicker(timing.revalidateInterval)
+	maximum := time.NewTimer(streamDuration)
 	defer heartbeat.Stop()
 	defer revalidate.Stop()
 	defer maximum.Stop()
-	controller := http.NewResponseController(w)
 	for {
 		select {
 		case <-r.Context().Done():
@@ -281,20 +297,16 @@ func (h *AdminHandler) Events(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-heartbeat.C:
-			_ = controller.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if _, err = w.Write([]byte(": heartbeat\n\n")); err != nil {
+			if err = stream.writeFrame([]byte(": heartbeat\n\n")); err != nil {
 				return
 			}
-			flusher.Flush()
 		case _, open := <-events:
 			if !open {
 				return
 			}
-			_ = controller.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if _, err = w.Write([]byte("event: pending-librarians-changed\ndata: {\"version\":1}\n\n")); err != nil {
+			if err = stream.writeFrame([]byte("event: pending-librarians-changed\ndata: {\"version\":1}\n\n")); err != nil {
 				return
 			}
-			flusher.Flush()
 		}
 	}
 }

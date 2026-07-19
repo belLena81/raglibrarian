@@ -1,0 +1,589 @@
+name: M4 protected staging gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      processing_image_uri:
+        description: Immutable ECR digest for the processing Lambda
+        required: true
+        type: string
+      dispatcher_image_uri:
+        description: Immutable ECR digest for the dispatcher Lambda
+        required: true
+        type: string
+      cleanup_image_uri:
+        description: Immutable ECR digest for the cleanup Lambda
+        required: true
+        type: string
+      worker_image_uri:
+        description: Immutable ECR digest for the fallback worker
+        required: true
+        type: string
+      change_ticket:
+        description: Approved deployment ticket identifier
+        required: true
+        type: string
+      confirmation:
+        description: Type DEPLOY_M4_STAGING
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: m4-protected-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy-and-verify:
+    environment: m4-staging
+    runs-on: [self-hosted, linux, x64, m4-staging-private]
+    timeout-minutes: 120
+    steps:
+      - name: Check out the reviewed revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate protected inputs and runner tooling
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+          CHANGE_TICKET: ${{ inputs.change_ticket }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRMATION" = DEPLOY_M4_STAGING
+          test "$REF_PROTECTED" = true || { echo 'M4 staging requires a protected Git ref.' >&2; exit 1; }
+          [[ "$CHANGE_TICKET" =~ ^[A-Za-z0-9._/-]{3,64}$ ]] || { echo 'Change ticket format is invalid.' >&2; exit 1; }
+          command -v aws >/dev/null
+          command -v curl >/dev/null
+          command -v go >/dev/null
+          command -v jq >/dev/null
+          command -v sam >/dev/null
+          [[ "$(aws --version 2>&1)" == aws-cli/2.35.19\ * ]] || { echo 'AWS CLI 2.35.19 is required.' >&2; exit 1; }
+          [[ "$(jq --version)" == jq-1.7.1 ]] || { echo 'jq 1.7.1 is required.' >&2; exit 1; }
+          [[ "$(sam --version)" == 'SAM CLI, version 1.145.2' ]] || { echo 'AWS SAM CLI 1.145.2 is required.' >&2; exit 1; }
+          [[ "$(go version)" == 'go version go1.26.5 '* ]] || { echo 'Go 1.26.5 is required.' >&2; exit 1; }
+          aws --version
+          jq --version
+          sam --version
+          make sam-validate
+
+      - name: Assume the protected staging deployment role
+        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: raglibrarian-m4-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          mask-aws-account-id: true
+          output-env-credentials: true
+
+      - name: Exercise safe consumer handoffs
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          STACK_NAME: ${{ vars.M4_STACK_NAME }}
+          BASE_PARAMETER_OVERRIDES_JSON: ${{ secrets.M4_STAGING_PARAMETER_OVERRIDES_JSON }}
+          E2E_SECRET_ARN: ${{ secrets.M4_STAGING_E2E_SECRET_ARN }}
+          M4_SAM_ARTIFACT_BUCKET: ${{ vars.M4_SAM_ARTIFACT_BUCKET }}
+          PROCESSING_IMAGE_URI: ${{ inputs.processing_image_uri }}
+          DISPATCHER_IMAGE_URI: ${{ inputs.dispatcher_image_uri }}
+          CLEANUP_IMAGE_URI: ${{ inputs.cleanup_image_uri }}
+          WORKER_IMAGE_URI: ${{ inputs.worker_image_uri }}
+          CHANGE_TICKET: ${{ inputs.change_ticket }}
+        run: |
+          set -euo pipefail
+          umask 077
+          evidence_dir=$(mktemp -d /tmp/raglibrarian-m4-staging.XXXXXX)
+          chmod 700 "$evidence_dir"
+          base_parameters="$evidence_dir/base-parameters.json"
+          mode_parameters="$evidence_dir/mode-parameters.json"
+          packaged_template="$evidence_dir/packaged-template.yaml"
+          evidence="$evidence_dir/evidence.jsonl"
+          e2e_secret="$evidence_dir/e2e-secret.json"
+          access_token="$evidence_dir/access-token"
+          revocable_access_token="$evidence_dir/revocable-access-token"
+          ingestion_dsn="$evidence_dir/ingestion-dsn"
+          rabbitmq_uri="$evidence_dir/rabbitmq-uri"
+          minio_access_key="$evidence_dir/minio-access-key"
+          minio_secret_key="$evidence_dir/minio-secret-key"
+          refresh_header="$evidence_dir/refresh-header"
+          refresh_response="$evidence_dir/refresh-response"
+          alarm_resources="$evidence_dir/alarm-resources.json"
+          alarm_states="$evidence_dir/alarm-states.json"
+          ecr_response="$evidence_dir/ecr-response.json"
+          ecr_layer_response="$evidence_dir/ecr-layer-response.json"
+          ecr_curl_config="$evidence_dir/ecr-curl-config"
+          image_config="$evidence_dir/image-config.json"
+          rabbitmq_cleanup_header="$evidence_dir/rabbitmq-cleanup-header"
+          fixture_dir="$evidence_dir/fixtures"
+          recovery_dir="$evidence_dir/recovery"
+          recovery_pid=''
+          deployment_started=false
+          rabbitmq_cleanup_pending=false
+          rabbitmq_cleanup_done=false
+          cleanup() {
+            local status=$?
+            local pause_confirmed=true
+            trap - EXIT INT TERM
+            if [[ -n "$recovery_pid" ]] && kill -0 "$recovery_pid" 2>/dev/null; then
+              kill "$recovery_pid" 2>/dev/null || true
+              wait "$recovery_pid" 2>/dev/null || true
+            fi
+            if [[ "$status" -ne 0 && "$deployment_started" == true ]]; then
+              echo 'A staging check failed; attempting to return the stack to paused mode.' >&2
+              set +e
+              deploy_mode paused >/dev/null
+              local pause_status=$?
+              set -e
+              if [[ "$pause_status" -ne 0 ]]; then
+                echo 'The stack could not be confirmed paused; broker teardown requires manual recovery.' >&2
+                pause_confirmed=false
+                status=1
+              fi
+            fi
+            if [[ "$rabbitmq_cleanup_pending" == true && "$rabbitmq_cleanup_done" == false ]]; then
+              if [[ "$deployment_started" == true && "$pause_confirmed" == false ]]; then
+                echo 'The isolated staging RabbitMQ vhost was retained because consumers may still be active.' >&2
+              else
+                set +e
+                delete_rabbitmq_vhost >/dev/null 2>&1
+                local rabbitmq_cleanup_status=$?
+                set -e
+                if [[ "$rabbitmq_cleanup_status" -ne 0 ]]; then
+                  echo 'The isolated staging RabbitMQ vhost could not be deleted.' >&2
+                  status=1
+                fi
+              fi
+            fi
+            rm -f "$base_parameters" "$mode_parameters" "$packaged_template" "$evidence" "$e2e_secret" \
+              "$access_token" "$revocable_access_token" "$ingestion_dsn" "$rabbitmq_uri" \
+              "$minio_access_key" "$minio_secret_key" "$refresh_header" "$refresh_response" \
+              "$alarm_resources" "$alarm_states" "$ecr_response" "$ecr_layer_response" \
+              "$ecr_curl_config" "$image_config" "$rabbitmq_cleanup_header" \
+              "$recovery_dir/upload-accepted" "$recovery_dir/worker-restarted" \
+              "$recovery_dir"/.worker-restarted.*
+            rm -rf "$fixture_dir"
+            rmdir "$recovery_dir" 2>/dev/null || true
+            rmdir "$evidence_dir" 2>/dev/null || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT TERM
+
+          printf '%s' "$BASE_PARAMETER_OVERRIDES_JSON" > "$base_parameters"
+          unset BASE_PARAMETER_OVERRIDES_JSON
+          chmod 600 "$base_parameters"
+          jq -e 'type == "object" and all(to_entries[]; (.value | type) == "string" or (.value | type) == "number")' "$base_parameters" >/dev/null
+
+          verify_image_provenance() {
+            local image_uri=$1
+            local repository=$2
+            local expected_prefix="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$repository@"
+            local digest config_digest
+            [[ "$image_uri" == "$expected_prefix"* ]] || { echo 'An image escaped its trusted ECR repository.' >&2; return 1; }
+            digest=${image_uri#"$expected_prefix"}
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'An ECR image digest is invalid.' >&2; return 1; }
+            aws ecr batch-get-image --repository-name "$repository" --image-ids imageDigest="$digest" \
+              --accepted-media-types application/vnd.oci.image.manifest.v1+json application/vnd.docker.distribution.manifest.v2+json \
+              --output json > "$ecr_response"
+            chmod 600 "$ecr_response"
+            jq -e '(.failures | length) == 0 and (.images | length) == 1' "$ecr_response" >/dev/null || {
+              echo 'An immutable ECR image could not be resolved.' >&2
+              return 1
+            }
+            config_digest=$(jq -er '.images[0].imageManifest | fromjson | .config.digest | select(test("^sha256:[0-9a-f]{64}$"))' "$ecr_response")
+            aws ecr get-download-url-for-layer --repository-name "$repository" --layer-digest "$config_digest" \
+              --output json > "$ecr_layer_response"
+            chmod 600 "$ecr_layer_response"
+            jq -er --arg output "$image_config" '
+              .downloadUrl |
+              select(type == "string" and length <= 8192 and startswith("https://") and (test("[\"\\r\\n]") | not)) |
+              "url = \"" + . + "\"\noutput = \"" + $output + "\""
+            ' "$ecr_layer_response" > "$ecr_curl_config"
+            chmod 600 "$ecr_curl_config"
+            curl --fail --silent --show-error --connect-timeout 5 --max-time 30 \
+              --max-filesize 1048576 --config "$ecr_curl_config"
+            chmod 600 "$image_config"
+            jq -e --arg revision "$GITHUB_SHA" '
+              (.config.Labels["org.opencontainers.image.revision"] // "") == $revision
+            ' "$image_config" >/dev/null || {
+              echo 'An ECR image is not bound to the reviewed Git commit.' >&2
+              return 1
+            }
+            rm -f "$ecr_response" "$ecr_layer_response" "$ecr_curl_config" "$image_config"
+          }
+
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || { echo 'The protected AWS account ID is invalid.' >&2; exit 1; }
+          [[ "$AWS_REGION" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]$ ]] || { echo 'The protected AWS region is invalid.' >&2; exit 1; }
+          verify_image_provenance "$PROCESSING_IMAGE_URI" raglibrarian/m4-processing
+          verify_image_provenance "$DISPATCHER_IMAGE_URI" raglibrarian/m4-dispatcher
+          verify_image_provenance "$CLEANUP_IMAGE_URI" raglibrarian/m4-cleanup
+          verify_image_provenance "$WORKER_IMAGE_URI" raglibrarian/m4-worker
+
+          [[ "$M4_SAM_ARTIFACT_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || { echo 'The staging SAM artifact bucket is invalid.' >&2; exit 1; }
+          sam package --template-file infra/aws/m4/template.yaml \
+            --s3-bucket "$M4_SAM_ARTIFACT_BUCKET" \
+            --output-template-file "$packaged_template" >/dev/null
+          chmod 600 "$packaged_template"
+
+          mkdir "$fixture_dir" "$recovery_dir"
+          chmod 700 "$fixture_dir" "$recovery_dir"
+          test ! -L "$recovery_dir"
+          test "$(stat -c '%u:%a' "$recovery_dir")" = "$(id -u):700"
+          aws secretsmanager get-secret-value --secret-id "$E2E_SECRET_ARN" \
+            --query SecretString --output text > "$e2e_secret"
+          chmod 600 "$e2e_secret"
+          jq -e --arg run_id "$GITHUB_RUN_ID" '
+            def bounded($maximum):
+              type == "string" and length >= 1 and length <= $maximum and (test("[\\r\\n]") | not);
+            def https_origin:
+              bounded(2048) and
+              (if test("^https://(?:(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?|\\[[0-9A-Fa-f:]+\\])(?::[0-9]{1,5})?$") then
+                if test(":[0-9]{1,5}$") then
+                  (capture(":(?<port>[0-9]{1,5})$").port | tonumber) as $port |
+                  $port >= 1 and $port <= 65535
+                else true end
+              else false end);
+            def s3_bucket:
+              bounded(63) and length >= 3 and
+              test("^[a-z0-9][a-z0-9.-]*[a-z0-9]$") and
+              (contains("..") | not) and (test("\\.-|-\\.") | not) and
+              (test("^[0-9]{1,3}(\\.[0-9]{1,3}){3}$") | not);
+            (keys | sort) == ([
+              "lambda_access_refresh_token",
+              "lambda_revocable_refresh_token",
+              "recovery_access_refresh_token",
+              "worker_access_refresh_token",
+              "worker_revocable_refresh_token",
+              "ingestion_postgres_dsn",
+              "rabbitmq_uri",
+              "rabbitmq_vhost",
+              "rabbitmq_cleanup_url",
+              "rabbitmq_cleanup_token",
+              "minio_access_key",
+              "minio_secret_key",
+              "edge_base_urls",
+              "public_origin",
+              "minio_endpoint",
+              "minio_artifact_bucket"
+            ] | sort) and ([
+              .lambda_access_refresh_token,
+              .lambda_revocable_refresh_token,
+              .recovery_access_refresh_token,
+              .worker_access_refresh_token,
+              .worker_revocable_refresh_token,
+              .ingestion_postgres_dsn,
+              .rabbitmq_uri,
+              .rabbitmq_vhost,
+              .rabbitmq_cleanup_url,
+              .rabbitmq_cleanup_token,
+              .minio_access_key,
+              .minio_secret_key,
+              .edge_base_urls,
+              .public_origin,
+              .minio_endpoint,
+              .minio_artifact_bucket
+            ] | all(.[]; bounded(8192))) and
+            ([
+              .lambda_access_refresh_token,
+              .lambda_revocable_refresh_token,
+              .recovery_access_refresh_token,
+              .worker_access_refresh_token,
+              .worker_revocable_refresh_token
+            ] | all(.[]; bounded(4096))) and
+            (.minio_access_key | bounded(1024)) and
+            (.minio_secret_key | bounded(1024)) and
+            (.rabbitmq_cleanup_token | bounded(4096)) and
+            (("raglibrarian-m4-" + $run_id) as $expected_vhost |
+              .rabbitmq_vhost == $expected_vhost and
+              (.rabbitmq_uri | test("^amqps://[^/?#]+/" + $expected_vhost + "(?:\\?[^#]*)?$")) and
+              (.rabbitmq_cleanup_url | bounded(2048)) and
+              (.rabbitmq_cleanup_url | endswith("/vhosts/" + $expected_vhost)) and
+              (.rabbitmq_cleanup_url | rtrimstr("/vhosts/" + $expected_vhost) | https_origin)) and
+            ((.edge_base_urls | split(",")) as $origins |
+              ($origins | length) == 2 and ($origins[0] != $origins[1]) and
+              ($origins | all(.[]; https_origin))) and
+            (.public_origin | https_origin) and
+            (.minio_endpoint | https_origin) and
+            (.minio_artifact_bucket | s3_bucket)
+          ' "$e2e_secret" >/dev/null || { echo 'The protected M4 E2E secret is incomplete.' >&2; exit 1; }
+          jq -er '.ingestion_postgres_dsn' "$e2e_secret" > "$ingestion_dsn"
+          jq -er '.rabbitmq_uri' "$e2e_secret" > "$rabbitmq_uri"
+          jq -er '.minio_access_key' "$e2e_secret" > "$minio_access_key"
+          jq -er '.minio_secret_key' "$e2e_secret" > "$minio_secret_key"
+          chmod 600 "$ingestion_dsn" "$rabbitmq_uri" "$minio_access_key" "$minio_secret_key"
+
+          M4_EDGE_BASE_URLS=$(jq -er '.edge_base_urls' "$e2e_secret")
+          M4_PUBLIC_ORIGIN=$(jq -er '.public_origin' "$e2e_secret")
+          M4_MINIO_ENDPOINT=$(jq -er '.minio_endpoint' "$e2e_secret")
+          M4_MINIO_ARTIFACT_BUCKET=$(jq -er '.minio_artifact_bucket' "$e2e_secret")
+          edge_primary=${M4_EDGE_BASE_URLS%%,*}
+          delete_rabbitmq_vhost() {
+            local cleanup_token cleanup_url
+            cleanup_token=$(jq -er '.rabbitmq_cleanup_token' "$e2e_secret")
+            cleanup_url=$(jq -er '.rabbitmq_cleanup_url' "$e2e_secret")
+            printf 'Authorization: Bearer %s\n' "$cleanup_token" > "$rabbitmq_cleanup_header"
+            unset cleanup_token
+            chmod 600 "$rabbitmq_cleanup_header"
+            if ! curl --fail --silent --show-error --connect-timeout 5 --max-time 30 \
+              --request DELETE --header @"$rabbitmq_cleanup_header" --output /dev/null "$cleanup_url"; then
+              rm -f "$rabbitmq_cleanup_header"
+              return 1
+            fi
+            rm -f "$rabbitmq_cleanup_header"
+            rabbitmq_cleanup_done=true
+          }
+          rabbitmq_cleanup_pending=true
+
+          mint_access_token() {
+            local refresh_field=$1
+            local output_file=$2
+            local refresh_value
+            refresh_value=$(jq -er --arg field "$refresh_field" '.[$field] | select(type == "string" and length > 0)' "$e2e_secret")
+            printf 'Cookie: __Host-refresh_token=%s\nOrigin: %s\n' "$refresh_value" "$M4_PUBLIC_ORIGIN" > "$refresh_header"
+            unset refresh_value
+            chmod 600 "$refresh_header"
+            curl --fail --silent --show-error --connect-timeout 5 --max-time 30 --request POST \
+              --header @"$refresh_header" --output "$refresh_response" "$edge_primary/auth/refresh"
+            chmod 600 "$refresh_response"
+            jq -er '.token | select(type == "string" and length > 0)' "$refresh_response" > "$output_file"
+            chmod 600 "$output_file"
+            rm -f "$refresh_header" "$refresh_response"
+          }
+
+          make M4_E2E_FIXTURE_DIR="$fixture_dir" m4-fixtures
+
+          stack_output() {
+            local key=$1
+            aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+              --query "Stacks[0].Outputs[?OutputKey=='$key'].OutputValue | [0]" --output text
+          }
+
+          active_mapping_count() {
+            local function_arn=$1
+            aws lambda list-event-source-mappings --function-name "$function_arn" \
+              --query 'length(EventSourceMappings[?State != `Disabled` && State != `Deleting`])' --output text
+          }
+
+          wait_for_mapping_count() {
+            local function_arn=$1
+            local expected=$2
+            local count
+            for _ in $(seq 1 60); do
+              count=$(active_mapping_count "$function_arn")
+              if [[ "$count" == "$expected" ]]; then return 0; fi
+              sleep 5
+            done
+            echo 'Lambda event-source mapping did not reach the required state.' >&2
+            return 1
+          }
+
+          assert_alarms_ok() {
+            local mode=$1
+            local expected_count=5
+            if [[ "$mode" != paused ]]; then expected_count=7; fi
+            aws cloudformation list-stack-resources --stack-name "$STACK_NAME" \
+              --query 'StackResourceSummaries[?ResourceType==`AWS::CloudWatch::Alarm`].{logical:LogicalResourceId,name:PhysicalResourceId}' \
+              --output json > "$alarm_resources"
+            chmod 600 "$alarm_resources"
+            jq -e --arg mode "$mode" '
+              ([
+                "CleanupErrorAlarm",
+                "DispatcherErrorAlarm",
+                "ProcessingErrorAlarm",
+                "ProcessingThrottleAlarm",
+                "RabbitMQDeadLetterAlarm"
+              ] + (if $mode == "paused" then [] else ["RabbitMQConsumerAlarm", "RabbitMQQueueDepthAlarm"] end) | sort) as $expected |
+              ([.[].logical] | sort) == $expected and
+              (length == ($expected | length)) and all(.[]; (.name | type) == "string" and (.name | length) > 0)
+            ' "$alarm_resources" >/dev/null || {
+              echo 'The M4 stack alarm resource set is incomplete or unexpected.' >&2
+              return 1
+            }
+            mapfile -t alarms < <(jq -r '.[].name' "$alarm_resources")
+            for _ in $(seq 1 60); do
+              aws cloudwatch describe-alarms --alarm-names "${alarms[@]}" --output json > "$alarm_states"
+              chmod 600 "$alarm_states"
+              if jq -e --argjson expected_count "$expected_count" --slurpfile expected "$alarm_resources" '
+                (.CompositeAlarms | length) == 0 and
+                (.MetricAlarms | length) == $expected_count and
+                (([.MetricAlarms[].AlarmName] | sort) == ([$expected[0][].name] | sort)) and
+                all(.MetricAlarms[]; .StateValue == "OK")
+              ' "$alarm_states" >/dev/null; then
+                return 0
+              fi
+              sleep 10
+            done
+            echo 'Every expected M4 alarm must reach OK; ALARM and INSUFFICIENT_DATA both block staging.' >&2
+            return 1
+          }
+
+          verify_mode() {
+            local expected=$1
+            local actual function_arn cluster_arn service_name desired running
+            actual=$(stack_output ActiveProcessingMode)
+            [[ "$actual" == "$expected" ]] || { echo 'CloudFormation reported an unexpected processing mode.' >&2; return 1; }
+            function_arn=$(stack_output ProcessingFunctionArn)
+            cluster_arn=$(stack_output WorkerClusterArn)
+            if [[ "$expected" == lambda ]]; then
+              wait_for_mapping_count "$function_arn" 1 || return 1
+            else
+              wait_for_mapping_count "$function_arn" 0 || return 1
+            fi
+            if [[ "$expected" == worker ]]; then
+              service_name=$(aws cloudformation describe-stack-resource --stack-name "$STACK_NAME" \
+                --logical-resource-id WorkerService --query StackResourceDetail.PhysicalResourceId --output text)
+              aws ecs wait services-stable --cluster "$cluster_arn" --services "$service_name" || return 1
+              [[ "$(aws ecs list-services --cluster "$cluster_arn" --query 'length(serviceArns)' --output text)" == 1 ]] || {
+                echo 'Worker mode did not expose exactly one active worker service.' >&2
+                return 1
+              }
+              read -r desired running < <(aws ecs describe-services --cluster "$cluster_arn" --services "$service_name" \
+                --query 'services[0].[desiredCount,runningCount]' --output text)
+              [[ "$desired" -ge 1 && "$running" == "$desired" ]] || { echo 'Worker service is not fully ready.' >&2; return 1; }
+            else
+              [[ "$(aws ecs list-services --cluster "$cluster_arn" --query 'length(serviceArns)' --output text)" == 0 ]] || {
+                echo 'A worker service remained active outside worker mode.' >&2
+                return 1
+              }
+            fi
+            assert_alarms_ok "$expected" || return 1
+            printf '{"mode":"%s","stack":"verified","consumers":"exclusive","alarms":"clear"}\n' "$expected" >> "$evidence"
+          }
+
+          deploy_mode() {
+            local mode=$1
+            jq --arg mode "$mode" \
+              --arg processing "$PROCESSING_IMAGE_URI" \
+              --arg dispatcher "$DISPATCHER_IMAGE_URI" \
+              --arg cleanup "$CLEANUP_IMAGE_URI" \
+              --arg worker "$WORKER_IMAGE_URI" \
+              '(. + {
+                ProcessingMode: $mode,
+                ProcessingImageUri: $processing,
+                DispatcherImageUri: $dispatcher,
+                CleanupImageUri: $cleanup,
+                WorkerImageUri: $worker
+              }) | to_entries | map({ParameterKey: .key, ParameterValue: (.value | tostring)})' \
+              "$base_parameters" > "$mode_parameters"
+            chmod 600 "$mode_parameters"
+            aws cloudformation deploy \
+              --template-file "$packaged_template" \
+              --stack-name "$STACK_NAME" \
+              --parameter-overrides "file://$mode_parameters" \
+              --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+              --no-fail-on-empty-changeset \
+              --no-cli-pager >/dev/null
+            verify_mode "$mode"
+          }
+
+          run_adapter_acceptance() {
+            local adapter=$1
+            local main_refresh_field=$2
+            local revocable_refresh_field=$3
+            mint_access_token "$main_refresh_field" "$access_token"
+            mint_access_token "$revocable_refresh_field" "$revocable_access_token"
+            M4_E2E_ACCESS_TOKEN_FILE="$access_token" \
+            M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE="$revocable_access_token" \
+            M4_E2E_FIXTURE_DIR="$fixture_dir" \
+            M4_E2E_EDGE_BASE_URLS="$M4_EDGE_BASE_URLS" \
+            M4_E2E_PUBLIC_ORIGIN="$M4_PUBLIC_ORIGIN" \
+            M4_E2E_INGESTION_POSTGRES_DSN_FILE="$ingestion_dsn" \
+            M4_E2E_MINIO_ENDPOINT="$M4_MINIO_ENDPOINT" \
+            M4_E2E_MINIO_INSECURE=false \
+            M4_E2E_MINIO_ACCESS_KEY_FILE="$minio_access_key" \
+            M4_E2E_MINIO_SECRET_KEY_FILE="$minio_secret_key" \
+            M4_E2E_MINIO_ARTIFACT_BUCKET="$M4_MINIO_ARTIFACT_BUCKET" \
+            M4_E2E_RABBITMQ_URI_FILE="$rabbitmq_uri" \
+            M4_E2E_STATUS_TIMEOUT=15m \
+              make m4-e2e
+            M4_E2E_ACCESS_TOKEN_FILE="$access_token" \
+            M4_E2E_FIXTURE_DIR="$fixture_dir" \
+            M4_E2E_EDGE_BASE_URLS="$M4_EDGE_BASE_URLS" \
+            M4_E2E_PUBLIC_ORIGIN="$M4_PUBLIC_ORIGIN" \
+            M4_E2E_INGESTION_POSTGRES_DSN_FILE="$ingestion_dsn" \
+            M4_E2E_MINIO_ENDPOINT="$M4_MINIO_ENDPOINT" \
+            M4_E2E_MINIO_INSECURE=false \
+            M4_E2E_MINIO_ACCESS_KEY_FILE="$minio_access_key" \
+            M4_E2E_MINIO_SECRET_KEY_FILE="$minio_secret_key" \
+            M4_E2E_MINIO_ARTIFACT_BUCKET="$M4_MINIO_ARTIFACT_BUCKET" \
+            M4_PERFORMANCE_PROFILE=m4-slo-v1 \
+            M4_PERFORMANCE_TIMEOUT=20m \
+              make m4-performance-smoke
+            rm -f "$access_token" "$revocable_access_token"
+            printf '{"adapter":"%s","contract":"passed","poison_dlq":"passed","live_status":"passed","profile":"m4-slo-v1"}\n' "$adapter" >> "$evidence"
+          }
+
+          run_worker_recovery() {
+            mint_access_token recovery_access_refresh_token "$access_token"
+            (cd tests/e2e && \
+              M4_E2E_ACCESS_TOKEN_FILE="$access_token" \
+              M4_E2E_RECOVERY_CONTROL_DIR="$recovery_dir" \
+              M4_E2E_FIXTURE_DIR="$fixture_dir" \
+              M4_E2E_EDGE_BASE_URLS="$M4_EDGE_BASE_URLS" \
+              M4_E2E_PUBLIC_ORIGIN="$M4_PUBLIC_ORIGIN" \
+              M4_E2E_INGESTION_POSTGRES_DSN_FILE="$ingestion_dsn" \
+              M4_E2E_MINIO_ENDPOINT="$M4_MINIO_ENDPOINT" \
+              M4_E2E_MINIO_INSECURE=false \
+              M4_E2E_MINIO_ACCESS_KEY_FILE="$minio_access_key" \
+              M4_E2E_MINIO_SECRET_KEY_FILE="$minio_secret_key" \
+              M4_E2E_MINIO_ARTIFACT_BUCKET="$M4_MINIO_ARTIFACT_BUCKET" \
+              M4_E2E_STATUS_TIMEOUT=15m \
+                go test -count=1 -v -timeout 25m -tags 'e2e m4' -run '^TestM4WorkerDownRecovery$' ./...) &
+            recovery_pid=$!
+            local found=false
+            for _ in $(seq 1 120); do
+              if [[ -f "$recovery_dir/upload-accepted" ]]; then found=true; break; fi
+              if ! kill -0 "$recovery_pid" 2>/dev/null; then wait "$recovery_pid"; return 1; fi
+              sleep 1
+            done
+            [[ "$found" == true ]] || { echo 'Staging recovery upload was not accepted while paused.' >&2; return 1; }
+            test ! -L "$recovery_dir/upload-accepted"
+            test "$(stat -c '%u:%a' "$recovery_dir/upload-accepted")" = "$(id -u):600"
+            test "$(wc -l < "$recovery_dir/upload-accepted")" -eq 1
+            grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' "$recovery_dir/upload-accepted"
+            deploy_mode worker
+            local restarted_tmp
+            restarted_tmp=$(mktemp "$recovery_dir/.worker-restarted.XXXXXX")
+            chmod 600 "$restarted_tmp"
+            mv "$restarted_tmp" "$recovery_dir/worker-restarted"
+            wait "$recovery_pid"
+            recovery_pid=''
+            rm -f "$access_token" "$recovery_dir/upload-accepted" "$recovery_dir/worker-restarted"
+            printf '{"adapter":"worker","durable_recovery":"passed"}\n' >> "$evidence"
+          }
+
+          deployment_started=true
+          deploy_mode paused
+          deploy_mode lambda
+          run_adapter_acceptance lambda lambda_access_refresh_token lambda_revocable_refresh_token
+          deploy_mode paused
+          run_worker_recovery
+          run_adapter_acceptance worker worker_access_refresh_token worker_revocable_refresh_token
+          deploy_mode paused
+          delete_rabbitmq_vhost
+
+          {
+            echo '### M4 protected staging evidence'
+            echo
+            echo "Reviewed commit: \`$GITHUB_SHA\`"
+            echo "Processing image: \`${PROCESSING_IMAGE_URI##*@}\`"
+            echo "Dispatcher image: \`${DISPATCHER_IMAGE_URI##*@}\`"
+            echo "Cleanup image: \`${CLEANUP_IMAGE_URI##*@}\`"
+            echo "Worker image: \`${WORKER_IMAGE_URI##*@}\`"
+            echo
+            echo 'The reviewed immutable images completed the required exclusive-consumer handoffs:'
+            jq -r 'select(has("mode")) | "- `" + .mode + "`: stack verified, one consumer mode, alarms clear"' "$evidence"
+            echo
+            echo 'Adapter acceptance:'
+            jq -r 'select(has("contract")) | "- `" + .adapter + "`: contract fixtures, poison/DLQ, live status, and m4-slo-v1 passed"' "$evidence"
+            jq -r 'select(has("durable_recovery")) | "- `" + .adapter + "`: paused upload and durable worker recovery passed"' "$evidence"
+            echo
+            echo 'Final mode: `paused`'
+            echo "Change ticket: \`$CHANGE_TICKET\`"
+          } >> "$GITHUB_STEP_SUMMARY"

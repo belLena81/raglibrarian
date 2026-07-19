@@ -113,7 +113,7 @@ jobs:
         run: make m4-contract-test
       - name: Verify MinIO multipart cleanup
         run: make minio-runtime-test
-      - name: Run black-box tests
+      - name: Run black-box and controlled worker-recovery tests
         run: |
           E2E_BOOTSTRAP_CODE="$(cat .dev/secrets/e2e_bootstrap_code)" \
           E2E_MAIL_FIXTURE_URL=http://127.0.0.1:8025/view/latest.txt \

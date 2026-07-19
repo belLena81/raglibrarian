@@ -141,6 +141,7 @@ type bookEvents struct {
 	hub           *BookStatusHub
 	publicOrigin  string
 	enforceOrigin bool
+	timing        sseTiming
 }
 
 // Events streams sanitized, revisioned processing changes for the library.
@@ -163,15 +164,16 @@ func (h *BooksHandler) Events(w http.ResponseWriter, r *http.Request) {
 		writeBookError(w, r, http.StatusUnauthorized, "unauthorized", "invalid or expired credentials")
 		return
 	}
-	streamDuration := 5 * time.Minute
+	timing := h.events.timing.withDefaults()
+	streamDuration := timing.maximumDuration
 	if !claims.ExpiresAt.IsZero() {
 		streamDuration = time.Until(claims.ExpiresAt)
 		if streamDuration <= 0 {
 			writeBookError(w, r, http.StatusUnauthorized, "unauthorized", "invalid or expired credentials")
 			return
 		}
-		if streamDuration > 5*time.Minute {
-			streamDuration = 5 * time.Minute
+		if streamDuration > timing.maximumDuration {
+			streamDuration = timing.maximumDuration
 		}
 	}
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -184,8 +186,8 @@ func (h *BooksHandler) Events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer remove()
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	stream, err := newSSEWriter(w, timing)
+	if err != nil {
 		writeBookError(w, r, http.StatusInternalServerError, "stream_unavailable", "stream unavailable")
 		return
 	}
@@ -193,17 +195,15 @@ func (h *BooksHandler) Events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store, private")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	if _, err = w.Write([]byte("event: books-resync\ndata: {\"version\":1}\n\n")); err != nil {
+	if err = stream.writeFrame([]byte("event: books-resync\ndata: {\"version\":1}\n\n")); err != nil {
 		return
 	}
-	flusher.Flush()
-	heartbeat := time.NewTicker(15 * time.Second)
-	revalidate := time.NewTicker(15 * time.Second)
+	heartbeat := time.NewTicker(timing.heartbeatInterval)
+	revalidate := time.NewTicker(timing.revalidateInterval)
 	maximum := time.NewTimer(streamDuration)
 	defer heartbeat.Stop()
 	defer revalidate.Stop()
 	defer maximum.Stop()
-	controller := http.NewResponseController(w)
 	for {
 		select {
 		case <-r.Context().Done():
@@ -216,11 +216,9 @@ func (h *BooksHandler) Events(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-heartbeat.C:
-			_ = controller.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if _, err = w.Write([]byte(": heartbeat\n\n")); err != nil {
+			if err = stream.writeFrame([]byte(": heartbeat\n\n")); err != nil {
 				return
 			}
-			flusher.Flush()
 		case event, open := <-events:
 			if !open {
 				return
@@ -229,14 +227,11 @@ func (h *BooksHandler) Events(w http.ResponseWriter, r *http.Request) {
 			if marshalErr != nil {
 				return
 			}
-			_ = controller.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if _, err = w.Write([]byte("id: " + event.EventID + "\nevent: book-processing-status-changed\ndata: ")); err != nil {
+			frame := append([]byte("id: "+event.EventID+"\nevent: book-processing-status-changed\ndata: "), body...)
+			frame = append(frame, '\n', '\n')
+			if err = stream.writeFrame(frame); err != nil {
 				return
 			}
-			if _, err = w.Write(append(body, '\n', '\n')); err != nil {
-				return
-			}
-			flusher.Flush()
 		}
 	}
 }
