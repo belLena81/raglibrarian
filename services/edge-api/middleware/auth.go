@@ -16,7 +16,10 @@ import (
 // contextKey is an unexported type for context keys to avoid collisions.
 type contextKey string
 
-const principalKey contextKey = "auth_principal"
+const (
+	principalKey contextKey = "auth_principal"
+	claimsKey    contextKey = "auth_claims"
+)
 
 // Authenticator validates the Authorization: Bearer token and stores Claims in context.
 // Rejects with 401 if the header is absent or the token is invalid.
@@ -71,7 +74,8 @@ func Authenticator(verifier tokenVerifier, sessions SessionValidator, diagnostic
 				return
 			}
 
-			ctx := context.WithValue(r.Context(), principalKey, principal)
+			ctx := context.WithValue(r.Context(), claimsKey, claims)
+			ctx = context.WithValue(ctx, principalKey, principal)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -127,7 +131,12 @@ func ClaimsFromContext(ctx context.Context) (auth.Claims, bool) {
 	if !ok {
 		return auth.Claims{}, false
 	}
-	return auth.Claims{UserID: principal.UserID, SessionID: principal.SessionID, Email: principal.Email, Role: auth.Role(principal.Role)}, true
+	claims, _ := ctx.Value(claimsKey).(auth.Claims)
+	claims.UserID = principal.UserID
+	claims.SessionID = principal.SessionID
+	claims.Email = principal.Email
+	claims.Role = auth.Role(principal.Role)
+	return claims, true
 }
 
 // PrincipalFromContext returns the live Identity principal stored by Authenticator.
@@ -140,6 +149,7 @@ func PrincipalFromContext(ctx context.Context) (authflow.Principal, bool) {
 // internal adapters and focused handler tests; public requests must use
 // Authenticator.
 func WithClaims(ctx context.Context, claims auth.Claims) context.Context {
+	ctx = context.WithValue(ctx, claimsKey, claims)
 	return WithPrincipal(ctx, authflow.Principal{UserID: claims.UserID, SessionID: claims.SessionID, Email: claims.Email, Role: string(claims.Role), Status: "active"})
 }
 

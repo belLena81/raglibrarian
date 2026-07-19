@@ -34,13 +34,17 @@ type BookMetadata struct {
 	Tags   []string `json:"tags"`
 }
 type Book struct {
-	ID               string    `json:"id"`
-	Title            string    `json:"title"`
-	Author           string    `json:"author"`
-	Year             int       `json:"year"`
-	Tags             []string  `json:"tags"`
-	ProcessingStatus string    `json:"processing_status"`
-	CreatedAt        time.Time `json:"created_at"`
+	ID                        string    `json:"id"`
+	Title                     string    `json:"title"`
+	Author                    string    `json:"author"`
+	Year                      int       `json:"year"`
+	Tags                      []string  `json:"tags"`
+	ProcessingStatus          string    `json:"processing_status"`
+	ProcessingStage           string    `json:"processing_stage"`
+	ProcessingFailureCategory string    `json:"processing_failure_category,omitempty"`
+	ProcessingUpdatedAt       time.Time `json:"processing_updated_at"`
+	ProcessingVersion         int64     `json:"processing_version"`
+	CreatedAt                 time.Time `json:"created_at"`
 }
 type BookPage struct {
 	Books         []Book
@@ -60,7 +64,10 @@ type BookCatalog interface {
 	GetBook(context.Context, string, CatalogActor) (Book, error)
 	CheckReady(context.Context) error
 }
-type BooksHandler struct{ catalog BookCatalog }
+type BooksHandler struct {
+	catalog BookCatalog
+	events  *bookEvents
+}
 
 func NewBooksHandler(catalog BookCatalog) *BooksHandler {
 	if dependencyMissing(catalog) {

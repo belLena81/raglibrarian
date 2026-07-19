@@ -212,6 +212,8 @@ Acceptance:
 
 **Owning service:** Ingestion.
 
+**Status:** implemented.
+
 **Outcome:** every accepted PDF progresses to processing and then either
 produces traceable chunks or displays a deterministic failure status.
 

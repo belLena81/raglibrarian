@@ -12,6 +12,7 @@ use (
 	./services/catalog-service
 	./services/edge-api
 	./services/identity-service
+	./services/ingestion-service
 	./tests/e2e
 	./tools/healthcheck
 )

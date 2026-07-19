@@ -1,0 +1,75 @@
+package extractor
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/domain"
+)
+
+type fakeRunner struct{ outputs [][]byte }
+
+func (r *fakeRunner) Run(context.Context, string, []string, int64) ([]byte, error) {
+	output := r.outputs[0]
+	r.outputs = r.outputs[1:]
+	return output, nil
+}
+
+func TestParseInfoRecognizesPaddedEncryptedField(t *testing.T) {
+	extractor := NewPoppler("pdfinfo", "pdftotext", Limits{}, &fakeRunner{})
+	_, err := extractor.parseInfo([]byte("Pages:           1\nEncrypted:       yes (print:yes copy:yes)\n"))
+	category, ok := FailureCategory(err)
+	if !ok || category != domain.FailureEncryptedDocument {
+		t.Fatalf("failure = %v, category = %q", err, category)
+	}
+}
+
+func TestPopplerStreamsPhysicalPages(t *testing.T) {
+	runner := &fakeRunner{outputs: [][]byte{
+		[]byte("Pages: 2\nEncrypted: no\n"),
+		[]byte("first page\fsecond page\f"),
+	}}
+	extractor := NewPoppler("pdfinfo", "pdftotext", Limits{MaximumPages: 10, MaximumPageBytes: 1024, MaximumExtractedBytes: 2048}, runner)
+	var pages []Page
+	info, err := extractor.Extract(context.Background(), "source.pdf", func(page Page) error {
+		pages = append(pages, page)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.PageCount != 2 || len(pages) != 2 || strings.TrimSpace(pages[1].Text) != "second page" {
+		t.Fatalf("unexpected extraction: %#v %#v", info, pages)
+	}
+}
+
+func TestPopplerRejectsEncryptedDocument(t *testing.T) {
+	runner := &fakeRunner{outputs: [][]byte{[]byte("Pages: 1\nEncrypted: yes (print:yes copy:no)\n")}}
+	extractor := NewPoppler("pdfinfo", "pdftotext", Limits{MaximumPages: 10, MaximumPageBytes: 1024, MaximumExtractedBytes: 2048}, runner)
+	_, err := extractor.Extract(context.Background(), "source.pdf", func(Page) error { return nil })
+	if category, ok := FailureCategory(err); !ok || category != "encrypted_document" {
+		t.Fatalf("expected encrypted category, got %q %v", category, err)
+	}
+}
+
+func TestConsumePageStreamPreservesBlankMiddlePageWithoutDocumentBuffering(t *testing.T) {
+	var pages []Page
+	err := consumePageStream(strings.NewReader("first\f\fthird\f"), Limits{MaximumPageBytes: 32, MaximumExtractedBytes: 64}, 3, func(page Page) error {
+		pages = append(pages, page)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pages) != 3 || pages[1].Number != 2 || pages[1].Text != "" {
+		t.Fatalf("unexpected pages: %#v", pages)
+	}
+}
+
+func TestConsumePageStreamStopsAtPerPageLimit(t *testing.T) {
+	err := consumePageStream(strings.NewReader("oversized\f"), Limits{MaximumPageBytes: 4, MaximumExtractedBytes: 64}, 1, func(Page) error { return nil })
+	if category, ok := FailureCategory(err); !ok || category != "resource_limit_exceeded" {
+		t.Fatalf("expected resource limit category, got %q %v", category, err)
+	}
+}

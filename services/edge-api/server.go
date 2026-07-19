@@ -122,6 +122,7 @@ func NewRouter(
 		router.Route("/books", func(router chi.Router) {
 			router.Use(middleware.Authenticator(verifier, sessions, diagnostics))
 			router.Get("/", booksHandler.List)
+			router.Get("/events", booksHandler.Events)
 			router.Get("/{book_id}", booksHandler.Get)
 			router.Group(func(router chi.Router) {
 				router.Use(middleware.RequireAnyRole(auth.RoleLibrarian, auth.RoleAdmin))

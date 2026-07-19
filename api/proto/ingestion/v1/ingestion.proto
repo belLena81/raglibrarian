@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+package ingestion.v1;
+
+option go_package = "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1;ingestionv1";
+
+import "google/protobuf/timestamp.proto";
+
+enum BookProcessingFailureCategory {
+  BOOK_PROCESSING_FAILURE_CATEGORY_UNSPECIFIED = 0;
+  BOOK_PROCESSING_FAILURE_CATEGORY_ENCRYPTED_DOCUMENT = 1;
+  BOOK_PROCESSING_FAILURE_CATEGORY_EXTRACTION_NOT_PERMITTED = 2;
+  BOOK_PROCESSING_FAILURE_CATEGORY_MALFORMED_DOCUMENT = 3;
+  BOOK_PROCESSING_FAILURE_CATEGORY_UNSUPPORTED_DOCUMENT = 4;
+  BOOK_PROCESSING_FAILURE_CATEGORY_NO_EXTRACTABLE_TEXT = 5;
+  BOOK_PROCESSING_FAILURE_CATEGORY_RESOURCE_LIMIT_EXCEEDED = 6;
+  BOOK_PROCESSING_FAILURE_CATEGORY_SOURCE_INTEGRITY_MISMATCH = 7;
+  BOOK_PROCESSING_FAILURE_CATEGORY_PROCESSING_TIMEOUT = 8;
+  BOOK_PROCESSING_FAILURE_CATEGORY_DEPENDENCY_UNAVAILABLE = 9;
+  BOOK_PROCESSING_FAILURE_CATEGORY_INTERNAL_PROCESSING_ERROR = 10;
+}
+
+message BookProcessingStartedV1 {
+  string event_id = 1;
+  string book_id = 2;
+  bytes source_sha256 = 3;
+  string extraction_version = 4;
+  string normalization_version = 5;
+  string tokenizer_version = 6;
+  string chunking_version = 7;
+  string correlation_id = 8;
+  google.protobuf.Timestamp occurred_at = 9;
+  string causation_id = 10;
+  string producer = 11;
+  string schema_version = 12;
+  string idempotency_key = 13;
+}
+
+message BookChunksReadyV1 {
+  string event_id = 1;
+  string book_id = 2;
+  bytes source_sha256 = 3;
+  string manifest_reference = 4;
+  bytes manifest_sha256 = 5;
+  int64 manifest_byte_size = 6;
+  uint32 page_count = 7;
+  uint32 chunk_count = 8;
+  string extraction_version = 9;
+  string normalization_version = 10;
+  string tokenizer_version = 11;
+  string chunking_version = 12;
+  string correlation_id = 13;
+  google.protobuf.Timestamp occurred_at = 14;
+  string causation_id = 15;
+  string producer = 16;
+  string schema_version = 17;
+  string idempotency_key = 18;
+}
+
+message BookProcessingFailedV1 {
+  string event_id = 1;
+  string book_id = 2;
+  bytes source_sha256 = 3;
+  string extraction_version = 4;
+  string normalization_version = 5;
+  string tokenizer_version = 6;
+  string chunking_version = 7;
+  BookProcessingFailureCategory failure_category = 8;
+  string correlation_id = 9;
+  google.protobuf.Timestamp occurred_at = 10;
+  string causation_id = 11;
+  string producer = 12;
+  string schema_version = 13;
+  string idempotency_key = 14;
+}
+
+message ChunkV1 {
+  string chunk_id = 1;
+  string book_id = 2;
+  uint64 order = 3;
+  string text = 4;
+  bytes content_sha256 = 5;
+  string chapter = 6;
+  string section = 7;
+  uint32 page_start = 8;
+  uint32 page_end = 9;
+  uint64 token_start = 10;
+  uint64 token_end = 11;
+  string extraction_version = 12;
+  string normalization_version = 13;
+  string tokenizer_version = 14;
+  string chunking_version = 15;
+}
+
+message ChunkShardDescriptorV1 {
+  string reference = 1;
+  bytes sha256 = 2;
+  int64 compressed_byte_size = 3;
+  int64 uncompressed_byte_size = 4;
+  uint32 chunk_count = 5;
+  uint64 first_chunk_order = 6;
+  uint64 last_chunk_order = 7;
+}
+
+message ChunkManifestV1 {
+  string schema_version = 1;
+  string book_id = 2;
+  bytes source_sha256 = 3;
+  bytes processing_config_digest = 4;
+  string extraction_version = 5;
+  string normalization_version = 6;
+  string tokenizer_version = 7;
+  string chunking_version = 8;
+  uint32 page_count = 9;
+  uint32 chunk_count = 10;
+  google.protobuf.Timestamp generated_at = 11;
+  repeated ChunkShardDescriptorV1 shards = 12;
+}

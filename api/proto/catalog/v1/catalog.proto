@@ -63,6 +63,10 @@ message Book {
   repeated string tags = 5;
   string processing_status = 6;
   google.protobuf.Timestamp created_at = 7;
+  string processing_stage = 8;
+  string processing_failure_category = 9;
+  google.protobuf.Timestamp processing_updated_at = 10;
+  int64 processing_version = 11;
 }
 
 // Actor is asserted by the authenticated Edge service, never by a browser.
@@ -93,4 +97,22 @@ message BookUploadedV1 {
   string producer = 15;
   string schema_version = 16;
   string idempotency_key = 17;
+}
+
+// BookProcessingStatusChangedV1 is Catalog's sanitized, authoritative
+// notification projection. It contains no book content or storage references.
+message BookProcessingStatusChangedV1 {
+  string event_id = 1;
+  string book_id = 2;
+  string processing_status = 3;
+  string processing_stage = 4;
+  string processing_failure_category = 5;
+  int64 processing_version = 6;
+  google.protobuf.Timestamp updated_at = 7;
+  string correlation_id = 8;
+  google.protobuf.Timestamp occurred_at = 9;
+  string causation_id = 10;
+  string producer = 11;
+  string schema_version = 12;
+  string idempotency_key = 13;
 }

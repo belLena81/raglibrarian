@@ -18,6 +18,7 @@ import (
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	identityv1 "github.com/belLena81/raglibrarian/pkg/proto/identity/v1"
 	edgeapi "github.com/belLena81/raglibrarian/services/edge-api"
+	"github.com/belLena81/raglibrarian/services/edge-api/bookstatus"
 	"github.com/belLena81/raglibrarian/services/edge-api/catalogclient"
 	"github.com/belLena81/raglibrarian/services/edge-api/config"
 	"github.com/belLena81/raglibrarian/services/edge-api/diagnostic"
@@ -80,6 +81,11 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	queryHandler := handler.NewQueryHandler(diagnostics)
 	healthHandler := handler.NewHealthHandler(readiness{identity: identity, catalog: catalog})
 	booksHandler := handler.NewBooksHandler(catalog)
+	bookStatusHub := handler.NewBookStatusHub(200)
+	booksHandler.EnableEvents(handler.BookEventsConfig{
+		Sessions: identity, Hub: bookStatusHub, PublicOrigin: cfg.PublicOrigin, EnforceOrigin: cfg.EnforceBrowserOrigin,
+	})
+	go bookstatus.Run(ctx, cfg.StatusRabbitURI, cfg.StatusQueue, bookStatusHub)
 	setupHandler := handler.NewSetupHandler(identity)
 	hub := handler.NewPendingHub(200)
 	adminHandler := handler.NewAdminHandler(identity, hub)

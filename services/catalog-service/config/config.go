@@ -17,22 +17,23 @@ import (
 
 // Config is validated Catalog runtime configuration.
 type Config struct {
-	Address           string
-	DSN               string
-	MinIOEndpoint     string
-	MinIOAccessKey    string
-	MinIOSecretKey    string
-	MinIOBucket       string
-	MinIOInsecure     bool
-	MinIOCAFile       string
-	RabbitURI         string
-	MaxUploadBytes    int64
-	UploadConcurrency int
-	MetricsAddress    string
-	ReconcileInterval time.Duration
-	OrphanGracePeriod time.Duration
-	TLS               internaltls.Files
-	RunAs             process.Identity
+	Address            string
+	DSN                string
+	MinIOEndpoint      string
+	MinIOAccessKey     string
+	MinIOSecretKey     string
+	MinIOBucket        string
+	MinIOInsecure      bool
+	MinIOCAFile        string
+	RabbitURI          string
+	IngestionRabbitURI string
+	MaxUploadBytes     int64
+	UploadConcurrency  int
+	MetricsAddress     string
+	ReconcileInterval  time.Duration
+	OrphanGracePeriod  time.Duration
+	TLS                internaltls.Files
+	RunAs              process.Identity
 }
 
 // Load reads Catalog configuration from the environment.
@@ -50,6 +51,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	rabbitURI, err := readSecret("CATALOG_RABBITMQ_URI_FILE", 4096)
+	if err != nil {
+		return Config{}, err
+	}
+	ingestionRabbitURI, err := readSecret("CATALOG_INGESTION_RABBITMQ_URI_FILE", 4096)
 	if err != nil {
 		return Config{}, err
 	}
@@ -115,7 +120,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{Address: optional("CATALOG_GRPC_ADDR", ":50052"), DSN: dsn, MinIOEndpoint: endpoint, MinIOAccessKey: minioAccessKey, MinIOSecretKey: minioSecretKey, MinIOBucket: bucket, MinIOInsecure: minioInsecure, MinIOCAFile: minioCAFile, RabbitURI: rabbitURI, MaxUploadBytes: maxUploadBytes, UploadConcurrency: uploadConcurrency, MetricsAddress: metricsAddress, ReconcileInterval: reconcileInterval, OrphanGracePeriod: orphanGracePeriod, TLS: internaltls.Files{CA: ca, Certificate: cert, Key: key}, RunAs: process.Identity{UID: uid, GID: gid}}, nil
+	return Config{Address: optional("CATALOG_GRPC_ADDR", ":50052"), DSN: dsn, MinIOEndpoint: endpoint, MinIOAccessKey: minioAccessKey, MinIOSecretKey: minioSecretKey, MinIOBucket: bucket, MinIOInsecure: minioInsecure, MinIOCAFile: minioCAFile, RabbitURI: rabbitURI, IngestionRabbitURI: ingestionRabbitURI, MaxUploadBytes: maxUploadBytes, UploadConcurrency: uploadConcurrency, MetricsAddress: metricsAddress, ReconcileInterval: reconcileInterval, OrphanGracePeriod: orphanGracePeriod, TLS: internaltls.Files{CA: ca, Certificate: cert, Key: key}, RunAs: process.Identity{UID: uid, GID: gid}}, nil
 }
 
 func strictBool(key string, fallback bool) (bool, error) {

@@ -99,15 +99,14 @@ and [Lambda quotas](https://docs.aws.amazon.com/lambda/latest/dg/gettingstarted-
 
 ## Current state and delivery order
 
-The one-time extraction is complete: Edge, Identity, and Catalog are separate
-processes. The remaining vertical slices are delivered in this order:
+The one-time extraction is complete: Edge, Identity, Catalog, and Ingestion are
+separate owning contexts/process adapters. Identity RBAC, Catalog upload, and
+Ingestion extraction/chunking are delivered. The remaining vertical slices are
+delivered in this order:
 
-1. Identity RBAC and librarian approval.
-2. Catalog PDF upload, MinIO, RabbitMQ, and transactional publication.
-3. Ingestion extraction/chunking through Lambda and worker adapters.
-4. Retrieval indexing/search through Lambda/worker indexing and gRPC search.
-5. Optional grounded Answer synthesis.
-6. EPUB and library lifecycle completion.
-7. Internet-ready hardening.
+1. Retrieval indexing/search through Lambda/worker indexing and gRPC search.
+2. Optional grounded Answer synthesis.
+3. EPUB and library lifecycle completion.
+4. Internet-ready hardening.
 
 The canonical acceptance criteria are in [README.md](README.md).

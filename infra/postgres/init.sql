@@ -7,6 +7,9 @@
 \set identity_runtime_password `cat /run/secrets/identity_runtime_password`
 \set catalog_migration_password `cat /run/secrets/catalog_migration_password`
 \set catalog_runtime_password `cat /run/secrets/catalog_runtime_password`
+\set ingestion_migration_password `cat /run/secrets/ingestion_migration_password`
+\set ingestion_runtime_password `cat /run/secrets/ingestion_runtime_password`
+\set ingestion_cleanup_password `cat /run/secrets/ingestion_cleanup_password`
 
 SELECT format('CREATE ROLE identity_migrator LOGIN PASSWORD %L', :'identity_migration_password')
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'identity_migrator') \gexec
@@ -50,7 +53,32 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA catalog TO catalog_
 ALTER DEFAULT PRIVILEGES FOR ROLE catalog_migrator IN SCHEMA catalog
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO catalog_runtime;
 
+\connect raglibrarian_platform
+SELECT format('CREATE ROLE ingestion_migrator LOGIN PASSWORD %L', :'ingestion_migration_password')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ingestion_migrator') \gexec
+SELECT format('CREATE ROLE ingestion_runtime LOGIN PASSWORD %L', :'ingestion_runtime_password')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ingestion_runtime') \gexec
+SELECT format('CREATE ROLE ingestion_cleanup LOGIN PASSWORD %L', :'ingestion_cleanup_password')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ingestion_cleanup') \gexec
+SELECT 'CREATE DATABASE ingestion OWNER ingestion_migrator TEMPLATE template0'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'ingestion') \gexec
+REVOKE ALL ON DATABASE ingestion FROM PUBLIC;
+GRANT CONNECT ON DATABASE ingestion TO ingestion_runtime;
+GRANT CONNECT ON DATABASE ingestion TO ingestion_cleanup;
+\connect ingestion
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+CREATE SCHEMA IF NOT EXISTS ingestion AUTHORIZATION ingestion_migrator;
+REVOKE ALL ON SCHEMA ingestion FROM PUBLIC;
+GRANT USAGE ON SCHEMA ingestion TO ingestion_runtime;
+GRANT USAGE ON SCHEMA ingestion TO ingestion_cleanup;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ingestion TO ingestion_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE ingestion_migrator IN SCHEMA ingestion
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ingestion_runtime;
+
 \unset identity_migration_password
 \unset identity_runtime_password
 \unset catalog_migration_password
 \unset catalog_runtime_password
+\unset ingestion_migration_password
+\unset ingestion_runtime_password
+\unset ingestion_cleanup_password

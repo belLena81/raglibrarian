@@ -25,6 +25,7 @@ import (
 	"github.com/belLena81/raglibrarian/services/catalog-service/internal/catalog"
 	"github.com/belLena81/raglibrarian/services/catalog-service/internal/metrics"
 	"github.com/belLena81/raglibrarian/services/catalog-service/outbox"
+	catalogprocessing "github.com/belLena81/raglibrarian/services/catalog-service/processing"
 	"github.com/belLena81/raglibrarian/services/catalog-service/repository"
 )
 
@@ -109,10 +110,15 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	}
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
 	var workers sync.WaitGroup
-	workers.Add(4)
+	workers.Add(5)
 	go func() {
 		defer workers.Done()
 		outbox.Run(workerCtx, bookRepository, publisher, recorder)
+	}()
+	go func() {
+		defer workers.Done()
+		processingService := catalog.NewProcessingService(bookRepository, nil, nil)
+		catalogprocessing.Run(workerCtx, cfg.IngestionRabbitURI, processingService, diagnostics)
 	}()
 	go func() {
 		defer workers.Done()

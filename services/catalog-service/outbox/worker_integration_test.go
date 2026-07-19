@@ -38,17 +38,20 @@ func TestOutboxPublishesAcceptedUploadAfterBrokerRecovery(t *testing.T) {
 	now := time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)
 	payload := []byte("stable integration payload")
 	book := catalog.Book{
-		ID:               "book-" + id,
-		Metadata:         catalog.BookMetadata{Title: "Integration", Author: "Contract", Year: 2026, Tags: []string{}},
-		ProcessingStatus: catalog.BookStatusPending,
-		CreatedAt:        now,
-		ObjectReference:  "originals/book-" + id + ".pdf",
-		ByteSize:         5,
-		ActorID:          "integration-actor",
+		ID:                  "book-" + id,
+		Metadata:            catalog.BookMetadata{Title: "Integration", Author: "Contract", Year: 2026, Tags: []string{}},
+		ProcessingStatus:    catalog.BookStatusPending,
+		ProcessingStage:     catalog.BookStageQueued,
+		ProcessingUpdatedAt: now,
+		ProcessingVersion:   1,
+		CreatedAt:           now,
+		ObjectReference:     "originals/book-" + id + ".pdf",
+		ByteSize:            5,
+		ActorID:             "integration-actor",
 	}
 	event := catalog.OutboxEvent{
 		ID:         "event-" + id,
-		Type:       routingKey,
+		Type:       "catalog.book.uploaded.v1",
 		OccurredAt: now,
 		Payload:    payload,
 	}

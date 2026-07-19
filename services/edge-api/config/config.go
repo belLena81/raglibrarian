@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"net/url"
 	"os"
@@ -31,6 +32,7 @@ var (
 // Config is validated Edge runtime configuration.
 type Config struct {
 	Addr, IdentityAddress, CatalogAddress string
+	StatusRabbitURI, StatusQueue          string
 	VerifyKey                             []byte
 	PreviousVerifyKey                     []byte
 	TrustedProxyCIDRs                     []netip.Prefix
@@ -43,6 +45,10 @@ type Config struct {
 
 // Load reads Edge configuration from the environment.
 func Load() (Config, error) {
+	statusRabbitURI, err := readSecret("EDGE_STATUS_RABBITMQ_URI_FILE", 4096)
+	if err != nil {
+		return Config{}, err
+	}
 	keyHex, err := required("EDGE_VERIFY_KEY")
 	if err != nil {
 		return Config{}, err
@@ -103,6 +109,8 @@ func Load() (Config, error) {
 		Addr:                 optional("QUERY_ADDR", ":8080"),
 		IdentityAddress:      optional("IDENTITY_GRPC_ADDR", "identity-service:50051"),
 		CatalogAddress:       optional("CATALOG_GRPC_ADDR", "catalog-service:50052"),
+		StatusRabbitURI:      statusRabbitURI,
+		StatusQueue:          optional("EDGE_STATUS_QUEUE", "edge.book-status.local.1"),
 		VerifyKey:            key,
 		PreviousVerifyKey:    previousKey,
 		TrustedProxyCIDRs:    prefixes,
@@ -157,4 +165,28 @@ func optional(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func readSecret(envKey string, maxBytes int64) (string, error) {
+	path, err := required(envKey)
+	if err != nil {
+		return "", err
+	}
+	file, err := os.Open(path) // #nosec G304 -- operator-provided secret path.
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", envKey, err)
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() > maxBytes {
+		return "", fmt.Errorf("%w: %s secret file is invalid", ErrRequiredConfiguration, envKey)
+	}
+	value, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", envKey, err)
+	}
+	if len(value) == 0 || int64(len(value)) > maxBytes || strings.TrimSpace(string(value)) == "" {
+		return "", fmt.Errorf("%w: %s secret is empty or too large", ErrRequiredConfiguration, envKey)
+	}
+	return strings.TrimSpace(string(value)), nil
 }

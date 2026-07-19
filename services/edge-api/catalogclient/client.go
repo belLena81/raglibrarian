@@ -136,7 +136,16 @@ func fromProto(book *catalogv1.Book) handler.Book {
 	if book.CreatedAt != nil {
 		createdAt = book.CreatedAt.AsTime()
 	}
-	return handler.Book{ID: book.Id, Title: book.Title, Author: book.Author, Year: int(book.Year), Tags: append([]string(nil), book.Tags...), ProcessingStatus: book.ProcessingStatus, CreatedAt: createdAt}
+	processingUpdatedAt := time.Time{}
+	if book.ProcessingUpdatedAt != nil {
+		processingUpdatedAt = book.ProcessingUpdatedAt.AsTime()
+	}
+	return handler.Book{
+		ID: book.Id, Title: book.Title, Author: book.Author, Year: int(book.Year), Tags: append([]string(nil), book.Tags...),
+		ProcessingStatus: book.ProcessingStatus, ProcessingStage: book.ProcessingStage,
+		ProcessingFailureCategory: book.ProcessingFailureCategory, ProcessingUpdatedAt: processingUpdatedAt,
+		ProcessingVersion: book.ProcessingVersion, CreatedAt: createdAt,
+	}
 }
 func mapError(err error) error {
 	if status.Code(err) == codes.NotFound {

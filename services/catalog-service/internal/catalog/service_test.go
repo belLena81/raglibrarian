@@ -280,7 +280,7 @@ func TestUploadBookPreservesObjectAfterAmbiguousCommittedCreate(t *testing.T) {
 
 type ambiguousCreateRepository struct{}
 
-func (ambiguousCreateRepository) Create(context.Context, Book, OutboxEvent) error {
+func (ambiguousCreateRepository) Create(context.Context, Book, ...OutboxEvent) error {
 	return errors.New("connection lost after commit")
 }
 

@@ -22,6 +22,12 @@ func New(log *zap.Logger) *Recorder {
 func (r *Recorder) OutboxClaimFailed() { r.log.Warn("catalog.outbox.claim.failed") }
 func (r *Recorder) OutboxRetryFailed() { r.log.Warn("catalog.outbox.retry.failed") }
 func (r *Recorder) OutboxMarkFailed()  { r.log.Warn("catalog.outbox.mark.failed") }
+func (r *Recorder) ProcessingConsumerUnavailable() {
+	r.log.Warn("catalog.processing.consumer.unavailable")
+}
+func (r *Recorder) ProcessingEventRejected()    { r.log.Warn("catalog.processing.event.rejected") }
+func (r *Recorder) ProcessingEventConflict()    { r.log.Error("catalog.processing.event.conflict") }
+func (r *Recorder) ProcessingEventApplyFailed() { r.log.Warn("catalog.processing.event.apply.failed") }
 
 // UploadCompleted records the durable identity and aggregate properties of an
 // uploaded book. It never records names, emails, titles, authors, object keys,

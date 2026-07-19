@@ -47,7 +47,7 @@ type UploadInput struct {
 }
 
 type BookRepository interface {
-	Create(context.Context, Book, OutboxEvent) error
+	Create(context.Context, Book, ...OutboxEvent) error
 	List(context.Context, int, string) ([]Book, string, error)
 	Get(context.Context, string) (Book, error)
 }
@@ -155,7 +155,12 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 		s.deleteObject(objectReference)
 		return Book{}, fmt.Errorf("generate book ID: %w", err)
 	}
-	book := Book{ID: bookID, Metadata: input.Metadata, ProcessingStatus: BookStatusPending, CreatedAt: now, ObjectReference: objectReference, Checksum: reader.sum(), ByteSize: reader.size, ActorID: input.Actor.UserID}
+	book := Book{
+		ID: bookID, Metadata: input.Metadata, ProcessingStatus: BookStatusPending,
+		ProcessingStage: BookStageQueued, ProcessingUpdatedAt: now, ProcessingVersion: 1,
+		CreatedAt: now, ObjectReference: objectReference, Checksum: reader.sum(), ByteSize: reader.size,
+		ActorID: input.Actor.UserID,
+	}
 	eventID, err := s.newID()
 	if err != nil {
 		s.deleteObject(objectReference)
@@ -175,7 +180,24 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 		return Book{}, errors.New("catalog event unavailable")
 	}
 	event := OutboxEvent{ID: eventID, Type: "catalog.book.uploaded.v1", OccurredAt: now, Payload: payload}
-	if err = s.repository.Create(ctx, book, event); err != nil {
+	statusEventID, err := s.newID()
+	if err != nil {
+		s.deleteObject(objectReference)
+		return Book{}, fmt.Errorf("generate status event ID: %w", err)
+	}
+	statusPayload, err := proto.Marshal(&catalogv1.BookProcessingStatusChangedV1{
+		EventId: statusEventID, BookId: book.ID, ProcessingStatus: string(book.ProcessingStatus),
+		ProcessingStage: string(book.ProcessingStage), ProcessingVersion: book.ProcessingVersion,
+		UpdatedAt: timestamppb.New(now), CorrelationId: input.CorrelationID, OccurredAt: timestamppb.New(now),
+		CausationId: eventID, Producer: "catalog-service", SchemaVersion: "v1",
+		IdempotencyKey: fmt.Sprintf("%s:processing:%d", book.ID, book.ProcessingVersion),
+	})
+	if err != nil {
+		s.deleteObject(objectReference)
+		return Book{}, errors.New("catalog status event unavailable")
+	}
+	statusEvent := OutboxEvent{ID: statusEventID, Type: "catalog.book.processing-status-changed.v1", OccurredAt: now, Payload: statusPayload}
+	if err = s.repository.Create(ctx, book, event, statusEvent); err != nil {
 		lookupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		persisted, lookupErr := s.repository.Get(lookupCtx, book.ID)
@@ -291,7 +313,7 @@ func generatedID() (string, error) {
 type MemoryRepository struct{ books map[string]Book }
 
 func NewMemoryRepository() *MemoryRepository { return &MemoryRepository{books: map[string]Book{}} }
-func (r *MemoryRepository) Create(_ context.Context, book Book, _ OutboxEvent) error {
+func (r *MemoryRepository) Create(_ context.Context, book Book, _ ...OutboxEvent) error {
 	r.books[book.ID] = book
 	return nil
 }

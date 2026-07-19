@@ -11,4 +11,4 @@ chmod 600 "$runtime_pgpass"
 export PGPASSFILE="$runtime_pgpass"
 
 psql --no-password --file /bootstrap/identity.sql
-echo "Identity database roles and privileges are ready"
+echo "Identity, Catalog, and Ingestion database roles and privileges are ready"

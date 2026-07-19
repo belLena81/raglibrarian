@@ -41,6 +41,7 @@ type Claims struct {
 	SessionID string
 	TokenID   string
 	KeyID     string
+	ExpiresAt time.Time
 }
 
 // Subject is the primitive token input; it deliberately contains no service aggregate.
@@ -219,6 +220,10 @@ func (v *Verifier) Validate(tokenStr string) (Claims, error) {
 	}
 	tokenID, _ := token.GetJti()
 	keyID, _ := token.GetString("kid")
+	expiresAt, err := token.GetExpiration()
+	if err != nil {
+		return Claims{}, ErrInvalidToken
+	}
 
 	return Claims{
 		UserID:    userID,
@@ -227,5 +232,6 @@ func (v *Verifier) Validate(tokenStr string) (Claims, error) {
 		SessionID: sessionID,
 		TokenID:   tokenID,
 		KeyID:     keyID,
+		ExpiresAt: expiresAt,
 	}, nil
 }

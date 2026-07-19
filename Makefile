@@ -4,14 +4,14 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-generate build run-edge-api run-identity run-catalog dev local-run local-stop tidy e2e contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 bootstrap-verifier compose-config ui-check ui-audit secret-scan dockerfile-lint image-build image-scan security-check full-gates integration-gates smtp-url
+.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-generate build run-edge-api run-identity run-catalog run-ingestion dev local-run local-stop tidy e2e contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 bootstrap-verifier compose-config ui-check ui-audit secret-scan dockerfile-lint image-build image-scan security-check full-gates integration-gates smtp-url
 
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
 HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
 # 0.69.2 is the vendor-designated unaffected Trivy release after the 2026
 # publishing incident. Do not move this pin without reviewing the advisory.
 TRIVY_IMAGE := aquasec/trivy:0.69.2
-SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local
+SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-ingestion-lambda:local raglibrarian-ingestion-cleanup-lambda:local
 
 # Service/library modules — looped over by test, lint, tidy, fmt.
 MODULES := \
@@ -23,13 +23,14 @@ MODULES := \
 	pkg/proto \
 	services/identity-service \
 	services/catalog-service \
+	services/ingestion-service \
 	services/edge-api \
 	tests/e2e \
 	tools/healthcheck
 
 # Go packages import generated protobuf bindings. Generate them before any
 # target that compiles or analyzes those packages.
-GO_PROTO_TARGETS := test test-race lint fmt fmt-check vet vuln build run-edge-api run-identity run-catalog tidy e2e
+GO_PROTO_TARGETS := test test-race lint fmt fmt-check vet vuln build run-edge-api run-identity run-catalog run-ingestion tidy e2e
 $(GO_PROTO_TARGETS): proto-generate
 
 # Guard: abort if not run from the workspace root.
@@ -102,6 +103,7 @@ build: _require_root
 	cd services/edge-api && go build -o ../../bin/edge-api ./cmd/main.go
 	cd services/identity-service && go build -o ../../bin/identity-service ./cmd/main.go
 	cd services/catalog-service && go build -o ../../bin/catalog-service ./cmd/main.go
+	cd services/ingestion-service && go build -o ../../bin/ingestion-service ./cmd/worker
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 # run-edge-api: requires AUTH_SECRET_KEY, POSTGRES_DSN, and IDENTITY_GRPC_ADDR.
@@ -115,6 +117,9 @@ run-identity: _require_root
 run-catalog: _require_root
 	cd services/catalog-service && go run ./cmd/main.go
 
+run-ingestion: _require_root
+	cd services/ingestion-service && go run ./cmd/worker
+
 # stack-up starts the complete local stack, including the migration job.
 stack-up: _require_root
 	@test -f .env || { \
@@ -126,6 +131,7 @@ stack-up: _require_root
 	@test -r "$${SECRET_DIR:-.dev/secrets}/identity_runtime_dsn" || { echo "development secrets are missing; run make dev-secrets"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/catalog_migration_password" && test -r "$${SECRET_DIR:-.dev/secrets}/catalog_runtime_password" && test -r "$${SECRET_DIR:-.dev/secrets}/catalog_migration_pgpass" && test -r "$${SECRET_DIR:-.dev/secrets}/catalog_runtime_dsn" || { echo "Catalog database development secrets are missing; run make dev-secrets-catalog-db"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/catalog_minio_access_key" || { echo "MinIO/RabbitMQ development secrets are missing; run make dev-secrets-m3"; exit 1; }
+	@test -r "$${SECRET_DIR:-.dev/secrets}/ingestion_runtime_dsn" && test -r "$${SECRET_DIR:-.dev/secrets}/ingestion_rabbitmq_uri" && test -r "$${SECRET_DIR:-.dev/secrets}/edge_status_rabbitmq_uri_1" && test -r "$${SECRET_DIR:-.dev/secrets}/edge_status_rabbitmq_uri_2" || { echo "M4 ingestion development secrets are missing; generate a fresh development secret set"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/identity_bootstrap_verifier" || { echo "bootstrap verifier is missing; run make bootstrap-verifier"; exit 1; }
 	@docker compose up -d --build
 
@@ -187,6 +193,12 @@ migrate-catalog-up: _require_root
 migrate-catalog-down: _require_root
 	docker compose run --rm -e MIGRATION_DIRECTION=down catalog-migrate
 
+migrate-ingestion-up: _require_root
+	docker compose run --rm ingestion-migrate
+
+migrate-ingestion-down: _require_root
+	docker compose run --rm -e MIGRATION_DIRECTION=down ingestion-migrate
+
 # ── Infrastructure ────────────────────────────────────────────────────────────
 infra-up: stack-up
 
@@ -209,6 +221,10 @@ dev-secrets-m3: _require_root
 	@echo "Generating MinIO and RabbitMQ development credentials..."
 	bash ./scripts/generate-catalog-dev-secrets.sh
 
+dev-secrets-m4: _require_root
+	@echo "Generating additive Ingestion, broker, storage, and database credentials..."
+	bash ./scripts/generate-m4-dev-secrets.sh
+
 bootstrap-verifier: _require_root
 	@secret_dir="$${SECRET_DIR:-$(CURDIR)/.dev/secrets}"; \
 	case "$$secret_dir" in /*) ;; *) secret_dir="$(CURDIR)/$$secret_dir" ;; esac; \
@@ -223,7 +239,7 @@ proto: _require_root
 	$(MAKE) proto-generate
 
 proto-generate: _require_root
-	PATH="$$HOME/go/bin:$$PATH" protoc -I api/proto --go_out=paths=source_relative:pkg/proto --go-grpc_out=paths=source_relative:pkg/proto api/proto/identity/v1/identity.proto api/proto/catalog/v1/catalog.proto
+	PATH="$$HOME/go/bin:$$PATH" protoc -I api/proto --go_out=paths=source_relative:pkg/proto --go-grpc_out=paths=source_relative:pkg/proto api/proto/identity/v1/identity.proto api/proto/catalog/v1/catalog.proto api/proto/ingestion/v1/ingestion.proto
 
 proto-check: _require_root
 	XDG_CACHE_HOME=/tmp/raglibrarian-cache buf lint api/proto
@@ -255,6 +271,9 @@ image-build: _require_root
 	docker build --build-arg SERVICE=identity-service -t raglibrarian-identity-service:local .
 	docker build --build-arg SERVICE=catalog-service -t raglibrarian-catalog-service:local .
 	docker build --build-arg SERVICE=edge-api -t raglibrarian-edge-api:local .
+	docker build --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/worker -t raglibrarian-ingestion-service:local .
+	docker build --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/lambda -t raglibrarian-ingestion-lambda:local .
+	docker build --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda -t raglibrarian-ingestion-cleanup-lambda:local .
 
 image-scan: image-build
 	@for image in $(SERVICE_IMAGES); do \

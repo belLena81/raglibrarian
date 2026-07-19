@@ -199,7 +199,13 @@ func (r *chunkReader) Read(target []byte) (int, error) {
 }
 
 func bookProto(book catalog.Book) *catalogv1.Book {
-	return &catalogv1.Book{Id: book.ID, Title: book.Metadata.Title, Author: book.Metadata.Author, Year: int32(book.Metadata.Year), Tags: append([]string(nil), book.Metadata.Tags...), ProcessingStatus: string(book.ProcessingStatus), CreatedAt: timestamppb.New(book.CreatedAt)} // #nosec G115 -- Catalog validates years before persistence.
+	return &catalogv1.Book{
+		Id: book.ID, Title: book.Metadata.Title, Author: book.Metadata.Author, Year: int32(book.Metadata.Year), // #nosec G115 -- Catalog validates years before persistence.
+		Tags: append([]string(nil), book.Metadata.Tags...), ProcessingStatus: string(book.ProcessingStatus),
+		CreatedAt: timestamppb.New(book.CreatedAt), ProcessingStage: string(book.ProcessingStage),
+		ProcessingFailureCategory: string(book.ProcessingFailureCategory),
+		ProcessingUpdatedAt:       timestamppb.New(book.ProcessingUpdatedAt), ProcessingVersion: book.ProcessingVersion,
+	}
 }
 
 func mapError(err error) error {

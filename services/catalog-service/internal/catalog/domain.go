@@ -15,9 +15,10 @@ const (
 )
 
 var (
-	ErrInvalidMetadata   = errors.New("invalid book metadata")
-	ErrUnauthorizedActor = errors.New("unauthorized actor")
-	ErrInvalidTransition = errors.New("invalid book status transition")
+	ErrInvalidMetadata           = errors.New("invalid book metadata")
+	ErrUnauthorizedActor         = errors.New("unauthorized actor")
+	ErrInvalidTransition         = errors.New("invalid book status transition")
+	ErrConflictingProcessingFact = errors.New("conflicting processing fact")
 )
 
 // BookStatus records the Catalog-owned publication lifecycle.
@@ -32,6 +33,48 @@ const (
 	BookStatusDeleting   BookStatus = "deleting"
 	BookStatusDeleted    BookStatus = "deleted"
 )
+
+// BookProcessingStage is Catalog's user-visible projection of asynchronous work.
+type BookProcessingStage string
+
+const (
+	BookStageQueued      BookProcessingStage = "queued"
+	BookStageExtracting  BookProcessingStage = "extracting"
+	BookStageChunksReady BookProcessingStage = "chunks_ready"
+	BookStageFailed      BookProcessingStage = "failed"
+)
+
+// ProcessingFailureCategory is a closed, sanitized processing outcome.
+type ProcessingFailureCategory string
+
+const (
+	FailureEncryptedDocument       ProcessingFailureCategory = "encrypted_document"
+	FailureExtractionNotPermitted  ProcessingFailureCategory = "extraction_not_permitted"
+	FailureMalformedDocument       ProcessingFailureCategory = "malformed_document"
+	FailureUnsupportedDocument     ProcessingFailureCategory = "unsupported_document"
+	FailureNoExtractableText       ProcessingFailureCategory = "no_extractable_text"
+	FailureResourceLimitExceeded   ProcessingFailureCategory = "resource_limit_exceeded"
+	FailureSourceIntegrityMismatch ProcessingFailureCategory = "source_integrity_mismatch"
+	FailureProcessingTimeout       ProcessingFailureCategory = "processing_timeout"
+	FailureDependencyUnavailable   ProcessingFailureCategory = "dependency_unavailable"
+	FailureInternalProcessingError ProcessingFailureCategory = "internal_processing_error"
+)
+
+// ProcessingFactKind identifies facts reported by Ingestion.
+type ProcessingFactKind uint8
+
+const (
+	ProcessingStarted ProcessingFactKind = iota + 1
+	ProcessingChunksReady
+	ProcessingFailed
+)
+
+// ProcessingFact contains only state needed by the Book aggregate.
+type ProcessingFact struct {
+	Kind            ProcessingFactKind
+	FailureCategory ProcessingFailureCategory
+	OccurredAt      time.Time
+}
 
 // Actor is a live principal forwarded only by the authenticated Edge service.
 type Actor struct {
@@ -62,14 +105,94 @@ type BookMetadata struct {
 
 // Book is Catalog's aggregate. Storage details never leave this package.
 type Book struct {
-	ID               string
-	Metadata         BookMetadata
-	ProcessingStatus BookStatus
-	CreatedAt        time.Time
-	ObjectReference  string
-	Checksum         [32]byte
-	ByteSize         int64
-	ActorID          string
+	ID                        string
+	Metadata                  BookMetadata
+	ProcessingStatus          BookStatus
+	CreatedAt                 time.Time
+	ObjectReference           string
+	Checksum                  [32]byte
+	ByteSize                  int64
+	ActorID                   string
+	ProcessingStage           BookProcessingStage
+	ProcessingFailureCategory ProcessingFailureCategory
+	ProcessingUpdatedAt       time.Time
+	ProcessingVersion         int64
+}
+
+// ApplyProcessingFact applies an idempotent, monotonic Ingestion fact.
+func (b *Book) ApplyProcessingFact(fact ProcessingFact) (bool, error) {
+	if fact.OccurredAt.IsZero() {
+		return false, ErrConflictingProcessingFact
+	}
+	switch fact.Kind {
+	case ProcessingStarted:
+		if b.ProcessingStage == BookStageExtracting {
+			return false, nil
+		}
+		if b.ProcessingStage == BookStageChunksReady || b.ProcessingStage == BookStageFailed {
+			return false, nil
+		}
+		if b.ProcessingStatus != BookStatusPending || b.ProcessingStage != BookStageQueued {
+			return false, ErrConflictingProcessingFact
+		}
+		if err := b.TransitionTo(BookStatusProcessing); err != nil {
+			return false, err
+		}
+		b.ProcessingStage = BookStageExtracting
+	case ProcessingChunksReady:
+		if b.ProcessingStage == BookStageChunksReady {
+			return false, nil
+		}
+		if b.ProcessingStage == BookStageFailed {
+			return false, ErrConflictingProcessingFact
+		}
+		if b.ProcessingStatus == BookStatusPending {
+			if err := b.TransitionTo(BookStatusProcessing); err != nil {
+				return false, err
+			}
+		} else if b.ProcessingStatus != BookStatusProcessing {
+			return false, ErrConflictingProcessingFact
+		}
+		b.ProcessingStage = BookStageChunksReady
+		b.ProcessingFailureCategory = ""
+	case ProcessingFailed:
+		if !validFailureCategory(fact.FailureCategory) {
+			return false, ErrConflictingProcessingFact
+		}
+		if b.ProcessingStage == BookStageFailed && b.ProcessingFailureCategory == fact.FailureCategory {
+			return false, nil
+		}
+		if b.ProcessingStage == BookStageChunksReady || b.ProcessingStatus == BookStatusFailed {
+			return false, ErrConflictingProcessingFact
+		}
+		if b.ProcessingStatus == BookStatusPending {
+			if err := b.TransitionTo(BookStatusProcessing); err != nil {
+				return false, err
+			}
+		}
+		if err := b.TransitionTo(BookStatusFailed); err != nil {
+			return false, err
+		}
+		b.ProcessingStage = BookStageFailed
+		b.ProcessingFailureCategory = fact.FailureCategory
+	default:
+		return false, ErrConflictingProcessingFact
+	}
+	b.ProcessingVersion++
+	b.ProcessingUpdatedAt = fact.OccurredAt.UTC()
+	return true, nil
+}
+
+func validFailureCategory(category ProcessingFailureCategory) bool {
+	switch category {
+	case FailureEncryptedDocument, FailureExtractionNotPermitted, FailureMalformedDocument,
+		FailureUnsupportedDocument, FailureNoExtractableText, FailureResourceLimitExceeded,
+		FailureSourceIntegrityMismatch, FailureProcessingTimeout, FailureDependencyUnavailable,
+		FailureInternalProcessingError:
+		return true
+	default:
+		return false
+	}
 }
 
 // TransitionTo validates and applies a Catalog-owned lifecycle transition.

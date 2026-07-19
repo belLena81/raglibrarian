@@ -58,6 +58,9 @@ services:
       - identity_runtime_password
       - catalog_migration_password
       - catalog_runtime_password
+      - ingestion_migration_password
+      - ingestion_runtime_password
+      - ingestion_cleanup_password
     volumes:
       - ./infra/postgres/init.sql:/bootstrap/identity.sql:ro
       - ./scripts/run-postgres-bootstrap.sh:/usr/local/bin/run-postgres-bootstrap:ro
@@ -141,6 +144,10 @@ services:
       - minio_root_password
       - catalog_minio_access_key
       - catalog_minio_secret_key
+      - ingestion_minio_access_key
+      - ingestion_minio_secret_key
+      - ingestion_cleanup_minio_access_key
+      - ingestion_cleanup_minio_secret_key
     volumes:
       - ./scripts/bootstrap-minio.sh:/usr/local/bin/bootstrap-minio:ro
     networks:
@@ -231,6 +238,7 @@ services:
       CATALOG_MINIO_ACCESS_KEY_FILE: /run/secrets/catalog_minio_access_key
       CATALOG_MINIO_SECRET_KEY_FILE: /run/secrets/catalog_minio_secret_key
       CATALOG_RABBITMQ_URI_FILE: /run/secrets/catalog_rabbitmq_uri
+      CATALOG_INGESTION_RABBITMQ_URI_FILE: /run/secrets/catalog_ingestion_rabbitmq_uri
       INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
       CATALOG_TLS_CERT_FILE: /run/secrets/catalog_tls_cert
       CATALOG_TLS_KEY_FILE: /run/secrets/catalog_tls_key
@@ -248,6 +256,7 @@ services:
       - catalog_minio_access_key
       - catalog_minio_secret_key
       - catalog_rabbitmq_uri
+      - catalog_ingestion_rabbitmq_uri
     networks:
       - backend
       # MinIO and RabbitMQ credentials are development-only plaintext values;
@@ -267,20 +276,24 @@ services:
       timeout: 4s
       retries: 10
 
-  edge-api:
+  edge-api: &edge-api-service
     <<: *service-hardening
     build: { context: ., args: { SERVICE: edge-api } }
     env_file:
       - ${SECRET_DIR:-./.dev/secrets}/edge.env
     ports:
       - "127.0.0.1:${EDGE_PORT:-8080}:8080"
-    environment:
+    environment: &edge-api-environment
       QUERY_ADDR: ":8080"
       IDENTITY_GRPC_ADDR: identity-service:50051
       CATALOG_GRPC_ADDR: catalog-service:50052
       INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
       EDGE_TLS_CERT_FILE: /run/secrets/edge_tls_cert
       EDGE_TLS_KEY_FILE: /run/secrets/edge_tls_key
+      EDGE_STATUS_RABBITMQ_URI_FILE: /run/secrets/edge_status_rabbitmq_uri_1
+      EDGE_STATUS_QUEUE: edge.book-status.local.1
+      EDGE_PUBLIC_ORIGIN: "${EDGE_PUBLIC_ORIGIN:-http://localhost:5173}"
+      EDGE_ENFORCE_BROWSER_ORIGIN: "${EDGE_ENFORCE_BROWSER_ORIGIN:-true}"
       EDGE_INSECURE_REFRESH_COOKIE: "${EDGE_INSECURE_REFRESH_COOKIE:-false}"
       EDGE_TRUSTED_PROXY_CIDRS: "${EDGE_TRUSTED_PROXY_CIDRS:-}"
       HEALTHCHECK_HTTP_URL: http://localhost:8080/readyz
@@ -292,9 +305,11 @@ services:
       - internal_ca
       - edge_tls_cert
       - edge_tls_key
+      - edge_status_rabbitmq_uri_1
     networks:
       - frontend
       - backend
+      - catalog-broker
     depends_on:
       identity-service:
         condition: service_healthy
@@ -305,6 +320,21 @@ services:
       interval: 5s
       timeout: 4s
       retries: 10
+
+  edge-api-2:
+    <<: *edge-api-service
+    profiles: ["m4-ha"]
+    ports:
+      - "127.0.0.1:${EDGE_SECONDARY_PORT:-8081}:8080"
+    environment:
+      <<: *edge-api-environment
+      EDGE_STATUS_RABBITMQ_URI_FILE: /run/secrets/edge_status_rabbitmq_uri_2
+      EDGE_STATUS_QUEUE: edge.book-status.local.2
+    secrets:
+      - internal_ca
+      - edge_tls_cert
+      - edge_tls_key
+      - edge_status_rabbitmq_uri_2
 
   catalog-migrate:
     <<: *job-hardening
@@ -327,6 +357,79 @@ services:
       identity-db-bootstrap:
         condition: service_completed_successfully
     command: ["/usr/local/bin/run-catalog-migrations"]
+
+  ingestion-migrate:
+    <<: *job-hardening
+    image: postgres:16.9-alpine
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: ingestion
+      PGUSER: ingestion_migrator
+      PGPASSFILE: /run/secrets/ingestion_migration_pgpass
+      MIGRATION_DIRECTION: up
+    secrets:
+      - ingestion_migration_pgpass
+    volumes:
+      - ./services/ingestion-service/migrations:/migrations:ro
+      - ./scripts/run-ingestion-migrations.sh:/usr/local/bin/run-ingestion-migrations:ro
+    networks:
+      - backend
+    depends_on:
+      identity-db-bootstrap:
+        condition: service_completed_successfully
+    command: ["/usr/local/bin/run-ingestion-migrations"]
+
+  ingestion-service:
+    <<: *service-hardening
+    build:
+      context: .
+      target: ingestion-runtime
+      args:
+        SERVICE: ingestion-service
+        SERVICE_COMMAND: cmd/worker
+    environment:
+      INGESTION_POSTGRES_DSN_FILE: /run/secrets/ingestion_runtime_dsn
+      INGESTION_RABBITMQ_URI_FILE: /run/secrets/ingestion_rabbitmq_uri
+      INGESTION_MINIO_ENDPOINT: minio:9000
+      INGESTION_MINIO_INSECURE: "true"
+      INGESTION_MINIO_ACCESS_KEY_FILE: /run/secrets/ingestion_minio_access_key
+      INGESTION_MINIO_SECRET_KEY_FILE: /run/secrets/ingestion_minio_secret_key
+      INGESTION_SOURCE_BUCKET: original-books
+      INGESTION_ARTIFACT_BUCKET: ingestion-artifacts
+      INGESTION_TOKENIZER_FILE: /opt/raglibrarian/cl100k_base.tiktoken
+      INGESTION_METRICS_ADDR: "0.0.0.0:9093"
+      INGESTION_WORK_CONCURRENCY: "${INGESTION_WORK_CONCURRENCY:-2}"
+      INGESTION_MAX_SOURCE_BYTES: "52428800"
+      INGESTION_MAX_PAGES: "1000"
+      INGESTION_MAX_TEMP_BYTES: "536870912"
+      RUN_AS_UID: "${RUN_AS_UID:-65532}"
+      RUN_AS_GID: "${RUN_AS_GID:-65532}"
+    secrets:
+      - ingestion_runtime_dsn
+      - ingestion_rabbitmq_uri
+      - ingestion_minio_access_key
+      - ingestion_minio_secret_key
+    networks:
+      - backend
+      - catalog-storage
+      - catalog-broker
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=1g
+    mem_limit: "${INGESTION_MEMORY_LIMIT:-1g}"
+    cpus: "${INGESTION_CPU_LIMIT:-2.0}"
+    pids_limit: 128
+    ulimits:
+      nofile:
+        soft: 1024
+        hard: 1024
+    depends_on:
+      ingestion-migrate:
+        condition: service_completed_successfully
+      minio-bootstrap:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
 
   contract-tests:
     <<: *job-hardening
@@ -437,6 +540,18 @@ secrets:
     file: ${SECRET_DIR:-./.dev/secrets}/catalog_migration_pgpass
   catalog_runtime_dsn:
     file: ${SECRET_DIR:-./.dev/secrets}/catalog_runtime_dsn
+  ingestion_migration_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_migration_password
+  ingestion_runtime_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_runtime_password
+  ingestion_migration_pgpass:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_migration_pgpass
+  ingestion_runtime_dsn:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_runtime_dsn
+  ingestion_cleanup_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_cleanup_password
+  ingestion_cleanup_dsn:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_cleanup_dsn
   minio_root_user:
     file: ${SECRET_DIR:-./.dev/secrets}/minio_root_user
   minio_root_password:
@@ -445,8 +560,24 @@ secrets:
     file: ${SECRET_DIR:-./.dev/secrets}/catalog_minio_access_key
   catalog_minio_secret_key:
     file: ${SECRET_DIR:-./.dev/secrets}/catalog_minio_secret_key
+  ingestion_minio_access_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_minio_access_key
+  ingestion_minio_secret_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_minio_secret_key
+  ingestion_cleanup_minio_access_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_cleanup_minio_access_key
+  ingestion_cleanup_minio_secret_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_cleanup_minio_secret_key
   catalog_rabbitmq_uri:
     file: ${SECRET_DIR:-./.dev/secrets}/catalog_rabbitmq_uri
+  catalog_ingestion_rabbitmq_uri:
+    file: ${SECRET_DIR:-./.dev/secrets}/catalog_ingestion_rabbitmq_uri
+  ingestion_rabbitmq_uri:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_rabbitmq_uri
+  edge_status_rabbitmq_uri_1:
+    file: ${SECRET_DIR:-./.dev/secrets}/edge_status_rabbitmq_uri_1
+  edge_status_rabbitmq_uri_2:
+    file: ${SECRET_DIR:-./.dev/secrets}/edge_status_rabbitmq_uri_2
   identity_migration_pgpass:
     file: ${SECRET_DIR:-./.dev/secrets}/identity_migration_pgpass
   identity_runtime_dsn:

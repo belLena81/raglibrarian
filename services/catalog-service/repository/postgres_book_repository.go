@@ -2,6 +2,7 @@
 package repository
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -11,7 +12,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	"github.com/belLena81/raglibrarian/services/catalog-service/internal/catalog"
 )
 
@@ -41,7 +45,10 @@ func NewPostgresBookRepository(pool *pgxpool.Pool) *PostgresBookRepository {
 	return &PostgresBookRepository{pool: pool}
 }
 
-func (r *PostgresBookRepository) Create(ctx context.Context, book catalog.Book, event catalog.OutboxEvent) error {
+func (r *PostgresBookRepository) Create(ctx context.Context, book catalog.Book, events ...catalog.OutboxEvent) error {
+	if len(events) == 0 {
+		return errors.New("catalog: at least one outbox event is required")
+	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("catalog: begin create: %w", err)
@@ -49,18 +56,22 @@ func (r *PostgresBookRepository) Create(ctx context.Context, book catalog.Book, 
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	_, err = tx.Exec(ctx, `INSERT INTO catalog.books
-        (id,title,author,year,tags,processing_status,created_at,object_reference,checksum,byte_size,media_type,actor_id)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'application/pdf',$11)`,
+		(id,title,author,year,tags,processing_status,created_at,object_reference,checksum,byte_size,media_type,actor_id,
+		 processing_stage,processing_failure_category,processing_updated_at,processing_version)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'application/pdf',$11,$12,$13,$14,$15)`,
 		book.ID, book.Metadata.Title, book.Metadata.Author, book.Metadata.Year, book.Metadata.Tags,
-		string(book.ProcessingStatus), book.CreatedAt, book.ObjectReference, book.Checksum[:], book.ByteSize, book.ActorID)
+		string(book.ProcessingStatus), book.CreatedAt, book.ObjectReference, book.Checksum[:], book.ByteSize, book.ActorID,
+		string(book.ProcessingStage), string(book.ProcessingFailureCategory), book.ProcessingUpdatedAt, book.ProcessingVersion)
 	if err != nil {
 		return fmt.Errorf("catalog: insert book: %w", err)
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO catalog.outbox
-        (event_id,event_type,payload,occurred_at,next_attempt_at)
-		VALUES ($1,$2,$3,$4,$4)`, event.ID, event.Type, event.Payload, event.OccurredAt)
-	if err != nil {
-		return fmt.Errorf("catalog: insert outbox: %w", err)
+	for _, event := range events {
+		_, err = tx.Exec(ctx, `INSERT INTO catalog.outbox
+			(event_id,event_type,payload,occurred_at,next_attempt_at)
+			VALUES ($1,$2,$3,$4,$4)`, event.ID, event.Type, event.Payload, event.OccurredAt)
+		if err != nil {
+			return fmt.Errorf("catalog: insert outbox: %w", err)
+		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return fmt.Errorf("catalog: commit create: %w", err)
@@ -70,7 +81,8 @@ func (r *PostgresBookRepository) Create(ctx context.Context, book catalog.Book, 
 
 func (r *PostgresBookRepository) List(ctx context.Context, size int, token string) ([]catalog.Book, string, error) {
 	args := []any{}
-	query := `SELECT id,title,author,year,tags,processing_status,created_at,object_reference,checksum,byte_size
+	query := `SELECT id,title,author,year,tags,processing_status,created_at,object_reference,checksum,byte_size,
+		processing_stage,processing_failure_category,processing_updated_at,processing_version
         FROM catalog.books WHERE processing_status <> 'deleted'`
 	if token != "" {
 		cursor, err := decodeCursor(token)
@@ -108,7 +120,8 @@ func (r *PostgresBookRepository) List(ctx context.Context, size int, token strin
 }
 
 func (r *PostgresBookRepository) Get(ctx context.Context, id string) (catalog.Book, error) {
-	book, err := scanBook(r.pool.QueryRow(ctx, `SELECT id,title,author,year,tags,processing_status,created_at,object_reference,checksum,byte_size
+	book, err := scanBook(r.pool.QueryRow(ctx, `SELECT id,title,author,year,tags,processing_status,created_at,object_reference,checksum,byte_size,
+		processing_stage,processing_failure_category,processing_updated_at,processing_version
         FROM catalog.books WHERE id=$1 AND processing_status <> 'deleted'`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return catalog.Book{}, catalog.ErrNotFound
@@ -117,6 +130,82 @@ func (r *PostgresBookRepository) Get(ctx context.Context, id string) (catalog.Bo
 		return catalog.Book{}, fmt.Errorf("catalog: get book: %w", err)
 	}
 	return book, nil
+}
+
+// ApplyProcessingEvent deduplicates an Ingestion fact, updates the Book
+// aggregate, and creates Catalog's sanitized notification in one transaction.
+func (r *PostgresBookRepository) ApplyProcessingEvent(ctx context.Context, event catalog.ProcessingEvent, statusEventID string, appliedAt time.Time) (catalog.Book, bool, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return catalog.Book{}, false, fmt.Errorf("catalog: begin processing event: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx, `INSERT INTO catalog.processing_inbox
+		(event_id,event_type,payload_sha256,processed_at) VALUES ($1,$2,$3,$4)
+		ON CONFLICT (event_id) DO NOTHING`, event.EventID, event.EventType, event.PayloadSHA256[:], appliedAt)
+	if err != nil {
+		return catalog.Book{}, false, fmt.Errorf("catalog: insert processing inbox: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		var existingType string
+		var existingDigest []byte
+		if err = tx.QueryRow(ctx, `SELECT event_type,payload_sha256 FROM catalog.processing_inbox WHERE event_id=$1`, event.EventID).Scan(&existingType, &existingDigest); err != nil {
+			return catalog.Book{}, false, fmt.Errorf("catalog: read processing inbox: %w", err)
+		}
+		if existingType != event.EventType || !bytes.Equal(existingDigest, event.PayloadSHA256[:]) {
+			return catalog.Book{}, false, catalog.ErrProcessingEventConflict
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return catalog.Book{}, false, fmt.Errorf("catalog: commit duplicate processing event: %w", err)
+		}
+		return catalog.Book{}, false, nil
+	}
+
+	book, err := scanBook(tx.QueryRow(ctx, `SELECT id,title,author,year,tags,processing_status,created_at,object_reference,checksum,byte_size,
+		processing_stage,processing_failure_category,processing_updated_at,processing_version
+		FROM catalog.books WHERE id=$1 AND processing_status <> 'deleted' FOR UPDATE`, event.BookID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return catalog.Book{}, false, catalog.ErrNotFound
+	}
+	if err != nil {
+		return catalog.Book{}, false, fmt.Errorf("catalog: lock processing book: %w", err)
+	}
+	if !bytes.Equal(book.Checksum[:], event.SourceSHA256[:]) {
+		return catalog.Book{}, false, catalog.ErrProcessingEventConflict
+	}
+	changed, err := book.ApplyProcessingFact(event.Fact)
+	if err != nil {
+		return catalog.Book{}, false, err
+	}
+	if changed {
+		payload, marshalErr := proto.Marshal(&catalogv1.BookProcessingStatusChangedV1{
+			EventId: statusEventID, BookId: book.ID, ProcessingStatus: string(book.ProcessingStatus),
+			ProcessingStage: string(book.ProcessingStage), ProcessingFailureCategory: string(book.ProcessingFailureCategory),
+			ProcessingVersion: book.ProcessingVersion, UpdatedAt: timestamppb.New(book.ProcessingUpdatedAt),
+			CorrelationId: event.CorrelationID, OccurredAt: timestamppb.New(appliedAt), CausationId: event.EventID,
+			Producer: "catalog-service", SchemaVersion: "v1",
+			IdempotencyKey: fmt.Sprintf("%s:processing:%d", book.ID, book.ProcessingVersion),
+		})
+		if marshalErr != nil {
+			return catalog.Book{}, false, errors.New("catalog: status event unavailable")
+		}
+		if _, err = tx.Exec(ctx, `UPDATE catalog.books SET processing_status=$2,processing_stage=$3,
+			processing_failure_category=$4,processing_updated_at=$5,processing_version=$6 WHERE id=$1`,
+			book.ID, string(book.ProcessingStatus), string(book.ProcessingStage), string(book.ProcessingFailureCategory),
+			book.ProcessingUpdatedAt, book.ProcessingVersion); err != nil {
+			return catalog.Book{}, false, fmt.Errorf("catalog: update processing book: %w", err)
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO catalog.outbox
+			(event_id,event_type,payload,occurred_at,next_attempt_at)
+			VALUES ($1,'catalog.book.processing-status-changed.v1',$2,$3,$3)`, statusEventID, payload, appliedAt); err != nil {
+			return catalog.Book{}, false, fmt.Errorf("catalog: insert processing status outbox: %w", err)
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return catalog.Book{}, false, fmt.Errorf("catalog: commit processing event: %w", err)
+	}
+	return book, changed, nil
 }
 
 func (r *PostgresBookRepository) ReferencesExist(ctx context.Context, references []string) (map[string]bool, error) {
@@ -203,7 +292,8 @@ func scanBook(row rowScanner) (catalog.Book, error) {
 	var book catalog.Book
 	var checksum []byte
 	err := row.Scan(&book.ID, &book.Metadata.Title, &book.Metadata.Author, &book.Metadata.Year, &book.Metadata.Tags,
-		&book.ProcessingStatus, &book.CreatedAt, &book.ObjectReference, &checksum, &book.ByteSize)
+		&book.ProcessingStatus, &book.CreatedAt, &book.ObjectReference, &checksum, &book.ByteSize,
+		&book.ProcessingStage, &book.ProcessingFailureCategory, &book.ProcessingUpdatedAt, &book.ProcessingVersion)
 	if err != nil {
 		return catalog.Book{}, err
 	}

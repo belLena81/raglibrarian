@@ -13,6 +13,12 @@ files=(
   catalog_runtime_password
   catalog_migration_pgpass
   catalog_runtime_dsn
+  ingestion_migration_password
+  ingestion_runtime_password
+  ingestion_cleanup_password
+  ingestion_migration_pgpass
+  ingestion_runtime_dsn
+  ingestion_cleanup_dsn
 )
 for file in "${files[@]}"; do
   if [[ -e "$dir/$file" ]]; then
@@ -23,13 +29,22 @@ done
 
 catalog_migration_password=$(openssl rand -hex 32)
 catalog_runtime_password=$(openssl rand -hex 32)
+ingestion_migration_password=$(openssl rand -hex 32)
+ingestion_runtime_password=$(openssl rand -hex 32)
+ingestion_cleanup_password=$(openssl rand -hex 32)
 
 printf '%s\n' "$catalog_migration_password" > "$dir/catalog_migration_password"
 printf '%s\n' "$catalog_runtime_password" > "$dir/catalog_runtime_password"
 printf 'postgres:5432:catalog:catalog_migrator:%s\n' "$catalog_migration_password" > "$dir/catalog_migration_pgpass"
 printf 'postgres://catalog_runtime:%s@postgres:5432/catalog?sslmode=disable\n' "$catalog_runtime_password" > "$dir/catalog_runtime_dsn"
+printf '%s\n' "$ingestion_migration_password" > "$dir/ingestion_migration_password"
+printf '%s\n' "$ingestion_runtime_password" > "$dir/ingestion_runtime_password"
+printf '%s\n' "$ingestion_cleanup_password" > "$dir/ingestion_cleanup_password"
+printf 'postgres:5432:ingestion:ingestion_migrator:%s\n' "$ingestion_migration_password" > "$dir/ingestion_migration_pgpass"
+printf 'postgres://ingestion_runtime:%s@postgres:5432/ingestion?sslmode=disable\n' "$ingestion_runtime_password" > "$dir/ingestion_runtime_dsn"
+printf 'postgres://ingestion_cleanup:%s@postgres:5432/ingestion?sslmode=disable\n' "$ingestion_cleanup_password" > "$dir/ingestion_cleanup_dsn"
 
 chmod 400 "${files[@]/#/$dir/}"
-unset catalog_migration_password catalog_runtime_password
+unset catalog_migration_password catalog_runtime_password ingestion_migration_password ingestion_runtime_password ingestion_cleanup_password
 
 echo "Generated Catalog database development credentials in $dir"

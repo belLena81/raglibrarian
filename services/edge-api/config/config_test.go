@@ -3,6 +3,8 @@ package config_test
 import (
 	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +15,9 @@ import (
 
 func setRequired(t *testing.T) {
 	t.Helper()
+	secretPath := filepath.Join(t.TempDir(), "rabbit-uri")
+	require.NoError(t, os.WriteFile(secretPath, []byte("amqp://edge-status:test@rabbitmq:5672/"), 0o600))
+	t.Setenv("EDGE_STATUS_RABBITMQ_URI_FILE", secretPath)
 	t.Setenv("EDGE_VERIFY_KEY", hex.EncodeToString(make([]byte, 32)))
 	t.Setenv("EDGE_TRUSTED_PROXY_CIDRS", "")
 	t.Setenv("EDGE_INSECURE_REFRESH_COOKIE", "false")

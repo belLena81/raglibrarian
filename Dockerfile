@@ -1,5 +1,6 @@
 FROM golang:1.26.5-alpine AS builder
 ARG SERVICE
+ARG SERVICE_COMMAND=cmd
 WORKDIR /src
 
 # Keep the build context explicit: operational files, local secrets, UI assets,
@@ -18,8 +19,8 @@ COPY tests ./tests
 RUN apk add --no-cache protobuf protobuf-dev \
     && go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10 \
     && go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1 \
-    && PATH="$(go env GOPATH)/bin:$PATH" protoc -I api/proto --go_out=paths=source_relative:pkg/proto --go-grpc_out=paths=source_relative:pkg/proto api/proto/identity/v1/identity.proto api/proto/catalog/v1/catalog.proto \
-    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /bin/service ./services/${SERVICE}/cmd \
+    && PATH="$(go env GOPATH)/bin:$PATH" protoc -I api/proto --go_out=paths=source_relative:pkg/proto --go-grpc_out=paths=source_relative:pkg/proto api/proto/identity/v1/identity.proto api/proto/catalog/v1/catalog.proto api/proto/ingestion/v1/ingestion.proto \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /bin/service ./services/${SERVICE}/${SERVICE_COMMAND} \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /bin/healthcheck ./tools/healthcheck
 
 FROM builder AS contract-tests
@@ -28,6 +29,41 @@ RUN go -C /src/tests/e2e mod download \
     && go -C /src/services/catalog-service mod download
 ENTRYPOINT ["/bin/sh", "-ec"]
 CMD ["grep -q '[^[:space:]]' \"$IDENTITY_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$IDENTITY_MIGRATION_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$CATALOG_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$CATALOG_RABBITMQ_URI_FILE\" && go -C /src/tests/e2e test -count=1 -v -tags=e2e -run '^TestGRPC' ./... && go -C /src/services/identity-service test -count=1 -v -tags=integration ./repository && go -C /src/services/identity-service test -count=1 -v -tags=integration ./migrations && go -C /src/services/catalog-service test -count=1 -v -tags=integration ./repository && go -C /src/services/catalog-service test -count=1 -v -tags=integration ./outbox"]
+
+FROM alpine:3.22 AS tokenizer
+# The checksum pins the official cl100k_base vocabulary. It is fetched during
+# the image build so workers never make runtime network calls on their hot path.
+SHELL ["/bin/ash", "-o", "pipefail", "-c"]
+RUN wget -q -O /cl100k_base.tiktoken https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken \
+    && echo "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7  /cl100k_base.tiktoken" | sha256sum -c -
+
+FROM builder AS ingestion-sandbox-builder
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /bin/parser-sandbox ./services/ingestion-service/cmd/parser_sandbox
+
+FROM alpine:3.22 AS ingestion-runtime
+# hadolint ignore=DL3018
+RUN apk add --no-cache ca-certificates poppler-utils
+COPY --from=builder /bin/service /service
+COPY --from=ingestion-sandbox-builder /bin/parser-sandbox /parser-sandbox
+COPY --from=tokenizer /cl100k_base.tiktoken /opt/raglibrarian/cl100k_base.tiktoken
+# The worker reads root-owned 0400 secrets, then permanently drops to the
+# configured non-root identity before consuming work.
+# hadolint ignore=DL3002
+USER root:root
+ENTRYPOINT ["/service"]
+
+FROM ingestion-runtime AS ingestion-lambda-runtime
+# Lambda container images run the handler directly through aws-lambda-go's
+# Runtime API client. Secrets must be mounted readable by this identity.
+USER 65532:65532
+ENTRYPOINT ["/service"]
+
+FROM gcr.io/distroless/static:nonroot AS service-runtime
+COPY --from=builder /bin/service /service
+COPY --from=builder /bin/healthcheck /healthcheck
+# hadolint ignore=DL3002
+USER root:root
+ENTRYPOINT ["/service"]
 
 FROM gcr.io/distroless/static:nonroot
 COPY --from=builder /bin/service /service

@@ -3,6 +3,7 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/rabbitmq/amqp091-go"
@@ -11,8 +12,8 @@ import (
 )
 
 const (
-	exchange   = "raglibrarian.events.v1"
-	routingKey = "catalog.book.uploaded.v1"
+	uploadExchange = "raglibrarian.events.v1"
+	statusExchange = "raglibrarian.edge-status.v1"
 )
 
 type store interface {
@@ -60,8 +61,16 @@ func publishPending(ctx context.Context, store store, publisher publisher, recor
 		return
 	}
 	for _, event := range events {
+		exchange, routingKey, mandatory, routeErr := publicationRoute(event.Type)
+		if routeErr != nil {
+			recorder.OutboxPublishFailed()
+			if retryErr := store.RetryOutbox(ctx, event.ID, now, event.Attempts); retryErr != nil {
+				recorder.OutboxRetryFailed()
+			}
+			continue
+		}
 		publishCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		err = publisher.PublishWithContext(publishCtx, exchange, routingKey, true, false, amqp091.Publishing{
+		err = publisher.PublishWithContext(publishCtx, exchange, routingKey, mandatory, false, amqp091.Publishing{
 			ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent,
 			MessageId: event.ID, Type: event.Type, Body: event.Payload,
 		})
@@ -76,5 +85,16 @@ func publishPending(ctx context.Context, store store, publisher publisher, recor
 		if markErr := store.MarkPublished(ctx, event.ID, now); markErr != nil {
 			recorder.OutboxMarkFailed()
 		}
+	}
+}
+
+func publicationRoute(eventType string) (exchange, routingKey string, mandatory bool, err error) {
+	switch eventType {
+	case "catalog.book.uploaded.v1":
+		return uploadExchange, eventType, true, nil
+	case "catalog.book.processing-status-changed.v1":
+		return statusExchange, eventType, false, nil
+	default:
+		return "", "", false, errors.New("unsupported catalog outbox event")
 	}
 }

@@ -28,7 +28,7 @@ client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
   status, and its transactional publication outbox.
 - Internal gRPC ports and Postgres are private in Compose. Service-to-service
   calls use TLS 1.3 with client certificates.
-- Future ingestion, indexing, retrieval, and answer generation are added in
+- Future indexing, retrieval, and answer generation are added in
   their owning bounded contexts. Bounded event work may run as Lambda or a
   portable worker without becoming another microservice. Contracts remain
   versioned and additive. See the local architecture decision record in `docs/`.
@@ -56,7 +56,7 @@ race, contract, integration, and security checks pass.
 
 | Capability | State | Notes |
 |---|---|---|
-| Edge, Identity, Catalog processes | Implemented | Compose migrates Identity, then starts all three services. |
+| Edge, Identity, Catalog, Ingestion processes | Implemented | Compose migrates owning schemas, then starts the long-running services. |
 | Public auth API | Implemented | Privacy-preserving registration, email verification/resend, login, refresh, `/me`, and server-side logout. |
 | Access tokens | Implemented | PASETO v4 public, Ed25519 signed by Identity and verified by Edge; 15-minute lifetime and `edge-api` audience. |
 | Password storage | Implemented | bcrypt at cost 12; plaintext is never persisted. |
@@ -66,15 +66,18 @@ race, contract, integration, and security checks pass.
 | Sessions, refresh tokens, revocation | Implemented | Refresh tokens rotate in an `HttpOnly`, `SameSite=Strict` cookie; logout/replay invalidates the server-side session family. |
 | Abuse controls | Implemented | Bounded in-process trusted-client-aware limits protect registration, verification, setup, login, and refresh. |
 | Catalog PDF upload/list/get | Implemented | Role-gated streaming upload, deterministic pagination, private MinIO persistence, durable publication, reconciliation, and fixed-label metrics. |
-| Ingestion, vectors, LLM | Not implemented | Future additive services. |
+| PDF ingestion and live status | Implemented | Event-driven, idempotent worker/Lambda adapters, sandboxed streamed extraction, deterministic chunk artifacts, Catalog status projection, and authenticated SSE with polling reconciliation. |
+| Vectors, retrieval, LLM | Not implemented | Future additive services. |
 
 ## Delivery roadmap
 
-Milestones 2 and 3 are complete. Milestone 3 adds role-gated PDF upload,
-Catalog persistence, MinIO storage, deterministic pagination, routed publisher
-confirmation, durable outbox retry, reconciliation, and private fixed-label
-metrics. Contract coverage verifies PostgreSQL migrations and repositories,
-broker-loss recovery, mTLS policy, and the complete Edge workflow.
+Milestones 2 through 4 are complete. Milestone 4 adds asynchronous PDF
+extraction and deterministic chunk manifests through one application shared by
+worker and Lambda adapters. Catalog projects monotonic processing state, while
+Edge gives authenticated clients low-latency SSE hints backed by authoritative
+polling reconciliation. Processing and notification queues are bounded;
+duplicate, out-of-order, poison, malformed, encrypted, image-only, and timeout
+paths terminate with stable behavior.
 
 The canonical service-by-service roadmap, data ownership, Lambda/worker
 deployment policy, contracts, and acceptance gates are in
