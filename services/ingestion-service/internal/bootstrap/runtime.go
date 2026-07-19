@@ -29,21 +29,56 @@ import (
 )
 
 type Runtime struct {
-	Config      config.Config
-	Processor   *application.Processor
-	Repository  *repository.Postgres
-	Outbox      *transport.OutboxWorker
-	Publisher   *transport.ReconnectingPublisher
-	Cleaner     *artifact.Cleaner
-	Metrics     *metrics.Recorder
-	Diagnostics *diagnostic.Logger
-	pool        *pgxpool.Pool
-	publisher   *transport.ReconnectingPublisher
+	Config       config.Config
+	Processor    *application.Processor
+	Repository   *repository.Postgres
+	Outbox       *transport.OutboxWorker
+	Publisher    *transport.ReconnectingPublisher
+	Cleaner      *artifact.Cleaner
+	Metrics      *metrics.Recorder
+	Diagnostics  *diagnostic.Logger
+	pool         *pgxpool.Pool
+	publisher    *transport.ReconnectingPublisher
+	storageProbe func(context.Context) bool
 }
 
 type CleanupRuntime struct {
 	Cleaner *artifact.Cleaner
 	pool    *pgxpool.Pool
+}
+
+type DispatcherRuntime struct {
+	Outbox    *transport.OutboxWorker
+	Publisher *transport.ReconnectingPublisher
+	pool      *pgxpool.Pool
+}
+
+func NewDispatcher(ctx context.Context, cfg config.Config) (*DispatcherRuntime, error) {
+	poolConfig, err := pgxpool.ParseConfig(cfg.DSN)
+	if err != nil {
+		return nil, errors.New("database configuration invalid")
+	}
+	poolConfig.MaxConns = 3
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	if err != nil {
+		return nil, errors.New("database unavailable")
+	}
+	if err = pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, errors.New("database unavailable")
+	}
+	publisher := transport.NewReconnectingPublisher(cfg.RabbitURI)
+	outbox, err := transport.NewOutboxWorker(repository.NewPostgres(pool), publisher, cfg.ResultExchange, cfg.OutboxInterval)
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return &DispatcherRuntime{Outbox: outbox, Publisher: publisher, pool: pool}, nil
+}
+
+func (r *DispatcherRuntime) Close() {
+	_ = r.Publisher.Close()
+	r.pool.Close()
 }
 
 func NewCleanup(ctx context.Context, cfg config.CleanupConfig) (*CleanupRuntime, error) {
@@ -60,18 +95,26 @@ func NewCleanup(ctx context.Context, cfg config.CleanupConfig) (*CleanupRuntime,
 		pool.Close()
 		return nil, errors.New("database unavailable")
 	}
-	minioClient, err := newMinIOClient(minIOConfig{
-		endpoint:  cfg.MinIOEndpoint,
-		accessKey: cfg.MinIOAccessKey,
-		secretKey: cfg.MinIOSecretKey,
-		caFile:    cfg.MinIOCAFile,
-		insecure:  cfg.MinIOInsecure,
-	})
+	var artifactStore artifact.PrefixStore
+	if cfg.RuntimeBackend == "aws" {
+		client, clientErr := storage.NewAWSS3Client(ctx, cfg.AWSRegion)
+		if clientErr != nil {
+			pool.Close()
+			return nil, clientErr
+		}
+		artifactStore, err = storage.NewAWSArtifactStore(client, cfg.ArtifactBucket, cfg.KMSKeyARN)
+	} else {
+		var minioClient *minio.Client
+		minioClient, err = newMinIOClient(minIOConfig{endpoint: cfg.MinIOEndpoint, accessKey: cfg.MinIOAccessKey, secretKey: cfg.MinIOSecretKey, caFile: cfg.MinIOCAFile, insecure: cfg.MinIOInsecure})
+		if err == nil {
+			artifactStore = storage.NewArtifactStore(minioClient, cfg.ArtifactBucket)
+		}
+	}
 	if err != nil {
 		pool.Close()
 		return nil, err
 	}
-	cleaner, err := artifact.NewCleaner(repository.NewPostgres(pool), storage.NewArtifactStore(minioClient, cfg.ArtifactBucket), cfg.CleanupInterval, cfg.OrphanGracePeriod)
+	cleaner, err := artifact.NewCleaner(repository.NewPostgres(pool), artifactStore, cfg.CleanupInterval, cfg.OrphanGracePeriod)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -96,13 +139,40 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		cleanup()
 		return nil, errors.New("database unavailable")
 	}
-	minioClient, err := newMinIOClient(minIOConfig{
-		endpoint:  cfg.MinIOEndpoint,
-		accessKey: cfg.MinIOAccessKey,
-		secretKey: cfg.MinIOSecretKey,
-		caFile:    cfg.MinIOCAFile,
-		insecure:  cfg.MinIOInsecure,
-	})
+	var sourceStore application.SourceReader
+	var storageProbe func(context.Context) bool
+	var artifactStore interface {
+		artifact.Store
+		artifact.PrefixStore
+	}
+	if cfg.RuntimeBackend == "aws" {
+		client, clientErr := storage.NewAWSS3Client(ctx, cfg.AWSRegion)
+		if clientErr != nil {
+			cleanup()
+			return nil, clientErr
+		}
+		var awsSource *storage.AWSSourceStore
+		awsSource, err = storage.NewAWSSourceStore(client, cfg.SourceBucket)
+		if err == nil {
+			sourceStore = awsSource
+			var awsArtifact *storage.AWSArtifactStore
+			awsArtifact, err = storage.NewAWSArtifactStore(client, cfg.ArtifactBucket, cfg.KMSKeyARN)
+			if err == nil {
+				artifactStore = awsArtifact
+				storageProbe = func(probeCtx context.Context) bool { return storage.AllReady(probeCtx, awsSource, awsArtifact) }
+			}
+		}
+	} else {
+		var minioClient *minio.Client
+		minioClient, err = newMinIOClient(minIOConfig{endpoint: cfg.MinIOEndpoint, accessKey: cfg.MinIOAccessKey, secretKey: cfg.MinIOSecretKey, caFile: cfg.MinIOCAFile, insecure: cfg.MinIOInsecure})
+		if err == nil {
+			minioSource := storage.NewSourceStore(minioClient, cfg.SourceBucket)
+			minioArtifact := storage.NewArtifactStore(minioClient, cfg.ArtifactBucket)
+			sourceStore = minioSource
+			storageProbe = func(probeCtx context.Context) bool { return storage.AllReady(probeCtx, minioSource, minioArtifact) }
+			artifactStore = minioArtifact
+		}
+	}
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -112,7 +182,6 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		cleanup()
 		return nil, err
 	}
-	artifactStore := storage.NewArtifactStore(minioClient, cfg.ArtifactBucket)
 	processingFactory, err := application.NewProcessingFactory(
 		tokenizer,
 		artifactStore,
@@ -142,7 +211,7 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		return nil, errors.New("worker identity unavailable")
 	}
 	repo := repository.NewPostgres(pool)
-	sourceStore := storage.NewSourceStore(minioClient, cfg.SourceBucket)
+	recorder := &metrics.Recorder{}
 	pdfExtractor := extractor.NewPoppler(
 		cfg.PDFInfoPath,
 		cfg.PDFTextPath,
@@ -170,6 +239,7 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 			JobLease:              cfg.JobLease,
 			MaximumAttempts:       cfg.MaximumAttempts,
 			ConfigDigest:          processingFactory.ConfigDigest(),
+			Observer:              recorder,
 		},
 	)
 	if err != nil {
@@ -188,22 +258,31 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		return nil, err
 	}
 	return &Runtime{
-		Config:      cfg,
-		Processor:   processor,
-		Repository:  repo,
-		Outbox:      outbox,
-		Publisher:   publisher,
-		Cleaner:     cleaner,
-		Metrics:     &metrics.Recorder{},
-		Diagnostics: diagnostic.New(nil),
-		pool:        pool,
-		publisher:   publisher,
+		Config:       cfg,
+		Processor:    processor,
+		Repository:   repo,
+		Outbox:       outbox,
+		Publisher:    publisher,
+		Cleaner:      cleaner,
+		Metrics:      recorder,
+		Diagnostics:  diagnostic.New(nil),
+		pool:         pool,
+		publisher:    publisher,
+		storageProbe: storageProbe,
 	}, nil
 }
 
 func (r *Runtime) Close() {
 	_ = r.publisher.Close()
 	r.pool.Close()
+}
+
+func (r *Runtime) DatabaseReady(ctx context.Context) bool {
+	return r.pool.Ping(ctx) == nil
+}
+
+func (r *Runtime) DependenciesReady(ctx context.Context) (bool, bool) {
+	return r.pool.Ping(ctx) == nil, r.storageProbe != nil && r.storageProbe(ctx)
 }
 
 func (r *Runtime) Process(ctx context.Context, event application.UploadedEvent) error {

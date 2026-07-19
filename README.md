@@ -4,9 +4,10 @@
 The eventual product will ingest books, retrieve evidence, and return answers
 with traceable book, chapter, page, and passage citations.
 
-The repository implements Milestones 2 and 3, including the Catalog
-upload/publication slice. It does not extract or chunk files, query Qdrant,
-call an LLM, or return real retrieval results.
+The repository implements Milestones 2 through 4, including Catalog upload,
+event-driven text-PDF extraction, structured chunking, and live processing
+status. It does not perform OCR, extract EPUB files, query Qdrant, call an LLM,
+or return real retrieval results.
 
 ## Architecture decision
 
@@ -18,6 +19,8 @@ than first being placed in the public API and extracted later.
 client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
                          |
                          +-- mTLS gRPC --> catalog-service (upload/list/get)
+                                      |
+                                      +-- RabbitMQ --> ingestion Lambda/worker
 ```
 
 - **edge-api** owns public HTTP, request validation, token verification, and
@@ -26,6 +29,8 @@ client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
   Postgres schema. It is the only service that signs access tokens.
 - **catalog-service** owns book metadata, original PDF objects, processing
   status, and its transactional publication outbox.
+- **ingestion-service** owns processing jobs and encrypted derived chunk
+  artifacts. Its worker and Lambda adapters invoke the same application.
 - Internal gRPC ports and Postgres are private in Compose. Service-to-service
   calls use TLS 1.3 with client certificates.
 - Future indexing, retrieval, and answer generation are added in
@@ -77,7 +82,8 @@ worker and Lambda adapters. Catalog projects monotonic processing state, while
 Edge gives authenticated clients low-latency SSE hints backed by authoritative
 polling reconciliation. Processing and notification queues are bounded;
 duplicate, out-of-order, poison, malformed, encrypted, image-only, and timeout
-paths terminate with stable behavior.
+paths terminate with stable behavior. M4 accepts text-bearing PDFs only; OCR
+and EPUB remain later work.
 
 The canonical service-by-service roadmap, data ownership, Lambda/worker
 deployment policy, contracts, and acceptance gates are in

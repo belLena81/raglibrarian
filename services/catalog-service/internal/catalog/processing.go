@@ -3,8 +3,10 @@ package catalog
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -12,7 +14,55 @@ import (
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
 )
 
-const maxProcessingEventBytes = 64 << 10
+const (
+	maxProcessingEventBytes = 64 << 10
+	maxManifestBytes        = 1 << 20
+	maxProcessedPages       = 500
+	maxProcessedChunks      = 50_000
+)
+
+type processingProfile struct {
+	extractionVersion    string
+	normalizationVersion string
+	tokenizerVersion     string
+	chunkingVersion      string
+	structureVersion     string
+	maximumTokens        uint32
+	overlapTokens        uint32
+	configDigest         [sha256.Size]byte
+}
+
+var supportedM4Profile = newM4ProcessingProfile()
+
+func newM4ProcessingProfile() processingProfile {
+	// #nosec G101 -- token limits and tokenizer identifiers are public processing
+	// contract values, not authentication credentials.
+	profile := processingProfile{
+		extractionVersion:    "poppler-layout-v1",
+		normalizationVersion: "nfc-v1",
+		tokenizerVersion:     "cl100k_base-v1",
+		chunkingVersion:      "token-window-v2",
+		structureVersion:     "heading-carry-v1",
+		maximumTokens:        800,
+		overlapTokens:        120,
+	}
+	// The final values are M4's maximum chunks, chunks per shard, and maximum
+	// shard bytes. Future profiles need an explicit registry entry rather than
+	// permissive acceptance on this v1 route.
+	profile.configDigest = sha256.Sum256([]byte(strings.Join([]string{
+		profile.extractionVersion,
+		profile.normalizationVersion,
+		profile.tokenizerVersion,
+		profile.chunkingVersion,
+		profile.structureVersion,
+		fmt.Sprint(profile.maximumTokens),
+		fmt.Sprint(profile.overlapTokens),
+		"50000",
+		"256",
+		"4194304",
+	}, "\x00")))
+	return profile
+}
 
 var (
 	ErrInvalidProcessingEvent  = errors.New("invalid processing event")
@@ -108,7 +158,7 @@ func decodeProcessingEvent(eventType string, payload []byte) (ProcessingEvent, e
 		event.Fact.Kind = ProcessingStarted
 	case "ingestion.book.chunks-ready.v1":
 		message := &ingestionv1.BookChunksReadyV1{}
-		if err := unmarshalStrict(payload, message); err != nil || message.GetManifestReference() == "" || len(message.GetManifestSha256()) != sha256.Size || message.GetManifestByteSize() <= 0 || message.GetPageCount() == 0 || message.GetChunkCount() == 0 {
+		if err := unmarshalStrict(payload, message); err != nil || !validReadyDescriptor(message) {
 			return ProcessingEvent{}, ErrInvalidProcessingEvent
 		}
 		event.EventID, event.BookID = message.GetEventId(), message.GetBookId()
@@ -147,14 +197,30 @@ func decodeProcessingEvent(eventType string, payload []byte) (ProcessingEvent, e
 	return event, nil
 }
 
+func validReadyDescriptor(message *ingestionv1.BookChunksReadyV1) bool {
+	if message == nil || !validEventIdentifier(message.GetBookId()) || len(message.GetSourceSha256()) != sha256.Size ||
+		len(message.GetManifestSha256()) != sha256.Size || message.GetManifestByteSize() <= 0 || message.GetManifestByteSize() > maxManifestBytes ||
+		message.GetPageCount() == 0 || message.GetPageCount() > maxProcessedPages ||
+		message.GetChunkCount() == 0 || message.GetChunkCount() > maxProcessedChunks ||
+		message.GetExtractionVersion() != supportedM4Profile.extractionVersion ||
+		message.GetNormalizationVersion() != supportedM4Profile.normalizationVersion ||
+		message.GetTokenizerVersion() != supportedM4Profile.tokenizerVersion ||
+		message.GetChunkingVersion() != supportedM4Profile.chunkingVersion ||
+		message.GetStructureVersion() != supportedM4Profile.structureVersion ||
+		message.GetMaximumTokens() != supportedM4Profile.maximumTokens ||
+		message.GetOverlapTokens() != supportedM4Profile.overlapTokens {
+		return false
+	}
+	prefix := "books/" + message.GetBookId() + "/" + hex.EncodeToString(message.GetSourceSha256()) + "/"
+	remainder, found := strings.CutPrefix(message.GetManifestReference(), prefix)
+	return found && remainder == hex.EncodeToString(supportedM4Profile.configDigest[:])+"/manifest.pb"
+}
+
 func unmarshalStrict(payload []byte, message proto.Message) error {
-	if err := (proto.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(payload, message); err != nil {
-		return err
-	}
-	if len(message.ProtoReflect().GetUnknown()) != 0 {
-		return ErrInvalidProcessingEvent
-	}
-	return nil
+	// The route and all known security-sensitive fields remain strictly
+	// validated below. Discarding bounded unknown protobuf fields allows an
+	// additive v1 producer rollout without breaking older Catalog consumers.
+	return (proto.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(payload, message)
 }
 
 func validEventIdentifier(value string) bool {

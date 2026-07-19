@@ -6,7 +6,6 @@ import (
 	"time"
 
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
-	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/application"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -30,15 +29,19 @@ func TestDecodeUploadedAcceptsFrozenCatalogContract(t *testing.T) {
 	}
 }
 
-func TestDecodeUploadedRejectsUnknownWireFields(t *testing.T) {
+func TestDecodeUploadedAcceptsAdditiveUnknownWireFields(t *testing.T) {
 	payload, err := proto.Marshal(validUploadMessage())
 	if err != nil {
 		t.Fatal(err)
 	}
 	payload = protowire.AppendTag(payload, 99, protowire.VarintType)
 	payload = protowire.AppendVarint(payload, 1)
-	if _, err = DecodeUploaded(payload); err != application.ErrInvalidEvent {
-		t.Fatalf("expected invalid event, got %v", err)
+	event, err := DecodeUploaded(payload)
+	if err != nil {
+		t.Fatalf("expected additive field compatibility, got %v", err)
+	}
+	if err = event.Validate(50 << 20); err != nil {
+		t.Fatalf("known security fields remain valid: %v", err)
 	}
 }
 

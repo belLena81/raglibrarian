@@ -40,6 +40,9 @@ for file in $files; do
     fi
   } >> "$sql_file"
 done
+if [ "$direction" = up ]; then
+  echo 'GRANT SELECT ON ingestion.inbox, ingestion.jobs, ingestion.artifact_sets TO ingestion_e2e;' >> "$sql_file"
+fi
 echo 'COMMIT;' >> "$sql_file"
 psql --no-password --file "$sql_file"
 echo 'Ingestion migrations completed'

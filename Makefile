@@ -4,14 +4,23 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-generate build run-edge-api run-identity run-catalog run-ingestion dev local-run local-stop tidy e2e contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 bootstrap-verifier compose-config ui-check ui-audit secret-scan dockerfile-lint image-build image-scan security-check full-gates integration-gates smtp-url
+.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-generate build run-edge-api run-identity run-catalog run-ingestion dev local-run local-stop tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-e2e m4-performance-smoke m4-sse-load m4-soak contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 bootstrap-verifier compose-config sam-validate sam-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-scan security-check full-gates integration-gates smtp-url
 
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
 HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
 # 0.69.2 is the vendor-designated unaffected Trivy release after the 2026
 # publishing incident. Do not move this pin without reviewing the advisory.
 TRIVY_IMAGE := aquasec/trivy:0.69.2
-SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-ingestion-lambda:local raglibrarian-ingestion-cleanup-lambda:local
+SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-ingestion-lambda:local raglibrarian-ingestion-dispatcher-lambda:local raglibrarian-ingestion-cleanup-lambda:local
+M4_E2E_INGESTION_POSTGRES_DSN_FILE ?= $(CURDIR)/.dev/secrets/ingestion_e2e_dsn
+M4_E2E_MINIO_ENDPOINT ?= 127.0.0.1:9000
+M4_E2E_MINIO_ACCESS_KEY_FILE ?= $(CURDIR)/.dev/secrets/ingestion_e2e_minio_access_key
+M4_E2E_MINIO_SECRET_KEY_FILE ?= $(CURDIR)/.dev/secrets/ingestion_e2e_minio_secret_key
+M4_E2E_MINIO_ARTIFACT_BUCKET ?= ingestion-artifacts
+M4_E2E_RABBITMQ_URI_FILE ?= $(CURDIR)/.dev/secrets/ingestion_e2e_rabbitmq_uri
+M4_E2E_FIXTURE_DIR ?= /tmp/raglibrarian-m4-fixtures
+M4_E2E_EDGE_BASE_URLS ?= http://127.0.0.1:8080,http://127.0.0.1:8081
+M4_E2E_PUBLIC_ORIGIN ?= http://127.0.0.1:5173
 
 # Service/library modules — looped over by test, lint, tidy, fmt.
 MODULES := \
@@ -131,7 +140,7 @@ stack-up: _require_root
 	@test -r "$${SECRET_DIR:-.dev/secrets}/identity_runtime_dsn" || { echo "development secrets are missing; run make dev-secrets"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/catalog_migration_password" && test -r "$${SECRET_DIR:-.dev/secrets}/catalog_runtime_password" && test -r "$${SECRET_DIR:-.dev/secrets}/catalog_migration_pgpass" && test -r "$${SECRET_DIR:-.dev/secrets}/catalog_runtime_dsn" || { echo "Catalog database development secrets are missing; run make dev-secrets-catalog-db"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/catalog_minio_access_key" || { echo "MinIO/RabbitMQ development secrets are missing; run make dev-secrets-m3"; exit 1; }
-	@test -r "$${SECRET_DIR:-.dev/secrets}/ingestion_runtime_dsn" && test -r "$${SECRET_DIR:-.dev/secrets}/ingestion_rabbitmq_uri" && test -r "$${SECRET_DIR:-.dev/secrets}/edge_status_rabbitmq_uri_1" && test -r "$${SECRET_DIR:-.dev/secrets}/edge_status_rabbitmq_uri_2" || { echo "M4 ingestion development secrets are missing; generate a fresh development secret set"; exit 1; }
+	@test -r "$${SECRET_DIR:-.dev/secrets}/ingestion_runtime_dsn" && test -r "$${SECRET_DIR:-.dev/secrets}/ingestion_rabbitmq_uri" && test -r "$${SECRET_DIR:-.dev/secrets}/ingestion_e2e_dsn" && test -r "$${SECRET_DIR:-.dev/secrets}/ingestion_e2e_minio_access_key" && test -r "$${SECRET_DIR:-.dev/secrets}/ingestion_e2e_rabbitmq_uri" && test -r "$${SECRET_DIR:-.dev/secrets}/edge_status_rabbitmq_uri_1" && test -r "$${SECRET_DIR:-.dev/secrets}/edge_status_rabbitmq_uri_2" || { echo "M4 ingestion development secrets are missing; generate a fresh development secret set"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/identity_bootstrap_verifier" || { echo "bootstrap verifier is missing; run make bootstrap-verifier"; exit 1; }
 	@docker compose up -d --build
 
@@ -163,20 +172,50 @@ tidy: _require_root
 e2e: _require_root
 	cd tests/e2e && go test -v -tags e2e ./...
 
+# M4 suites are deliberately separate because their files require both the
+# e2e and m4 build constraints. All targets expect a running local stack.
+m4-contract-test: contract-test
+
+# Preserve the complete M2 lifecycle gate, then pass its short-lived sessions
+# to the separate M4 process through owner-only files. Token values are never
+# placed in command arguments or output.
+m4-integration-test: _require_root
+	@set -eu; \
+	token_dir="$$(mktemp -d /tmp/raglibrarian-m4-tokens.XXXXXX)"; \
+	chmod 700 "$$token_dir"; \
+	trap 'rm -f "$$token_dir/access" "$$token_dir/revocable"; rmdir "$$token_dir"' EXIT; \
+	E2E_M4_ACCESS_TOKEN_OUT="$$token_dir/access" E2E_M4_REVOCABLE_TOKEN_OUT="$$token_dir/revocable" $(MAKE) e2e; \
+	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE="$$token_dir/revocable" $(MAKE) m4-e2e
+
+m4-fixtures: _require_root
+	go run ./tests/fixtures/ingestion/generate.go -out "$(M4_E2E_FIXTURE_DIR)"
+
+m4-e2e: m4-fixtures
+	cd tests/e2e && M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" M4_E2E_EDGE_BASE_URLS="$(M4_E2E_EDGE_BASE_URLS)" M4_E2E_PUBLIC_ORIGIN="$(M4_E2E_PUBLIC_ORIGIN)" M4_E2E_INGESTION_POSTGRES_DSN_FILE="$(M4_E2E_INGESTION_POSTGRES_DSN_FILE)" M4_E2E_MINIO_ENDPOINT="$(M4_E2E_MINIO_ENDPOINT)" M4_E2E_MINIO_INSECURE=true M4_E2E_MINIO_ACCESS_KEY_FILE="$(M4_E2E_MINIO_ACCESS_KEY_FILE)" M4_E2E_MINIO_SECRET_KEY_FILE="$(M4_E2E_MINIO_SECRET_KEY_FILE)" M4_E2E_MINIO_ARTIFACT_BUCKET="$(M4_E2E_MINIO_ARTIFACT_BUCKET)" M4_E2E_RABBITMQ_URI_FILE="$(M4_E2E_RABBITMQ_URI_FILE)" go test -count=1 -v -tags 'e2e m4' ./...
+
+m4-performance-smoke: m4-fixtures
+	cd tests/e2e && M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" M4_E2E_EDGE_BASE_URLS="$(M4_E2E_EDGE_BASE_URLS)" M4_E2E_PUBLIC_ORIGIN="$(M4_E2E_PUBLIC_ORIGIN)" M4_E2E_INGESTION_POSTGRES_DSN_FILE="$(M4_E2E_INGESTION_POSTGRES_DSN_FILE)" M4_E2E_MINIO_ENDPOINT="$(M4_E2E_MINIO_ENDPOINT)" M4_E2E_MINIO_INSECURE=true M4_E2E_MINIO_ACCESS_KEY_FILE="$(M4_E2E_MINIO_ACCESS_KEY_FILE)" M4_E2E_MINIO_SECRET_KEY_FILE="$(M4_E2E_MINIO_SECRET_KEY_FILE)" M4_E2E_MINIO_ARTIFACT_BUCKET="$(M4_E2E_MINIO_ARTIFACT_BUCKET)" M4_PERFORMANCE_PROFILE="$${M4_PERFORMANCE_PROFILE:-m4-slo-v1}" go test -count=1 -v -timeout "$${M4_PERFORMANCE_TIMEOUT:-20m}" -tags 'e2e m4' -run '^TestM4Performance' ./...
+
+m4-sse-load: _require_root
+	cd tests/e2e && go test -count=1 -v -timeout "$${M4_SSE_LOAD_TIMEOUT:-20m}" -tags 'e2e m4 m4_load' -run '^TestM4SSEConnectionCapIsEnforced$$' ./...
+
+m4-soak: m4-fixtures
+	cd tests/e2e && M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" M4_E2E_EDGE_BASE_URLS="$(M4_E2E_EDGE_BASE_URLS)" M4_E2E_PUBLIC_ORIGIN="$(M4_E2E_PUBLIC_ORIGIN)" M4_E2E_INGESTION_POSTGRES_DSN_FILE="$(M4_E2E_INGESTION_POSTGRES_DSN_FILE)" M4_E2E_MINIO_ENDPOINT="$(M4_E2E_MINIO_ENDPOINT)" M4_E2E_MINIO_INSECURE=true M4_E2E_MINIO_ACCESS_KEY_FILE="$(M4_E2E_MINIO_ACCESS_KEY_FILE)" M4_E2E_MINIO_SECRET_KEY_FILE="$(M4_E2E_MINIO_SECRET_KEY_FILE)" M4_E2E_MINIO_ARTIFACT_BUCKET="$(M4_E2E_MINIO_ARTIFACT_BUCKET)" M4_SOAK_DURATION="$${M4_SOAK_DURATION:-30m}" go test -count=1 -v -timeout "$${M4_SOAK_TIMEOUT:-45m}" -tags 'e2e m4 m4_soak' -run '^TestM4Soak' ./...
+
 .PHONY: contract-test
 contract-test: _require_root
 	@project=raglibrarian-contract-test; \
-	trap 'MAILPIT_UI_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile test down -v --remove-orphans' EXIT; \
-	MAILPIT_UI_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile test build identity-service catalog-service contract-tests && \
-	MAILPIT_UI_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile test run --rm contract-tests
+	trap 'MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile test down -v --remove-orphans' EXIT; \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile test build identity-service catalog-service ingestion-service contract-tests && \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile test run --rm contract-tests
 
 minio-runtime-test: _require_root
 	@project=raglibrarian-minio-runtime-test; \
-	trap 'COMPOSE_PROJECT_NAME=$$project docker compose --profile minio-runtime-test down -v --remove-orphans' EXIT; \
-	COMPOSE_PROJECT_NAME=$$project docker compose --profile minio-runtime-test build catalog-minio-runtime-tests && \
-	COMPOSE_PROJECT_NAME=$$project docker compose --profile minio-runtime-test up -d --wait minio && \
-	COMPOSE_PROJECT_NAME=$$project docker compose --profile minio-runtime-test run --rm minio-bootstrap && \
-	COMPOSE_PROJECT_NAME=$$project docker compose --profile minio-runtime-test run --rm catalog-minio-runtime-tests
+	trap 'MINIO_API_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile minio-runtime-test down -v --remove-orphans' EXIT; \
+	MINIO_API_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile minio-runtime-test build catalog-minio-runtime-tests && \
+	MINIO_API_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile minio-runtime-test up -d --wait minio && \
+	MINIO_API_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile minio-runtime-test run --rm minio-bootstrap && \
+	MINIO_API_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile minio-runtime-test run --rm catalog-minio-runtime-tests
 
 # ── Database ──────────────────────────────────────────────────────────────────
 # Uses psql directly — no migrate CLI dependency.
@@ -251,6 +290,17 @@ dev-certs: _require_root
 compose-config: _require_root
 	docker compose config --quiet
 
+sam-validate: _require_root
+	@command -v sam >/dev/null || { echo "AWS SAM CLI is required"; exit 1; }
+	sam validate --lint --template-file infra/aws/m4/template.yaml
+
+# Packaging is intentionally local-only: it validates image references and
+# CloudFormation translation without publishing images or changing AWS state.
+sam-package-check: sam-validate
+	@command -v aws >/dev/null || { echo "AWS CLI is required"; exit 1; }
+	@test -n "$${M4_SAM_ARTIFACT_BUCKET:-}" || { echo "M4_SAM_ARTIFACT_BUCKET is required"; exit 1; }
+	sam package --template-file infra/aws/m4/template.yaml --s3-bucket "$${M4_SAM_ARTIFACT_BUCKET}" --output-template-file /tmp/raglibrarian-m4-packaged.yaml
+
 ui-check: _require_root
 	npm --prefix ui ci
 	npm --prefix ui test
@@ -273,6 +323,7 @@ image-build: _require_root
 	docker build --build-arg SERVICE=edge-api -t raglibrarian-edge-api:local .
 	docker build --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/worker -t raglibrarian-ingestion-service:local .
 	docker build --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/lambda -t raglibrarian-ingestion-lambda:local .
+	docker build --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/dispatcher_lambda -t raglibrarian-ingestion-dispatcher-lambda:local .
 	docker build --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda -t raglibrarian-ingestion-cleanup-lambda:local .
 
 image-scan: image-build
@@ -286,8 +337,8 @@ security-check: secret-scan dockerfile-lint image-scan ui-audit
 full-gates: fmt-check vet lint test test-race arch-check vuln proto-check compose-config ui-check security-check
 
 integration-gates: compose-config
-	docker compose up -d --build --wait --wait-timeout 180
-	$(MAKE) contract-test minio-runtime-test e2e
+	docker compose --profile m4-ha up -d --build --wait --wait-timeout 180
+	$(MAKE) contract-test minio-runtime-test m4-integration-test
 
 smtp-url:
 	@echo "Mailpit is available only on http://127.0.0.1:$${MAILPIT_UI_PORT:-8025}"

@@ -20,22 +20,20 @@ type EventProcessor interface {
 }
 
 type Consumer struct {
-	channel        *amqp091.Channel
-	queue          string
-	processor      EventProcessor
-	retryPublisher Publisher
-	retryExchange  string
-	now            func() time.Time
+	channel   *amqp091.Channel
+	queue     string
+	processor EventProcessor
+	now       func() time.Time
 }
 
-func NewConsumer(channel *amqp091.Channel, queue string, concurrency int, processor EventProcessor, retryPublisher Publisher, retryExchange string) (*Consumer, error) {
-	if channel == nil || queue == "" || concurrency < 1 || processor == nil || retryPublisher == nil || retryExchange == "" {
+func NewConsumer(channel *amqp091.Channel, queue string, concurrency int, processor EventProcessor) (*Consumer, error) {
+	if channel == nil || queue == "" || concurrency < 1 || processor == nil {
 		return nil, errors.New("invalid RabbitMQ consumer")
 	}
 	if err := channel.Qos(concurrency, 0, false); err != nil {
 		return nil, err
 	}
-	return &Consumer{channel: channel, queue: queue, processor: processor, retryPublisher: retryPublisher, retryExchange: retryExchange, now: time.Now}, nil
+	return &Consumer{channel: channel, queue: queue, processor: processor, now: time.Now}, nil
 }
 
 func (c *Consumer) Run(ctx context.Context, concurrency int) error {
@@ -80,92 +78,13 @@ func (c *Consumer) handle(ctx context.Context, delivery amqp091.Delivery) {
 		_ = delivery.Nack(false, true)
 		return
 	}
-	if err == nil {
+	switch application.DeliveryDisposition(err) {
+	case application.DeliveryAcknowledge:
 		_ = delivery.Ack(false)
-		return
-	}
-	var deferred application.DeferredError
-	if errors.As(err, &deferred) {
-		route := retryRoute(time.Until(deferred.RetryAt))
-		if c.publishRetry(ctx, delivery, route, nil) != nil {
-			_ = delivery.Reject(false)
-			return
-		}
-		_ = delivery.Ack(false)
-		return
-	}
-	if errors.Is(err, application.ErrInvalidEvent) || errors.Is(err, application.ErrConflictingEvent) {
+	case application.DeliveryReject:
 		_ = delivery.Reject(false)
-		return
-	}
-	attempt := retryAttempt(delivery.Headers) + 1
-	if attempt > 4 {
-		_ = delivery.Reject(false)
-		return
-	}
-	delay := retryDelay(attempt)
-	if c.publishRetry(ctx, delivery, retryRoute(delay), amqp091.Table{"x-ingestion-retry-attempt": int32(attempt)}) != nil { // #nosec G115 -- attempt is bounded to four.
-		_ = delivery.Reject(false)
-		return
-	}
-	_ = delivery.Ack(false)
-}
-
-func (c *Consumer) publishRetry(ctx context.Context, delivery amqp091.Delivery, route string, headers amqp091.Table) error {
-	publishCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	return c.retryPublisher.PublishWithContext(publishCtx, c.retryExchange, route, true, false, amqp091.Publishing{
-		Headers:       headers,
-		ContentType:   delivery.ContentType,
-		DeliveryMode:  amqp091.Persistent,
-		MessageId:     delivery.MessageId,
-		Type:          delivery.Type,
-		CorrelationId: delivery.CorrelationId,
-		Timestamp:     c.now().UTC(),
-		Body:          delivery.Body,
-	})
-}
-
-func retryAttempt(headers amqp091.Table) int {
-	value, exists := headers["x-ingestion-retry-attempt"]
-	if !exists {
-		return 0
-	}
-	switch attempt := value.(type) {
-	case byte:
-		return boundedRetryAttempt(int64(attempt))
-	case int8:
-		return boundedRetryAttempt(int64(attempt))
-	case int:
-		if attempt >= 0 && attempt <= 4 {
-			return attempt
-		}
-		return 4
-	case int16:
-		return boundedRetryAttempt(int64(attempt))
-	case int32:
-		return boundedRetryAttempt(int64(attempt))
-	case int64:
-		return boundedRetryAttempt(attempt)
-	}
-	return 4
-}
-
-func boundedRetryAttempt(value int64) int {
-	if value < 0 || value > 4 {
-		return 4
-	}
-	return int(value)
-}
-
-func retryDelay(attempt int) time.Duration {
-	switch attempt {
-	case 1:
-		return 5 * time.Second
-	case 2:
-		return 30 * time.Second
-	default:
-		return 2 * time.Minute
+	case application.DeliveryRequeue:
+		_ = delivery.Nack(false, true)
 	}
 }
 
@@ -200,7 +119,10 @@ func NewOutboxWorker(repo *repository.Postgres, publisher Publisher, exchange st
 }
 
 func (w *OutboxWorker) Run(ctx context.Context) error {
-	ticker := time.NewTicker(w.interval)
+	// One-second recovery polling remains even when a larger legacy interval is
+	// configured; normal latency comes from the post-commit buffered wake.
+	recovery := min(w.interval, time.Second)
+	ticker := time.NewTicker(recovery)
 	defer ticker.Stop()
 	for {
 		if err := w.PublishPending(ctx); err != nil && ctx.Err() != nil {
@@ -209,30 +131,60 @@ func (w *OutboxWorker) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-w.repository.Wake():
 		case <-ticker.C:
 		}
 	}
 }
 
 func (w *OutboxWorker) PublishPending(ctx context.Context) error {
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for {
+		published, err := w.publishBatch(ctx)
+		if err != nil || !published || time.Now().After(deadline) {
+			return err
+		}
+	}
+}
+
+func (w *OutboxWorker) publishBatch(ctx context.Context) (bool, error) {
 	now := w.now().UTC()
 	events, err := w.repository.ClaimOutbox(ctx, now, w.lease)
 	if err != nil {
-		return err
+		return false, err
 	}
+	published := len(events) > 0
 	for _, event := range events {
 		publishCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		err = w.publisher.PublishWithContext(publishCtx, w.exchange, event.Type, true, false, amqp091.Publishing{ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent, MessageId: event.ID, Type: event.Type, Timestamp: now, Body: event.Payload})
 		cancel()
 		if err != nil {
 			_ = w.repository.RetryOutbox(ctx, event.ID, now, event.Attempts)
-			return err
+			return published, err
 		}
 		if err = w.repository.MarkPublished(ctx, event.ID, now); err != nil {
-			return err
+			return published, err
 		}
 	}
-	return nil
+	retries, err := w.repository.ClaimRetryDispatches(ctx, now, w.lease)
+	if err != nil {
+		return published, err
+	}
+	published = published || len(retries) > 0
+	for _, retry := range retries {
+		delay := retry.DispatchAfter.Sub(now)
+		publishCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err = w.publisher.PublishWithContext(publishCtx, RetryExchange, retryRoute(delay), true, false, amqp091.Publishing{ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent, MessageId: retry.EventID, Type: UploadRoute, Timestamp: now, Body: retry.Payload})
+		cancel()
+		if err != nil {
+			_ = w.repository.RetryRetryDispatch(ctx, retry.JobID, retry.Attempt, now)
+			return published, err
+		}
+		if err = w.repository.MarkRetryPublished(ctx, retry.JobID, retry.Attempt, now); err != nil {
+			return published, err
+		}
+	}
+	return published, nil
 }
 
 type ReconnectingPublisher struct {

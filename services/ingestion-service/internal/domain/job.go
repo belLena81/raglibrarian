@@ -77,7 +77,16 @@ func NewProcessingJob(id, bookID string, sourceSHA256 [32]byte, configDigest str
 
 func RestoreProcessingJob(id, bookID string, sourceSHA256 [32]byte, configDigest string, state JobState, attempts int, leaseOwner string, leaseExpiresAt, nextAttemptAt time.Time, failure FailureCategory, manifestRef string, manifestSHA256 [32]byte, manifestSize int64, createdAt, updatedAt time.Time) (ProcessingJob, error) {
 	job := ProcessingJob{id: id, bookID: bookID, sourceSHA256: sourceSHA256, configDigest: configDigest, state: state, attempts: attempts, leaseOwner: leaseOwner, leaseExpiresAt: leaseExpiresAt, nextAttemptAt: nextAttemptAt, failure: failure, manifestRef: manifestRef, manifestSHA256: manifestSHA256, manifestSize: manifestSize, createdAt: createdAt, updatedAt: updatedAt}
-	if !validIdentifier(id) || !validIdentifier(bookID) || attempts < 0 || createdAt.IsZero() || updatedAt.IsZero() {
+	if !validIdentifier(id) || !validIdentifier(bookID) || strings.TrimSpace(configDigest) == "" || len(configDigest) > 128 || attempts < 0 || createdAt.IsZero() || updatedAt.IsZero() || updatedAt.Before(createdAt) || !state.Valid() {
+		return ProcessingJob{}, ErrInvalidJob
+	}
+	if (state == JobProcessing) != (validIdentifier(leaseOwner) && !leaseExpiresAt.IsZero()) || (state == JobRetrying) != !nextAttemptAt.IsZero() || (state == JobFailed) != failure.Valid() {
+		return ProcessingJob{}, ErrInvalidJob
+	}
+	if state == JobCompleted && (strings.TrimSpace(manifestRef) == "" || manifestSize < 1) {
+		return ProcessingJob{}, ErrInvalidJob
+	}
+	if state != JobCompleted && (manifestRef != "" || manifestSize != 0 || manifestSHA256 != [32]byte{}) {
 		return ProcessingJob{}, ErrInvalidJob
 	}
 	return job, nil
@@ -102,7 +111,7 @@ func (j *ProcessingJob) Claim(owner string, now time.Time, lease time.Duration) 
 }
 
 func (j *ProcessingJob) RenewLease(owner string, now time.Time, lease time.Duration) error {
-	if j.state != JobProcessing || j.leaseOwner != owner || now.After(j.leaseExpiresAt) {
+	if j.state != JobProcessing || j.leaseOwner != owner || !now.Before(j.leaseExpiresAt) {
 		return ErrLeaseNotOwned
 	}
 	j.leaseExpiresAt = now.Add(lease).UTC()
@@ -176,10 +185,19 @@ func (j ProcessingJob) requireOwner(owner string, now time.Time) error {
 	if j.terminal() {
 		return ErrTerminalJob
 	}
-	if j.state != JobProcessing || owner != j.leaseOwner || now.After(j.leaseExpiresAt) {
+	if j.state != JobProcessing || owner != j.leaseOwner || !now.Before(j.leaseExpiresAt) {
 		return ErrLeaseNotOwned
 	}
 	return nil
+}
+
+func (s JobState) Valid() bool {
+	switch s {
+	case JobQueued, JobProcessing, JobRetrying, JobCompleted, JobFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func (j *ProcessingJob) clearLease() {

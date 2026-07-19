@@ -13,7 +13,7 @@ chmod 700 "$dir"
 files=(
   postgres_password postgres_pgpass identity_migration_password identity_runtime_password
 	 catalog_migration_password catalog_runtime_password catalog_migration_pgpass catalog_runtime_dsn
-	 ingestion_migration_password ingestion_runtime_password ingestion_cleanup_password ingestion_migration_pgpass ingestion_runtime_dsn ingestion_cleanup_dsn
+	 ingestion_migration_password ingestion_runtime_password ingestion_cleanup_password ingestion_e2e_password ingestion_migration_pgpass ingestion_runtime_dsn ingestion_e2e_dsn ingestion_e2e_container_dsn ingestion_cleanup_dsn
   identity_migration_pgpass identity_migration_dsn identity_runtime_dsn identity_signing_key
   edge_verify_key edge.env identity_email_outbox_key
 	identity_email_fingerprint_key identity_password_reset_hmac_key identity_smtp_password
@@ -33,6 +33,7 @@ catalog_runtime_password=$(openssl rand -hex 32)
 ingestion_migration_password=$(openssl rand -hex 32)
 ingestion_runtime_password=$(openssl rand -hex 32)
 ingestion_cleanup_password=$(openssl rand -hex 32)
+ingestion_e2e_password=$(openssl rand -hex 32)
 smtp_password=$(openssl rand -hex 32)
 key_output=$(cd pkg/auth && go run ./cmd/keygen/)
 signing_key=$(printf '%s\n' "$key_output" | sed -n 's/^IDENTITY_SIGNING_KEY=//p')
@@ -53,8 +54,11 @@ printf 'postgres://catalog_runtime:%s@postgres:5432/catalog?sslmode=disable\n' "
 printf '%s\n' "$ingestion_migration_password" > "$dir/ingestion_migration_password"
 printf '%s\n' "$ingestion_runtime_password" > "$dir/ingestion_runtime_password"
 printf '%s\n' "$ingestion_cleanup_password" > "$dir/ingestion_cleanup_password"
+printf '%s\n' "$ingestion_e2e_password" > "$dir/ingestion_e2e_password"
 printf 'postgres:5432:ingestion:ingestion_migrator:%s\n' "$ingestion_migration_password" > "$dir/ingestion_migration_pgpass"
 printf 'postgres://ingestion_runtime:%s@postgres:5432/ingestion?sslmode=disable\n' "$ingestion_runtime_password" > "$dir/ingestion_runtime_dsn"
+printf 'postgres://ingestion_e2e:%s@127.0.0.1:5432/ingestion?sslmode=disable\n' "$ingestion_e2e_password" > "$dir/ingestion_e2e_dsn"
+printf 'postgres://ingestion_e2e:%s@postgres:5432/ingestion?sslmode=disable\n' "$ingestion_e2e_password" > "$dir/ingestion_e2e_container_dsn"
 printf 'postgres://ingestion_cleanup:%s@postgres:5432/ingestion?sslmode=disable\n' "$ingestion_cleanup_password" > "$dir/ingestion_cleanup_dsn"
 printf '%s\n' "$signing_key" > "$dir/identity_signing_key"
 printf '%s\n' "$verify_key" > "$dir/edge_verify_key"
@@ -65,6 +69,6 @@ openssl rand -hex 32 > "$dir/identity_password_reset_hmac_key"
 printf '%s\n' "$smtp_password" > "$dir/identity_smtp_password"
 
 chmod 400 "$dir"/*
-unset postgres_password migration_password runtime_password catalog_migration_password catalog_runtime_password ingestion_migration_password ingestion_runtime_password ingestion_cleanup_password smtp_password key_output signing_key verify_key
+unset postgres_password migration_password runtime_password catalog_migration_password catalog_runtime_password ingestion_migration_password ingestion_runtime_password ingestion_cleanup_password ingestion_e2e_password smtp_password key_output signing_key verify_key
 bash ./scripts/generate-catalog-dev-secrets.sh "$dir"
 echo "Generated file-backed development credentials in $dir"

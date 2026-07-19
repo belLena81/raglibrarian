@@ -35,6 +35,29 @@ func TestProcessingJobRejectsWrongLeaseOwner(t *testing.T) {
 	}
 }
 
+func TestProcessingJobLeaseExpiresAtExactBoundary(t *testing.T) {
+	now := time.Now().UTC()
+	job, _ := NewProcessingJob("job-1", "book-1", checksum(1), "config-1", now)
+	_ = job.Claim("worker-1", now, time.Minute)
+	if err := job.RenewLease("worker-1", now.Add(time.Minute), time.Minute); !errors.Is(err, ErrLeaseNotOwned) {
+		t.Fatalf("expected exact expiry to reject renewal, got %v", err)
+	}
+	if err := job.Complete("worker-1", "manifest.pb", checksum(2), 42, now.Add(time.Minute)); !errors.Is(err, ErrLeaseNotOwned) {
+		t.Fatalf("expected exact expiry to invalidate owner, got %v", err)
+	}
+	if err := job.Claim("worker-2", now.Add(time.Minute), time.Minute); err != nil {
+		t.Fatalf("expected exact expiry to permit a new claim, got %v", err)
+	}
+}
+
+func TestRestoreProcessingJobRejectsInconsistentState(t *testing.T) {
+	now := time.Now().UTC()
+	_, err := RestoreProcessingJob("job-1", "book-1", checksum(1), "config-1", JobProcessing, 1, "", time.Time{}, time.Time{}, "", "", [32]byte{}, 0, now, now)
+	if !errors.Is(err, ErrInvalidJob) {
+		t.Fatalf("expected invalid restored state, got %v", err)
+	}
+}
+
 func checksum(value byte) [32]byte {
 	var sum [32]byte
 	sum[0] = value

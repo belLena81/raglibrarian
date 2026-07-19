@@ -28,7 +28,11 @@ type Store interface {
 	Delete(context.Context, string) error
 }
 
-type Versions struct{ Extraction, Normalization, Tokenizer, Chunking string }
+type Versions struct{ Extraction, Normalization, Tokenizer, Chunking, Structure string }
+type ProcessingProfile struct {
+	MaximumTokens int
+	OverlapTokens int
+}
 type Metadata struct {
 	BookID       string
 	SourceSHA256 [32]byte
@@ -52,22 +56,33 @@ type Writer struct {
 	store       Store
 	metadata    Metadata
 	versions    Versions
+	profile     ProcessingProfile
 	limits      Limits
 	prefix      string
-	pending     []*ingestionv1.ChunkV1
+	pending     []encodedChunk
 	pendingSize int
 	descriptors []*ingestionv1.ChunkShardDescriptorV1
 	chunkCount  uint32
 	finalized   bool
 	written     []string
+	encoder     *zstd.Encoder
 }
 
-func NewWriter(store Store, metadata Metadata, versions Versions, limits Limits) (*Writer, error) {
-	if store == nil || metadata.BookID == "" || metadata.GeneratedAt.IsZero() || versions.Extraction == "" || versions.Normalization == "" || versions.Tokenizer == "" || versions.Chunking == "" || limits.ChunksPerShard < 1 || limits.MaximumShardBytes < 1024 || limits.MaximumManifestBytes < 1024 {
+type encodedChunk struct {
+	message *ingestionv1.ChunkV1
+	bytes   []byte
+}
+
+func NewWriter(store Store, metadata Metadata, versions Versions, profile ProcessingProfile, limits Limits) (*Writer, error) {
+	if store == nil || metadata.BookID == "" || metadata.GeneratedAt.IsZero() || versions.Extraction == "" || versions.Normalization == "" || versions.Tokenizer == "" || versions.Chunking == "" || versions.Structure == "" || profile.MaximumTokens < 1 || profile.OverlapTokens < 0 || profile.OverlapTokens >= profile.MaximumTokens || limits.ChunksPerShard < 1 || limits.MaximumShardBytes < 1024 || limits.MaximumManifestBytes < 1024 {
 		return nil, errors.New("invalid artifact writer configuration")
 	}
+	encoder, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest), zstd.WithEncoderConcurrency(1))
+	if err != nil {
+		return nil, errors.New("initialize shard compressor")
+	}
 	prefix := path.Join("books", metadata.BookID, hex.EncodeToString(metadata.SourceSHA256[:]), hex.EncodeToString(metadata.ConfigDigest[:]))
-	return &Writer{store: store, metadata: metadata, versions: versions, limits: limits, prefix: prefix, pending: make([]*ingestionv1.ChunkV1, 0, limits.ChunksPerShard)}, nil
+	return &Writer{store: store, metadata: metadata, versions: versions, profile: profile, limits: limits, prefix: prefix, pending: make([]encodedChunk, 0, limits.ChunksPerShard), encoder: encoder}, nil
 }
 
 func (w *Writer) Add(ctx context.Context, value domain.Chunk) error {
@@ -75,7 +90,7 @@ func (w *Writer) Add(ctx context.Context, value domain.Chunk) error {
 		return errors.New("artifact writer already finalized")
 	}
 	contentSHA256 := value.ContentSHA256()
-	chunk := &ingestionv1.ChunkV1{ChunkId: value.ID(), BookId: value.BookID(), Order: value.Order(), Text: value.Text(), ContentSha256: contentSHA256[:], Chapter: value.Chapter(), Section: value.Section(), PageStart: value.PageStart(), PageEnd: value.PageEnd(), TokenStart: value.TokenStart(), TokenEnd: value.TokenEnd(), ExtractionVersion: w.versions.Extraction, NormalizationVersion: w.versions.Normalization, TokenizerVersion: w.versions.Tokenizer, ChunkingVersion: w.versions.Chunking}
+	chunk := &ingestionv1.ChunkV1{ChunkId: value.ID(), BookId: value.BookID(), Order: value.Order(), Text: value.Text(), ContentSha256: contentSHA256[:], Chapter: value.Chapter(), Section: value.Section(), PageStart: value.PageStart(), PageEnd: value.PageEnd(), TokenStart: value.TokenStart(), TokenEnd: value.TokenEnd(), ExtractionVersion: w.versions.Extraction, NormalizationVersion: w.versions.Normalization, TokenizerVersion: w.versions.Tokenizer, ChunkingVersion: w.versions.Chunking, StructureVersion: w.versions.Structure}
 	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(chunk)
 	if err != nil {
 		return errors.New("encode chunk")
@@ -89,7 +104,7 @@ func (w *Writer) Add(ctx context.Context, value domain.Chunk) error {
 			return err
 		}
 	}
-	w.pending = append(w.pending, chunk)
+	w.pending = append(w.pending, encodedChunk{message: chunk, bytes: encoded})
 	w.pendingSize += recordSize
 	w.chunkCount++
 	return nil
@@ -102,7 +117,7 @@ func (w *Writer) Finalize(ctx context.Context, pageCount uint32) (Result, error)
 	if err := w.flush(ctx); err != nil {
 		return Result{}, err
 	}
-	manifest := &ingestionv1.ChunkManifestV1{SchemaVersion: "v1", BookId: w.metadata.BookID, SourceSha256: append([]byte(nil), w.metadata.SourceSHA256[:]...), ProcessingConfigDigest: append([]byte(nil), w.metadata.ConfigDigest[:]...), ExtractionVersion: w.versions.Extraction, NormalizationVersion: w.versions.Normalization, TokenizerVersion: w.versions.Tokenizer, ChunkingVersion: w.versions.Chunking, PageCount: pageCount, ChunkCount: w.chunkCount, GeneratedAt: timestamppb.New(w.metadata.GeneratedAt), Shards: w.descriptors}
+	manifest := &ingestionv1.ChunkManifestV1{SchemaVersion: "v1", BookId: w.metadata.BookID, SourceSha256: append([]byte(nil), w.metadata.SourceSHA256[:]...), ProcessingConfigDigest: append([]byte(nil), w.metadata.ConfigDigest[:]...), ExtractionVersion: w.versions.Extraction, NormalizationVersion: w.versions.Normalization, TokenizerVersion: w.versions.Tokenizer, ChunkingVersion: w.versions.Chunking, StructureVersion: w.versions.Structure, MaximumTokens: uint32(w.profile.MaximumTokens), OverlapTokens: uint32(w.profile.OverlapTokens), PageCount: pageCount, ChunkCount: w.chunkCount, GeneratedAt: timestamppb.New(w.metadata.GeneratedAt), Shards: w.descriptors} // #nosec G115 -- validated positive processing bounds.
 	contents, err := proto.MarshalOptions{Deterministic: true}.Marshal(manifest)
 	if err != nil || len(contents) > w.limits.MaximumManifestBytes {
 		return Result{}, ErrArtifactLimit
@@ -112,8 +127,11 @@ func (w *Writer) Finalize(ctx context.Context, pageCount uint32) (Result, error)
 	if err = w.store.Put(ctx, reference, contents, sum); err != nil {
 		return Result{}, err
 	}
-	w.finalized = true
 	w.written = append(w.written, reference)
+	if err = w.encoder.Close(); err != nil {
+		return Result{}, errors.New("close artifact compressor")
+	}
+	w.finalized = true
 	return Result{ManifestReference: reference, ManifestSHA256: sum, ManifestByteSize: int64(len(contents)), PageCount: pageCount, ChunkCount: w.chunkCount}, nil
 }
 
@@ -123,25 +141,14 @@ func (w *Writer) flush(ctx context.Context) error {
 	}
 	uncompressed := make([]byte, 0, w.pendingSize)
 	for _, chunk := range w.pending {
-		encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(chunk)
-		if err != nil {
-			return errors.New("encode shard")
-		}
-		uncompressed = protowire.AppendVarint(uncompressed, uint64(len(encoded)))
-		uncompressed = append(uncompressed, encoded...)
+		uncompressed = protowire.AppendVarint(uncompressed, uint64(len(chunk.bytes)))
+		uncompressed = append(uncompressed, chunk.bytes...)
 	}
-	encoder, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest), zstd.WithEncoderConcurrency(1))
-	if err != nil {
-		return errors.New("initialize shard compressor")
-	}
-	compressed := encoder.EncodeAll(uncompressed, nil)
-	if err = encoder.Close(); err != nil {
-		return errors.New("close shard compressor")
-	}
+	compressed := w.encoder.EncodeAll(uncompressed, nil)
 	sum := sha256.Sum256(compressed)
 	index := len(w.descriptors)
 	reference := path.Join(w.prefix, "shards", fmt.Sprintf("%06d.pb.zst", index))
-	if err = w.store.Put(ctx, reference, compressed, sum); err != nil {
+	if err := w.store.Put(ctx, reference, compressed, sum); err != nil {
 		return err
 	}
 	chunkCount := uint32(len(w.pending)) // #nosec G115 -- pending chunks are bounded to 256.
@@ -151,8 +158,8 @@ func (w *Writer) flush(ctx context.Context) error {
 		CompressedByteSize:   int64(len(compressed)),
 		UncompressedByteSize: int64(len(uncompressed)),
 		ChunkCount:           chunkCount,
-		FirstChunkOrder:      w.pending[0].Order,
-		LastChunkOrder:       w.pending[len(w.pending)-1].Order,
+		FirstChunkOrder:      w.pending[0].message.Order,
+		LastChunkOrder:       w.pending[len(w.pending)-1].message.Order,
 	})
 	w.written = append(w.written, reference)
 	w.pending = w.pending[:0]
@@ -169,5 +176,5 @@ func (w *Writer) Abort(ctx context.Context) error {
 		result = errors.Join(result, w.store.Delete(ctx, reference))
 	}
 	w.written = nil
-	return result
+	return errors.Join(result, w.encoder.Close())
 }

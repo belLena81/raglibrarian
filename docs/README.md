@@ -41,7 +41,7 @@ bounded retries, and dead-letter queues.
 | Edge API | Public HTTP, request validation, perimeter authentication, DTO mapping, routing | Business data, retrieval orchestration, ingestion, prompts |
 | Identity | Accounts, credentials, roles, approvals, sessions, token signing | Books, upload authorization policy outside role facts |
 | Catalog | Book metadata, original objects, public processing status, upload outbox | Extracted text, chunks, embeddings, vectors |
-| Ingestion | Processing jobs, PDF/EPUB extraction, chunk artifacts | Original-book metadata, Qdrant, search |
+| Ingestion | Processing jobs, text-PDF extraction, chunk artifacts | Original-book metadata, OCR, EPUB, Qdrant, search |
 | Retrieval | Embedding compatibility, evidence projection, Qdrant, semantic search | Book lifecycle, LLM answer synthesis |
 | Answer | Prompt construction and grounded answer synthesis | Citation invention, vector storage, book metadata |
 
@@ -73,7 +73,7 @@ types, IAM concepts, or environment-specific clients.
 | Workload | Deployment decision | Reason |
 |---|---|---|
 | Edge, Identity, Catalog | Long-running service | HTTP/gRPC latency, streaming upload, connection pools, health, and graceful shutdown |
-| PDF/EPUB extract and chunk | Lambda container image when bounded; portable worker deployment alternative | Event-driven, stateless per job, native parser dependencies fit a container image |
+| Text-PDF extract and chunk | Lambda container image when bounded; portable worker deployment alternative | Event-driven, stateless per job, native parser dependencies fit a container image |
 | Embed and index a bounded chunk batch | Lambda container image when bounded; portable worker deployment alternative | Idempotent event work that scales independently while remaining Retrieval-owned |
 | Retrieval search | Long-running service | Low-latency gRPC and stable Qdrant/provider connections |
 | Grounded synchronous answer | Long-running service initially | Predictable gRPC behavior and future response streaming; evaluate Lambda only for non-streaming async answers |
@@ -227,13 +227,23 @@ Implementation:
 - Consume `BookUploadedV1` idempotently. Read originals through read-only
   credentials and write derived artifacts only to an Ingestion-owned location.
 - Preserve book, chapter, section, page range, chunk order, token bounds,
-  extraction version, and checksums for every chunk.
+  extraction/structure/chunking profile, and checksums for every chunk. Carry
+  chapter and section context across pages and permit bounded cross-page chunks
+  without losing exact source spans.
 - Emit `BookChunksReadyV1` with a versioned manifest reference, or
   `BookProcessingFailedV1` with a sanitized category. Catalog consumes these
   events to update status without reading Ingestion storage.
 - Preflight file size/page count and enforce a sub-14-minute execution budget.
   Keep raw content only in encrypted transient storage for the invocation and
   never rely on warm-runtime state for correctness.
+- Persist retry intent with the inbox state before acknowledging delivery.
+  Worker and Lambda adapters apply the same retry/final-failure disposition;
+  artifact cleanup is leased, retryable, and cannot starve newer failed jobs.
+- Use a buffered post-commit outbox wakeup and bounded batch drain for normal
+  low latency, retaining the periodic database scan as the recovery mechanism.
+- AWS deploys exactly one active processing mode (`lambda`, `worker`, or
+  `paused`) for a queue. Switching modes pauses the current consumer before
+  enabling the replacement so two adapters never race the same document.
 
 Acceptance:
 
@@ -243,6 +253,11 @@ Acceptance:
   worker adapter; both produce identical application results and idempotency.
 - Chunk boundaries and page citations are covered by stable document fixtures.
 - Raw book content never appears in logs, traces, event error fields, or DLQs.
+- Under processing profile `m4-slo-v1` (text PDF up to 25 MiB/500 pages,
+  extracted text up to 64 MiB, five-book sample, two processing slots), the
+  extracting status is visible within 2 seconds at p95, ready propagation from
+  commit to Catalog is under 1 second, tiny documents finish within 10 seconds
+  at p95, and mean ingestion stays below 120 seconds.
 
 ## Milestone 5 — Retrieval, indexing, and semantic search
 

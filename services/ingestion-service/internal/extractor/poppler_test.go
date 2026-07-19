@@ -2,6 +2,7 @@ package extractor
 
 import (
 	"context"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -14,6 +15,29 @@ func (r *fakeRunner) Run(context.Context, string, []string, int64) ([]byte, erro
 	output := r.outputs[0]
 	r.outputs = r.outputs[1:]
 	return output, nil
+}
+
+func TestClassifySandboxSetupFailures(t *testing.T) {
+	tests := []struct {
+		code     string
+		expected domain.FailureCategory
+	}{
+		{code: "121", expected: domain.FailureResourceLimitExceeded},
+		{code: "122", expected: domain.FailureDependencyUnavailable},
+		{code: "123", expected: domain.FailureDependencyUnavailable},
+		{code: "124", expected: domain.FailureDependencyUnavailable},
+		{code: "1", expected: domain.FailureMalformedDocument},
+	}
+	for _, test := range tests {
+		t.Run(test.code, func(t *testing.T) {
+			err := exec.Command("sh", "-c", "exit "+test.code).Run() // #nosec G204 -- fixed synthetic test input.
+			classified := classifyCommandError(context.Background(), err)
+			category, ok := FailureCategory(classified)
+			if !ok || category != test.expected {
+				t.Fatalf("expected %q, got %q", test.expected, category)
+			}
+		})
+	}
 }
 
 func TestParseInfoRecognizesPaddedEncryptedField(t *testing.T) {

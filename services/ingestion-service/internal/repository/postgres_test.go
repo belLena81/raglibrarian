@@ -28,6 +28,26 @@ func TestExistingActiveLeaseDefersDeliveryUntilRecoveryBoundary(t *testing.T) {
 	}
 }
 
+func TestActiveLeaseRecoveryDispatchIsNotPublishedBeforeLongLeaseExpires(t *testing.T) {
+	now := time.Now().UTC()
+	job, err := domain.NewProcessingJob("job-1", "book-1", [32]byte{1}, "config", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := 13 * time.Minute
+	if err = job.Claim("worker-1", now, lease); err != nil {
+		t.Fatal(err)
+	}
+	_, decisionErr := existingJobDecision(job, now.Add(time.Second))
+	nextAttemptAt, deferred := recoveryDispatchTime(decisionErr)
+	if !deferred || !nextAttemptAt.Equal(job.LeaseExpiresAt()) {
+		t.Fatalf("recovery dispatch must remain pending until lease expiry: at=%v err=%v", nextAttemptAt, decisionErr)
+	}
+	if nextAttemptAt.Sub(now) <= 2*time.Minute {
+		t.Fatal("regression requires a lease beyond the broker's longest retry TTL")
+	}
+}
+
 func TestExpiredLeaseCanBeReclaimed(t *testing.T) {
 	now := time.Now().UTC()
 	job, _ := domain.NewProcessingJob("job-1", "book-1", [32]byte{1}, "config", now)

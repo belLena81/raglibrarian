@@ -20,6 +20,8 @@ CREATE INDEX books_created_at_id_idx ON catalog.books (created_at, id);
 CREATE TABLE catalog.outbox (
     event_id TEXT PRIMARY KEY,
     event_type TEXT NOT NULL CHECK (event_type = 'catalog.book.uploaded.v1'),
+    aggregate_id TEXT NOT NULL,
+    sequence BIGINT NOT NULL CHECK (sequence >= 0),
     payload BYTEA NOT NULL,
     occurred_at TIMESTAMPTZ NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
@@ -28,5 +30,6 @@ CREATE TABLE catalog.outbox (
     published_at TIMESTAMPTZ
 );
 
-CREATE INDEX outbox_pending_idx ON catalog.outbox (next_attempt_at, event_id)
+CREATE UNIQUE INDEX outbox_aggregate_sequence_idx ON catalog.outbox (aggregate_id, sequence);
+CREATE INDEX outbox_pending_idx ON catalog.outbox (next_attempt_at, occurred_at, aggregate_id, sequence, event_id)
     WHERE published_at IS NULL;

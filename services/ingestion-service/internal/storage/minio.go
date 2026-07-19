@@ -39,9 +39,17 @@ func (s *SourceStore) Open(ctx context.Context, reference string) (io.ReadCloser
 	return object, info.Size, nil
 }
 
+func (s *SourceStore) Ready(ctx context.Context) bool {
+	return prefixReady(ctx, s.client, s.bucket, "originals/")
+}
+
 type ArtifactStore struct {
 	client *minio.Client
 	bucket string
+}
+
+func (s *ArtifactStore) Ready(ctx context.Context) bool {
+	return prefixReady(ctx, s.client, s.bucket, "books/")
 }
 
 func NewArtifactStore(client *minio.Client, bucket string) *ArtifactStore {
@@ -84,12 +92,15 @@ func (s *ArtifactStore) Delete(ctx context.Context, reference string) error {
 }
 
 func (s *ArtifactStore) DeletePrefix(ctx context.Context, prefix string) error {
-	if !validArtifactReference(prefix) || !strings.HasSuffix(prefix, "/") {
+	if !validArtifactPrefix(prefix) {
 		return errors.New("invalid artifact prefix")
 	}
 	for object := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) {
 		if object.Err != nil {
 			return errors.New("artifact cleanup unavailable")
+		}
+		if !validArtifactReference(object.Key) || !strings.HasPrefix(object.Key, prefix) {
+			return errors.New("artifact cleanup boundary violated")
 		}
 		if err := s.client.RemoveObject(ctx, s.bucket, object.Key, minio.RemoveObjectOptions{}); err != nil {
 			return errors.New("artifact cleanup unavailable")
@@ -107,8 +118,83 @@ func metadataValue(values map[string]string, key string) string {
 	return ""
 }
 
+func prefixReady(ctx context.Context, client *minio.Client, bucket, prefix string) bool {
+	// A prefix-scoped list works with the runtime's least-privilege ListBucket
+	// condition. It reads no object body and returns at most one metadata entry.
+	for object := range client.ListObjects(ctx, bucket, minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: true,
+		MaxKeys:   1,
+	}) {
+		return object.Err == nil
+	}
+	return ctx.Err() == nil
+}
+
 func validArtifactReference(reference string) bool {
-	return strings.HasPrefix(reference, "books/") && !strings.Contains(reference, "..") && !strings.ContainsAny(reference, "\\\x00") && len(reference) <= 1024
+	prefix, name, ok := splitArtifactReference(reference)
+	if !ok || !validArtifactPrefix(prefix) {
+		return false
+	}
+	if name == "manifest.pb" {
+		return true
+	}
+	if !strings.HasPrefix(name, "shards/") || !strings.HasSuffix(name, ".pb.zst") {
+		return false
+	}
+	index := strings.TrimSuffix(strings.TrimPrefix(name, "shards/"), ".pb.zst")
+	if len(index) != 6 {
+		return false
+	}
+	for _, char := range index {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validArtifactPrefix(prefix string) bool {
+	parts := strings.Split(prefix, "/")
+	if len(parts) != 5 || parts[0] != "books" || parts[4] != "" || !validBookID(parts[1]) {
+		return false
+	}
+	return validLowerHexDigest(parts[2]) && validLowerHexDigest(parts[3])
+}
+
+func splitArtifactReference(reference string) (string, string, bool) {
+	parts := strings.Split(reference, "/")
+	if len(parts) == 5 {
+		return strings.Join(parts[:4], "/") + "/", parts[4], true
+	}
+	if len(parts) == 6 {
+		return strings.Join(parts[:4], "/") + "/", strings.Join(parts[4:], "/"), true
+	}
+	return "", "", false
+}
+
+func validBookID(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '-' && char != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func validLowerHexDigest(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, char := range value {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func contentType(reference string) string {

@@ -55,6 +55,9 @@ message BookChunksReadyV1 {
   string producer = 16;
   string schema_version = 17;
   string idempotency_key = 18;
+  string structure_version = 19;
+  uint32 maximum_tokens = 20;
+  uint32 overlap_tokens = 21;
 }
 
 message BookProcessingFailedV1 {
@@ -90,6 +93,7 @@ message ChunkV1 {
   string normalization_version = 13;
   string tokenizer_version = 14;
   string chunking_version = 15;
+  string structure_version = 16;
 }
 
 message ChunkShardDescriptorV1 {
@@ -115,4 +119,7 @@ message ChunkManifestV1 {
   uint32 chunk_count = 10;
   google.protobuf.Timestamp generated_at = 11;
   repeated ChunkShardDescriptorV1 shards = 12;
+  string structure_version = 13;
+  uint32 maximum_tokens = 14;
+  uint32 overlap_tokens = 15;
 }

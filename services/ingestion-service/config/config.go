@@ -15,14 +15,17 @@ import (
 )
 
 type Config struct {
+	RuntimeBackend                                                string
 	DSN, RabbitURI, MinIOEndpoint, MinIOAccessKey, MinIOSecretKey string
 	SourceBucket, ArtifactBucket, MinIOCAFile, MetricsAddress     string
+	AWSRegion, KMSKeyARN                                          string
 	TokenizerFile, PDFInfoPath, PDFTextPath, TemporaryDirectory   string
 	Queue, ResultExchange                                         string
 	MinIOInsecure                                                 bool
 	WorkConcurrency, MaximumAttempts, MaximumChunks               int
 	MaximumSourceBytes, MaximumExtractedBytes, MaximumPageBytes   int64
 	MaximumManifestBytes, MaximumTemporaryBytes                   int64
+	MemoryLimitBytes                                              int64
 	MaximumPages                                                  uint32
 	ProcessingTimeout, JobLease, OutboxInterval                   time.Duration
 	CleanupInterval, OrphanGracePeriod                            time.Duration
@@ -33,13 +36,15 @@ type Config struct {
 // tokenizer settings. Deployments should back it with cleanup-only database
 // and artifact-store credentials.
 type CleanupConfig struct {
+	RuntimeBackend                                     string
 	DSN, MinIOEndpoint, MinIOAccessKey, MinIOSecretKey string
 	ArtifactBucket, MinIOCAFile                        string
+	AWSRegion, KMSKeyARN                               string
 	MinIOInsecure                                      bool
 	CleanupInterval, OrphanGracePeriod                 time.Duration
 }
 
-func LoadCleanup() (CleanupConfig, error) {
+func loadLocalCleanup() (CleanupConfig, error) {
 	dsn, err := readSecret("INGESTION_CLEANUP_POSTGRES_DSN_FILE", 4096)
 	if err != nil {
 		return CleanupConfig{}, err
@@ -80,6 +85,7 @@ func LoadCleanup() (CleanupConfig, error) {
 		return CleanupConfig{}, err
 	}
 	return CleanupConfig{
+		RuntimeBackend:    "local",
 		DSN:               dsn,
 		MinIOEndpoint:     endpoint,
 		MinIOAccessKey:    accessKey,
@@ -92,7 +98,7 @@ func LoadCleanup() (CleanupConfig, error) {
 	}, nil
 }
 
-func Load() (Config, error) {
+func loadLocal() (Config, error) {
 	dsn, err := readSecret("INGESTION_POSTGRES_DSN_FILE", 4096)
 	if err != nil {
 		return Config{}, err
@@ -143,7 +149,9 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	workConcurrency, err := boundedInt("INGESTION_WORK_CONCURRENCY", 2, 16)
+	// One parser uses a 768 MiB address-space budget. Horizontal worker scaling
+	// provides concurrency without overcommitting a 1 GiB task.
+	workConcurrency, err := boundedInt("INGESTION_WORK_CONCURRENCY", 1, 16)
 	if err != nil {
 		return Config{}, err
 	}
@@ -182,6 +190,15 @@ func Load() (Config, error) {
 	if maximumTemporary < maximumSource {
 		return Config{}, fmt.Errorf("INGESTION_MAX_TEMP_BYTES must be at least INGESTION_MAX_SOURCE_BYTES")
 	}
+	memoryLimit, err := boundedInt64("INGESTION_MEMORY_LIMIT_BYTES", 1<<30, 64<<30)
+	if err != nil {
+		return Config{}, err
+	}
+	const parserMemory = int64(768 << 20)
+	const runtimeHeadroom = int64(256 << 20)
+	if int64(workConcurrency)*parserMemory+runtimeHeadroom > memoryLimit {
+		return Config{}, fmt.Errorf("INGESTION_WORK_CONCURRENCY exceeds INGESTION_MEMORY_LIMIT_BYTES")
+	}
 	timeout, err := boundedDuration("INGESTION_PROCESSING_TIMEOUT", time.Minute, 13*time.Minute+30*time.Second, 12*time.Minute+30*time.Second)
 	if err != nil {
 		return Config{}, err
@@ -214,7 +231,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	maximumPages := uint32(maximumPages64) // #nosec G115 -- bounded above to 10,000.
+	temporaryDirectory := optional("INGESTION_TEMP_DIR", "/tmp")
+	if temporaryDirectory != "/tmp" {
+		return Config{}, fmt.Errorf("INGESTION_TEMP_DIR must be /tmp")
+	}
 	return Config{
+		RuntimeBackend:        "local",
 		DSN:                   dsn,
 		RabbitURI:             rabbitURI,
 		MinIOEndpoint:         endpoint,
@@ -227,7 +249,7 @@ func Load() (Config, error) {
 		TokenizerFile:         tokenizerFile,
 		PDFInfoPath:           optional("INGESTION_PDFINFO_PATH", "/usr/bin/pdfinfo"),
 		PDFTextPath:           optional("INGESTION_PDFTOTEXT_PATH", "/usr/bin/pdftotext"),
-		TemporaryDirectory:    optional("INGESTION_TEMP_DIR", "/tmp"),
+		TemporaryDirectory:    temporaryDirectory,
 		Queue:                 optional("INGESTION_QUEUE", "ingestion.book-uploaded.v1"),
 		ResultExchange:        optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
 		MinIOInsecure:         insecure,
@@ -239,6 +261,7 @@ func Load() (Config, error) {
 		MaximumPageBytes:      maximumPage,
 		MaximumManifestBytes:  maximumManifest,
 		MaximumTemporaryBytes: maximumTemporary,
+		MemoryLimitBytes:      memoryLimit,
 		MaximumPages:          maximumPages,
 		ProcessingTimeout:     timeout,
 		JobLease:              lease,

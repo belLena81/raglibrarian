@@ -21,9 +21,10 @@ import (
 )
 
 var (
-	ErrInvalidEvent       = errors.New("invalid upload event")
-	ErrConflictingEvent   = errors.New("conflicting upload event")
-	ErrProcessingDeferred = errors.New("processing deferred")
+	ErrInvalidEvent                 = errors.New("invalid upload event")
+	ErrConflictingEvent             = errors.New("conflicting upload event")
+	ErrProcessingDeferred           = errors.New("processing deferred")
+	ErrUnsupportedProcessingProfile = errors.New("unsupported processing profile")
 )
 
 type operationalError struct {
@@ -119,6 +120,7 @@ type Extractor interface {
 
 type Chunker interface {
 	AddPage(string, chunking.Page) ([]domain.Chunk, error)
+	Finish(string) ([]domain.Chunk, error)
 }
 
 type ArtifactWriter interface {
@@ -149,7 +151,25 @@ type Config struct {
 	JobLease              time.Duration
 	MaximumAttempts       int
 	ConfigDigest          [32]byte
+	Observer              PhaseObserver
 }
+
+type ProcessingPhase uint8
+
+const (
+	PhaseDownload ProcessingPhase = iota
+	PhaseExtractChunk
+	PhaseArtifactFinalize
+	PhaseTotal
+)
+
+type PhaseObserver interface {
+	ObservePhase(ProcessingPhase, time.Duration)
+}
+
+type noopObserver struct{}
+
+func (noopObserver) ObservePhase(ProcessingPhase, time.Duration) {}
 
 type Processor struct {
 	repository Repository
@@ -161,16 +181,23 @@ type Processor struct {
 	now        Clock
 	workerID   string
 	config     Config
+	observer   PhaseObserver
 }
 
 func NewProcessor(repository Repository, sources SourceReader, pdfExtractor Extractor, factory Factory, events EventFactory, newID IDGenerator, now Clock, workerID string, config Config) (*Processor, error) {
 	if repository == nil || sources == nil || pdfExtractor == nil || factory == nil || events == nil || newID == nil || now == nil || !safeID(workerID) || config.MaximumSourceBytes < 1 || config.MaximumTemporaryBytes < config.MaximumSourceBytes || config.ProcessingTimeout <= 0 || config.JobLease < config.ProcessingTimeout+30*time.Second || config.MaximumAttempts < 1 || config.TemporaryDirectory == "" {
 		return nil, errors.New("invalid processor configuration")
 	}
-	return &Processor{repository: repository, sources: sources, extractor: pdfExtractor, factory: factory, events: events, newID: newID, now: now, workerID: workerID, config: config}, nil
+	observer := config.Observer
+	if observer == nil {
+		observer = noopObserver{}
+	}
+	return &Processor{repository: repository, sources: sources, extractor: pdfExtractor, factory: factory, events: events, newID: newID, now: now, workerID: workerID, config: config, observer: observer}, nil
 }
 
 func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
+	totalStarted := p.now()
+	defer func() { p.observer.ObservePhase(PhaseTotal, p.now().Sub(totalStarted)) }()
 	if err := event.Validate(p.config.MaximumSourceBytes); err != nil {
 		return err
 	}
@@ -201,7 +228,7 @@ func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
 	}
 	ctx, cancel := context.WithTimeout(parent, p.config.ProcessingTimeout)
 	defer cancel()
-	result, processErr := p.processClaimed(ctx, event)
+	result, processErr := p.processClaimed(ctx, event, job.CreatedAt())
 	claim := ClaimToken{Owner: job.LeaseOwner(), Attempt: job.Attempts(), ExpiresAt: job.LeaseExpiresAt()}
 	if processErr == nil {
 		ready, readyErr := p.events.Ready(event, job, result, p.now().UTC())
@@ -227,7 +254,7 @@ func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
 	return p.persistFailure(parent, event, &job, claim, category)
 }
 
-func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent) (artifact.Result, error) {
+func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, generatedAt time.Time) (artifact.Result, error) {
 	if err := ensureTemporaryCapacity(p.config.TemporaryDirectory, p.config.MaximumTemporaryBytes); err != nil {
 		return artifact.Result{}, categorized(domain.FailureResourceLimitExceeded)
 	}
@@ -238,14 +265,19 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent) (ar
 	_ = os.Chmod(invocationDir, 0o700) // #nosec G302 -- directories require execute permission and remain owner-only.
 	defer func() { _ = os.RemoveAll(invocationDir) }()
 	sourcePath := filepath.Join(invocationDir, "source.pdf")
-	if err = p.download(ctx, event, sourcePath); err != nil {
+	downloadStarted := p.now()
+	err = p.download(ctx, event, sourcePath)
+	p.observer.ObservePhase(PhaseDownload, p.now().Sub(downloadStarted))
+	if err != nil {
 		return artifact.Result{}, err
 	}
 	chunker, err := p.factory.NewChunker()
 	if err != nil {
 		return artifact.Result{}, err
 	}
-	writer, err := p.factory.NewArtifactWriter(event, p.now().UTC())
+	// Job creation is the immutable processing acceptance time. Using it keeps
+	// manifest bytes stable when an upload succeeded but the DB commit did not.
+	writer, err := p.factory.NewArtifactWriter(event, generatedAt)
 	if err != nil {
 		return artifact.Result{}, err
 	}
@@ -258,6 +290,7 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent) (ar
 		}
 	}()
 	var chunkCount uint32
+	extractStarted := p.now()
 	info, err := p.extractor.Extract(ctx, sourcePath, func(page extractor.Page) error {
 		chunks, chunkErr := chunker.AddPage(event.BookID, chunking.Page{Number: page.Number, Text: page.Text})
 		if chunkErr != nil {
@@ -272,12 +305,26 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent) (ar
 		return nil
 	})
 	if err != nil {
+		p.observer.ObservePhase(PhaseExtractChunk, p.now().Sub(extractStarted))
 		return artifact.Result{}, err
 	}
+	remaining, err := chunker.Finish(event.BookID)
+	if err != nil {
+		return artifact.Result{}, err
+	}
+	for _, value := range remaining {
+		if err = writer.Add(ctx, value); err != nil {
+			return artifact.Result{}, err
+		}
+		chunkCount++
+	}
+	p.observer.ObservePhase(PhaseExtractChunk, p.now().Sub(extractStarted))
 	if chunkCount == 0 {
 		return artifact.Result{}, categorized(domain.FailureNoExtractableText)
 	}
+	finalizeStarted := p.now()
 	result, err := writer.Finalize(ctx, info.PageCount)
+	p.observer.ObservePhase(PhaseArtifactFinalize, p.now().Sub(finalizeStarted))
 	if err == nil {
 		committed = true
 	}

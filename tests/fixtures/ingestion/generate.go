@@ -36,9 +36,12 @@ func main() {
 
 	fixtures := map[string][]byte{
 		"minimal.pdf": pdf([]page{{text: "Synthetic chapter one. Deterministic ingestion fixture."}}),
+		"canary.pdf": pdf([]page{
+			{text: "Chapter Canary. M4_CANARY_7D3B9A11 remains confined to encrypted processing artifacts."},
+		}),
 		"multipage.pdf": pdf([]page{
-			{text: "Chapter One. Synthetic systems begin with explicit boundaries."},
-			{text: "Section One. Page citations remain stable across chunk boundaries."},
+			{text: "Chapter One. Synthetic systems begin with explicit boundaries and continue across pages."},
+			{text: "This continuation deliberately omits a heading so chapter context must be carried forward. Section One. Page citations remain stable across chunk boundaries."},
 			{text: "Chapter Two. Deterministic output makes retries harmless."},
 		}),
 		"blank_middle_page.pdf": pdf([]page{
@@ -49,6 +52,7 @@ func main() {
 		"image_only.pdf": imageOnlyPDF(),
 		"encrypted.pdf":  encryptedPDF(),
 		"malformed.pdf":  []byte("%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages"),
+		"oversize.pdf":   oversizedPDF(),
 	}
 
 	names := make([]string, 0, len(fixtures))
@@ -62,6 +66,14 @@ func main() {
 			fatal(err)
 		}
 	}
+}
+
+func oversizedPDF() []byte {
+	const maximumUploadBytes = 64 << 20
+	value := pdf([]page{{text: "Synthetic document whose transport body exceeds the upload limit."}})
+	// Bytes after %%EOF are legal PDF trailing data. This keeps the fixture
+	// syntactically valid so the test exercises the upload bound, not parsing.
+	return append(value, make([]byte, maximumUploadBytes+1-len(value))...)
 }
 
 func pdf(pages []page) []byte {

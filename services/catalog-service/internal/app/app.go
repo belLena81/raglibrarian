@@ -75,7 +75,14 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		grpc.UnaryInterceptor(grpcauth.UnaryServerInterceptor(grpcauth.Policy{Service: "catalog.v1.CatalogService", DNSName: "edge-api"})),
 		grpc.StreamInterceptor(grpcauth.StreamServerInterceptor(grpcauth.Policy{Service: "catalog.v1.CatalogService", DNSName: "edge-api"})),
 	)
-	bookRepository := repository.NewPostgresBookRepository(pool)
+	outboxWake := make(chan struct{}, 1)
+	wakeOutbox := func() {
+		select {
+		case outboxWake <- struct{}{}:
+		default:
+		}
+	}
+	bookRepository := repository.NewPostgresBookRepository(pool, wakeOutbox)
 	objects := repository.NewMinIOObjectStore(minioClient, cfg.MinIOBucket)
 	service := catalog.NewServiceWithOptions(bookRepository, objects, catalog.ServiceOptions{
 		MaxBytes:          cfg.MaxUploadBytes,
@@ -113,7 +120,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	workers.Add(5)
 	go func() {
 		defer workers.Done()
-		outbox.Run(workerCtx, bookRepository, publisher, recorder)
+		outbox.RunWithWake(workerCtx, bookRepository, publisher, recorder, outboxWake)
 	}()
 	go func() {
 		defer workers.Done()

@@ -12,11 +12,28 @@ func TestLoadUsesBoundedProductionDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.MaximumSourceBytes != 50<<20 || value.MaximumPages != 1000 || value.WorkConcurrency != 2 {
+	if value.MaximumSourceBytes != 50<<20 || value.MaximumPages != 1000 || value.WorkConcurrency != 1 {
 		t.Fatalf("unexpected defaults: %#v", value)
 	}
 	if value.SourceBucket == value.ArtifactBucket {
 		t.Fatal("source and artifact buckets must be isolated")
+	}
+}
+
+func TestLoadRejectsTemporaryDirectoryOutsideSandbox(t *testing.T) {
+	setRequiredEnvironment(t)
+	t.Setenv("INGESTION_TEMP_DIR", "/var/tmp")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected fail-closed temporary directory validation")
+	}
+}
+
+func TestLoadRejectsParserMemoryOvercommit(t *testing.T) {
+	setRequiredEnvironment(t)
+	t.Setenv("INGESTION_WORK_CONCURRENCY", "2")
+	t.Setenv("INGESTION_MEMORY_LIMIT_BYTES", "1073741824")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected parser memory overcommit to fail closed")
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -169,6 +170,26 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 func closeBody(t *testing.T, resp *http.Response) {
 	t.Helper()
 	require.NoError(t, resp.Body.Close())
+}
+
+func writeM4SessionToken(t *testing.T, environmentKey, token string) {
+	t.Helper()
+	path := strings.TrimSpace(os.Getenv(environmentKey))
+	if path == "" {
+		return
+	}
+	if !filepath.IsAbs(path) || strings.TrimSpace(token) == "" {
+		t.Fatalf("%s must be an absolute output path for a non-empty session", environmentKey)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- explicit CI-owned secret output.
+	if err != nil {
+		t.Fatalf("could not create the requested M4 session handoff for %s", environmentKey)
+	}
+	if _, err = io.WriteString(file, token); err != nil {
+		_ = file.Close()
+		t.Fatalf("could not write the requested M4 session handoff for %s", environmentKey)
+	}
+	require.NoError(t, file.Close())
 }
 
 func assertPrivateNoStore(t *testing.T, resp *http.Response) {
@@ -483,6 +504,7 @@ func TestMilestone2IdentityLifecycle(t *testing.T) {
 	approvedEmail := uniqueEmail("librarian-approved")
 	rejectedEmail := uniqueEmail("librarian-rejected")
 	eventEmail := uniqueEmail("librarian-event")
+	var approvedAccessToken string
 
 	t.Run("bootstrap singleton admin", func(t *testing.T) {
 		invalid := request(t, http.MethodPost, "/setup/admin", map[string]string{
@@ -615,6 +637,7 @@ func TestMilestone2IdentityLifecycle(t *testing.T) {
 		closeBody(t, rejected)
 
 		approvedSession := login(t, approvedEmail)
+		approvedAccessToken = approvedSession.Token
 		actual := getMe(t, approvedSession.Token)
 		assert.Equal(t, "librarian", actual.Role)
 		assert.Equal(t, "active", actual.Status)
@@ -744,6 +767,9 @@ func TestMilestone2IdentityLifecycle(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data["version"], &version))
 		assert.Equal(t, 1, version)
 	})
+
+	writeM4SessionToken(t, "E2E_M4_ACCESS_TOKEN_OUT", approvedAccessToken)
+	writeM4SessionToken(t, "E2E_M4_REVOCABLE_TOKEN_OUT", admin.Token)
 }
 
 func TestUnknownRouteReturns404(t *testing.T) {

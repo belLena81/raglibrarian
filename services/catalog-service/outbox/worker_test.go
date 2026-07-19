@@ -56,6 +56,24 @@ func TestPublishPendingReplaysStableEventAfterMarkFailure(t *testing.T) {
 	}
 }
 
+func TestDrainPendingClaimsUntilStoreIsEmpty(t *testing.T) {
+	events := []repository.PendingOutboxEvent{
+		{ID: "event-1", Type: "catalog.book.uploaded.v1", Payload: []byte("first")},
+		{ID: "event-2", Type: "catalog.book.processing-status-changed.v1", Payload: []byte("second")},
+	}
+	store := &fakeStore{claims: [][]repository.PendingOutboxEvent{events, nil}}
+	publisher := &fakePublisher{}
+
+	drainPending(context.Background(), store, publisher, &fakeRecorder{}, time.Now())
+
+	if store.claimIndex != 2 {
+		t.Fatalf("claims = %d, want 2", store.claimIndex)
+	}
+	if len(store.marked) != 2 || len(publisher.publications) != 2 {
+		t.Fatalf("marked = %d, publications = %d, want 2 each", len(store.marked), len(publisher.publications))
+	}
+}
+
 func TestPublicationRouteSeparatesDurableWorkFromDisposableStatus(t *testing.T) {
 	exchange, key, mandatory, err := publicationRoute("catalog.book.uploaded.v1")
 	if err != nil || exchange != uploadExchange || key != "catalog.book.uploaded.v1" || !mandatory {

@@ -71,7 +71,7 @@ thin Lambda handler while local Compose/CI and workloads outside the accepted
 Lambda envelope use a RabbitMQ worker command over the same application use
 case:
 
-- Ingestion PDF/EPUB extraction and chunking may run as a Lambda container.
+- Ingestion text-PDF extraction and chunking may run as a Lambda container.
 - Retrieval embedding/index batches may run as a Lambda container.
 - Short owning-context cleanup tasks may run as scheduled Lambdas.
 
@@ -86,6 +86,9 @@ references, reserved concurrency, bounded temporary storage, DLQs, and alarms.
 RabbitMQ mappings default to one concurrent Lambda environment; measured
 throughput must justify a mapping-specific limit increase or selection of the
 portable worker deployment.
+Only one processing mode may consume the document queue. Production mode
+changes use an explicit `lambda` -> `paused` -> `worker` (or reverse) handoff;
+the paused state is verified before the replacement consumer is enabled.
 Functions have no public URL and accept only validated versioned events with
 controlled object references; an event can never direct a function to fetch an
 arbitrary URL or object prefix.

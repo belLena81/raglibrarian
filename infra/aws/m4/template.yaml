@@ -1,0 +1,868 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  RAGLibrarian M4 PDF ingestion. Shared networking, RabbitMQ, PostgreSQL and the
+  source bucket are inputs; this stack owns processing compute and encrypted
+  chunk artifacts.
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedPattern: '^[a-z][a-z0-9-]{1,15}$'
+  ProcessingMode:
+    Type: String
+    Default: paused
+    AllowedValues: [lambda, paused, worker]
+    Description: >-
+      Exactly one consumer mode. Deploy paused between lambda and worker mode
+      changes, verify the old consumer is stopped, then enable the new mode.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Shared private VPC containing PostgreSQL and RabbitMQ.
+  ProcessingImageUri:
+    Type: String
+    AllowedPattern: '^.+@sha256:[0-9a-f]{64}$'
+    Description: Immutable ECR digest for cmd/lambda.
+  DispatcherImageUri:
+    Type: String
+    AllowedPattern: '^.+@sha256:[0-9a-f]{64}$'
+    Description: Immutable ECR digest for the retry/outbox dispatcher handler.
+  CleanupImageUri:
+    Type: String
+    AllowedPattern: '^.+@sha256:[0-9a-f]{64}$'
+    Description: Immutable ECR digest for cmd/cleanup_lambda.
+  WorkerImageUri:
+    Type: String
+    AllowedPattern: '^.+@sha256:[0-9a-f]{64}$'
+    Description: Immutable ECR digest for cmd/worker.
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  RuntimeSecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: >-
+      Egress must be limited to the shared PostgreSQL and RabbitMQ security
+      groups plus S3, ECR, Logs, Lambda, STS and Secrets Manager endpoints.
+  RabbitMQBrokerArn:
+    Type: String
+    AllowedPattern: '^arn:.+:mq:.+:broker:.+$'
+  RabbitMQQueueName:
+    Type: String
+    Default: ingestion.book-uploaded.v1
+    AllowedPattern: '^[A-Za-z0-9._-]{1,128}$'
+  RabbitMQDeadLetterQueueName:
+    Type: String
+    Default: ingestion.book-uploaded.dlq.v1
+    AllowedPattern: '^[A-Za-z0-9._-]{1,128}$'
+  RabbitMQBrokerName:
+    Type: String
+    AllowedPattern: '^[A-Za-z0-9._-]{1,100}$'
+    Description: Amazon MQ broker-name dimension used by CloudWatch metrics.
+  RabbitMQQueueDepthThreshold:
+    Type: Number
+    Default: 100
+    MinValue: 1
+  RabbitMQVirtualHost:
+    Type: String
+    Default: '/'
+    MaxLength: 128
+  RabbitMQBasicAuthSecretArn:
+    Type: String
+    AllowedPattern: '^arn:.+:secretsmanager:.+:secret:.+$'
+    Description: Secret JSON containing only username and password.
+  RabbitMQPublisherSecretArn:
+    Type: String
+    AllowedPattern: '^arn:.+:secretsmanager:.+:secret:.+$'
+    Description: Secret JSON containing only the uri field used by the application.
+  DatabaseSecretArn:
+    Type: String
+    AllowedPattern: '^arn:.+:secretsmanager:.+:secret:.+$'
+    Description: Secret JSON containing only the TLS-verifying dsn field used by processing and dispatch.
+  CleanupDatabaseSecretArn:
+    Type: String
+    AllowedPattern: '^arn:.+:secretsmanager:.+:secret:.+$'
+    Description: Secret JSON containing only the TLS-verifying dsn field for the least-privilege ingestion_cleanup role.
+  RuntimeSecretKMSKeyArn:
+    Type: String
+    AllowedPattern: '^arn:.+:kms:.+:key/.+$'
+    Description: Customer-managed KMS key encrypting the database and MQ secrets.
+  SourceBucketName:
+    Type: String
+    AllowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+  SourceKMSKeyArn:
+    Type: String
+    AllowedPattern: '^arn:.+:kms:.+:key/.+$'
+    Description: Customer-managed KMS key encrypting source PDFs.
+  LambdaReservedConcurrency:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 50
+  WorkerDesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 20
+  CanaryDeploymentType:
+    Type: String
+    Default: Canary10Percent10Minutes
+    AllowedValues:
+      - Canary10Percent5Minutes
+      - Canary10Percent10Minutes
+      - Linear10PercentEvery10Minutes
+      - AllAtOnce
+  AlarmNotificationTopicArn:
+    Type: String
+    Default: ''
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [7, 14, 30, 60, 90, 120, 180, 365]
+
+Conditions:
+  LambdaMode: !Equals [!Ref ProcessingMode, lambda]
+  WorkerMode: !Equals [!Ref ProcessingMode, worker]
+  ActiveMode: !Not [!Equals [!Ref ProcessingMode, paused]]
+  HasAlarmTopic: !Not [!Equals [!Ref AlarmNotificationTopicArn, '']]
+
+Globals:
+  Function:
+    Architectures: [x86_64]
+    MemorySize: 2048
+    Timeout: 840
+    EphemeralStorage:
+      Size: 2048
+    VpcConfig:
+      SecurityGroupIds: !Ref RuntimeSecurityGroupIds
+      SubnetIds: !Ref PrivateSubnetIds
+    Environment:
+      Variables:
+        LOG_ENV: production
+        LOG_LEVEL: info
+        INGESTION_PROCESSING_TIMEOUT: 12m30s
+        INGESTION_RUNTIME_BACKEND: aws
+        INGESTION_TEMP_DIR: /tmp
+        INGESTION_WORK_CONCURRENCY: '1'
+        INGESTION_MAX_SOURCE_BYTES: '26214400'
+        INGESTION_MAX_EXTRACTED_BYTES: '67108864'
+        INGESTION_MAX_PAGES: '500'
+        INGESTION_MAX_TEMP_BYTES: '1610612736'
+        INGESTION_MEMORY_LIMIT_BYTES: '2147483648'
+        INGESTION_SOURCE_BUCKET: !Ref SourceBucketName
+        INGESTION_ARTIFACT_BUCKET: !Ref ArtifactBucket
+        INGESTION_DATABASE_SECRET_ARN: !Ref DatabaseSecretArn
+        INGESTION_RABBITMQ_PUBLISHER_SECRET_ARN: !Ref RabbitMQPublisherSecretArn
+        INGESTION_AWS_REGION: !Ref AWS::Region
+        INGESTION_KMS_KEY_ARN: !GetAtt ArtifactKey.Arn
+        INGESTION_TOKENIZER_FILE: /opt/raglibrarian/cl100k_base.tiktoken
+
+Resources:
+  ArtifactKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub '${AWS::StackName} chunk artifact encryption'
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: EncryptCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - kms:Decrypt
+              - kms:Encrypt
+              - kms:GenerateDataKey
+            Resource: '*'
+            Condition:
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+
+  ArtifactKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${Environment}-raglibrarian-m4-artifacts'
+      TargetKeyId: !Ref ArtifactKey
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt ArtifactKey.Arn
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+          - Id: RemoveNoncurrentArtifacts
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+
+  ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt ArtifactBucket.Arn
+              - !Sub '${ArtifactBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+          - Sid: DenyUnencryptedArtifactWrites
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub '${ArtifactBucket.Arn}/books/*'
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: aws:kms
+          - Sid: DenyWrongArtifactKey
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub '${ArtifactBucket.Arn}/books/*'
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption-aws-kms-key-id: !GetAtt ArtifactKey.Arn
+
+  ProcessingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole'
+      Policies:
+        - PolicyName: ProcessingDataPlane
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadRuntimeSecrets
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DatabaseSecretArn
+                  - !Ref RabbitMQBasicAuthSecretArn
+                  - !Ref RabbitMQPublisherSecretArn
+              - Sid: DecryptRuntimeSecrets
+                Effect: Allow
+                Action: kms:Decrypt
+                Resource: !Ref RuntimeSecretKMSKeyArn
+              - Sid: InspectRabbitMQBroker
+                Effect: Allow
+                Action: mq:DescribeBroker
+                Resource: !Ref RabbitMQBrokerArn
+              - Sid: ReadSourcePDF
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${SourceBucketName}/originals/*'
+              - Sid: ProbeStorageBuckets
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${SourceBucketName}'
+                  - !GetAtt ArtifactBucket.Arn
+              - Sid: DecryptSourcePDF
+                Effect: Allow
+                Action: kms:Decrypt
+                Resource: !Ref SourceKMSKeyArn
+              - Sid: WriteArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub '${ArtifactBucket.Arn}/books/*'
+              - Sid: UseArtifactKey
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt ArtifactKey.Arn
+
+  ProcessingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageUri: !Ref ProcessingImageUri
+      Role: !GetAtt ProcessingRole.Arn
+      ReservedConcurrentExecutions: !Ref LambdaReservedConcurrency
+      AutoPublishAlias: live
+      DeploymentPreference:
+        Enabled: true
+        Type: !Ref CanaryDeploymentType
+        Alarms:
+          - !Ref ProcessingErrorAlarm
+      Events:
+        BookUploaded:
+          Type: MQ
+          Properties:
+            Broker: !Ref RabbitMQBrokerArn
+            Queues:
+              - !Ref RabbitMQQueueName
+            BatchSize: 1
+            MaximumBatchingWindowInSeconds: 0
+            Enabled: !If [LambdaMode, true, false]
+            SourceAccessConfigurations:
+              - Type: BASIC_AUTH
+                URI: !Ref RabbitMQBasicAuthSecretArn
+              - Type: VIRTUAL_HOST
+                URI: !Ref RabbitMQVirtualHost
+
+  ProcessingLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProcessingFunction}'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !GetAtt ArtifactKey.Arn
+
+  ProcessingErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: M4 processing Lambda errors during the five-minute canary window.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ProcessingFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmTopic
+        - [!Ref AlarmNotificationTopicArn]
+        - !Ref AWS::NoValue
+
+  ProcessingThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: M4 processing Lambda is throttled.
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ProcessingFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmTopic
+        - [!Ref AlarmNotificationTopicArn]
+        - !Ref AWS::NoValue
+
+  DispatcherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageUri: !Ref DispatcherImageUri
+      Role: !GetAtt DispatcherRole.Arn
+      MemorySize: 1024
+      Timeout: 60
+      EphemeralStorage:
+        Size: 512
+      AutoPublishAlias: live
+      Events:
+        ScheduledDispatch:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+            Enabled: true
+            RetryPolicy:
+              MaximumEventAgeInSeconds: 300
+              MaximumRetryAttempts: 2
+
+  DispatcherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole'
+      Policies:
+        - PolicyName: DispatchDataPlane
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DatabaseSecretArn
+                  - !Ref RabbitMQPublisherSecretArn
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: !Ref RuntimeSecretKMSKeyArn
+
+  DispatcherLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${DispatcherFunction}'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !GetAtt ArtifactKey.Arn
+
+  DispatcherErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scheduled retry or outbox dispatch failed.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DispatcherFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmTopic
+        - [!Ref AlarmNotificationTopicArn]
+        - !Ref AWS::NoValue
+
+  CleanupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole'
+      Policies:
+        - PolicyName: CleanupDataPlane
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref CleanupDatabaseSecretArn
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: !Ref RuntimeSecretKMSKeyArn
+              - Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                Resource: !Sub '${ArtifactBucket.Arn}/books/*'
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                Resource: !GetAtt ArtifactBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: 'books/*'
+  CleanupFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageUri: !Ref CleanupImageUri
+      Role: !GetAtt CleanupRole.Arn
+      MemorySize: 1024
+      Timeout: 300
+      EphemeralStorage:
+        Size: 512
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          INGESTION_DATABASE_SECRET_ARN: !Ref CleanupDatabaseSecretArn
+          INGESTION_ARTIFACT_BUCKET: !Ref ArtifactBucket
+          INGESTION_AWS_REGION: !Ref AWS::Region
+      Events:
+        ScheduledCleanup:
+          Type: Schedule
+          Properties:
+            Schedule: rate(15 minutes)
+            Enabled: true
+            RetryPolicy:
+              MaximumEventAgeInSeconds: 900
+              MaximumRetryAttempts: 2
+
+  CleanupLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${CleanupFunction}'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !GetAtt ArtifactKey.Arn
+
+  CleanupErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scheduled artifact cleanup failed.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CleanupFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmTopic
+        - [!Ref AlarmNotificationTopicArn]
+        - !Ref AWS::NoValue
+
+  RabbitMQQueueDepthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: ActiveMode
+    Properties:
+      AlarmDescription: M4 source queue depth is above the bounded operating threshold.
+      Namespace: AWS/AmazonMQ
+      MetricName: MessageCount
+      Dimensions:
+        - Name: Broker
+          Value: !Ref RabbitMQBrokerName
+        - Name: Virtual Host
+          Value: !Ref RabbitMQVirtualHost
+        - Name: Queue
+          Value: !Ref RabbitMQQueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      Threshold: !Ref RabbitMQQueueDepthThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: breaching
+      AlarmActions: !If
+        - HasAlarmTopic
+        - [!Ref AlarmNotificationTopicArn]
+        - !Ref AWS::NoValue
+
+  RabbitMQConsumerAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: ActiveMode
+    Properties:
+      AlarmDescription: M4 source queue has no active consumer.
+      Namespace: AWS/AmazonMQ
+      MetricName: ConsumerCount
+      Dimensions:
+        - Name: Broker
+          Value: !Ref RabbitMQBrokerName
+        - Name: Virtual Host
+          Value: !Ref RabbitMQVirtualHost
+        - Name: Queue
+          Value: !Ref RabbitMQQueueName
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: !If
+        - HasAlarmTopic
+        - [!Ref AlarmNotificationTopicArn]
+        - !Ref AWS::NoValue
+
+  RabbitMQDeadLetterAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: M4 dead-letter queue contains at least one message.
+      Namespace: AWS/AmazonMQ
+      MetricName: MessageCount
+      Dimensions:
+        - Name: Broker
+          Value: !Ref RabbitMQBrokerName
+        - Name: Virtual Host
+          Value: !Ref RabbitMQVirtualHost
+        - Name: Queue
+          Value: !Ref RabbitMQDeadLetterQueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmTopic
+        - [!Ref AlarmNotificationTopicArn]
+        - !Ref AWS::NoValue
+
+  WorkerCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${Environment}-raglibrarian-m4'
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+  WorkerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+
+  WorkerTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: WorkerDataPlane
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DatabaseSecretArn
+                  - !Ref RabbitMQPublisherSecretArn
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: !Ref RuntimeSecretKMSKeyArn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${SourceBucketName}/originals/*'
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${SourceBucketName}'
+                  - !GetAtt ArtifactBucket.Arn
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: !Ref SourceKMSKeyArn
+              - Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub '${ArtifactBucket.Arn}/books/*'
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt ArtifactBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: 'books/*'
+              - Effect: Allow
+                Action: s3:ListBucketVersions
+                Resource: !GetAtt ArtifactBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: 'books/*'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt ArtifactKey.Arn
+
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub '/ecs/${Environment}/raglibrarian-m4-worker'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !GetAtt ArtifactKey.Arn
+
+  WorkerTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Cpu: '1024'
+      Memory: '2048'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt WorkerExecutionRole.Arn
+      TaskRoleArn: !GetAtt WorkerTaskRole.Arn
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ContainerDefinitions:
+        - Name: ingestion-worker
+          Essential: true
+          Image: !Ref WorkerImageUri
+          ReadonlyRootFilesystem: true
+          LinuxParameters:
+            InitProcessEnabled: true
+            Capabilities:
+              Add: [SETGID, SETUID]
+              Drop: [ALL]
+          Environment:
+            - Name: LOG_ENV
+              Value: production
+            - Name: LOG_LEVEL
+              Value: info
+            - Name: INGESTION_PROCESSING_TIMEOUT
+              Value: 12m30s
+            - Name: INGESTION_RUNTIME_BACKEND
+              Value: aws
+            - Name: INGESTION_TEMP_DIR
+              Value: /tmp
+            - Name: INGESTION_WORK_CONCURRENCY
+              Value: '1'
+            - Name: INGESTION_MAX_SOURCE_BYTES
+              Value: '26214400'
+            - Name: INGESTION_MAX_EXTRACTED_BYTES
+              Value: '67108864'
+            - Name: INGESTION_MAX_PAGES
+              Value: '500'
+            - Name: INGESTION_MAX_TEMP_BYTES
+              Value: '1073741824'
+            - Name: INGESTION_MEMORY_LIMIT_BYTES
+              Value: '2147483648'
+            - Name: INGESTION_SOURCE_BUCKET
+              Value: !Ref SourceBucketName
+            - Name: INGESTION_ARTIFACT_BUCKET
+              Value: !Ref ArtifactBucket
+            - Name: INGESTION_DATABASE_SECRET_ARN
+              Value: !Ref DatabaseSecretArn
+            - Name: INGESTION_RABBITMQ_PUBLISHER_SECRET_ARN
+              Value: !Ref RabbitMQPublisherSecretArn
+            - Name: INGESTION_AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: INGESTION_KMS_KEY_ARN
+              Value: !GetAtt ArtifactKey.Arn
+            - Name: INGESTION_TOKENIZER_FILE
+              Value: /opt/raglibrarian/cl100k_base.tiktoken
+            - Name: INGESTION_METRICS_ADDR
+              Value: 0.0.0.0:9093
+            - Name: HEALTHCHECK_HTTP_URL
+              Value: http://127.0.0.1:9093/readyz
+          PortMappings:
+            - Name: metrics
+              ContainerPort: 9093
+              Protocol: tcp
+          MountPoints:
+            - SourceVolume: temporary
+              ContainerPath: /tmp
+              ReadOnly: false
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref WorkerLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ingestion
+          HealthCheck:
+            Command:
+              - CMD
+              - /healthcheck
+            Interval: 30
+            Retries: 3
+            StartPeriod: 30
+            Timeout: 5
+      Volumes:
+        - Name: temporary
+
+  WorkerService:
+    Type: AWS::ECS::Service
+    Condition: WorkerMode
+    Properties:
+      Cluster: !Ref WorkerCluster
+      DesiredCount: !Ref WorkerDesiredCount
+      EnableECSManagedTags: true
+      EnableExecuteCommand: false
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      PropagateTags: SERVICE
+      TaskDefinition: !Ref WorkerTaskDefinition
+      DeploymentConfiguration:
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups: !Ref RuntimeSecurityGroupIds
+          Subnets: !Ref PrivateSubnetIds
+
+Outputs:
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket
+  ArtifactKeyArn:
+    Value: !GetAtt ArtifactKey.Arn
+  ActiveProcessingMode:
+    Value: !Ref ProcessingMode
+  SharedVpcId:
+    Value: !Ref VpcId
+  ProcessingFunctionArn:
+    Value: !GetAtt ProcessingFunction.Arn
+  WorkerClusterArn:
+    Value: !GetAtt WorkerCluster.Arn

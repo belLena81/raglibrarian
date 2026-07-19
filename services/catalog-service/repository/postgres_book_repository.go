@@ -21,7 +21,8 @@ import (
 
 // PostgresBookRepository persists a book and its outbox record in one transaction.
 type PostgresBookRepository struct {
-	pool *pgxpool.Pool
+	pool       *pgxpool.Pool
+	wakeOutbox func()
 }
 
 // PendingOutboxEvent is a leased event awaiting broker confirmation.
@@ -38,11 +39,15 @@ type OutboxBacklog struct {
 	OldestAgeSecond int64
 }
 
-func NewPostgresBookRepository(pool *pgxpool.Pool) *PostgresBookRepository {
+func NewPostgresBookRepository(pool *pgxpool.Pool, wakeOutbox ...func()) *PostgresBookRepository {
 	if pool == nil {
 		panic("repository: pgx pool is required")
 	}
-	return &PostgresBookRepository{pool: pool}
+	wake := func() {}
+	if len(wakeOutbox) > 0 && wakeOutbox[0] != nil {
+		wake = wakeOutbox[0]
+	}
+	return &PostgresBookRepository{pool: pool, wakeOutbox: wake}
 }
 
 func (r *PostgresBookRepository) Create(ctx context.Context, book catalog.Book, events ...catalog.OutboxEvent) error {
@@ -67,8 +72,8 @@ func (r *PostgresBookRepository) Create(ctx context.Context, book catalog.Book, 
 	}
 	for _, event := range events {
 		_, err = tx.Exec(ctx, `INSERT INTO catalog.outbox
-			(event_id,event_type,payload,occurred_at,next_attempt_at)
-			VALUES ($1,$2,$3,$4,$4)`, event.ID, event.Type, event.Payload, event.OccurredAt)
+			(event_id,event_type,aggregate_id,sequence,payload,occurred_at,next_attempt_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$6)`, event.ID, event.Type, event.AggregateID, event.Sequence, event.Payload, event.OccurredAt)
 		if err != nil {
 			return fmt.Errorf("catalog: insert outbox: %w", err)
 		}
@@ -76,6 +81,7 @@ func (r *PostgresBookRepository) Create(ctx context.Context, book catalog.Book, 
 	if err = tx.Commit(ctx); err != nil {
 		return fmt.Errorf("catalog: commit create: %w", err)
 	}
+	r.wakeOutbox()
 	return nil
 }
 
@@ -197,13 +203,16 @@ func (r *PostgresBookRepository) ApplyProcessingEvent(ctx context.Context, event
 			return catalog.Book{}, false, fmt.Errorf("catalog: update processing book: %w", err)
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO catalog.outbox
-			(event_id,event_type,payload,occurred_at,next_attempt_at)
-			VALUES ($1,'catalog.book.processing-status-changed.v1',$2,$3,$3)`, statusEventID, payload, appliedAt); err != nil {
+			(event_id,event_type,aggregate_id,sequence,payload,occurred_at,next_attempt_at)
+			VALUES ($1,'catalog.book.processing-status-changed.v1',$2,$3,$4,$5,$5)`, statusEventID, book.ID, book.ProcessingVersion, payload, appliedAt); err != nil {
 			return catalog.Book{}, false, fmt.Errorf("catalog: insert processing status outbox: %w", err)
 		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return catalog.Book{}, false, fmt.Errorf("catalog: commit processing event: %w", err)
+	}
+	if changed {
+		r.wakeOutbox()
 	}
 	return book, changed, nil
 }
@@ -244,13 +253,20 @@ func (r *PostgresBookRepository) OutboxBacklog(ctx context.Context, now time.Tim
 	return backlog, nil
 }
 
-// ClaimOutbox leases one due row. Processing one record at a time preserves a
-// clear durable boundary between broker confirmation and publication marking.
+// ClaimOutbox leases a bounded batch while preventing a later event for an
+// aggregate from overtaking an earlier unpublished event.
 func (r *PostgresBookRepository) ClaimOutbox(ctx context.Context, now time.Time, lease time.Duration) ([]PendingOutboxEvent, error) {
 	rows, err := r.pool.Query(ctx, `WITH candidates AS (
-        SELECT event_id FROM catalog.outbox
-        WHERE published_at IS NULL AND next_attempt_at <= $1 AND (leased_until IS NULL OR leased_until < $1)
-        ORDER BY next_attempt_at,event_id FOR UPDATE SKIP LOCKED LIMIT 1
+		SELECT candidate.event_id FROM catalog.outbox AS candidate
+		WHERE candidate.published_at IS NULL AND candidate.next_attempt_at <= $1
+		  AND (candidate.leased_until IS NULL OR candidate.leased_until <= $1)
+		  AND NOT EXISTS (
+			SELECT 1 FROM catalog.outbox AS predecessor
+			WHERE predecessor.aggregate_id=candidate.aggregate_id
+			  AND predecessor.published_at IS NULL AND predecessor.sequence < candidate.sequence
+		  )
+		ORDER BY candidate.next_attempt_at,candidate.occurred_at,candidate.sequence,candidate.event_id
+		FOR UPDATE SKIP LOCKED LIMIT 32
     )
     UPDATE catalog.outbox AS outbox SET leased_until=$2
     FROM candidates WHERE outbox.event_id=candidates.event_id
@@ -259,7 +275,7 @@ func (r *PostgresBookRepository) ClaimOutbox(ctx context.Context, now time.Time,
 		return nil, fmt.Errorf("catalog: claim outbox: %w", err)
 	}
 	defer rows.Close()
-	events := make([]PendingOutboxEvent, 0, 1)
+	events := make([]PendingOutboxEvent, 0, 32)
 	for rows.Next() {
 		var event PendingOutboxEvent
 		if err = rows.Scan(&event.ID, &event.Type, &event.Payload, &event.Attempts); err != nil {

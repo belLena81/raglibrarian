@@ -31,9 +31,9 @@ func DecodeUploaded(payload []byte) (application.UploadedEvent, error) {
 	if err := (proto.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(payload, &event); err != nil || len(event.Sha256) != sha256Size || event.OccurredAt == nil || !event.OccurredAt.IsValid() {
 		return application.UploadedEvent{}, application.ErrInvalidEvent
 	}
-	if len(event.ProtoReflect().GetUnknown()) != 0 {
-		return application.UploadedEvent{}, application.ErrInvalidEvent
-	}
+	// Known v1 envelopes accept additive protobuf fields. The envelope remains
+	// byte-bounded above and all authorization/security-relevant known fields are
+	// still validated by UploadedEvent.Validate.
 	var sum [sha256Size]byte
 	copy(sum[:], event.Sha256)
 	return application.UploadedEvent{EventID: event.EventId, BookID: event.BookId, ObjectReference: event.ObjectReference, MediaType: event.MediaType, CorrelationID: event.CorrelationId, CausationID: event.CausationId, Producer: event.Producer, SchemaVersion: event.SchemaVersion, IdempotencyKey: event.IdempotencyKey, SourceSHA256: sum, ByteSize: event.ByteSize, OccurredAt: event.OccurredAt.AsTime(), Payload: append([]byte(nil), payload...)}, nil
@@ -64,7 +64,7 @@ func (f *ProtoEventFactory) Ready(source application.UploadedEvent, job domain.P
 	if err != nil {
 		return application.OutboxEvent{}, errors.New("generate event ID")
 	}
-	message := &ingestionv1.BookChunksReadyV1{EventId: id, BookId: source.BookID, SourceSha256: source.SourceSHA256[:], ManifestReference: result.ManifestReference, ManifestSha256: result.ManifestSHA256[:], ManifestByteSize: result.ManifestByteSize, PageCount: result.PageCount, ChunkCount: result.ChunkCount, ExtractionVersion: extractor.ExtractionVersion, NormalizationVersion: chunking.NormalizationVersion, TokenizerVersion: chunking.TokenizerVersion, ChunkingVersion: chunking.ChunkingVersion, CorrelationId: source.CorrelationID, OccurredAt: timestamppb.New(now), CausationId: source.EventID, Producer: "ingestion-service", SchemaVersion: "v1", IdempotencyKey: fmt.Sprintf("%s:%s:ready", source.BookID, job.ConfigDigest())}
+	message := &ingestionv1.BookChunksReadyV1{EventId: id, BookId: source.BookID, SourceSha256: source.SourceSHA256[:], ManifestReference: result.ManifestReference, ManifestSha256: result.ManifestSHA256[:], ManifestByteSize: result.ManifestByteSize, PageCount: result.PageCount, ChunkCount: result.ChunkCount, ExtractionVersion: extractor.ExtractionVersion, NormalizationVersion: chunking.NormalizationVersion, TokenizerVersion: chunking.TokenizerVersion, ChunkingVersion: chunking.ChunkingVersion, StructureVersion: chunking.StructureVersion, MaximumTokens: chunking.DefaultMaximumTokens, OverlapTokens: chunking.DefaultOverlapTokens, CorrelationId: source.CorrelationID, OccurredAt: timestamppb.New(now), CausationId: source.EventID, Producer: "ingestion-service", SchemaVersion: "v1", IdempotencyKey: fmt.Sprintf("%s:%s:ready", source.BookID, job.ConfigDigest())}
 	return marshalOutbox(id, ReadyRoute, now, message)
 }
 

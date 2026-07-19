@@ -6,6 +6,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,16 +18,36 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
+	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/klauspost/compress/zstd"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const m4MaxFixtureBytes = 64 << 20
+
+const (
+	m4SLOProfile                 = "m4-slo-v1"
+	m4ExtractingVisibilitySLO    = 2 * time.Second
+	m4ReadyPropagationSLO        = time.Second
+	m4TinyDocumentTerminalSLO    = 10 * time.Second
+	m4AverageDocumentTerminalSLO = 120 * time.Second
+)
 
 type m4Environment struct {
 	accessToken  string
@@ -32,6 +55,22 @@ type m4Environment struct {
 	edgeURLs     []string
 	publicOrigin string
 	timeout      time.Duration
+}
+
+type m4ArtifactEnvironment struct {
+	dsn       string
+	endpoint  string
+	accessKey string
+	secretKey string
+	bucket    string
+	secure    bool
+	caFile    string
+}
+
+type m4ArtifactReceipt struct {
+	reference string
+	sha256    []byte
+	byteSize  int64
 }
 
 type m4Book struct {
@@ -94,6 +133,168 @@ func TestM4SyntheticPDFCorpusReachesDeterministicStatus(t *testing.T) {
 	}
 }
 
+func TestM4OversizePDFIsRejectedAtUploadBoundary(t *testing.T) {
+	environment := loadM4Environment(t, false)
+	status := uploadM4FixtureExpectingStatus(t, environment.edgeURLs[0], environment.accessToken, environment.fixtureDir, "oversize.pdf")
+	assert.Contains(t, []int{http.StatusBadRequest, http.StatusRequestEntityTooLarge}, status)
+}
+
+func TestM4PerformanceSLOProfile(t *testing.T) {
+	environment := loadM4Environment(t, false)
+	if configured := strings.TrimSpace(os.Getenv("M4_PERFORMANCE_PROFILE")); configured != "" && configured != m4SLOProfile {
+		t.Fatalf("M4_PERFORMANCE_PROFILE must be %s", m4SLOProfile)
+	}
+	fixtures := []string{"minimal.pdf", "minimal.pdf", "multipage.pdf", "minimal.pdf", "multipage.pdf"}
+	durationResults := make(chan time.Duration, len(fixtures))
+	processingSlots := make(chan struct{}, 2)
+	var wait sync.WaitGroup
+	for index, fixture := range fixtures {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			processingSlots <- struct{}{}
+			defer func() { <-processingSlots }()
+			ctx, cancel := context.WithTimeout(context.Background(), environment.timeout)
+			defer cancel()
+			edgeURL := environment.edgeURLs[index%len(environment.edgeURLs)]
+			stream := openM4EventStream(t, ctx, edgeURL, environment.publicOrigin, environment.accessToken, "")
+			startedAt := time.Now()
+			book := uploadM4Fixture(t, edgeURL, environment.accessToken, environment.fixtureDir, fixture)
+			waitForM4SLOEvents(t, stream, book.ID, startedAt)
+			book = getM4Book(t, edgeURL, environment.accessToken, book.ID)
+			assert.Equal(t, "processing", book.ProcessingStatus)
+			assert.Equal(t, "chunks_ready", book.ProcessingStage)
+			durationResults <- time.Since(startedAt)
+		}()
+	}
+	wait.Wait()
+	close(durationResults)
+	durations := make([]time.Duration, 0, len(fixtures))
+	for duration := range durationResults {
+		durations = append(durations, duration)
+	}
+	require.Len(t, durations, len(fixtures))
+	sorted := append([]time.Duration(nil), durations...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	p95Index := (95*len(sorted)+99)/100 - 1
+	assert.LessOrEqual(t, sorted[p95Index], m4TinyDocumentTerminalSLO, "%s tiny-document p95 exceeded", m4SLOProfile)
+	var total time.Duration
+	for _, duration := range durations {
+		total += duration
+	}
+	assert.Less(t, total/time.Duration(len(durations)), m4AverageDocumentTerminalSLO, "%s mean ingestion exceeded", m4SLOProfile)
+}
+
+func TestM4ArtifactsContainValidManifestAndOrderedShards(t *testing.T) {
+	environment := loadM4Environment(t, false)
+	requireM4ArtifactReader(t)
+	book := uploadM4Fixture(t, environment.edgeURLs[0], environment.accessToken, environment.fixtureDir, "multipage.pdf")
+	waitForM4Status(t, environment, environment.edgeURLs[0], book.ID, func(current m4Book) bool {
+		return current.ProcessingStage == "chunks_ready"
+	})
+
+	manifestBytes := fetchM4Manifest(t, book.ID)
+	manifest := decodeM4Manifest(t, manifestBytes, book.ID)
+	chunks := fetchM4Chunks(t, manifest)
+	require.Len(t, chunks, int(manifest.ChunkCount))
+	for index, chunk := range chunks {
+		assert.Equal(t, uint64(index), chunk.Order)
+		assert.Equal(t, book.ID, chunk.BookId)
+		assert.NotEmpty(t, chunk.ChunkId)
+		assert.NotEmpty(t, chunk.Text)
+		assert.Len(t, chunk.ContentSha256, sha256.Size)
+		assert.LessOrEqual(t, chunk.PageStart, chunk.PageEnd)
+		assert.LessOrEqual(t, chunk.TokenStart, chunk.TokenEnd)
+		assert.NotEmpty(t, chunk.StructureVersion)
+	}
+	assertCrossPageStructure(t, chunks)
+}
+
+func TestM4RetryReplayKeepsManifestByteIdentical(t *testing.T) {
+	environment := loadM4Environment(t, false)
+	requireM4ArtifactReader(t)
+	book := uploadM4Fixture(t, environment.edgeURLs[0], environment.accessToken, environment.fixtureDir, "multipage.pdf")
+	waitForM4Status(t, environment, environment.edgeURLs[0], book.ID, func(current m4Book) bool {
+		return current.ProcessingStage == "chunks_ready"
+	})
+	before := fetchM4Manifest(t, book.ID)
+	payload, eventID := fetchM4AcceptedEnvelope(t, book.ID)
+	publishM4UploadedEnvelope(t, eventID, payload)
+	after := fetchM4Manifest(t, book.ID)
+	assert.Equal(t, sha256.Sum256(before), sha256.Sum256(after), "retry changed deterministic manifest bytes")
+}
+
+func TestM4CanaryIsConfinedToPrivilegedArtifacts(t *testing.T) {
+	environment := loadM4Environment(t, false)
+	requireM4ArtifactReader(t)
+	book := uploadM4Fixture(t, environment.edgeURLs[0], environment.accessToken, environment.fixtureDir, "canary.pdf")
+	book = waitForM4Status(t, environment, environment.edgeURLs[0], book.ID, func(current m4Book) bool {
+		return current.ProcessingStage == "chunks_ready"
+	})
+	publicProjection, err := json.Marshal(book)
+	require.NoError(t, err)
+	if bytes.Contains(publicProjection, []byte("M4_CANARY_")) {
+		t.Fatal("public projection exposed the artifact-confidentiality canary")
+	}
+	chunks := fetchM4Chunks(t, decodeM4Manifest(t, fetchM4Manifest(t, book.ID), book.ID))
+	found := false
+	for _, chunk := range chunks {
+		found = found || strings.Contains(chunk.Text, "M4_CANARY_")
+	}
+	if !found {
+		t.Fatal("privileged artifact reader did not find the expected synthetic canary")
+	}
+}
+
+func TestM4KnownV1WireContractAcceptsUnknownAdditiveProtobufField(t *testing.T) {
+	event := &catalogv1.BookUploadedV1{
+		EventId:         "00000000-0000-4000-8000-000000000004",
+		BookId:          "00000000-0000-4000-8000-000000000005",
+		ObjectReference: "originals/00000000-0000-4000-8000-000000000005.pdf",
+		Sha256:          bytes.Repeat([]byte{0x4a}, sha256.Size),
+		ByteSize:        42,
+		MediaType:       "application/pdf",
+		CorrelationId:   "00000000-0000-4000-8000-000000000006",
+		CausationId:     "00000000-0000-4000-8000-000000000007",
+		Producer:        "catalog-service", SchemaVersion: "v1",
+		IdempotencyKey: "00000000-0000-4000-8000-000000000005",
+		OccurredAt:     timestamppb.Now(),
+	}
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(event)
+	require.NoError(t, err)
+	payload = protowire.AppendTag(payload, 127, protowire.BytesType)
+	payload = protowire.AppendString(payload, "future-additive-value")
+	var decoded catalogv1.BookUploadedV1
+	require.NoError(t, (proto.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(payload, &decoded))
+	assert.Equal(t, event.BookId, decoded.BookId)
+	assert.NotEmpty(t, decoded.ProtoReflect().GetUnknown())
+}
+
+func TestM4CatalogProjectionIgnoresOutOfOrderEvent(t *testing.T) {
+	environment := loadM4Environment(t, false)
+	endpoint := requiredM4AbsoluteURLOrSkip(t, "M4_E2E_EVENT_INJECT_URL")
+	book := uploadM4Fixture(t, environment.edgeURLs[0], environment.accessToken, environment.fixtureDir, "minimal.pdf")
+	book = waitForM4Status(t, environment, environment.edgeURLs[0], book.ID, func(current m4Book) bool {
+		return current.ProcessingStage == "chunks_ready"
+	})
+	require.Greater(t, book.ProcessingVersion, int64(1))
+	staleEvent := map[string]any{
+		"book_id":            book.ID,
+		"processing_status":  "failed",
+		"processing_stage":   "failed",
+		"failure_category":   "internal_processing_error",
+		"processing_version": book.ProcessingVersion - 1,
+		"schema_version":     1,
+	}
+	payload, err := json.Marshal(staleEvent)
+	require.NoError(t, err)
+	postM4TestControlJSON(t, endpoint, payload)
+	after := getM4Book(t, environment.edgeURLs[0], environment.accessToken, book.ID)
+	assert.Equal(t, book.ProcessingVersion, after.ProcessingVersion)
+	assert.Equal(t, book.ProcessingStage, after.ProcessingStage)
+	assert.Equal(t, book.ProcessingFailureCategory, after.ProcessingFailureCategory)
+}
+
 func TestM4SSERequiresBearerAuthenticationAndStartsWithResync(t *testing.T) {
 	environment := loadM4Environment(t, false)
 
@@ -115,9 +316,9 @@ func TestM4SSERequiresBearerAuthenticationAndStartsWithResync(t *testing.T) {
 
 func TestM4SSEClosesAfterSessionRevocation(t *testing.T) {
 	environment := loadM4Environment(t, false)
-	revocableToken := strings.TrimSpace(os.Getenv("M4_E2E_REVOCABLE_ACCESS_TOKEN"))
+	revocableToken := loadM4Token(t, "M4_E2E_REVOCABLE_ACCESS_TOKEN", "M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE")
 	if revocableToken == "" {
-		t.Fatal("M4_E2E_REVOCABLE_ACCESS_TOKEN is required and must belong to a disposable active session")
+		t.Fatal("M4_E2E_REVOCABLE_ACCESS_TOKEN or its file variant is required and must belong to a disposable active session")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
@@ -211,13 +412,13 @@ func TestM4StatusEventsFanOutAndReconcileAcrossEdgeInstances(t *testing.T) {
 func loadM4Environment(t *testing.T, requireFanout bool) m4Environment {
 	t.Helper()
 	environment := m4Environment{
-		accessToken:  strings.TrimSpace(os.Getenv("M4_E2E_ACCESS_TOKEN")),
+		accessToken:  loadM4Token(t, "M4_E2E_ACCESS_TOKEN", "M4_E2E_ACCESS_TOKEN_FILE"),
 		fixtureDir:   strings.TrimSpace(os.Getenv("M4_E2E_FIXTURE_DIR")),
 		publicOrigin: strings.TrimRight(strings.TrimSpace(os.Getenv("M4_E2E_PUBLIC_ORIGIN")), "/"),
 		timeout:      2 * time.Minute,
 	}
 	if environment.accessToken == "" {
-		t.Fatal("M4_E2E_ACCESS_TOKEN is required")
+		t.Fatal("M4_E2E_ACCESS_TOKEN or M4_E2E_ACCESS_TOKEN_FILE is required")
 	}
 	if environment.fixtureDir == "" {
 		t.Fatal("M4_E2E_FIXTURE_DIR is required; generate it with tests/fixtures/ingestion/generate.go")
@@ -251,6 +452,21 @@ func loadM4Environment(t *testing.T, requireFanout bool) m4Environment {
 		t.Fatal("M4_E2E_EDGE_BASE_URLS must contain at least two Edge instances for the fanout test")
 	}
 	return environment
+}
+
+func loadM4Token(t *testing.T, directKey, fileKey string) string {
+	t.Helper()
+	if direct := strings.TrimSpace(os.Getenv(directKey)); direct != "" {
+		return direct
+	}
+	path := strings.TrimSpace(os.Getenv(fileKey))
+	if path == "" {
+		return ""
+	}
+	if !filepath.IsAbs(path) {
+		t.Fatalf("%s must be an absolute path", fileKey)
+	}
+	return readM4SecretFile(t, path, 16<<10)
 }
 
 func uploadM4Fixture(t *testing.T, edgeURL, token, fixtureDir, fixtureName string) m4Book {
@@ -297,13 +513,51 @@ func uploadM4Fixture(t *testing.T, edgeURL, token, fixtureDir, fixtureName strin
 	return book
 }
 
+func uploadM4FixtureExpectingStatus(t *testing.T, edgeURL, token, fixtureDir, fixtureName string) int {
+	t.Helper()
+	fixture, err := os.Open(filepath.Join(fixtureDir, fixtureName)) // #nosec G304 -- fixtureName is a test-owned constant.
+	require.NoError(t, err)
+	defer fixture.Close()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	metadata, err := writer.CreateFormField("metadata")
+	require.NoError(t, err)
+	_, err = io.WriteString(metadata, `{"title":"M4 synthetic oversize","author":"RAGLibrarian QA","year":2026,"tags":["m4-synthetic"]}`)
+	require.NoError(t, err)
+	file, err := writer.CreateFormFile("file", fixtureName)
+	require.NoError(t, err)
+	_, err = io.Copy(file, fixture)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, edgeURL+"/books", &body)
+	require.NoError(t, err)
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("Origin", loadM4PublicOrigin(t))
+	response, err := http.DefaultClient.Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	_, err = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
+	require.NoError(t, err)
+	return response.StatusCode
+}
+
 func waitForM4Status(t *testing.T, environment m4Environment, edgeURL, bookID string, done func(m4Book) bool) m4Book {
+	t.Helper()
+	return waitForM4StatusObserving(t, environment, edgeURL, bookID, done)
+}
+
+func waitForM4StatusObserving(t *testing.T, environment m4Environment, edgeURL, bookID string, observe func(m4Book) bool) m4Book {
 	t.Helper()
 	deadline := time.Now().Add(environment.timeout)
 	var last m4Book
 	for time.Now().Before(deadline) {
 		last = getM4Book(t, edgeURL, environment.accessToken, bookID)
-		if done(last) {
+		if observe(last) {
 			return last
 		}
 		if last.ProcessingStatus == "failed" || last.ProcessingStage == "chunks_ready" {
@@ -313,6 +567,328 @@ func waitForM4Status(t *testing.T, environment m4Environment, edgeURL, bookID st
 	}
 	t.Fatalf("book did not reach expected M4 projection; last status=%q stage=%q category=%q version=%d", last.ProcessingStatus, last.ProcessingStage, last.ProcessingFailureCategory, last.ProcessingVersion)
 	return m4Book{}
+}
+
+func requireM4ArtifactReader(t *testing.T) {
+	t.Helper()
+	loadM4ArtifactEnvironment(t)
+}
+
+func fetchM4Manifest(t *testing.T, bookID string) []byte {
+	t.Helper()
+	environment := loadM4ArtifactEnvironment(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, environment.dsn)
+	if err != nil {
+		t.Fatal("M4 artifact database connection configuration is invalid")
+	}
+	defer pool.Close()
+	var receipt m4ArtifactReceipt
+	err = pool.QueryRow(ctx, `SELECT manifest_reference, manifest_sha256, manifest_byte_size
+		FROM ingestion.jobs WHERE book_id=$1 AND state='completed'`, bookID).Scan(&receipt.reference, &receipt.sha256, &receipt.byteSize)
+	if err != nil {
+		t.Fatal("completed M4 artifact receipt was not available in Ingestion Postgres")
+	}
+	contents := fetchM4Artifact(t, environment, receipt.reference)
+	actualSHA := sha256.Sum256(contents)
+	assert.True(t, bytes.Equal(receipt.sha256, actualSHA[:]), "manifest receipt checksum mismatch")
+	assert.Equal(t, receipt.byteSize, int64(len(contents)))
+	return contents
+}
+
+func fetchM4Artifact(t *testing.T, environment m4ArtifactEnvironment, reference string) []byte {
+	t.Helper()
+	client := newM4MinIOClient(t, environment)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	object, err := client.GetObject(ctx, environment.bucket, reference, minio.GetObjectOptions{})
+	if err != nil {
+		t.Fatal("M4 private artifact read failed")
+	}
+	defer object.Close()
+	contents, err := io.ReadAll(io.LimitReader(object, 65<<20))
+	require.NoError(t, err)
+	require.NotEmpty(t, contents)
+	return contents
+}
+
+func loadM4ArtifactEnvironment(t *testing.T) m4ArtifactEnvironment {
+	t.Helper()
+	dsnFile := requiredM4PathOrSkip(t, "M4_E2E_INGESTION_POSTGRES_DSN_FILE")
+	accessKeyFile := requiredM4PathOrSkip(t, "M4_E2E_MINIO_ACCESS_KEY_FILE")
+	secretKeyFile := requiredM4PathOrSkip(t, "M4_E2E_MINIO_SECRET_KEY_FILE")
+	environment := m4ArtifactEnvironment{
+		dsn:       readM4SecretFile(t, dsnFile, 4096),
+		endpoint:  strings.TrimSpace(os.Getenv("M4_E2E_MINIO_ENDPOINT")),
+		accessKey: readM4SecretFile(t, accessKeyFile, 1024),
+		secretKey: readM4SecretFile(t, secretKeyFile, 1024),
+		bucket:    strings.TrimSpace(os.Getenv("M4_E2E_MINIO_ARTIFACT_BUCKET")),
+		caFile:    strings.TrimSpace(os.Getenv("M4_E2E_MINIO_CA_FILE")),
+	}
+	if environment.endpoint == "" {
+		t.Skip("M4_E2E_MINIO_ENDPOINT is required for private artifact validation")
+	}
+	if environment.bucket == "" {
+		t.Skip("M4_E2E_MINIO_ARTIFACT_BUCKET is required for private artifact validation")
+	}
+	if strings.Contains(environment.endpoint, "://") {
+		parsed, err := url.Parse(environment.endpoint)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.User != nil {
+			t.Fatal("M4_E2E_MINIO_ENDPOINT must be a MinIO host or HTTP(S) origin")
+		}
+		environment.secure = parsed.Scheme == "https"
+		environment.endpoint = parsed.Host
+	} else if strings.ContainsAny(environment.endpoint, "/@?#") {
+		t.Fatal("M4_E2E_MINIO_ENDPOINT must be a MinIO host or HTTP(S) origin")
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("M4_E2E_MINIO_INSECURE")), "true") {
+		environment.secure = false
+	}
+	return environment
+}
+
+func newM4MinIOClient(t *testing.T, environment m4ArtifactEnvironment) *minio.Client {
+	t.Helper()
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	if environment.caFile != "" {
+		certificate, err := os.ReadFile(environment.caFile) // #nosec G304 -- explicit test-only CA path.
+		if err != nil {
+			t.Fatal("M4 MinIO CA file could not be read")
+		}
+		roots, err := x509.SystemCertPool()
+		if err != nil || roots == nil {
+			roots = x509.NewCertPool()
+		}
+		if !roots.AppendCertsFromPEM(certificate) {
+			t.Fatal("M4 MinIO CA file contained no certificates")
+		}
+		transport.TLSClientConfig.RootCAs = roots
+	}
+	client, err := minio.New(environment.endpoint, &minio.Options{
+		Creds:     credentials.NewStaticV4(environment.accessKey, environment.secretKey, ""),
+		Secure:    environment.secure,
+		Transport: transport,
+	})
+	if err != nil {
+		t.Fatal("M4 MinIO client configuration is invalid")
+	}
+	return client
+}
+
+func requiredM4PathOrSkip(t *testing.T, key string) string {
+	t.Helper()
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		t.Skipf("%s is required for private artifact validation", key)
+	}
+	if !filepath.IsAbs(value) {
+		t.Fatalf("%s must be an absolute path", key)
+	}
+	return value
+}
+
+func readM4SecretFile(t *testing.T, path string, maximumBytes int64) string {
+	t.Helper()
+	file, err := os.Open(path) // #nosec G304 -- explicit test-only secret path.
+	if err != nil {
+		t.Fatal("M4 test credential file could not be opened")
+	}
+	defer file.Close()
+	contents, err := io.ReadAll(io.LimitReader(file, maximumBytes+1))
+	if err != nil || len(contents) == 0 || int64(len(contents)) > maximumBytes {
+		t.Fatal("M4 test credential file has invalid bounded content")
+	}
+	value := strings.TrimSpace(string(contents))
+	if value == "" || strings.ContainsAny(value, "\r\n") {
+		t.Fatal("M4 test credential file must contain one non-empty line")
+	}
+	return value
+}
+
+func fetchM4AcceptedEnvelope(t *testing.T, bookID string) ([]byte, string) {
+	t.Helper()
+	environment := loadM4ArtifactEnvironment(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, environment.dsn)
+	if err != nil {
+		t.Fatal("M4 replay database connection configuration is invalid")
+	}
+	defer pool.Close()
+	var eventID string
+	var payload []byte
+	err = pool.QueryRow(ctx, `SELECT event_id, payload FROM ingestion.inbox WHERE business_key=$1`, bookID).Scan(&eventID, &payload)
+	if err != nil || eventID == "" || len(payload) == 0 || len(payload) > 256<<10 {
+		t.Fatal("bounded original M4 envelope was not available for replay")
+	}
+	return payload, eventID
+}
+
+func publishM4UploadedEnvelope(t *testing.T, eventID string, payload []byte) {
+	t.Helper()
+	uriFile := requiredM4PathOrSkip(t, "M4_E2E_RABBITMQ_URI_FILE")
+	uri := readM4SecretFile(t, uriFile, 4096)
+	connection, err := amqp091.DialConfig(uri, amqp091.Config{Dial: amqp091.DefaultDial(5 * time.Second)})
+	if err != nil {
+		t.Fatal("M4 replay broker connection failed")
+	}
+	defer connection.Close()
+	channel, err := connection.Channel()
+	if err != nil {
+		t.Fatal("M4 replay broker channel failed")
+	}
+	defer channel.Close()
+	if err = channel.Confirm(false); err != nil {
+		t.Fatal("M4 replay broker confirms unavailable")
+	}
+	confirmations := channel.NotifyPublish(make(chan amqp091.Confirmation, 1))
+	returns := channel.NotifyReturn(make(chan amqp091.Return, 1))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err = channel.PublishWithContext(ctx, "raglibrarian.events.v1", "catalog.book.uploaded.v1", true, false, amqp091.Publishing{
+		ContentType:  "application/x-protobuf",
+		DeliveryMode: amqp091.Persistent,
+		MessageId:    eventID,
+		Type:         "catalog.book.uploaded.v1",
+		Timestamp:    time.Now().UTC(),
+		Body:         payload,
+	})
+	if err != nil {
+		t.Fatal("M4 replay publish failed")
+	}
+	for {
+		select {
+		case <-returns:
+			t.Fatal("M4 replay envelope was unroutable")
+		case confirmation, open := <-confirmations:
+			if !open || !confirmation.Ack {
+				t.Fatal("M4 replay publish was not confirmed")
+			}
+			return
+		case <-ctx.Done():
+			t.Fatal("M4 replay confirmation timed out")
+		}
+	}
+}
+
+func decodeM4Manifest(t *testing.T, contents []byte, bookID string) *ingestionv1.ChunkManifestV1 {
+	t.Helper()
+	var manifest ingestionv1.ChunkManifestV1
+	require.NoError(t, proto.Unmarshal(contents, &manifest))
+	assert.Equal(t, "v1", manifest.SchemaVersion)
+	assert.Equal(t, bookID, manifest.BookId)
+	assert.Len(t, manifest.SourceSha256, sha256.Size)
+	assert.Len(t, manifest.ProcessingConfigDigest, sha256.Size)
+	assert.NotEmpty(t, manifest.ExtractionVersion)
+	assert.NotEmpty(t, manifest.NormalizationVersion)
+	assert.NotEmpty(t, manifest.TokenizerVersion)
+	assert.NotEmpty(t, manifest.ChunkingVersion)
+	assert.NotEmpty(t, manifest.StructureVersion)
+	assert.Equal(t, uint32(800), manifest.MaximumTokens)
+	assert.Equal(t, uint32(120), manifest.OverlapTokens)
+	assert.Positive(t, manifest.PageCount)
+	assert.Positive(t, manifest.ChunkCount)
+	require.NotNil(t, manifest.GeneratedAt)
+	assert.NoError(t, manifest.GeneratedAt.CheckValid())
+	require.NotEmpty(t, manifest.Shards)
+	return &manifest
+}
+
+func fetchM4Chunks(t *testing.T, manifest *ingestionv1.ChunkManifestV1) []*ingestionv1.ChunkV1 {
+	t.Helper()
+	environment := loadM4ArtifactEnvironment(t)
+	chunks := make([]*ingestionv1.ChunkV1, 0, manifest.ChunkCount)
+	var nextOrder uint64
+	decoder, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(128<<20))
+	require.NoError(t, err)
+	defer decoder.Close()
+	for _, descriptor := range manifest.Shards {
+		require.NotNil(t, descriptor)
+		require.NotEmpty(t, descriptor.Reference)
+		require.Len(t, descriptor.Sha256, sha256.Size)
+		compressed := fetchM4Artifact(t, environment, descriptor.Reference)
+		actualSHA := sha256.Sum256(compressed)
+		assert.True(t, bytes.Equal(descriptor.Sha256, actualSHA[:]), "shard checksum mismatch")
+		assert.Equal(t, descriptor.CompressedByteSize, int64(len(compressed)))
+		uncompressed, err := decoder.DecodeAll(compressed, nil)
+		require.NoError(t, err)
+		assert.Equal(t, descriptor.UncompressedByteSize, int64(len(uncompressed)))
+		shardChunks := decodeM4ChunkRecords(t, uncompressed)
+		require.Len(t, shardChunks, int(descriptor.ChunkCount))
+		require.NotEmpty(t, shardChunks)
+		assert.Equal(t, nextOrder, descriptor.FirstChunkOrder)
+		assert.Equal(t, shardChunks[0].Order, descriptor.FirstChunkOrder)
+		assert.Equal(t, shardChunks[len(shardChunks)-1].Order, descriptor.LastChunkOrder)
+		nextOrder = descriptor.LastChunkOrder + 1
+		chunks = append(chunks, shardChunks...)
+	}
+	return chunks
+}
+
+func decodeM4ChunkRecords(t *testing.T, contents []byte) []*ingestionv1.ChunkV1 {
+	t.Helper()
+	var chunks []*ingestionv1.ChunkV1
+	for len(contents) > 0 {
+		size, consumed := protowire.ConsumeVarint(contents)
+		if consumed < 0 || size > uint64(len(contents)-consumed) {
+			t.Fatal("invalid length-delimited chunk record")
+		}
+		contents = contents[consumed:]
+		chunk := new(ingestionv1.ChunkV1)
+		require.NoError(t, proto.Unmarshal(contents[:size], chunk))
+		chunks = append(chunks, chunk)
+		contents = contents[size:]
+	}
+	return chunks
+}
+
+func assertCrossPageStructure(t *testing.T, chunks []*ingestionv1.ChunkV1) {
+	t.Helper()
+	carried := false
+	for _, chunk := range chunks {
+		if chunk.PageStart <= 2 && chunk.PageEnd >= 2 && chunk.Chapter != "" {
+			carried = true
+			break
+		}
+	}
+	assert.True(t, carried, "chapter context was not carried onto the unheaded second page")
+}
+
+func requiredM4AbsoluteURLOrSkip(t *testing.T, key string) string {
+	t.Helper()
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		t.Skipf("%s is required for this test-only capability", key)
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		t.Fatalf("%s must be an absolute HTTP(S) URL", key)
+	}
+	return value
+}
+
+func postM4TestControlJSON(t *testing.T, endpoint string, payload []byte) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal("invalid M4 event-injection URL")
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if token := strings.TrimSpace(os.Getenv("M4_E2E_EVENT_INJECT_TOKEN")); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal("M4 event-injection request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted && response.StatusCode != http.StatusNoContent && response.StatusCode != http.StatusOK {
+		t.Fatalf("M4 event-injection endpoint returned HTTP %d", response.StatusCode)
+	}
 }
 
 func getM4Book(t *testing.T, edgeURL, token, bookID string) m4Book {
@@ -432,9 +1008,45 @@ func waitForM4ReadyEvent(t *testing.T, stream *m4EventStream, bookID string) (m4
 		}
 		var payload m4SSEPayload
 		require.NoError(t, json.Unmarshal(event.data, &payload))
-		assert.NotContains(t, string(event.data), "Synthetic chapter")
+		if bytes.Contains(event.data, []byte("Synthetic chapter")) || bytes.Contains(event.data, []byte("M4_CANARY_")) {
+			t.Fatal("SSE payload exposed synthetic document content")
+		}
 		if payload.BookID == bookID && payload.ProcessingStage == "chunks_ready" {
+			propagationDelay := time.Since(payload.UpdatedAt)
+			assert.GreaterOrEqual(t, propagationDelay, -m4ReadyPropagationSLO, "clock skew exceeds the SLO tolerance")
+			assert.LessOrEqual(t, propagationDelay, m4ReadyPropagationSLO, "%s ready propagation exceeded", m4SLOProfile)
 			return payload, event.id
+		}
+	}
+}
+
+func waitForM4SLOEvents(t *testing.T, stream *m4EventStream, bookID string, startedAt time.Time) {
+	t.Helper()
+	extractingObserved := false
+	for {
+		event, err := readM4SSEEvent(stream)
+		require.NoError(t, err)
+		if event.eventType == "books-resync" {
+			continue
+		}
+		require.Equal(t, "book-processing-status-changed", event.eventType)
+		var payload m4SSEPayload
+		require.NoError(t, json.Unmarshal(event.data, &payload))
+		if payload.BookID != bookID {
+			continue
+		}
+		switch payload.ProcessingStage {
+		case "extracting":
+			extractingObserved = true
+			assert.LessOrEqual(t, time.Since(startedAt), m4ExtractingVisibilitySLO, "%s extracting visibility exceeded", m4SLOProfile)
+		case "chunks_ready":
+			assert.True(t, extractingObserved, "%s requires an externally visible extracting stage", m4SLOProfile)
+			propagationDelay := time.Since(payload.UpdatedAt)
+			assert.GreaterOrEqual(t, propagationDelay, -m4ReadyPropagationSLO, "clock skew exceeds the SLO tolerance")
+			assert.LessOrEqual(t, propagationDelay, m4ReadyPropagationSLO, "%s ready propagation exceeded", m4SLOProfile)
+			return
+		case "failed":
+			t.Fatalf("%s document failed with category %q", m4SLOProfile, payload.ProcessingFailureCategory)
 		}
 	}
 }

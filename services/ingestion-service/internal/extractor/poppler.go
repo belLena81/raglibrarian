@@ -167,6 +167,18 @@ func classifyCommandError(ctx context.Context, err error) error {
 	if errors.Is(err, exec.ErrNotFound) {
 		return &categorizedError{category: domain.FailureDependencyUnavailable, cause: err}
 	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		switch exitErr.ExitCode() {
+		case 121:
+			return &categorizedError{category: domain.FailureResourceLimitExceeded, cause: err}
+		case 122, 123, 124:
+			return &categorizedError{category: domain.FailureDependencyUnavailable, cause: err}
+		}
+		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && (status.Signal() == syscall.SIGKILL || status.Signal() == syscall.SIGXCPU) {
+			return &categorizedError{category: domain.FailureResourceLimitExceeded, cause: err}
+		}
+	}
 	return &categorizedError{category: domain.FailureMalformedDocument, cause: err}
 }
 

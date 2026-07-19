@@ -14,6 +14,7 @@ import (
 const (
 	uploadExchange = "raglibrarian.events.v1"
 	statusExchange = "raglibrarian.edge-status.v1"
+	drainBudget    = 250 * time.Millisecond
 )
 
 type store interface {
@@ -38,6 +39,12 @@ type Recorder interface {
 // Run keeps uploads durable during broker loss: failed publication only retries
 // the existing outbox record and never changes its event ID or payload.
 func Run(ctx context.Context, store store, publisher publisher, recorder Recorder) {
+	RunWithWake(ctx, store, publisher, recorder, nil)
+}
+
+// RunWithWake publishes immediately after a committed write, while retaining
+// a periodic poll so a lost in-memory notification cannot strand durable work.
+func RunWithWake(ctx context.Context, store store, publisher publisher, recorder Recorder, wake <-chan struct{}) {
 	if recorder == nil {
 		panic("outbox recorder is required")
 	}
@@ -47,18 +54,33 @@ func Run(ctx context.Context, store store, publisher publisher, recorder Recorde
 		select {
 		case <-ctx.Done():
 			return
+		case <-wake:
+			drainPending(ctx, store, publisher, recorder, time.Now().UTC())
 		case now := <-ticker.C:
-			publishPending(ctx, store, publisher, recorder, now)
+			drainPending(ctx, store, publisher, recorder, now)
 		}
 	}
 }
 
-func publishPending(ctx context.Context, store store, publisher publisher, recorder Recorder, now time.Time) {
+func drainPending(ctx context.Context, store store, publisher publisher, recorder Recorder, now time.Time) {
+	deadline := time.Now().Add(drainBudget)
+	for {
+		if !publishPending(ctx, store, publisher, recorder, now) || time.Now().After(deadline) {
+			return
+		}
+		now = time.Now().UTC()
+	}
+}
+
+func publishPending(ctx context.Context, store store, publisher publisher, recorder Recorder, now time.Time) bool {
 	now = now.UTC()
 	events, err := store.ClaimOutbox(ctx, now, 30*time.Second)
 	if err != nil {
 		recorder.OutboxClaimFailed()
-		return
+		return false
+	}
+	if len(events) == 0 {
+		return false
 	}
 	for _, event := range events {
 		exchange, routingKey, mandatory, routeErr := publicationRoute(event.Type)
@@ -86,6 +108,7 @@ func publishPending(ctx context.Context, store store, publisher publisher, recor
 			recorder.OutboxMarkFailed()
 		}
 	}
+	return true
 }
 
 func publicationRoute(eventType string) (exchange, routingKey string, mandatory bool, err error) {

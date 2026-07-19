@@ -6,8 +6,15 @@ import (
 	"time"
 )
 
+type Orphan struct {
+	JobID  string
+	Prefix string
+}
+
 type OrphanRepository interface {
-	OrphanPrefixes(context.Context, time.Time, int) ([]string, error)
+	ClaimOrphans(context.Context, time.Time, time.Time, time.Duration, int) ([]Orphan, error)
+	CompleteOrphanCleanup(context.Context, string, time.Time) error
+	RetryOrphanCleanup(context.Context, string, time.Time) error
 }
 
 type PrefixStore interface {
@@ -50,14 +57,18 @@ func (c *Cleaner) RunOnce(ctx context.Context) error {
 }
 
 func (c *Cleaner) runOnce(ctx context.Context) error {
-	prefixes, err := c.repository.OrphanPrefixes(ctx, c.now().UTC().Add(-c.gracePeriod), 100)
+	now := c.now().UTC()
+	orphans, err := c.repository.ClaimOrphans(ctx, now, now.Add(-c.gracePeriod), time.Minute, 100)
 	if err != nil {
 		return err
 	}
-	for _, prefix := range prefixes {
-		if err = c.store.DeletePrefix(ctx, prefix); err != nil {
-			return err
+	var result error
+	for _, orphan := range orphans {
+		if err = c.store.DeletePrefix(ctx, orphan.Prefix); err != nil {
+			result = errors.Join(result, err, c.repository.RetryOrphanCleanup(ctx, orphan.JobID, now))
+			continue
 		}
+		result = errors.Join(result, c.repository.CompleteOrphanCleanup(ctx, orphan.JobID, now))
 	}
-	return nil
+	return result
 }

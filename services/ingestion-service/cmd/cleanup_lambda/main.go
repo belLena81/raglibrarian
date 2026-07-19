@@ -12,28 +12,37 @@ import (
 )
 
 var (
-	runtimeOnce   sync.Once
+	runtimeMu     sync.Mutex
 	sharedRuntime *bootstrap.CleanupRuntime
-	runtimeError  error
 )
 
 func main() { lambda.Start(handle) }
 
 func handle(ctx context.Context) error {
-	runtimeOnce.Do(func() {
-		if os.Geteuid() == 0 {
-			runtimeError = errors.New("cleanup lambda runtime must be non-root")
-			return
-		}
-		cfg, err := config.LoadCleanup()
-		if err != nil {
-			runtimeError = err
-			return
-		}
-		sharedRuntime, runtimeError = bootstrap.NewCleanup(ctx, cfg)
-	})
-	if runtimeError != nil {
-		return runtimeError
+	runtimeValue, err := getRuntime(ctx)
+	if err != nil {
+		return err
 	}
-	return sharedRuntime.Cleaner.RunOnce(ctx)
+	return runtimeValue.Cleaner.RunOnce(ctx)
+}
+
+func getRuntime(ctx context.Context) (*bootstrap.CleanupRuntime, error) {
+	runtimeMu.Lock()
+	defer runtimeMu.Unlock()
+	if sharedRuntime != nil {
+		return sharedRuntime, nil
+	}
+	if os.Geteuid() == 0 {
+		return nil, errors.New("cleanup lambda runtime must be non-root")
+	}
+	cfg, err := config.LoadCleanupContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runtimeValue, err := bootstrap.NewCleanup(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	sharedRuntime = runtimeValue
+	return sharedRuntime, nil
 }

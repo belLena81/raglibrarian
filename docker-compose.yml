@@ -33,6 +33,8 @@ services:
       - postgres_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     networks:
       - backend
     security_opt:
@@ -61,6 +63,7 @@ services:
       - ingestion_migration_password
       - ingestion_runtime_password
       - ingestion_cleanup_password
+      - ingestion_e2e_password
     volumes:
       - ./infra/postgres/init.sql:/bootstrap/identity.sql:ro
       - ./scripts/run-postgres-bootstrap.sh:/usr/local/bin/run-postgres-bootstrap:ro
@@ -125,6 +128,8 @@ services:
       - minio_root_password
     volumes:
       - minio_data:/data
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
     networks:
       - catalog-storage
     healthcheck:
@@ -148,6 +153,8 @@ services:
       - ingestion_minio_secret_key
       - ingestion_cleanup_minio_access_key
       - ingestion_cleanup_minio_secret_key
+      - ingestion_e2e_minio_access_key
+      - ingestion_e2e_minio_secret_key
     volumes:
       - ./scripts/bootstrap-minio.sh:/usr/local/bin/bootstrap-minio:ro
     networks:
@@ -164,6 +171,8 @@ services:
       - rabbitmq_data:/var/lib/rabbitmq
       - ${SECRET_DIR:-./.dev/secrets}/rabbitmq_definitions.json:/bootstrap/rabbitmq_definitions.json:ro
       - ./scripts/bootstrap-rabbitmq.sh:/usr/local/bin/bootstrap-rabbitmq:ro
+    ports:
+      - "127.0.0.1:${RABBITMQ_AMQP_PORT:-5672}:5672"
     networks:
       - catalog-broker
     healthcheck:
@@ -399,10 +408,17 @@ services:
       INGESTION_ARTIFACT_BUCKET: ingestion-artifacts
       INGESTION_TOKENIZER_FILE: /opt/raglibrarian/cl100k_base.tiktoken
       INGESTION_METRICS_ADDR: "0.0.0.0:9093"
-      INGESTION_WORK_CONCURRENCY: "${INGESTION_WORK_CONCURRENCY:-2}"
-      INGESTION_MAX_SOURCE_BYTES: "52428800"
-      INGESTION_MAX_PAGES: "1000"
-      INGESTION_MAX_TEMP_BYTES: "536870912"
+      HEALTHCHECK_HTTP_URL: http://127.0.0.1:9093/readyz
+      # One parser sandbox can reserve 768 MiB. Keep at least 256 MiB for the
+      # worker; scale service replicas for additional throughput at this limit.
+      INGESTION_WORK_CONCURRENCY: "${INGESTION_WORK_CONCURRENCY:-1}"
+      INGESTION_MAX_SOURCE_BYTES: "26214400"
+      INGESTION_MAX_EXTRACTED_BYTES: "67108864"
+      INGESTION_MAX_PAGES: "500"
+      # Leave 256 MiB for filesystem metadata and runtime scratch within tmpfs.
+      INGESTION_MAX_TEMP_BYTES: "805306368"
+      INGESTION_MEMORY_LIMIT_BYTES: "1073741824"
+      INGESTION_PROCESSING_TIMEOUT: "12m30s"
       RUN_AS_UID: "${RUN_AS_UID:-65532}"
       RUN_AS_GID: "${RUN_AS_GID:-65532}"
     secrets:
@@ -430,6 +446,12 @@ services:
         condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 10s
 
   contract-tests:
     <<: *job-hardening
@@ -448,6 +470,24 @@ services:
       CATALOG_POSTGRES_INTEGRATION: "true"
       CATALOG_POSTGRES_DSN_FILE: /run/secrets/catalog_runtime_dsn
       CATALOG_RABBITMQ_URI_FILE: /run/secrets/catalog_rabbitmq_uri
+      INGESTION_POSTGRES_DSN_FILE: /run/secrets/ingestion_runtime_dsn
+      INGESTION_RABBITMQ_URI_FILE: /run/secrets/ingestion_rabbitmq_uri
+      INGESTION_MINIO_ENDPOINT: minio:9000
+      INGESTION_MINIO_INSECURE: "true"
+      INGESTION_MINIO_ACCESS_KEY_FILE: /run/secrets/ingestion_minio_access_key
+      INGESTION_MINIO_SECRET_KEY_FILE: /run/secrets/ingestion_minio_secret_key
+      INGESTION_SOURCE_BUCKET: original-books
+      INGESTION_ARTIFACT_BUCKET: ingestion-artifacts
+      INGESTION_TOKENIZER_FILE: /opt/raglibrarian/cl100k_base.tiktoken
+      INGESTION_POSTGRES_INTEGRATION: "true"
+      INGESTION_MINIO_INTEGRATION: "true"
+      M4_E2E_INGESTION_POSTGRES_DSN_FILE: /run/secrets/ingestion_e2e_container_dsn
+      M4_E2E_MINIO_ENDPOINT: minio:9000
+      M4_E2E_MINIO_INSECURE: "true"
+      M4_E2E_MINIO_ACCESS_KEY_FILE: /run/secrets/ingestion_e2e_minio_access_key
+      M4_E2E_MINIO_SECRET_KEY_FILE: /run/secrets/ingestion_e2e_minio_secret_key
+      M4_E2E_MINIO_ARTIFACT_BUCKET: ingestion-artifacts
+      M4_E2E_RABBITMQ_URI_FILE: /run/secrets/ingestion_e2e_rabbitmq_container_uri
       CATALOG_GRPC_ADDR: catalog-service:50052
       GRPC_CONTRACT_TESTS: "true"
       EDGE_VERIFY_KEY_FILE: /run/secrets/edge_verify_key
@@ -464,6 +504,14 @@ services:
       - identity_migration_dsn
       - catalog_runtime_dsn
       - catalog_rabbitmq_uri
+      - ingestion_runtime_dsn
+      - ingestion_rabbitmq_uri
+      - ingestion_minio_access_key
+      - ingestion_minio_secret_key
+      - ingestion_e2e_container_dsn
+      - ingestion_e2e_rabbitmq_container_uri
+      - ingestion_e2e_minio_access_key
+      - ingestion_e2e_minio_secret_key
       - edge_verify_key
       - internal_ca
       - edge_tls_cert
@@ -475,12 +523,15 @@ services:
     networks:
       - backend
       - catalog-broker
+      - catalog-storage
     depends_on:
       identity-service:
         condition: service_healthy
       catalog-service:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      ingestion-service:
         condition: service_healthy
 
   catalog-minio-runtime-tests:
@@ -552,6 +603,12 @@ secrets:
     file: ${SECRET_DIR:-./.dev/secrets}/ingestion_cleanup_password
   ingestion_cleanup_dsn:
     file: ${SECRET_DIR:-./.dev/secrets}/ingestion_cleanup_dsn
+  ingestion_e2e_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_e2e_password
+  ingestion_e2e_dsn:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_e2e_dsn
+  ingestion_e2e_container_dsn:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_e2e_container_dsn
   minio_root_user:
     file: ${SECRET_DIR:-./.dev/secrets}/minio_root_user
   minio_root_password:
@@ -568,12 +625,18 @@ secrets:
     file: ${SECRET_DIR:-./.dev/secrets}/ingestion_cleanup_minio_access_key
   ingestion_cleanup_minio_secret_key:
     file: ${SECRET_DIR:-./.dev/secrets}/ingestion_cleanup_minio_secret_key
+  ingestion_e2e_minio_access_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_e2e_minio_access_key
+  ingestion_e2e_minio_secret_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_e2e_minio_secret_key
   catalog_rabbitmq_uri:
     file: ${SECRET_DIR:-./.dev/secrets}/catalog_rabbitmq_uri
   catalog_ingestion_rabbitmq_uri:
     file: ${SECRET_DIR:-./.dev/secrets}/catalog_ingestion_rabbitmq_uri
   ingestion_rabbitmq_uri:
     file: ${SECRET_DIR:-./.dev/secrets}/ingestion_rabbitmq_uri
+  ingestion_e2e_rabbitmq_container_uri:
+    file: ${SECRET_DIR:-./.dev/secrets}/ingestion_e2e_rabbitmq_container_uri
   edge_status_rabbitmq_uri_1:
     file: ${SECRET_DIR:-./.dev/secrets}/edge_status_rabbitmq_uri_1
   edge_status_rabbitmq_uri_2:

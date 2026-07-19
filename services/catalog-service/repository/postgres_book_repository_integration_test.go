@@ -97,8 +97,8 @@ func TestOutboxBacklogScansFractionalOldestAge(t *testing.T) {
 	}
 	fixtureAge := time.Duration(baseline.OldestAgeSecond+1)*time.Second + 750*time.Millisecond
 	_, err = pool.Exec(ctx, `INSERT INTO catalog.outbox
-        (event_id,event_type,payload,occurred_at,next_attempt_at)
-        VALUES ($1,'catalog.book.uploaded.v1',$2,$3,$4)`,
+		(event_id,event_type,aggregate_id,sequence,payload,occurred_at,next_attempt_at)
+		VALUES ($1,'catalog.book.uploaded.v1',$1,0,$2,$3,$4)`,
 		eventID, []byte("backlog integration fixture"), now.Add(-fixtureAge), now.Add(time.Hour))
 	if err != nil {
 		t.Fatalf("insert outbox fixture: %v", err)
@@ -131,6 +131,58 @@ func TestOutboxBacklogScansFractionalOldestAge(t *testing.T) {
 	}
 	if backlog != baseline {
 		t.Fatalf("published backlog = %+v, want baseline %+v", backlog, baseline)
+	}
+}
+
+func TestClaimOutboxDoesNotOvertakeAggregateSequence(t *testing.T) {
+	if os.Getenv("CATALOG_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set CATALOG_POSTGRES_INTEGRATION=true inside the Compose test network")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	dsn := readCatalogIntegrationSecret(t, "CATALOG_POSTGRES_DSN_FILE")
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect catalog database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	aggregateID := "ordering-" + randomIntegrationID(t)
+	eventIDs := []string{aggregateID + "-uploaded", aggregateID + "-queued"}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	for sequence, eventID := range eventIDs {
+		_, err = pool.Exec(ctx, `INSERT INTO catalog.outbox
+			(event_id,event_type,aggregate_id,sequence,payload,occurred_at,next_attempt_at)
+			VALUES ($1,'catalog.book.uploaded.v1',$2,$3,$4,$5,$5)`,
+			eventID, aggregateID, sequence, []byte("ordering fixture"), now)
+		if err != nil {
+			t.Fatalf("insert sequence %d: %v", sequence, err)
+		}
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.outbox WHERE aggregate_id=$1", aggregateID)
+	})
+
+	repository := NewPostgresBookRepository(pool)
+	claimed, err := repository.ClaimOutbox(ctx, now, 30*time.Second)
+	if err != nil {
+		t.Fatalf("claim upload: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].ID != eventIDs[0] {
+		t.Fatalf("first claim = %#v, want only %q", claimed, eventIDs[0])
+	}
+	if err = repository.MarkPublished(ctx, eventIDs[0], now); err != nil {
+		t.Fatalf("mark upload published: %v", err)
+	}
+	claimed, err = repository.ClaimOutbox(ctx, now, 30*time.Second)
+	if err != nil {
+		t.Fatalf("claim queued status: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].ID != eventIDs[1] {
+		t.Fatalf("second claim = %#v, want only %q", claimed, eventIDs[1])
 	}
 }
 

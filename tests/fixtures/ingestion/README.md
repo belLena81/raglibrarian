@@ -10,26 +10,53 @@ Generate the corpus into a temporary directory:
 go run ./tests/fixtures/ingestion/generate.go -out /tmp/raglibrarian-m4-fixtures
 ```
 
-The corpus covers a minimal text PDF, structured multipage text, an intentional
-blank middle page, an image-only page, a PDF carrying a Standard encryption
-dictionary, and a truncated malformed PDF. Generated binaries are intentionally
-not committed; black-box tests receive their directory through
-`M4_E2E_FIXTURE_DIR`.
+The corpus covers a minimal text PDF, structured cross-page text, an intentional
+blank middle page, an artifact-confidentiality canary, an image-only page, a PDF
+carrying a Standard encryption dictionary, a truncated malformed PDF, and a
+syntactically valid file one byte above the 64 MiB upload bound. Generated
+binaries are intentionally not committed; black-box tests receive their
+directory through `M4_E2E_FIXTURE_DIR`.
 
 Run the dedicated black-box contract after starting an M4 stack:
 
 ```sh
 M4_E2E_FIXTURE_DIR=/tmp/raglibrarian-m4-fixtures \
-M4_E2E_ACCESS_TOKEN='<active librarian or admin access token>' \
-M4_E2E_REVOCABLE_ACCESS_TOKEN='<a second disposable active-session token>' \
+M4_E2E_ACCESS_TOKEN_FILE='/tmp/raglibrarian-m4/access-token' \
+M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE='/tmp/raglibrarian-m4/revocable-token' \
 M4_E2E_PUBLIC_ORIGIN='http://127.0.0.1:5173' \
 M4_E2E_EDGE_BASE_URLS='http://127.0.0.1:8080,http://127.0.0.1:8081' \
 go -C tests/e2e test -count=1 -v -tags='e2e m4' ./...
 ```
 
-The tagged suite deliberately fails when an environment value is absent; it
-does not silently skip a required M4 contract. Run the connection-cap contract
-only against a dedicated stack, adding the `m4_load` tag and setting
+For an isolated CI stack, the base M2 lifecycle can hand these sessions to the
+separate M4 process without printing them. Point `E2E_M4_ACCESS_TOKEN_OUT` and
+`E2E_M4_REVOCABLE_TOKEN_OUT` at absent files inside a mode-0700 temporary
+directory; the test creates each file once with mode 0600. The M4 process reads
+those same paths through the two `*_TOKEN_FILE` variables above. The temporary
+directory must be removed by the surrounding test runner.
+
+Deep artifact and replay checks use private test credentials and never add a
+production public route. The M4 Compose test stack provides:
+
+- `M4_E2E_INGESTION_POSTGRES_DSN_FILE`, a read-capable test DSN used to resolve
+  the durable manifest receipt and original bounded inbox envelope;
+- `M4_E2E_MINIO_ENDPOINT`, `M4_E2E_MINIO_ACCESS_KEY_FILE`,
+  `M4_E2E_MINIO_SECRET_KEY_FILE`, and `M4_E2E_MINIO_ARTIFACT_BUCKET`, scoped to
+  reading the private artifact bucket;
+- `M4_E2E_MINIO_CA_FILE` for a private CA, or `M4_E2E_MINIO_INSECURE=true` only
+  for the isolated local Compose network;
+- `M4_E2E_RABBITMQ_URI_FILE`, scoped to publishing an idempotent replay to the
+  existing Catalog upload exchange;
+- `M4_E2E_EVENT_INJECT_URL`, a test-control POST endpoint that accepts a JSON
+  Catalog projection event and blocks until projection drain, plus
+  `M4_E2E_EVENT_INJECT_TOKEN`. This destructive out-of-order adapter is optional.
+
+Omitting one of these explicitly skips only its dependent test. It does not
+skip the ordinary upload, processing, failure taxonomy, SSE, or SLO contracts.
+
+The tagged suite deliberately fails when a core environment value is absent;
+only the explicitly optional out-of-order adapter may skip. Run the
+connection-cap contract only against a dedicated stack, adding the `m4_load` tag and setting
 `M4_E2E_SSE_CONNECTION_CAP` to that stack's configured cap (at most 10 for the
 single-source-IP test) and `M4_E2E_SSE_ACCESS_TOKENS` to the same number of
 comma-separated, distinct active-session tokens.
@@ -39,8 +66,10 @@ Expected processing outcomes:
 | Fixture | Expected outcome |
 |---|---|
 | `minimal.pdf` | chunks ready |
-| `multipage.pdf` | chunks ready with ordered page citations |
+| `canary.pdf` | chunks ready; canary present only in encrypted artifacts |
+| `multipage.pdf` | chunks ready with ordered cross-page citations and carried structure |
 | `blank_middle_page.pdf` | chunks ready without a synthetic blank chunk |
 | `image_only.pdf` | failed: no extractable text |
 | `encrypted.pdf` | failed: encrypted PDF |
 | `malformed.pdf` | failed: malformed PDF |
+| `oversize.pdf` | rejected by the upload boundary |

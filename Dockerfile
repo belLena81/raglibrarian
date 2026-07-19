@@ -26,9 +26,10 @@ RUN apk add --no-cache protobuf protobuf-dev \
 FROM builder AS contract-tests
 RUN go -C /src/tests/e2e mod download \
     && go -C /src/services/identity-service mod download \
-    && go -C /src/services/catalog-service mod download
+    && go -C /src/services/catalog-service mod download \
+    && go -C /src/services/ingestion-service mod download
 ENTRYPOINT ["/bin/sh", "-ec"]
-CMD ["grep -q '[^[:space:]]' \"$IDENTITY_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$IDENTITY_MIGRATION_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$CATALOG_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$CATALOG_RABBITMQ_URI_FILE\" && go -C /src/tests/e2e test -count=1 -v -tags=e2e -run '^TestGRPC' ./... && go -C /src/services/identity-service test -count=1 -v -tags=integration ./repository && go -C /src/services/identity-service test -count=1 -v -tags=integration ./migrations && go -C /src/services/catalog-service test -count=1 -v -tags=integration ./repository && go -C /src/services/catalog-service test -count=1 -v -tags=integration ./outbox"]
+CMD ["grep -q '[^[:space:]]' \"$IDENTITY_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$IDENTITY_MIGRATION_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$CATALOG_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$CATALOG_RABBITMQ_URI_FILE\" && grep -q '[^[:space:]]' \"$INGESTION_POSTGRES_DSN_FILE\" && go -C /src/tests/e2e test -count=1 -v -tags=e2e -run '^TestGRPC' ./... && go -C /src/services/identity-service test -count=1 -v -tags=integration ./repository && go -C /src/services/identity-service test -count=1 -v -tags=integration ./migrations && go -C /src/services/catalog-service test -count=1 -v -tags=integration ./repository && go -C /src/services/catalog-service test -count=1 -v -tags=integration ./outbox && go -C /src/services/ingestion-service test -count=1 -v -tags=integration ./..."]
 
 FROM alpine:3.22 AS tokenizer
 # The checksum pins the official cl100k_base vocabulary. It is fetched during
@@ -44,6 +45,7 @@ FROM alpine:3.22 AS ingestion-runtime
 # hadolint ignore=DL3018
 RUN apk add --no-cache ca-certificates poppler-utils
 COPY --from=builder /bin/service /service
+COPY --from=builder /bin/healthcheck /healthcheck
 COPY --from=ingestion-sandbox-builder /bin/parser-sandbox /parser-sandbox
 COPY --from=tokenizer /cl100k_base.tiktoken /opt/raglibrarian/cl100k_base.tiktoken
 # The worker reads root-owned 0400 secrets, then permanently drops to the

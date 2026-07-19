@@ -10,33 +10,22 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/config"
+	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/bootstrap"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/transport"
 )
 
 var (
-	runtimeOnce   sync.Once
+	runtimeMu     sync.Mutex
 	sharedRuntime *bootstrap.Runtime
-	runtimeError  error
 )
 
 func main() { lambda.Start(handle) }
 
 func handle(ctx context.Context, incoming events.RabbitMQEvent) error {
-	runtimeOnce.Do(func() {
-		cfg, err := config.Load()
-		if err != nil {
-			runtimeError = err
-			return
-		}
-		if os.Geteuid() == 0 {
-			runtimeError = errors.New("lambda runtime must be non-root")
-			return
-		}
-		sharedRuntime, runtimeError = bootstrap.New(ctx, cfg)
-	})
-	if runtimeError != nil {
-		return runtimeError
+	runtimeValue, err := getRuntime(ctx)
+	if err != nil {
+		return err
 	}
 	message, err := singleMessage(incoming)
 	if err != nil {
@@ -56,14 +45,33 @@ func handle(ctx context.Context, incoming events.RabbitMQEvent) error {
 	if !messageIDMatches(message.BasicProperties.MessageID, event.EventID) {
 		return errors.New("invalid broker message")
 	}
-	outboxCtx, stopOutbox := context.WithCancel(ctx)
-	defer stopOutbox()
-	go func() {
-		_ = sharedRuntime.Outbox.Run(outboxCtx)
-	}()
-	processErr := sharedRuntime.Process(ctx, event)
-	publishErr := sharedRuntime.Outbox.PublishPending(ctx)
+	processErr := runtimeValue.Process(ctx, event)
+	publishErr := runtimeValue.Outbox.PublishPending(ctx)
+	if errors.Is(processErr, application.ErrProcessingDeferred) && publishErr == nil {
+		return nil
+	}
 	return errors.Join(processErr, publishErr)
+}
+
+func getRuntime(ctx context.Context) (*bootstrap.Runtime, error) {
+	runtimeMu.Lock()
+	defer runtimeMu.Unlock()
+	if sharedRuntime != nil {
+		return sharedRuntime, nil
+	}
+	if os.Geteuid() == 0 {
+		return nil, errors.New("lambda runtime must be non-root")
+	}
+	cfg, err := config.LoadContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runtimeValue, err := bootstrap.New(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	sharedRuntime = runtimeValue
+	return sharedRuntime, nil
 }
 
 func messageIDMatches(messageID *string, eventID string) bool {

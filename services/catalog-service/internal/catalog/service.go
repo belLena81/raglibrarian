@@ -64,9 +64,11 @@ type ObjectReceipt struct {
 }
 
 type OutboxEvent struct {
-	ID, Type   string
-	Payload    []byte
-	OccurredAt time.Time
+	ID, Type    string
+	AggregateID string
+	Sequence    int64
+	Payload     []byte
+	OccurredAt  time.Time
 }
 
 // Service coordinates validation, private object storage and atomic persistence.
@@ -179,7 +181,7 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 		s.deleteObject(objectReference)
 		return Book{}, errors.New("catalog event unavailable")
 	}
-	event := OutboxEvent{ID: eventID, Type: "catalog.book.uploaded.v1", OccurredAt: now, Payload: payload}
+	event := OutboxEvent{ID: eventID, Type: "catalog.book.uploaded.v1", AggregateID: book.ID, Sequence: 0, OccurredAt: now, Payload: payload}
 	statusEventID, err := s.newID()
 	if err != nil {
 		s.deleteObject(objectReference)
@@ -196,7 +198,7 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 		s.deleteObject(objectReference)
 		return Book{}, errors.New("catalog status event unavailable")
 	}
-	statusEvent := OutboxEvent{ID: statusEventID, Type: "catalog.book.processing-status-changed.v1", OccurredAt: now, Payload: statusPayload}
+	statusEvent := OutboxEvent{ID: statusEventID, Type: "catalog.book.processing-status-changed.v1", AggregateID: book.ID, Sequence: book.ProcessingVersion, OccurredAt: now, Payload: statusPayload}
 	if err = s.repository.Create(ctx, book, event, statusEvent); err != nil {
 		lookupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

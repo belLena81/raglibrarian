@@ -50,10 +50,12 @@ func TestOutboxPublishesAcceptedUploadAfterBrokerRecovery(t *testing.T) {
 		ActorID:             "integration-actor",
 	}
 	event := catalog.OutboxEvent{
-		ID:         "event-" + id,
-		Type:       "catalog.book.uploaded.v1",
-		OccurredAt: now,
-		Payload:    payload,
+		ID:          "event-" + id,
+		Type:        "catalog.book.uploaded.v1",
+		AggregateID: book.ID,
+		Sequence:    0,
+		OccurredAt:  now,
+		Payload:     payload,
 	}
 	store := repository.NewPostgresBookRepository(pool)
 	if err = store.Create(ctx, book, event); err != nil {
