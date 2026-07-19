@@ -286,6 +286,9 @@ func (r *Runtime) DependenciesReady(ctx context.Context) (bool, bool) {
 }
 
 func (r *Runtime) Process(ctx context.Context, event application.UploadedEvent) error {
+	if err := event.Validate(r.Config.MaximumSourceBytes); err != nil {
+		return err
+	}
 	r.Diagnostics.ProcessingStarted(event.EventID, event.BookID)
 	err := r.Processor.Process(ctx, event)
 	if err == nil {

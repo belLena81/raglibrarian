@@ -99,6 +99,12 @@ func (c *Chunker) AddPage(bookID string, page Page) ([]domain.Chunk, error) {
 		}
 	}
 
+	if len(c.buffer) > 0 {
+		for _, token := range c.tokenizer.Encode("\n") {
+			c.buffer = append(c.buffer, bufferedToken{value: token, page: page.Number, global: c.nextToken})
+			c.nextToken++
+		}
+	}
 	tokens := c.tokenizer.Encode(text)
 	for _, token := range tokens {
 		c.buffer = append(c.buffer, bufferedToken{value: token, page: page.Number, global: c.nextToken})

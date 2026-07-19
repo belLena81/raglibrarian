@@ -78,9 +78,19 @@ func (h *BookStatusHub) Publish(event BookStatusEvent) {
 		select {
 		case subscriber <- event:
 		default:
-			<-subscriber
-			subscriber <- event
+			replaceLatestBookStatusEvent(subscriber, event)
 		}
+	}
+}
+
+func replaceLatestBookStatusEvent(subscriber chan BookStatusEvent, event BookStatusEvent) {
+	select {
+	case <-subscriber:
+	default:
+	}
+	select {
+	case subscriber <- event:
+	default:
 	}
 }
 
