@@ -16,8 +16,9 @@ import (
 )
 
 var (
-	runtimeMu     sync.Mutex
-	sharedRuntime *bootstrap.Runtime
+	runtimeMu               sync.Mutex
+	sharedRuntime           *bootstrap.Runtime
+	errInvalidBrokerMessage = errors.New("invalid broker message")
 )
 
 type eventProcessor interface {
@@ -46,8 +47,11 @@ func loadInvocation(ctx context.Context) (eventProcessor, pendingPublisher, erro
 
 func handleWithLoader(ctx context.Context, incoming events.RabbitMQEvent, load invocationLoader) error {
 	event, valid, err := decodeInvocation(incoming)
-	if err != nil || !valid {
+	if err != nil {
 		return err
+	}
+	if !valid {
+		return errInvalidBrokerMessage
 	}
 	processor, publisher, err := load(ctx)
 	if err != nil {
@@ -85,8 +89,10 @@ func invoke(ctx context.Context, event application.UploadedEvent, processor even
 		return errors.Join(processErr, publishErr)
 	}
 	switch application.DeliveryDisposition(processErr) {
-	case application.DeliveryAcknowledge, application.DeliveryReject:
+	case application.DeliveryAcknowledge:
 		return nil
+	case application.DeliveryReject:
+		return processErr
 	case application.DeliveryRequeue:
 		return processErr
 	default:

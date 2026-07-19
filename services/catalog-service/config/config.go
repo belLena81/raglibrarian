@@ -100,7 +100,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	maxUploadBytes, err := boundedInt64("CATALOG_MAX_UPLOAD_BYTES", 50<<20, 512<<20)
+	maxUploadBytes, err := fixedInt64("CATALOG_MAX_UPLOAD_BYTES", 25<<20)
 	if err != nil {
 		return Config{}, err
 	}
@@ -153,10 +153,10 @@ func validateMinIOEndpoint(endpoint string) error {
 	return nil
 }
 
-func boundedInt64(key string, fallback, maximum int64) (int64, error) {
-	value, err := strconv.ParseInt(optional(key, strconv.FormatInt(fallback, 10)), 10, 64)
-	if err != nil || value < 1 || value > maximum {
-		return 0, fmt.Errorf("%s must be between 1 and %d", key, maximum)
+func fixedInt64(key string, supported int64) (int64, error) {
+	value, err := strconv.ParseInt(optional(key, strconv.FormatInt(supported, 10)), 10, 64)
+	if err != nil || value != supported {
+		return 0, fmt.Errorf("%s must be %d for the supported processing profile", key, supported)
 	}
 	return value, nil
 }

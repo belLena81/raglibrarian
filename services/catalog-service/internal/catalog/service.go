@@ -24,7 +24,7 @@ import (
 
 const (
 	ChunkSize       = 64 << 10
-	DefaultMaxBytes = 50 << 20
+	DefaultMaxBytes = 25 << 20
 )
 
 var (

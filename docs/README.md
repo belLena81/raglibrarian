@@ -114,7 +114,8 @@ and [ephemeral storage](https://docs.aws.amazon.com/lambda/latest/dg/configurati
 ## Contract rules
 
 - Preserve existing public HTTP paths and protobuf field numbers.
-- Make protobuf changes additive and run Buf lint and compatibility checks.
+- Make protobuf changes additive and run `make proto-check proto-breaking`;
+  the compatibility gate compares `api/proto` with the main-branch contract.
 - Each event envelope carries an event ID, occurrence time, correlation ID,
   causation ID, producer, schema version, and idempotency business key.
 - Edge derives actor identity from a verified, live Identity session. Clients
@@ -212,7 +213,8 @@ Acceptance:
 
 **Owning service:** Ingestion.
 
-**Status:** implemented.
+**Status:** implemented; AWS SAM/staging and controlled restart/DLQ acceptance
+remain release gates.
 
 **Outcome:** every accepted PDF progresses to processing and then either
 produces traceable chunks or displays a deterministic failure status.

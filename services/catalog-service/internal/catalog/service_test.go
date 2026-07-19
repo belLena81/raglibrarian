@@ -13,6 +13,12 @@ import (
 	"time"
 )
 
+func TestDefaultUploadEnvelopeMatchesM4SourceProfile(t *testing.T) {
+	if DefaultMaxBytes != 25<<20 {
+		t.Fatalf("DefaultMaxBytes = %d, want %d", DefaultMaxBytes, 25<<20)
+	}
+}
+
 func TestUploadBookStoresPendingPDF(t *testing.T) {
 	repository := NewMemoryRepository()
 	objects := NewMemoryObjectStore()

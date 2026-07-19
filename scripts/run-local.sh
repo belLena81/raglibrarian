@@ -58,13 +58,7 @@ if [[ ! -r "$secret_dir/identity_password_reset_hmac_key" ]]; then
   echo "Created missing password-reset development secret."
 fi
 
-if [[ ! -r "$secret_dir/catalog_migration_password" || ! -r "$secret_dir/catalog_runtime_password" || ! -r "$secret_dir/catalog_migration_pgpass" || ! -r "$secret_dir/catalog_runtime_dsn" ]]; then
-  make dev-secrets-catalog-db
-fi
-
-if [[ ! -r "$secret_dir/ingestion_runtime_dsn" || ! -r "$secret_dir/ingestion_rabbitmq_uri" || ! -r "$secret_dir/edge_status_rabbitmq_uri_1" || ! -r "$secret_dir/edge_status_rabbitmq_uri_2" ]]; then
-  make dev-secrets-m4
-fi
+bash ./scripts/ensure-m4-dev-secrets.sh "$secret_dir"
 
 if [[ ! -r "$secret_dir/identity_bootstrap_verifier" ]]; then
   echo "Creating a local admin bootstrap verifier (interactive)."

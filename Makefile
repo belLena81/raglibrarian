@@ -4,7 +4,7 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-generate build run-edge-api run-identity run-catalog run-ingestion dev local-run local-stop tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-e2e m4-performance-smoke m4-sse-load m4-soak contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 bootstrap-verifier compose-config sam-validate sam-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-scan security-check full-gates integration-gates smtp-url
+.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion dev local-run local-stop tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-e2e m4-performance-smoke m4-sse-load m4-soak contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-test bootstrap-verifier compose-config sam-validate sam-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-scan security-check full-gates integration-gates smtp-url
 
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
 HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
@@ -140,7 +140,7 @@ stack-up: _require_root
 	@test -r "$${SECRET_DIR:-.dev/secrets}/identity_runtime_dsn" || { echo "development secrets are missing; run make dev-secrets"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/catalog_migration_password" && test -r "$${SECRET_DIR:-.dev/secrets}/catalog_runtime_password" && test -r "$${SECRET_DIR:-.dev/secrets}/catalog_migration_pgpass" && test -r "$${SECRET_DIR:-.dev/secrets}/catalog_runtime_dsn" || { echo "Catalog database development secrets are missing; run make dev-secrets-catalog-db"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/catalog_minio_access_key" || { echo "MinIO/RabbitMQ development secrets are missing; run make dev-secrets-m3"; exit 1; }
-	@test -r "$${SECRET_DIR:-.dev/secrets}/ingestion_runtime_dsn" && test -r "$${SECRET_DIR:-.dev/secrets}/ingestion_rabbitmq_uri" && test -r "$${SECRET_DIR:-.dev/secrets}/ingestion_e2e_dsn" && test -r "$${SECRET_DIR:-.dev/secrets}/ingestion_e2e_minio_access_key" && test -r "$${SECRET_DIR:-.dev/secrets}/ingestion_e2e_rabbitmq_uri" && test -r "$${SECRET_DIR:-.dev/secrets}/edge_status_rabbitmq_uri_1" && test -r "$${SECRET_DIR:-.dev/secrets}/edge_status_rabbitmq_uri_2" || { echo "M4 ingestion development secrets are missing; generate a fresh development secret set"; exit 1; }
+	@bash ./scripts/check-m4-dev-secrets.sh "$${SECRET_DIR:-.dev/secrets}" || { echo "M4 ingestion development secrets are incomplete; run make dev-secrets for a fresh checkout or scripts/run-local.sh for an additive upgrade"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/identity_bootstrap_verifier" || { echo "bootstrap verifier is missing; run make bootstrap-verifier"; exit 1; }
 	@docker compose up -d --build
 
@@ -264,6 +264,9 @@ dev-secrets-m4: _require_root
 	@echo "Generating additive Ingestion, broker, storage, and database credentials..."
 	bash ./scripts/generate-m4-dev-secrets.sh
 
+dev-secrets-test: _require_root
+	bash ./scripts/test-dev-secret-upgrades.sh
+
 bootstrap-verifier: _require_root
 	@secret_dir="$${SECRET_DIR:-$(CURDIR)/.dev/secrets}"; \
 	case "$$secret_dir" in /*) ;; *) secret_dir="$(CURDIR)/$$secret_dir" ;; esac; \
@@ -282,6 +285,9 @@ proto-generate: _require_root
 
 proto-check: _require_root
 	XDG_CACHE_HOME=/tmp/raglibrarian-cache buf lint api/proto
+
+proto-breaking: _require_root
+	XDG_CACHE_HOME=/tmp/raglibrarian-cache buf breaking api/proto --against '.git#branch=main,subdir=api/proto'
 
 dev-certs: _require_root
 	bash ./scripts/generate-dev-certs.sh
@@ -334,7 +340,7 @@ image-scan: image-build
 
 security-check: secret-scan dockerfile-lint image-scan ui-audit
 
-full-gates: fmt-check vet lint test test-race arch-check vuln proto-check compose-config ui-check security-check
+full-gates: fmt-check vet lint test test-race arch-check vuln proto-check proto-breaking dev-secrets-test compose-config ui-check security-check
 
 integration-gates: compose-config
 	docker compose --profile m4-ha up -d --build --wait --wait-timeout 180

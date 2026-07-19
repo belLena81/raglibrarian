@@ -76,7 +76,9 @@ race, contract, integration, and security checks pass.
 
 ## Delivery roadmap
 
-Milestones 2 through 4 are complete. Milestone 4 adds asynchronous PDF
+Milestones 2 and 3 are complete. Milestone 4 is implemented and passes the
+local quality and contract gates; AWS SAM/staging and controlled restart/DLQ
+acceptance remain release gates. Milestone 4 adds asynchronous PDF
 extraction and deterministic chunk manifests through one application shared by
 worker and Lambda adapters. Catalog projects monotonic processing state, while
 Edge gives authenticated clients low-latency SSE hints backed by authoritative
@@ -183,6 +185,11 @@ make stack-up
 make e2e
 ```
 
+For an existing Identity-only or M3 checkout, use `make local-run`. Its
+additive secret upgrade preserves complete credential groups, generates the
+full M4 Ingestion database set (including host and container E2E DSNs), and
+refuses partial groups rather than overwriting credentials.
+
 `make stack-up` starts the full Compose stack on loopback `:8080`, applies
 Identity migrations with the migration-only role, and then starts Identity
 with its bounded runtime role. A disposable Mailpit SMTP fixture is private to
@@ -209,6 +216,8 @@ make vet         # per-module go vet
 make lint        # golangci-lint per module
 make vuln        # govulncheck per module
 make proto-check # Buf contract lint
+make proto-breaking # reject protobuf changes that break main
+make dev-secrets-test # fresh and additive local-secret upgrade regressions
 make contract-test # live mTLS, database, and broker-recovery contracts
 make minio-runtime-test # live object-storage cleanup and pagination contracts
 make ui-check    # UI install, lint, type-check, and production build

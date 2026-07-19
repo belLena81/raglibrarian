@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5.5.0
         with:
           go-version: '1.26.5'
@@ -37,7 +39,7 @@ jobs:
           version: v2.11.4
           install-only: true
       - name: Run Go quality gates
-        run: make fmt-check vet lint test test-race arch-check vuln proto-check
+        run: make fmt-check vet lint test test-race arch-check vuln proto-check proto-breaking dev-secrets-test
 
   ui:
     runs-on: ubuntu-latest

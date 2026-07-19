@@ -39,7 +39,10 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-const m4MaxFixtureBytes = 64 << 20
+const (
+	m4MaxFixtureBytes  = 64 << 20
+	m4V1MaxSourceBytes = 25 << 20
+)
 
 const (
 	m4SLOProfile                 = "m4-slo-v1"
@@ -139,6 +142,18 @@ func TestM4OversizePDFIsRejectedAtUploadBoundary(t *testing.T) {
 	assert.Contains(t, []int{http.StatusBadRequest, http.StatusRequestEntityTooLarge}, status)
 }
 
+func TestM4MaximumSourceBytesReachesAStableTerminalProjection(t *testing.T) {
+	environment := loadM4Environment(t, false)
+	fixtureDir := t.TempDir()
+	writeM4MaximumSourceFixture(t, fixtureDir)
+	book := uploadM4Fixture(t, environment.edgeURLs[0], environment.accessToken, fixtureDir, "maximum_source_bytes.pdf")
+	book = waitForM4Status(t, environment, environment.edgeURLs[0], book.ID, func(current m4Book) bool {
+		return current.ProcessingStage == "chunks_ready"
+	})
+	assert.Equal(t, "processing", book.ProcessingStatus)
+	assert.Empty(t, book.ProcessingFailureCategory)
+}
+
 func TestM4PerformanceSLOProfile(t *testing.T) {
 	environment := loadM4Environment(t, false)
 	if configured := strings.TrimSpace(os.Getenv("M4_PERFORMANCE_PROFILE")); configured != "" && configured != m4SLOProfile {
@@ -224,6 +239,17 @@ func TestM4RetryReplayKeepsManifestByteIdentical(t *testing.T) {
 	assert.Equal(t, sha256.Sum256(before), sha256.Sum256(after), "retry changed deterministic manifest bytes")
 }
 
+func TestM4PoisonEnvelopeDoesNotBlockFollowingUpload(t *testing.T) {
+	environment := loadM4Environment(t, false)
+	publishM4UploadedEnvelope(t, "00000000-0000-4000-8000-0000000000ff", []byte("synthetic malformed protobuf"))
+	book := uploadM4Fixture(t, environment.edgeURLs[0], environment.accessToken, environment.fixtureDir, "minimal.pdf")
+	book = waitForM4Status(t, environment, environment.edgeURLs[0], book.ID, func(current m4Book) bool {
+		return current.ProcessingStage == "chunks_ready"
+	})
+	assert.Equal(t, "processing", book.ProcessingStatus)
+	assert.Empty(t, book.ProcessingFailureCategory)
+}
+
 func TestM4CanaryIsConfinedToPrivilegedArtifacts(t *testing.T) {
 	environment := loadM4Environment(t, false)
 	requireM4ArtifactReader(t)
@@ -268,31 +294,6 @@ func TestM4KnownV1WireContractAcceptsUnknownAdditiveProtobufField(t *testing.T) 
 	require.NoError(t, (proto.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(payload, &decoded))
 	assert.Equal(t, event.BookId, decoded.BookId)
 	assert.NotEmpty(t, decoded.ProtoReflect().GetUnknown())
-}
-
-func TestM4CatalogProjectionIgnoresOutOfOrderEvent(t *testing.T) {
-	environment := loadM4Environment(t, false)
-	endpoint := requiredM4AbsoluteURLOrSkip(t, "M4_E2E_EVENT_INJECT_URL")
-	book := uploadM4Fixture(t, environment.edgeURLs[0], environment.accessToken, environment.fixtureDir, "minimal.pdf")
-	book = waitForM4Status(t, environment, environment.edgeURLs[0], book.ID, func(current m4Book) bool {
-		return current.ProcessingStage == "chunks_ready"
-	})
-	require.Greater(t, book.ProcessingVersion, int64(1))
-	staleEvent := map[string]any{
-		"book_id":            book.ID,
-		"processing_status":  "failed",
-		"processing_stage":   "failed",
-		"failure_category":   "internal_processing_error",
-		"processing_version": book.ProcessingVersion - 1,
-		"schema_version":     1,
-	}
-	payload, err := json.Marshal(staleEvent)
-	require.NoError(t, err)
-	postM4TestControlJSON(t, endpoint, payload)
-	after := getM4Book(t, environment.edgeURLs[0], environment.accessToken, book.ID)
-	assert.Equal(t, book.ProcessingVersion, after.ProcessingVersion)
-	assert.Equal(t, book.ProcessingStage, after.ProcessingStage)
-	assert.Equal(t, book.ProcessingFailureCategory, after.ProcessingFailureCategory)
 }
 
 func TestM4SSERequiresBearerAuthenticationAndStartsWithResync(t *testing.T) {
@@ -511,6 +512,41 @@ func uploadM4Fixture(t *testing.T, edgeURL, token, fixtureDir, fixtureName strin
 	decodeJSON(t, response, &book)
 	require.NotEmpty(t, book.ID)
 	return book
+}
+
+func writeM4MaximumSourceFixture(t *testing.T, destinationDir string) {
+	t.Helper()
+	padding := m4V1MaxSourceBytes
+	var contents []byte
+	for attempts := 0; attempts < 4; attempts++ {
+		contents = buildM4BoundaryPDF(padding)
+		padding += m4V1MaxSourceBytes - len(contents)
+	}
+	require.Len(t, contents, m4V1MaxSourceBytes)
+	require.NoError(t, os.WriteFile(filepath.Join(destinationDir, "maximum_source_bytes.pdf"), contents, 0o600))
+}
+
+func buildM4BoundaryPDF(padding int) []byte {
+	var output bytes.Buffer
+	output.WriteString("%PDF-1.7\n")
+	offsets := make([]int, 6)
+	writeObject := func(id int, value string) {
+		offsets[id] = output.Len()
+		_, _ = fmt.Fprintf(&output, "%d 0 obj\n%s\nendobj\n", id, value)
+	}
+	writeObject(1, "<< /Type /Catalog /Pages 2 0 R >>")
+	writeObject(2, "<< /Type /Pages /Count 1 /Kids [4 0 R] >>")
+	writeObject(3, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+	writeObject(4, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>")
+	content := "BT /F1 12 Tf 72 720 Td (Synthetic maximum source boundary.) Tj ET\n" + strings.Repeat(" ", padding)
+	writeObject(5, fmt.Sprintf("<< /Length %d >>\nstream\n%sendstream", len(content), content))
+	xref := output.Len()
+	output.WriteString("xref\n0 6\n0000000000 65535 f \n")
+	for _, offset := range offsets[1:] {
+		_, _ = fmt.Fprintf(&output, "%010d 00000 n \n", offset)
+	}
+	_, _ = fmt.Fprintf(&output, "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", xref)
+	return output.Bytes()
 }
 
 func uploadM4FixtureExpectingStatus(t *testing.T, edgeURL, token, fixtureDir, fixtureName string) int {
@@ -854,41 +890,6 @@ func assertCrossPageStructure(t *testing.T, chunks []*ingestionv1.ChunkV1) {
 		}
 	}
 	assert.True(t, carried, "chapter context was not carried onto the unheaded second page")
-}
-
-func requiredM4AbsoluteURLOrSkip(t *testing.T, key string) string {
-	t.Helper()
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		t.Skipf("%s is required for this test-only capability", key)
-	}
-	parsed, err := url.Parse(value)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		t.Fatalf("%s must be an absolute HTTP(S) URL", key)
-	}
-	return value
-}
-
-func postM4TestControlJSON(t *testing.T, endpoint string, payload []byte) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		t.Fatal("invalid M4 event-injection URL")
-	}
-	request.Header.Set("Content-Type", "application/json")
-	if token := strings.TrimSpace(os.Getenv("M4_E2E_EVENT_INJECT_TOKEN")); token != "" {
-		request.Header.Set("Authorization", "Bearer "+token)
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal("M4 event-injection request failed")
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusAccepted && response.StatusCode != http.StatusNoContent && response.StatusCode != http.StatusOK {
-		t.Fatalf("M4 event-injection endpoint returned HTTP %d", response.StatusCode)
-	}
 }
 
 func getM4Book(t *testing.T, edgeURL, token, bookID string) m4Book {

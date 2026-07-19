@@ -12,11 +12,33 @@ func TestLoadUsesBoundedProductionDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.MaximumSourceBytes != 50<<20 || value.MaximumPages != 1000 || value.WorkConcurrency != 1 {
+	if value.MaximumSourceBytes != 25<<20 || value.MaximumPages != 500 || value.MaximumChunks != 50_000 || value.MaximumManifestBytes != 1<<20 || value.WorkConcurrency != 1 {
 		t.Fatalf("unexpected defaults: %#v", value)
 	}
 	if value.SourceBucket == value.ArtifactBucket {
 		t.Fatal("source and artifact buckets must be isolated")
+	}
+}
+
+func TestLoadRejectsUnsupportedM4ProcessingProfile(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "chunk limit", key: "INGESTION_MAX_CHUNKS", value: "50001"},
+		{name: "source envelope", key: "INGESTION_MAX_SOURCE_BYTES", value: "52428800"},
+		{name: "page envelope", key: "INGESTION_MAX_PAGES", value: "501"},
+		{name: "manifest envelope", key: "INGESTION_MAX_MANIFEST_BYTES", value: "1048577"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			setRequiredEnvironment(t)
+			t.Setenv(test.key, test.value)
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load() accepted unsupported %s=%s", test.key, test.value)
+			}
+		})
 	}
 }
 

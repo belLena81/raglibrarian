@@ -13,9 +13,9 @@ go run ./tests/fixtures/ingestion/generate.go -out /tmp/raglibrarian-m4-fixtures
 The corpus covers a minimal text PDF, structured cross-page text, an intentional
 blank middle page, an artifact-confidentiality canary, an image-only page, a PDF
 carrying a Standard encryption dictionary, a truncated malformed PDF, and a
-syntactically valid file one byte above the 64 MiB upload bound. Generated
-binaries are intentionally not committed; black-box tests receive their
-directory through `M4_E2E_FIXTURE_DIR`.
+syntactically valid file larger than 64 MiB that remains safely above the
+frozen 25 MiB upload bound. Generated binaries are intentionally not committed;
+black-box tests receive their directory through `M4_E2E_FIXTURE_DIR`.
 
 Run the dedicated black-box contract after starting an M4 stack:
 
@@ -46,17 +46,18 @@ production public route. The M4 Compose test stack provides:
 - `M4_E2E_MINIO_CA_FILE` for a private CA, or `M4_E2E_MINIO_INSECURE=true` only
   for the isolated local Compose network;
 - `M4_E2E_RABBITMQ_URI_FILE`, scoped to publishing an idempotent replay to the
-  existing Catalog upload exchange;
-- `M4_E2E_EVENT_INJECT_URL`, a test-control POST endpoint that accepts a JSON
-  Catalog projection event and blocks until projection drain, plus
-  `M4_E2E_EVENT_INJECT_TOKEN`. This destructive out-of-order adapter is optional.
+  existing Catalog upload exchange.
 
-Omitting one of these explicitly skips only its dependent test. It does not
-skip the ordinary upload, processing, failure taxonomy, SSE, or SLO contracts.
+Omitting an optional private inspection credential skips only its dependent
+artifact or replay assertion. It does not skip the ordinary upload, processing,
+failure taxonomy, SSE, or SLO contracts. Out-of-order projection behavior is
+covered deterministically inside Catalog; there is no public event-injection
+route.
 
 The tagged suite deliberately fails when a core environment value is absent;
-only the explicitly optional out-of-order adapter may skip. Run the
-connection-cap contract only against a dedicated stack, adding the `m4_load` tag and setting
+private artifact and replay assertions may skip when their explicitly optional
+credentials are absent. Run the connection-cap contract only against a
+dedicated stack, adding the `m4_load` tag and setting
 `M4_E2E_SSE_CONNECTION_CAP` to that stack's configured cap (at most 10 for the
 single-source-IP test) and `M4_E2E_SSE_ACCESS_TOKENS` to the same number of
 comma-separated, distinct active-session tokens.

@@ -6,14 +6,14 @@ import (
 )
 
 func TestCatalogBounds(t *testing.T) {
-	t.Setenv("CATALOG_MAX_UPLOAD_BYTES", "52428800")
-	bytes, err := boundedInt64("CATALOG_MAX_UPLOAD_BYTES", 50<<20, 512<<20)
-	if err != nil || bytes != 50<<20 {
+	t.Setenv("CATALOG_MAX_UPLOAD_BYTES", "26214400")
+	bytes, err := fixedInt64("CATALOG_MAX_UPLOAD_BYTES", 25<<20)
+	if err != nil || bytes != 25<<20 {
 		t.Fatalf("bytes = %d, err = %v", bytes, err)
 	}
-	t.Setenv("CATALOG_MAX_UPLOAD_BYTES", "536870913")
-	if _, err := boundedInt64("CATALOG_MAX_UPLOAD_BYTES", 50<<20, 512<<20); err == nil {
-		t.Fatal("expected max upload error")
+	t.Setenv("CATALOG_MAX_UPLOAD_BYTES", "52428800")
+	if _, err := fixedInt64("CATALOG_MAX_UPLOAD_BYTES", 25<<20); err == nil {
+		t.Fatal("expected unsupported upload envelope error")
 	}
 	t.Setenv("CATALOG_UPLOAD_CONCURRENCY", "17")
 	if _, err := boundedInt("CATALOG_UPLOAD_CONCURRENCY", 2, 16); err == nil {

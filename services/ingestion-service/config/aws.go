@@ -91,15 +91,15 @@ func loadAWS(ctx context.Context) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	maximumChunks, err := boundedInt("INGESTION_MAX_CHUNKS", 50000, 100000)
+	maximumChunks, err := fixedInt("INGESTION_MAX_CHUNKS", 50_000)
 	if err != nil {
 		return Config{}, err
 	}
-	maximumPages, err := boundedInt64("INGESTION_MAX_PAGES", 500, 10000)
+	maximumPages, err := boundedInt64("INGESTION_MAX_PAGES", 500, 500)
 	if err != nil {
 		return Config{}, err
 	}
-	maximumSource, err := boundedInt64("INGESTION_MAX_SOURCE_BYTES", 25<<20, 512<<20)
+	maximumSource, err := fixedInt64("INGESTION_MAX_SOURCE_BYTES", 25<<20)
 	if err != nil {
 		return Config{}, err
 	}
@@ -111,7 +111,7 @@ func loadAWS(ctx context.Context) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	maximumManifest, err := boundedInt64("INGESTION_MAX_MANIFEST_BYTES", 1<<20, 16<<20)
+	maximumManifest, err := boundedInt64("INGESTION_MAX_MANIFEST_BYTES", 1<<20, 1<<20)
 	if err != nil {
 		return Config{}, err
 	}

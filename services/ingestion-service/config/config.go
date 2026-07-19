@@ -159,15 +159,15 @@ func loadLocal() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	maximumChunks, err := boundedInt("INGESTION_MAX_CHUNKS", 50000, 100000)
+	maximumChunks, err := fixedInt("INGESTION_MAX_CHUNKS", 50_000)
 	if err != nil {
 		return Config{}, err
 	}
-	maximumPages64, err := boundedInt64("INGESTION_MAX_PAGES", 1000, 10000)
+	maximumPages64, err := boundedInt64("INGESTION_MAX_PAGES", 500, 500)
 	if err != nil {
 		return Config{}, err
 	}
-	maximumSource, err := boundedInt64("INGESTION_MAX_SOURCE_BYTES", 50<<20, 512<<20)
+	maximumSource, err := fixedInt64("INGESTION_MAX_SOURCE_BYTES", 25<<20)
 	if err != nil {
 		return Config{}, err
 	}
@@ -179,7 +179,7 @@ func loadLocal() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	maximumManifest, err := boundedInt64("INGESTION_MAX_MANIFEST_BYTES", 1<<20, 16<<20)
+	maximumManifest, err := boundedInt64("INGESTION_MAX_MANIFEST_BYTES", 1<<20, 1<<20)
 	if err != nil {
 		return Config{}, err
 	}
@@ -321,10 +321,27 @@ func boundedInt(key string, fallback, maximum int) (int, error) {
 	}
 	return value, nil
 }
+
+func fixedInt(key string, supported int) (int, error) {
+	value, err := strconv.Atoi(optional(key, strconv.Itoa(supported)))
+	if err != nil || value != supported {
+		return 0, fmt.Errorf("%s must be %d for the supported processing profile", key, supported)
+	}
+	return value, nil
+}
+
 func boundedInt64(key string, fallback, maximum int64) (int64, error) {
 	value, err := strconv.ParseInt(optional(key, strconv.FormatInt(fallback, 10)), 10, 64)
 	if err != nil || value < 1 || value > maximum {
 		return 0, fmt.Errorf("%s must be between 1 and %d", key, maximum)
+	}
+	return value, nil
+}
+
+func fixedInt64(key string, supported int64) (int64, error) {
+	value, err := strconv.ParseInt(optional(key, strconv.FormatInt(supported, 10)), 10, 64)
+	if err != nil || value != supported {
+		return 0, fmt.Errorf("%s must be %d for the supported processing profile", key, supported)
 	}
 	return value, nil
 }
