@@ -228,7 +228,7 @@ func (r *Runtime) Index(ctx context.Context, event RabbitEvent) error {
 		return err
 	}
 	if err = r.indexer.Process(ctx, work); err != nil {
-		if eventAttempt(event) >= 4 {
+		if application.TerminalIndexingFailure(err) || eventAttempt(event) >= 4 {
 			if r.vector == nil {
 				return errors.New("retrieval vector indexer unavailable")
 			}

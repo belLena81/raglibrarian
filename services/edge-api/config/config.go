@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/process"
@@ -27,6 +28,8 @@ var (
 	ErrRefreshCookieConfiguration = errors.New("refresh cookie configuration invalid")
 	// ErrRunIdentityConfiguration identifies an invalid runtime UID or GID.
 	ErrRunIdentityConfiguration = errors.New("run identity configuration invalid")
+	// ErrQueryLimitConfiguration identifies invalid query admission controls.
+	ErrQueryLimitConfiguration = errors.New("query limit configuration invalid")
 )
 
 // Config is validated Edge runtime configuration.
@@ -41,6 +44,8 @@ type Config struct {
 	PublicOrigin                                            string
 	EnforceBrowserOrigin                                    bool
 	RetrievalReadinessRequired                              bool
+	QueryRateLimit, QueryRateMaxKeys, QueryConcurrency      int
+	QueryRateWindow                                         time.Duration
 	RunAs                                                   process.Identity
 }
 
@@ -80,6 +85,22 @@ func Load() (Config, error) {
 	retrievalReadinessRequired, err := strconv.ParseBool(optional("EDGE_RETRIEVAL_READINESS_REQUIRED", "true"))
 	if err != nil {
 		return Config{}, fmt.Errorf("EDGE_RETRIEVAL_READINESS_REQUIRED: %w", err)
+	}
+	queryRateLimit, err := positiveInt("EDGE_QUERY_RATE_LIMIT", 30)
+	if err != nil {
+		return Config{}, err
+	}
+	queryRateWindow, err := positiveDuration("EDGE_QUERY_RATE_WINDOW", time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	queryRateMaxKeys, err := positiveInt("EDGE_QUERY_RATE_MAX_KEYS", 10000)
+	if err != nil {
+		return Config{}, err
+	}
+	queryConcurrency, err := positiveInt("EDGE_QUERY_CONCURRENCY", 8)
+	if err != nil {
+		return Config{}, err
 	}
 	publicOrigin := strings.TrimRight(strings.TrimSpace(os.Getenv("EDGE_PUBLIC_ORIGIN")), "/")
 	if enforceOrigin && publicOrigin == "" {
@@ -125,8 +146,30 @@ func Load() (Config, error) {
 		PublicOrigin:               publicOrigin,
 		EnforceBrowserOrigin:       enforceOrigin,
 		RetrievalReadinessRequired: retrievalReadinessRequired,
+		QueryRateLimit:             queryRateLimit,
+		QueryRateWindow:            queryRateWindow,
+		QueryRateMaxKeys:           queryRateMaxKeys,
+		QueryConcurrency:           queryConcurrency,
 		RunAs:                      runAs,
 	}, nil
+}
+
+func positiveInt(key string, fallback int) (int, error) {
+	value := optional(key, strconv.Itoa(fallback))
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 {
+		return 0, fmt.Errorf("%w: %s must be a positive integer", ErrQueryLimitConfiguration, key)
+	}
+	return parsed, nil
+}
+
+func positiveDuration(key string, fallback time.Duration) (time.Duration, error) {
+	value := optional(key, fallback.String())
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%w: %s must be a positive duration", ErrQueryLimitConfiguration, key)
+	}
+	return parsed, nil
 }
 
 func parseCIDRs(value string) ([]netip.Prefix, error) {

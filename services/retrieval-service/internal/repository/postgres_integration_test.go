@@ -162,6 +162,65 @@ func TestFailManifestEmitsIncompatibleProfileTerminalEvent(t *testing.T) {
 	}
 }
 
+func TestCompleteBatchRejectsConflictingDuplicateChunkID(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository := NewPostgres(pool)
+	suffix := randomIntegrationID(t)
+	bookID, jobID, batchID := "book-"+suffix, "job-"+suffix, "batch-"+suffix
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	work := application.BatchWork{EventID: "event-" + suffix, JobID: jobID, BatchID: batchID, BookID: bookID,
+		ShardReference: "books/" + bookID + "/source/profile/shards/000000.pb.zst", ShardSHA256: integrationDigest(1), SourceSHA256: integrationDigest(2),
+		ManifestSHA256: integrationDigest(3), ProfileDigest: domain.SupportedIndexProfile().Digest, CompressedBytes: 10, UncompressedBytes: 20, ChunkCount: 2,
+		CorrelationID: "correlation-" + suffix, CausationID: "cause-" + suffix, Producer: "retrieval-service", SchemaVersion: "v1", IdempotencyKey: batchID, OccurredAt: now}
+	payloadDigest := integrationDigest(4)
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.metadata_facts(book_id,event_id,payload_digest,source_sha256,title,author,publication_year,tags,correlation_id,causation_id,occurred_at)
+		VALUES($1,$2,$3,$4,'Synthetic systems','RAGLibrarian QA',2026,'{}',$5,$6,$7)`, bookID, "metadata-"+suffix, payloadDigest[:], work.SourceSHA256[:], work.CorrelationID, work.CausationID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_jobs(id,book_id,source_sha256,manifest_sha256,profile_digest,state,expected_batches,correlation_id,created_at,updated_at)
+		VALUES($1,$2,$3,$4,$5,'pending',1,$6,$7,$7)`, jobID, bookID, work.SourceSHA256[:], work.ManifestSHA256[:], work.ProfileDigest[:], work.CorrelationID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_batches(id,job_id,shard_reference,shard_sha256,compressed_byte_size,uncompressed_byte_size,chunk_count,state,updated_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'processing',$8)`, batchID, jobID, work.ShardReference, work.ShardSHA256[:], work.CompressedBytes, work.UncompressedBytes, work.ChunkCount, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.outbox WHERE aggregate_id=$1`, jobID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE id=$1`, jobID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
+	})
+	vector := make([]float32, domain.EmbeddingDimensions)
+	records := []application.EvidenceRecord{
+		{Evidence: application.Evidence{EvidenceID: "evidence-a-" + suffix, ChunkID: "chunk-1", JobID: jobID, BookID: bookID, Title: "Synthetic systems", Author: "RAGLibrarian QA", Passage: "first"}, JobID: jobID, ContentSHA256: integrationDigest(11), Vector: vector},
+		{Evidence: application.Evidence{EvidenceID: "evidence-b-" + suffix, ChunkID: "chunk-1", JobID: jobID, BookID: bookID, Title: "Synthetic systems", Author: "RAGLibrarian QA", Passage: "second"}, JobID: jobID, ContentSHA256: integrationDigest(12), Vector: vector},
+	}
+
+	complete, err := repository.CompleteBatch(ctx, work, records, now)
+
+	if complete || application.FailureCategory(err) != domain.FailureManifestIntegrity {
+		t.Fatalf("CompleteBatch() complete=%v error=%v category=%s", complete, err, application.FailureCategory(err))
+	}
+	var accumulators int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.document_embedding_accumulators WHERE job_id=$1`, jobID).Scan(&accumulators); err != nil || accumulators != 0 {
+		t.Fatalf("document accumulator count=%d error=%v", accumulators, err)
+	}
+}
+
 func TestCompleteBatchSerializesFinalBatchCompletion(t *testing.T) {
 	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
 		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")

@@ -40,3 +40,11 @@ func FailureCategory(err error) domain.FailureCategory {
 	}
 	return domain.FailureInternalIndexing
 }
+
+func TerminalIndexingFailure(err error) bool {
+	var typed failureError
+	if !errors.As(err, &typed) {
+		return false
+	}
+	return typed.category == domain.FailureManifestIntegrity || typed.category == domain.FailureResourceLimit
+}

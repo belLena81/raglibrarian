@@ -4,6 +4,7 @@ package rabbitmq
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/rabbitmq/amqp091-go"
@@ -27,6 +28,7 @@ type confirmingChannel interface {
 type Publisher struct {
 	channel confirmingChannel
 	returns <-chan amqp091.Return
+	mu      sync.Mutex
 }
 
 // NewPublisher registers the mandatory-return listener before any publish.
@@ -40,6 +42,8 @@ func NewPublisher(channel confirmingChannel) *Publisher {
 // Publish sends one persistent event and succeeds only after RabbitMQ confirms
 // it and no mandatory return is observed for the single in-flight publish.
 func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, message amqp091.Publishing) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	confirmation, err := p.channel.PublishWithDeferredConfirmWithContext(ctx, exchange, routingKey, true, false, message)
 	if err != nil {
 		return err

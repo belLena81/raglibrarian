@@ -6,7 +6,9 @@ import (
 	"crypto/ed25519"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,6 +26,15 @@ type fakeIdentity struct{}
 type fakeRetrieval struct{}
 
 func (fakeRetrieval) Search(context.Context, handler.SearchRequest) (handler.SearchResult, error) {
+	return handler.SearchResult{Results: []handler.Evidence{}}, nil
+}
+
+type countingRetrieval struct {
+	calls atomic.Int32
+}
+
+func (r *countingRetrieval) Search(context.Context, handler.SearchRequest) (handler.SearchResult, error) {
+	r.calls.Add(1)
 	return handler.SearchResult{Results: []handler.Evidence{}}, nil
 }
 
@@ -130,6 +141,32 @@ func TestPasswordResetStagesHaveIndependentRateLimits(t *testing.T) {
 	}
 }
 
+func TestQueryRouteRateLimitsTrustedPrincipalBeforeRetrieval(t *testing.T) {
+	signer, verifier, err := testSignerVerifier()
+	require.NoError(t, err)
+	diagnostics := diagnostic.New(zaptest.NewLogger(t))
+	identity := fakeIdentity{}
+	retrieval := &countingRetrieval{}
+	router := edgeapi.NewRouter(
+		handler.NewQueryHandler(retrieval),
+		handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: true}),
+		handler.NewHealthHandler(identity),
+		handler.NewSetupHandler(identity),
+		handler.NewAdminHandler(identity, handler.NewPendingHub(10)),
+		verifier,
+		identity,
+		diagnostics,
+		edgeapi.RouterConfig{QueryRateLimit: 1, QueryRateWindow: time.Hour, QueryRateMaxKeys: 100, QueryConcurrency: 2},
+	)
+	token, err := signer.Issue(auth.Subject{UserID: "query-user", Email: "reader@example.test", Role: auth.RoleReader, SessionID: "session-1"})
+	require.NoError(t, err)
+
+	assertAuthenticatedPostStatus(t, router, "/query", `{"question":"replication"}`, token, http.StatusOK)
+	assertAuthenticatedPostStatus(t, router, "/query", `{"question":"replication"}`, token, http.StatusTooManyRequests)
+
+	assert.Equal(t, int32(1), retrieval.calls.Load())
+}
+
 type passwordResetIdentity struct {
 	fakeIdentity
 	verifyErrors []error
@@ -173,6 +210,29 @@ func assertPostStatus(t *testing.T, router http.Handler, path, body string, want
 }
 
 func testVerifier() (*auth.Verifier, error) {
+	_, verifier, err := testSignerVerifier()
+	return verifier, err
+}
+
+func testSignerVerifier() (*auth.Signer, *auth.Verifier, error) {
 	privateKey := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
-	return auth.NewVerifier(privateKey.Public().(ed25519.PublicKey))
+	signer, err := auth.NewSigner(privateKey, time.Hour)
+	if err != nil {
+		return nil, nil, err
+	}
+	verifier, err := auth.NewVerifier(privateKey.Public().(ed25519.PublicKey))
+	if err != nil {
+		return nil, nil, err
+	}
+	return signer, verifier, nil
+}
+
+func assertAuthenticatedPostStatus(t *testing.T, router http.Handler, path, body, token string, want int) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+	router.ServeHTTP(recorder, request)
+	assert.Equal(t, want, recorder.Code, "%s response: %s", path, recorder.Body.String())
 }

@@ -284,7 +284,7 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 		for index, value := range record.Vector {
 			batchVectorSum[index] += value
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO retrieval.evidence
+		command, err := tx.Exec(ctx, `INSERT INTO retrieval.evidence
 			(evidence_id,chunk_id,job_id,book_id,title,author,publication_year,tags,chapter,section,page_start,page_end,passage,content_sha256,created_at)
 			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 			ON CONFLICT(job_id,chunk_id) DO UPDATE SET content_sha256=EXCLUDED.content_sha256
@@ -292,6 +292,9 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 			record.Year, record.Tags, record.Chapter, record.Section, record.PageStart, record.PageEnd, record.Passage, record.ContentSHA256[:], now)
 		if err != nil {
 			return false, err
+		}
+		if command.RowsAffected() != 1 {
+			return false, application.Failure(domain.FailureManifestIntegrity, application.ErrConflictingEvent)
 		}
 	}
 	if err = r.accumulateDocumentVector(ctx, tx, work.JobID, batchVectorSum, len(records), now); err != nil {

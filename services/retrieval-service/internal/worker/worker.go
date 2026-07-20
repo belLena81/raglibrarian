@@ -273,6 +273,21 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 			_ = delivery.Ack(false)
 			return
 		}
+		if terminalFailure != nil && application.TerminalIndexingFailure(err) {
+			failureContext, failureCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			failureErr := terminalFailure(failureContext, delivery.Body, application.FailureCategory(err))
+			failureCancel()
+			if failureErr == nil {
+				_ = delivery.Ack(false)
+				return
+			}
+			if r.publishRetry(ctx, publisher, sourceQueue, delivery, maximumRetryAttempts) == nil {
+				_ = delivery.Ack(false)
+				return
+			}
+			_ = delivery.Nack(false, true)
+			return
+		}
 		if errors.Is(err, application.ErrInvalidEvent) || errors.Is(err, application.ErrConflictingEvent) {
 			_ = delivery.Nack(false, false)
 			return

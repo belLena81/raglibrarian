@@ -9,16 +9,41 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/lambdaadapter"
 )
 
-var once sync.Once
-var runtime *lambdaadapter.Runtime
-var initializationError error
+var (
+	runtimeMu sync.Mutex
+	runtime   cleanupRuntime
+)
+
+type cleanupRuntime interface {
+	Cleanup(context.Context) error
+}
 
 func handler(ctx context.Context) error {
-	once.Do(func() { runtime, initializationError = lambdaadapter.NewCleanupRuntime(ctx) })
-	if initializationError != nil || runtime == nil {
+	runtimeValue, err := getRuntime(ctx)
+	if err != nil || runtimeValue == nil {
 		return errors.New("retrieval cleanup unavailable")
 	}
-	return runtime.Cleanup(ctx)
+	return runtimeValue.Cleanup(ctx)
+}
+
+func getRuntime(ctx context.Context) (cleanupRuntime, error) {
+	return getRuntimeWithLoader(ctx, func(ctx context.Context) (cleanupRuntime, error) {
+		return lambdaadapter.NewCleanupRuntime(ctx)
+	})
+}
+
+func getRuntimeWithLoader(ctx context.Context, load func(context.Context) (cleanupRuntime, error)) (cleanupRuntime, error) {
+	runtimeMu.Lock()
+	defer runtimeMu.Unlock()
+	if runtime != nil {
+		return runtime, nil
+	}
+	runtimeValue, err := load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runtime = runtimeValue
+	return runtime, nil
 }
 
 func main() { lambda.Start(handler) }

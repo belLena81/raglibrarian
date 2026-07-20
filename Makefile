@@ -11,7 +11,7 @@ HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
 # 0.69.2 is the vendor-designated unaffected Trivy release after the 2026
 # publishing incident. Do not move this pin without reviewing the advisory.
 TRIVY_IMAGE := aquasec/trivy:0.69.2
-SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-ingestion-lambda:local raglibrarian-ingestion-dispatcher-lambda:local raglibrarian-ingestion-cleanup-lambda:local raglibrarian-retrieval-service:local raglibrarian-retrieval-worker:local raglibrarian-retrieval-planner-lambda:local raglibrarian-retrieval-index-lambda:local raglibrarian-retrieval-dispatcher-lambda:local raglibrarian-retrieval-cleanup-lambda:local
+SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-ingestion-lambda:local raglibrarian-ingestion-dispatcher-lambda:local raglibrarian-ingestion-cleanup-lambda:local raglibrarian-retrieval-service:local raglibrarian-retrieval-worker:local raglibrarian-retrieval-qdrant-init:local raglibrarian-retrieval-planner-lambda:local raglibrarian-retrieval-index-lambda:local raglibrarian-retrieval-dispatcher-lambda:local raglibrarian-retrieval-cleanup-lambda:local
 M5_PROVIDER_IMAGES := qdrant/qdrant:v1.18.3 ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
 M4_E2E_INGESTION_POSTGRES_DSN_FILE ?= $(CURDIR)/.dev/secrets/ingestion_e2e_dsn
 M4_E2E_MINIO_ENDPOINT ?= 127.0.0.1:9000
@@ -191,7 +191,7 @@ m4-contract-test: contract-test
 m5-contract-test: contract-test
 	@project=raglibrarian-m5-contract-test; \
 	trap 'MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile m5-contract-test down -v --remove-orphans' EXIT; \
-	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile m5-contract-test build retrieval-service retrieval-contract-tests && \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile m5-contract-test build retrieval-qdrant-init retrieval-service retrieval-contract-tests && \
 	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile m5-contract-test run --rm retrieval-contract-tests
 
 m5-integration-test: m5-contract-test m5-e2e m5-worker-recovery-test
@@ -466,6 +466,7 @@ image-build: _require_root
 	docker build --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda -t raglibrarian-ingestion-cleanup-lambda:local .
 	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/server -t raglibrarian-retrieval-service:local .
 	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/worker -t raglibrarian-retrieval-worker:local .
+	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/qdrant_init -t raglibrarian-retrieval-qdrant-init:local .
 	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/planner_lambda -t raglibrarian-retrieval-planner-lambda:local .
 	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/index_lambda -t raglibrarian-retrieval-index-lambda:local .
 	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/dispatcher_lambda -t raglibrarian-retrieval-dispatcher-lambda:local .

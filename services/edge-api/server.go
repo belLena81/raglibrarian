@@ -24,6 +24,10 @@ type RouterConfig struct {
 	TrustedProxyCIDRs    []netip.Prefix
 	PublicOrigin         string
 	EnforceBrowserOrigin bool
+	QueryRateLimit       int
+	QueryRateWindow      time.Duration
+	QueryRateMaxKeys     int
+	QueryConcurrency     int
 }
 
 // NewRouter wires all public routes and mandatory authentication dependencies.
@@ -114,6 +118,8 @@ func NewRouter(
 	})
 	router.Group(func(router chi.Router) {
 		router.Use(middleware.Authenticator(verifier, sessions, diagnostics))
+		router.Use(middleware.FixedWindowPrincipalRateLimit(queryRateLimit(config.QueryRateLimit), queryRateWindow(config.QueryRateWindow), queryRateMaxKeys(config.QueryRateMaxKeys)))
+		router.Use(middleware.BoundedConcurrency(queryConcurrency(config.QueryConcurrency)))
 		router.Post("/query", query.Query)
 		router.Route("/query", func(router chi.Router) { router.Post("/", query.Query) })
 	})
@@ -133,4 +139,32 @@ func NewRouter(
 		})
 	}
 	return router
+}
+
+func queryRateLimit(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 30
+}
+
+func queryRateWindow(value time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return time.Minute
+}
+
+func queryRateMaxKeys(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 10000
+}
+
+func queryConcurrency(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 8
 }

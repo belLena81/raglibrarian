@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,6 +40,10 @@ func TestLoadParsesExplicitSecurityConfiguration(t *testing.T) {
 	assert.Equal(t, 65532, cfg.RunAs.UID)
 	assert.Equal(t, "retrieval-service:50054", cfg.RetrievalAddress)
 	assert.True(t, cfg.RetrievalReadinessRequired)
+	assert.Equal(t, 30, cfg.QueryRateLimit)
+	assert.Equal(t, time.Minute, cfg.QueryRateWindow)
+	assert.Equal(t, 10000, cfg.QueryRateMaxKeys)
+	assert.Equal(t, 8, cfg.QueryConcurrency)
 }
 
 func TestLoadParsesRetrievalReadinessPolicy(t *testing.T) {
@@ -49,6 +54,22 @@ func TestLoadParsesRetrievalReadinessPolicy(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.False(t, cfg.RetrievalReadinessRequired)
+}
+
+func TestLoadParsesQueryAdmissionControls(t *testing.T) {
+	setRequired(t)
+	t.Setenv("EDGE_QUERY_RATE_LIMIT", "12")
+	t.Setenv("EDGE_QUERY_RATE_WINDOW", "30s")
+	t.Setenv("EDGE_QUERY_RATE_MAX_KEYS", "500")
+	t.Setenv("EDGE_QUERY_CONCURRENCY", "3")
+
+	cfg, err := config.Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, 12, cfg.QueryRateLimit)
+	assert.Equal(t, 30*time.Second, cfg.QueryRateWindow)
+	assert.Equal(t, 500, cfg.QueryRateMaxKeys)
+	assert.Equal(t, 3, cfg.QueryConcurrency)
 }
 
 func TestLoadRejectsInvalidSecurityConfiguration(t *testing.T) {
@@ -91,6 +112,13 @@ func TestLoadClassifiesConfigurationFailures(t *testing.T) {
 				t.Setenv("EDGE_INSECURE_REFRESH_COOKIE", "sometimes")
 			},
 			expected: config.ErrRefreshCookieConfiguration,
+		},
+		{
+			name: "query rate invalid",
+			configure: func(t *testing.T) {
+				t.Setenv("EDGE_QUERY_RATE_LIMIT", "0")
+			},
+			expected: config.ErrQueryLimitConfiguration,
 		},
 		{
 			name: "retrieval readiness policy invalid",

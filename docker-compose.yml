@@ -522,6 +522,28 @@ services:
       retries: 20
       start_period: 10s
 
+  retrieval-qdrant-init:
+    <<: *job-hardening
+    profiles: ["m5", "m5-contract-test"]
+    build:
+      context: .
+      target: retrieval-runtime
+      args:
+        SERVICE: retrieval-service
+        SERVICE_COMMAND: cmd/qdrant_init
+    environment:
+      RETRIEVAL_QDRANT_URL: http://qdrant:6333
+      RETRIEVAL_QDRANT_COLLECTION: evidence_v2
+      RETRIEVAL_QDRANT_API_KEY_FILE: /run/secrets/retrieval_qdrant_api_key
+    secrets:
+      - retrieval_qdrant_api_key
+    networks:
+      - retrieval-index
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    pids_limit: 128
+
   text-embeddings-inference:
     profiles: ["m5", "m5-contract-test"]
     image: ${M5_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.9}
@@ -596,6 +618,8 @@ services:
         condition: service_completed_successfully
       qdrant:
         condition: service_healthy
+      retrieval-qdrant-init:
+        condition: service_completed_successfully
       text-embeddings-inference:
         condition: service_healthy
     pids_limit: 128
