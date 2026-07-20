@@ -9,3 +9,13 @@ ALTER TABLE catalog.books
     DROP COLUMN processing_updated_at,
     DROP COLUMN processing_failure_category,
     DROP COLUMN processing_stage;
+
+DROP INDEX catalog.outbox_pending_idx;
+DROP INDEX catalog.outbox_aggregate_sequence_idx;
+
+ALTER TABLE catalog.outbox
+    DROP COLUMN sequence,
+    DROP COLUMN aggregate_id;
+
+CREATE INDEX outbox_pending_idx ON catalog.outbox (next_attempt_at, event_id)
+    WHERE published_at IS NULL;

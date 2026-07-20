@@ -38,7 +38,8 @@ const validPassword = "correct-horse-123"
 var verificationTokenPattern = regexp.MustCompile(`#[A-Za-z0-9_-]{43}`)
 
 type authSession struct {
-	Token string `json:"token"`
+	Token         string `json:"token"`
+	RefreshCookie string `json:"-"`
 }
 
 type principal struct {
@@ -362,10 +363,26 @@ func login(t *testing.T, email string) authSession {
 	}, "")
 	requireStatus(t, http.StatusOK, resp)
 	assertPrivateNoStore(t, resp)
+	refreshCookie, err := m4RefreshCookieHeader(resp.Cookies())
+	require.NoError(t, err)
 	var session authSession
 	decodeJSON(t, resp, &session)
 	require.NotEmpty(t, session.Token)
+	session.RefreshCookie = refreshCookie
 	return session
+}
+
+func m4RefreshCookieHeader(cookies []*http.Cookie) (string, error) {
+	for _, cookie := range cookies {
+		if cookie.Name != "refresh_token" && cookie.Name != "__Host-refresh_token" {
+			continue
+		}
+		if cookie.Value == "" || len(cookie.Value) > 16<<10 || strings.ContainsAny(cookie.Value, "\r\n;") {
+			return "", fmt.Errorf("refresh session cookie was invalid")
+		}
+		return cookie.Name + "=" + cookie.Value, nil
+	}
+	return "", fmt.Errorf("refresh session cookie was missing")
 }
 
 func getMe(t *testing.T, token string) principal {
@@ -504,7 +521,7 @@ func TestMilestone2IdentityLifecycle(t *testing.T) {
 	approvedEmail := uniqueEmail("librarian-approved")
 	rejectedEmail := uniqueEmail("librarian-rejected")
 	eventEmail := uniqueEmail("librarian-event")
-	var approvedAccessToken string
+	var approvedSession authSession
 
 	t.Run("bootstrap singleton admin", func(t *testing.T) {
 		invalid := request(t, http.MethodPost, "/setup/admin", map[string]string{
@@ -636,8 +653,7 @@ func TestMilestone2IdentityLifecycle(t *testing.T) {
 		assertPrivateNoStore(t, rejected)
 		closeBody(t, rejected)
 
-		approvedSession := login(t, approvedEmail)
-		approvedAccessToken = approvedSession.Token
+		approvedSession = login(t, approvedEmail)
 		actual := getMe(t, approvedSession.Token)
 		assert.Equal(t, "librarian", actual.Role)
 		assert.Equal(t, "active", actual.Status)
@@ -768,7 +784,8 @@ func TestMilestone2IdentityLifecycle(t *testing.T) {
 		assert.Equal(t, 1, version)
 	})
 
-	writeM4SessionToken(t, "E2E_M4_ACCESS_TOKEN_OUT", approvedAccessToken)
+	writeM4SessionToken(t, "E2E_M4_ACCESS_TOKEN_OUT", approvedSession.Token)
+	writeM4SessionToken(t, "E2E_M4_REFRESH_COOKIE_OUT", approvedSession.RefreshCookie)
 	writeM4SessionToken(t, "E2E_M4_REVOCABLE_TOKEN_OUT", admin.Token)
 }
 

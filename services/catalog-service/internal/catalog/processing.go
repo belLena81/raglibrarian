@@ -145,7 +145,7 @@ func decodeProcessingEvent(eventType string, payload []byte) (ProcessingEvent, e
 	switch eventType {
 	case "ingestion.book.processing-started.v1":
 		message := &ingestionv1.BookProcessingStartedV1{}
-		if err := unmarshalStrict(payload, message); err != nil {
+		if err := unmarshalStrict(payload, message); err != nil || !validProcessingProfile(message) {
 			return ProcessingEvent{}, ErrInvalidProcessingEvent
 		}
 		event.EventID, event.BookID = message.GetEventId(), message.GetBookId()
@@ -171,7 +171,7 @@ func decodeProcessingEvent(eventType string, payload []byte) (ProcessingEvent, e
 		event.Fact.Kind = ProcessingChunksReady
 	case "ingestion.book.processing-failed.v1":
 		message := &ingestionv1.BookProcessingFailedV1{}
-		if err := unmarshalStrict(payload, message); err != nil {
+		if err := unmarshalStrict(payload, message); err != nil || !validProcessingProfile(message) {
 			return ProcessingEvent{}, ErrInvalidProcessingEvent
 		}
 		event.EventID, event.BookID = message.GetEventId(), message.GetBookId()
@@ -197,15 +197,26 @@ func decodeProcessingEvent(eventType string, payload []byte) (ProcessingEvent, e
 	return event, nil
 }
 
+type processingProfileDescriptor interface {
+	GetExtractionVersion() string
+	GetNormalizationVersion() string
+	GetTokenizerVersion() string
+	GetChunkingVersion() string
+}
+
+func validProcessingProfile(message processingProfileDescriptor) bool {
+	return message.GetExtractionVersion() == supportedM4Profile.extractionVersion &&
+		message.GetNormalizationVersion() == supportedM4Profile.normalizationVersion &&
+		message.GetTokenizerVersion() == supportedM4Profile.tokenizerVersion &&
+		message.GetChunkingVersion() == supportedM4Profile.chunkingVersion
+}
+
 func validReadyDescriptor(message *ingestionv1.BookChunksReadyV1) bool {
 	if message == nil || !validEventIdentifier(message.GetBookId()) || len(message.GetSourceSha256()) != sha256.Size ||
 		len(message.GetManifestSha256()) != sha256.Size || message.GetManifestByteSize() <= 0 || message.GetManifestByteSize() > maxManifestBytes ||
 		message.GetPageCount() == 0 || message.GetPageCount() > maxProcessedPages ||
 		message.GetChunkCount() == 0 || message.GetChunkCount() > maxProcessedChunks ||
-		message.GetExtractionVersion() != supportedM4Profile.extractionVersion ||
-		message.GetNormalizationVersion() != supportedM4Profile.normalizationVersion ||
-		message.GetTokenizerVersion() != supportedM4Profile.tokenizerVersion ||
-		message.GetChunkingVersion() != supportedM4Profile.chunkingVersion ||
+		!validProcessingProfile(message) ||
 		message.GetStructureVersion() != supportedM4Profile.structureVersion ||
 		message.GetMaximumTokens() != supportedM4Profile.maximumTokens ||
 		message.GetOverlapTokens() != supportedM4Profile.overlapTokens {

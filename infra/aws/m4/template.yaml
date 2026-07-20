@@ -312,6 +312,19 @@ Resources:
                   - s3:GetObject
                   - s3:PutObject
                 Resource: !Sub '${ArtifactBucket.Arn}/books/*'
+              - Sid: AbortPartialArtifacts
+                Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                Resource: !Sub '${ArtifactBucket.Arn}/books/*'
+              - Sid: ListPartialArtifactVersions
+                Effect: Allow
+                Action: s3:ListBucketVersions
+                Resource: !GetAtt ArtifactBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: 'books/*'
               - Sid: UseArtifactKey
                 Effect: Allow
                 Action:

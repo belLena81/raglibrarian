@@ -468,8 +468,14 @@ services:
       IDENTITY_MIGRATION_POSTGRES_DSN_FILE: /run/secrets/identity_migration_dsn
       CATALOG_OUTBOX_INTEGRATION: "true"
       CATALOG_POSTGRES_INTEGRATION: "true"
+      CATALOG_MIGRATION_INTEGRATION: "true"
       CATALOG_POSTGRES_DSN_FILE: /run/secrets/catalog_runtime_dsn
       CATALOG_RABBITMQ_URI_FILE: /run/secrets/catalog_rabbitmq_uri
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: catalog
+      PGUSER: catalog_migrator
+      PGPASSFILE: /run/secrets/catalog_migration_pgpass
       INGESTION_POSTGRES_DSN_FILE: /run/secrets/ingestion_runtime_dsn
       INGESTION_RABBITMQ_URI_FILE: /run/secrets/ingestion_rabbitmq_uri
       INGESTION_MINIO_ENDPOINT: minio:9000
@@ -503,6 +509,7 @@ services:
       - identity_runtime_dsn
       - identity_migration_dsn
       - catalog_runtime_dsn
+      - catalog_migration_pgpass
       - catalog_rabbitmq_uri
       - ingestion_runtime_dsn
       - ingestion_rabbitmq_uri

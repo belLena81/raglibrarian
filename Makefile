@@ -257,7 +257,11 @@ m4-sse-load: _require_root
 	cd tests/e2e && go test -count=1 -v -timeout "$${M4_SSE_LOAD_TIMEOUT:-20m}" -tags 'e2e m4 m4_load' -run '^TestM4SSEConnectionCapIsEnforced$$' ./...
 
 m4-soak: m4-fixtures
-	cd tests/e2e && M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" M4_E2E_EDGE_BASE_URLS="$(M4_E2E_EDGE_BASE_URLS)" M4_E2E_PUBLIC_ORIGIN="$(M4_E2E_PUBLIC_ORIGIN)" M4_E2E_INGESTION_POSTGRES_DSN_FILE="$(M4_E2E_INGESTION_POSTGRES_DSN_FILE)" M4_E2E_MINIO_ENDPOINT="$(M4_E2E_MINIO_ENDPOINT)" M4_E2E_MINIO_INSECURE=true M4_E2E_MINIO_ACCESS_KEY_FILE="$(M4_E2E_MINIO_ACCESS_KEY_FILE)" M4_E2E_MINIO_SECRET_KEY_FILE="$(M4_E2E_MINIO_SECRET_KEY_FILE)" M4_E2E_MINIO_ARTIFACT_BUCKET="$(M4_E2E_MINIO_ARTIFACT_BUCKET)" M4_SOAK_DURATION="$${M4_SOAK_DURATION:-30m}" go test -count=1 -v -timeout "$${M4_SOAK_TIMEOUT:-45m}" -tags 'e2e m4 m4_soak' -run '^TestM4Soak' ./...
+	@set -eu; \
+	cd tests/e2e; \
+	soak_tests="$$(go test -count=1 -tags 'e2e m4 m4_soak' -list '^TestM4SoakRepeatedIngestion$$' ./...)"; \
+	printf '%s\n' "$$soak_tests" | grep -qx 'TestM4SoakRepeatedIngestion' || { echo 'M4 soak test was not discovered' >&2; exit 1; }; \
+	M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" M4_E2E_EDGE_BASE_URLS="$(M4_E2E_EDGE_BASE_URLS)" M4_E2E_PUBLIC_ORIGIN="$(M4_E2E_PUBLIC_ORIGIN)" M4_E2E_INGESTION_POSTGRES_DSN_FILE="$(M4_E2E_INGESTION_POSTGRES_DSN_FILE)" M4_E2E_MINIO_ENDPOINT="$(M4_E2E_MINIO_ENDPOINT)" M4_E2E_MINIO_INSECURE=true M4_E2E_MINIO_ACCESS_KEY_FILE="$(M4_E2E_MINIO_ACCESS_KEY_FILE)" M4_E2E_MINIO_SECRET_KEY_FILE="$(M4_E2E_MINIO_SECRET_KEY_FILE)" M4_E2E_MINIO_ARTIFACT_BUCKET="$(M4_E2E_MINIO_ARTIFACT_BUCKET)" M4_E2E_REFRESH_COOKIE_FILE="$${M4_E2E_REFRESH_COOKIE_FILE:-}" M4_SOAK_DURATION="$${M4_SOAK_DURATION:-30m}" M4_E2E_SOAK_ITERATIONS="$${M4_E2E_SOAK_ITERATIONS:-10}" go test -count=1 -v -timeout "$${M4_SOAK_TIMEOUT:-45m}" -tags 'e2e m4 m4_soak' -run '^TestM4SoakRepeatedIngestion$$' ./...
 
 .PHONY: contract-test
 contract-test: _require_root
@@ -354,6 +358,7 @@ compose-config: _require_root
 	docker compose config --quiet
 
 sam-validate: _require_root
+	bash ./scripts/check-m4-processing-policy.sh
 	@command -v sam >/dev/null || { echo "AWS SAM CLI is required"; exit 1; }
 	sam validate --lint --template-file infra/aws/m4/template.yaml
 

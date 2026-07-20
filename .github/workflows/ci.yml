@@ -173,13 +173,15 @@ jobs:
         run: |
           token_dir="$(mktemp -d /tmp/raglibrarian-m4-tokens.XXXXXX)"
           chmod 700 "$token_dir"
-          trap 'rm -f "$token_dir/access" "$token_dir/revocable"; rmdir "$token_dir"' EXIT
+          trap 'rm -f "$token_dir/access" "$token_dir/refresh" "$token_dir/revocable"; rmdir "$token_dir"' EXIT
           E2E_BOOTSTRAP_CODE="$(cat .dev/secrets/e2e_bootstrap_code)" \
           E2E_M4_ACCESS_TOKEN_OUT="$token_dir/access" \
+          E2E_M4_REFRESH_COOKIE_OUT="$token_dir/refresh" \
           E2E_M4_REVOCABLE_TOKEN_OUT="$token_dir/revocable" \
           E2E_MAIL_FIXTURE_URL=http://127.0.0.1:8025/view/latest.txt make e2e
           M4_E2E_ACCESS_TOKEN_FILE="$token_dir/access" make m4-performance-smoke
-          M4_E2E_ACCESS_TOKEN_FILE="$token_dir/access" make m4-soak
+          M4_E2E_ACCESS_TOKEN_FILE="$token_dir/access" \
+          M4_E2E_REFRESH_COOKIE_FILE="$token_dir/refresh" make m4-soak
       - name: Show container state and logs
         if: failure()
         run: docker compose --profile m4-ha ps --all

@@ -18,6 +18,8 @@ import (
 
 const ExtractionVersion = "poppler-layout-v1"
 
+var errIncompletePageStream = errors.New("incomplete page stream")
+
 type Page struct {
 	Number uint32
 	Text   string
@@ -164,12 +166,19 @@ func classifyCommandError(ctx context.Context, err error) error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return &categorizedError{category: domain.FailureProcessingTimeout, cause: ctx.Err()}
 	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return &categorizedError{category: domain.FailureInternalProcessing, cause: ctx.Err()}
+	}
 	if errors.Is(err, exec.ErrNotFound) {
 		return &categorizedError{category: domain.FailureDependencyUnavailable, cause: err}
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		switch exitErr.ExitCode() {
+		case 1:
+			return &categorizedError{category: domain.FailureMalformedDocument, cause: err}
+		case 3:
+			return &categorizedError{category: domain.FailureExtractionNotPermitted, cause: err}
 		case 121:
 			return &categorizedError{category: domain.FailureResourceLimitExceeded, cause: err}
 		case 122, 123, 124:
@@ -179,7 +188,7 @@ func classifyCommandError(ctx context.Context, err error) error {
 			return &categorizedError{category: domain.FailureResourceLimitExceeded, cause: err}
 		}
 	}
-	return &categorizedError{category: domain.FailureMalformedDocument, cause: err}
+	return &categorizedError{category: domain.FailureInternalProcessing, cause: err}
 }
 
 type ExecRunner struct{}
@@ -222,6 +231,13 @@ func (ExecRunner) StreamPages(ctx context.Context, path string, args []string, l
 	}
 	streamErr := consumePageStream(stdout, limits, expectedPages, consume)
 	if streamErr != nil {
+		if errors.Is(streamErr, errIncompletePageStream) {
+			waitErr := command.Wait()
+			if waitErr != nil {
+				return waitErr
+			}
+			return streamErr
+		}
 		_ = command.Cancel()
 		_ = command.Wait()
 		return streamErr
@@ -266,7 +282,7 @@ func consumePageStream(input io.Reader, limits Limits, expectedPages uint32, con
 		}
 	}
 	if pageNumber != expectedPages {
-		return &categorizedError{category: domain.FailureMalformedDocument}
+		return &categorizedError{category: domain.FailureMalformedDocument, cause: errIncompletePageStream}
 	}
 	return nil
 }

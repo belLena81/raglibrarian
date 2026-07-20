@@ -389,17 +389,26 @@ func classify(err error, ctx context.Context) (domain.FailureCategory, bool) {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return domain.FailureProcessingTimeout, false
 	}
-	if category, ok := extractor.FailureCategory(err); ok {
-		return category, category != domain.FailureDependencyUnavailable && category != domain.FailureProcessingTimeout
-	}
-	var typed processingError
-	if errors.As(err, &typed) {
-		return typed.category, typed.category != domain.FailureDependencyUnavailable && typed.category != domain.FailureProcessingTimeout
-	}
 	if errors.Is(err, chunking.ErrChunkLimit) || errors.Is(err, artifact.ErrArtifactLimit) {
 		return domain.FailureResourceLimitExceeded, true
 	}
+	if category, ok := extractor.FailureCategory(err); ok {
+		return category, permanentProcessingFailure(category)
+	}
+	var typed processingError
+	if errors.As(err, &typed) {
+		return typed.category, permanentProcessingFailure(typed.category)
+	}
 	return domain.FailureInternalProcessing, false
+}
+
+func permanentProcessingFailure(category domain.FailureCategory) bool {
+	switch category {
+	case domain.FailureDependencyUnavailable, domain.FailureProcessingTimeout, domain.FailureInternalProcessing:
+		return false
+	default:
+		return true
+	}
 }
 
 func retryDelay(attempt int) time.Duration {

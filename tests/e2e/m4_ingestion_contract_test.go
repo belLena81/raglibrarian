@@ -540,6 +540,11 @@ func loadM4Token(t *testing.T, directKey, fileKey string) string {
 	if direct := strings.TrimSpace(os.Getenv(directKey)); direct != "" {
 		return direct
 	}
+	return loadM4FileSecret(t, fileKey)
+}
+
+func loadM4FileSecret(t *testing.T, fileKey string) string {
+	t.Helper()
 	path := strings.TrimSpace(os.Getenv(fileKey))
 	if path == "" {
 		return ""

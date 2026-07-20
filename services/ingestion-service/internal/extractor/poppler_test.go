@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/domain"
 )
@@ -17,6 +18,24 @@ func (r *fakeRunner) Run(context.Context, string, []string, int64) ([]byte, erro
 	return output, nil
 }
 
+func TestStreamPagesTreatsParentCancellationAsRetryable(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+	err := (ExecRunner{}).StreamPages(
+		ctx,
+		"sh",
+		[]string{"-c", "printf 'first'; sleep 10"},
+		Limits{MaximumPageBytes: 32, MaximumExtractedBytes: 64},
+		3,
+		func(Page) error { return nil },
+	)
+	classified := classifyStreamError(ctx, err)
+	category, ok := FailureCategory(classified)
+	if !ok || category != domain.FailureInternalProcessing {
+		t.Fatalf("expected retryable internal processing failure, got %q", category)
+	}
+}
+
 func TestClassifySandboxSetupFailures(t *testing.T) {
 	tests := []struct {
 		code     string
@@ -27,11 +46,48 @@ func TestClassifySandboxSetupFailures(t *testing.T) {
 		{code: "123", expected: domain.FailureDependencyUnavailable},
 		{code: "124", expected: domain.FailureDependencyUnavailable},
 		{code: "1", expected: domain.FailureMalformedDocument},
+		{code: "99", expected: domain.FailureInternalProcessing},
 	}
 	for _, test := range tests {
 		t.Run(test.code, func(t *testing.T) {
 			err := exec.Command("sh", "-c", "exit "+test.code).Run() // #nosec G204 -- fixed synthetic test input.
 			classified := classifyCommandError(context.Background(), err)
+			category, ok := FailureCategory(classified)
+			if !ok || category != test.expected {
+				t.Fatalf("expected %q, got %q", test.expected, category)
+			}
+		})
+	}
+}
+
+func TestStreamPagesDistinguishesMalformedOutputFromUnexpectedParserExit(t *testing.T) {
+	tests := []struct {
+		name     string
+		command  string
+		expected domain.FailureCategory
+	}{
+		{
+			name:     "successful parser with incomplete page stream",
+			command:  "printf 'first\\f'; exit 0",
+			expected: domain.FailureMalformedDocument,
+		},
+		{
+			name:     "failed parser with incomplete page stream",
+			command:  "printf 'first\\f'; exit 99",
+			expected: domain.FailureInternalProcessing,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := (ExecRunner{}).StreamPages(
+				context.Background(),
+				"sh",
+				[]string{"-c", test.command},
+				Limits{MaximumPageBytes: 32, MaximumExtractedBytes: 64},
+				3,
+				func(Page) error { return nil },
+			)
+			classified := classifyStreamError(context.Background(), err)
 			category, ok := FailureCategory(classified)
 			if !ok || category != test.expected {
 				t.Fatalf("expected %q, got %q", test.expected, category)

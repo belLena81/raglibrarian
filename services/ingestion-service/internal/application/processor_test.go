@@ -69,6 +69,16 @@ type processorExtractor struct {
 	sourcePath string
 }
 
+type processorStreamingRunner struct{}
+
+func (processorStreamingRunner) Run(context.Context, string, []string, int64) ([]byte, error) {
+	return []byte("Pages: 1\nEncrypted: no\n"), nil
+}
+
+func (processorStreamingRunner) StreamPages(_ context.Context, _ string, _ []string, _ extractor.Limits, _ uint32, consume func(extractor.Page) error) error {
+	return consume(extractor.Page{Number: 1, Text: "synthetic"})
+}
+
 func (e *processorExtractor) Extract(ctx context.Context, sourcePath string, consume func(extractor.Page) error) (extractor.DocumentInfo, error) {
 	e.sourcePath = sourcePath
 	if e.waitForCtx {
@@ -191,6 +201,54 @@ func TestProcessorPersistsRetryAndFinalTimeout(t *testing.T) {
 	}
 }
 
+func TestProcessorRetriesInternalExtractorFailure(t *testing.T) {
+	invalidExtractor := extractor.NewPoppler("pdfinfo", "pdftotext", extractor.Limits{}, nil)
+	_, extractorErr := invalidExtractor.Extract(context.Background(), "source.pdf", func(extractor.Page) error { return nil })
+	processor, repository, writer, _, _ := newTestProcessor(t, processorOptions{
+		extractErr:      extractorErr,
+		maximumAttempts: 2,
+	})
+
+	err := processor.Process(context.Background(), validProcessorEvent())
+	if !errors.Is(err, ErrProcessingDeferred) || repository.retries != 1 || repository.fails != 0 || writer.aborts != 1 {
+		t.Fatalf("internal extraction retry: err=%v repo=%#v writer=%#v", err, repository, writer)
+	}
+}
+
+func TestProcessorDoesNotRetryStreamingLimitFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "chunk limit", err: chunking.ErrChunkLimit},
+		{name: "artifact limit", err: artifact.ErrArtifactLimit},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pdfExtractor := extractor.NewPoppler(
+				"pdfinfo",
+				"pdftotext",
+				extractor.Limits{MaximumPages: 2, MaximumPageBytes: 32, MaximumExtractedBytes: 64},
+				processorStreamingRunner{},
+			)
+			_, extractErr := pdfExtractor.Extract(context.Background(), "source.pdf", func(extractor.Page) error {
+				return test.err
+			})
+			processor, repository, writer, _, _ := newTestProcessor(t, processorOptions{
+				extractErr:      extractErr,
+				maximumAttempts: 2,
+			})
+
+			if err := processor.Process(context.Background(), validProcessorEvent()); err != nil {
+				t.Fatal(err)
+			}
+			if repository.retries != 0 || repository.fails != 1 || repository.failedJob.Failure() != domain.FailureResourceLimitExceeded || writer.aborts != 1 {
+				t.Fatalf("streaming limit result: repo=%#v writer=%#v", repository, writer)
+			}
+		})
+	}
+}
+
 func TestProcessorAbortsArtifactsAndRemovesTemporaryInput(t *testing.T) {
 	processor, repository, writer, _, pdfExtractor := newTestProcessor(t, processorOptions{extractErr: errors.New("extractor crashed"), maximumAttempts: 1})
 	if err := processor.Process(context.Background(), validProcessorEvent()); err != nil {
@@ -218,6 +276,46 @@ func TestProcessorSurfacesRepositoryAndOutboxPersistenceFailures(t *testing.T) {
 	}
 	if events.ready != 1 || events.failed != 1 || repository.fails != 1 || writer.aborts != 0 {
 		t.Fatalf("ready event fallback: repo=%#v writer=%#v events=%#v", repository, writer, events)
+	}
+}
+
+func TestClassifyRetriesInternalExtractorAndProcessingFailures(t *testing.T) {
+	ctx := context.Background()
+	invalidExtractor := extractor.NewPoppler("pdfinfo", "pdftotext", extractor.Limits{}, nil)
+	_, extractorErr := invalidExtractor.Extract(ctx, "source.pdf", func(extractor.Page) error { return nil })
+
+	tests := []struct {
+		name      string
+		err       error
+		category  domain.FailureCategory
+		permanent bool
+	}{
+		{
+			name:      "internal extractor failure",
+			err:       extractorErr,
+			category:  domain.FailureInternalProcessing,
+			permanent: false,
+		},
+		{
+			name:      "internal processing failure",
+			err:       processingError{category: domain.FailureInternalProcessing},
+			category:  domain.FailureInternalProcessing,
+			permanent: false,
+		},
+		{
+			name:      "malformed document",
+			err:       processingError{category: domain.FailureMalformedDocument},
+			category:  domain.FailureMalformedDocument,
+			permanent: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			category, permanent := classify(test.err, ctx)
+			if category != test.category || permanent != test.permanent {
+				t.Fatalf("classify() = (%q, %t), want (%q, %t)", category, permanent, test.category, test.permanent)
+			}
+		})
 	}
 }
 

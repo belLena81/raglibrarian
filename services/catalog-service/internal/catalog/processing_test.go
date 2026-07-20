@@ -3,6 +3,7 @@ package catalog
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"testing"
 	"time"
@@ -108,6 +109,92 @@ func TestProcessingServiceRejectsUntrustedReadyDescriptors(t *testing.T) {
 	}
 }
 
+func TestProcessingServiceRejectsUnsupportedCommonProfilesBeforePersistence(t *testing.T) {
+	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name   string
+		mutate func(*processingProfileFields)
+	}{
+		{name: "missing extraction", mutate: func(profile *processingProfileFields) { profile.extractionVersion = "" }},
+		{name: "changed extraction", mutate: func(profile *processingProfileFields) { profile.extractionVersion = "poppler-layout-v2" }},
+		{name: "missing normalization", mutate: func(profile *processingProfileFields) { profile.normalizationVersion = "" }},
+		{name: "changed normalization", mutate: func(profile *processingProfileFields) { profile.normalizationVersion = "nfc-v2" }},
+		{name: "missing tokenizer", mutate: func(profile *processingProfileFields) { profile.tokenizerVersion = "" }},
+		{name: "changed tokenizer", mutate: func(profile *processingProfileFields) { profile.tokenizerVersion = "cl100k-base-v1" }},
+		{name: "missing chunking", mutate: func(profile *processingProfileFields) { profile.chunkingVersion = "" }},
+		{name: "changed chunking", mutate: func(profile *processingProfileFields) { profile.chunkingVersion = "token-window-v3" }},
+	}
+
+	for _, eventType := range []string{
+		"ingestion.book.processing-started.v1",
+		"ingestion.book.processing-failed.v1",
+	} {
+		for _, test := range tests {
+			t.Run(eventType+"/"+test.name, func(t *testing.T) {
+				profile := processingProfileFields{
+					extractionVersion:    supportedM4Profile.extractionVersion,
+					normalizationVersion: supportedM4Profile.normalizationVersion,
+					tokenizerVersion:     supportedM4Profile.tokenizerVersion,
+					chunkingVersion:      supportedM4Profile.chunkingVersion,
+				}
+				test.mutate(&profile)
+				payload := processingEventPayload(t, eventType, now, profile)
+				repository := &processingRepositoryFake{}
+				service := NewProcessingService(repository, func() time.Time { return now }, func() (string, error) { return "status-1", nil })
+
+				changed, err := service.Handle(context.Background(), eventType, payload)
+
+				if err != ErrInvalidProcessingEvent || changed {
+					t.Fatalf("Handle() = %v, %v", changed, err)
+				}
+				if repository.calls != 0 {
+					t.Fatalf("repository calls = %d, want 0", repository.calls)
+				}
+			})
+		}
+	}
+}
+
+type processingProfileFields struct {
+	extractionVersion    string
+	normalizationVersion string
+	tokenizerVersion     string
+	chunkingVersion      string
+}
+
+func processingEventPayload(t *testing.T, eventType string, occurredAt time.Time, profile processingProfileFields) []byte {
+	t.Helper()
+	commonChecksum := bytes.Repeat([]byte{1}, sha256.Size)
+	var message proto.Message
+	switch eventType {
+	case "ingestion.book.processing-started.v1":
+		message = &ingestionv1.BookProcessingStartedV1{
+			EventId: "event-1", BookId: "book-1", SourceSha256: commonChecksum,
+			ExtractionVersion: profile.extractionVersion, NormalizationVersion: profile.normalizationVersion,
+			TokenizerVersion: profile.tokenizerVersion, ChunkingVersion: profile.chunkingVersion,
+			CorrelationId: "correlation-1", CausationId: "upload-1", Producer: "ingestion-service",
+			SchemaVersion: "v1", IdempotencyKey: "book-1:v1", OccurredAt: timestamppb.New(occurredAt),
+		}
+	case "ingestion.book.processing-failed.v1":
+		message = &ingestionv1.BookProcessingFailedV1{
+			EventId: "event-1", BookId: "book-1", SourceSha256: commonChecksum,
+			ExtractionVersion: profile.extractionVersion, NormalizationVersion: profile.normalizationVersion,
+			TokenizerVersion: profile.tokenizerVersion, ChunkingVersion: profile.chunkingVersion,
+			FailureCategory: ingestionv1.BookProcessingFailureCategory_BOOK_PROCESSING_FAILURE_CATEGORY_INTERNAL_PROCESSING_ERROR,
+			CorrelationId:   "correlation-1", CausationId: "upload-1", Producer: "ingestion-service",
+			SchemaVersion: "v1", IdempotencyKey: "book-1:v1", OccurredAt: timestamppb.New(occurredAt),
+		}
+	default:
+		t.Fatalf("unsupported test event type %q", eventType)
+	}
+	payload, err := proto.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
 func validM4ManifestReference(bookID string, sourceChecksum []byte) string {
 	return "books/" + bookID + "/" + hex.EncodeToString(sourceChecksum) + "/" + hex.EncodeToString(supportedM4Profile.configDigest[:]) + "/manifest.pb"
 }
@@ -131,6 +218,8 @@ func TestProcessingServiceAcceptsAdditiveUnknownFieldsOnKnownV1Route(t *testing.
 	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
 	payload, err := proto.Marshal(&ingestionv1.BookProcessingStartedV1{
 		EventId: "event-1", BookId: "book-1", SourceSha256: bytes.Repeat([]byte{1}, 32),
+		ExtractionVersion: supportedM4Profile.extractionVersion, NormalizationVersion: supportedM4Profile.normalizationVersion,
+		TokenizerVersion: supportedM4Profile.tokenizerVersion, ChunkingVersion: supportedM4Profile.chunkingVersion,
 		CorrelationId: "correlation-1", CausationId: "upload-1", Producer: "ingestion-service",
 		SchemaVersion: "v1", IdempotencyKey: "book-1:v1", OccurredAt: timestamppb.New(now),
 	})
@@ -149,9 +238,11 @@ func TestProcessingServiceAcceptsAdditiveUnknownFieldsOnKnownV1Route(t *testing.
 type processingRepositoryFake struct {
 	event         ProcessingEvent
 	statusEventID string
+	calls         int
 }
 
 func (r *processingRepositoryFake) ApplyProcessingEvent(_ context.Context, event ProcessingEvent, statusEventID string, _ time.Time) (Book, bool, error) {
+	r.calls++
 	r.event = event
 	r.statusEventID = statusEventID
 	return Book{}, true, nil
