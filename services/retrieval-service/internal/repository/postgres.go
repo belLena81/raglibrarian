@@ -244,6 +244,10 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var jobState string
+	if err = tx.QueryRow(ctx, `SELECT state FROM retrieval.index_jobs WHERE id=$1 FOR UPDATE`, work.JobID).Scan(&jobState); err != nil {
+		return false, err
+	}
 	var state string
 	if err = tx.QueryRow(ctx, `SELECT state FROM retrieval.index_batches WHERE id=$1 AND job_id=$2 FOR UPDATE`, work.BatchID, work.JobID).Scan(&state); err != nil {
 		return false, err
@@ -288,6 +292,10 @@ func (r *Postgres) FinalizeJob(ctx context.Context, work application.BatchWork, 
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var jobState string
+	if err = tx.QueryRow(ctx, `SELECT state FROM retrieval.index_jobs WHERE id=$1 FOR UPDATE`, work.JobID).Scan(&jobState); err != nil {
+		return err
+	}
 	var remaining, evidenceCount int
 	if err = tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state <> 'completed'),(SELECT count(*) FROM retrieval.evidence WHERE job_id=$1) FROM retrieval.index_batches WHERE job_id=$1`, work.JobID).Scan(&remaining, &evidenceCount); err != nil {
 		return err

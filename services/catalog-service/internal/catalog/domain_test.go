@@ -123,35 +123,31 @@ func TestBookAppliesRetrievalTerminalFactsFromChunksReady(t *testing.T) {
 	})
 }
 
-func TestBookRejectsContradictoryAndPrematureRetrievalFacts(t *testing.T) {
+func TestBookAppliesRetrievalTerminalFactsFromExtracting(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
-	tests := []struct {
-		name string
-		book Book
-		fact ProcessingFact
-	}{
-		{
-			name: "indexed before chunks ready",
-			book: Book{ProcessingStatus: BookStatusProcessing, ProcessingStage: BookStageExtracting, ProcessingVersion: 2},
-			fact: ProcessingFact{Kind: ProcessingIndexed, OccurredAt: now},
-		},
-		{
-			name: "index failure before chunks ready",
-			book: Book{ProcessingStatus: BookStatusProcessing, ProcessingStage: BookStageExtracting, ProcessingVersion: 2},
-			fact: ProcessingFact{Kind: ProcessingIndexingFailed, FailureCategory: FailureInternalIndexingError, OccurredAt: now},
-		},
-		{
-			name: "failure after indexed",
-			book: Book{ProcessingStatus: BookStatusIndexed, ProcessingStage: BookStageIndexed, ProcessingVersion: 4},
-			fact: ProcessingFact{Kind: ProcessingIndexingFailed, FailureCategory: FailureInternalIndexingError, OccurredAt: now},
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if changed, err := test.book.ApplyProcessingFact(test.fact); err != ErrConflictingProcessingFact || changed {
-				t.Fatalf("ApplyProcessingFact() = %v, %v", changed, err)
-			}
-		})
+
+	t.Run("indexed", func(t *testing.T) {
+		book := Book{ProcessingStatus: BookStatusProcessing, ProcessingStage: BookStageExtracting, ProcessingVersion: 2}
+		changed, err := book.ApplyProcessingFact(ProcessingFact{Kind: ProcessingIndexed, OccurredAt: now})
+		if err != nil || !changed || book.ProcessingStatus != BookStatusIndexed || book.ProcessingStage != BookStageIndexed || book.ProcessingVersion != 3 {
+			t.Fatalf("indexed = (%+v, %v, %v)", book, changed, err)
+		}
+	})
+
+	t.Run("indexing failed", func(t *testing.T) {
+		book := Book{ProcessingStatus: BookStatusProcessing, ProcessingStage: BookStageExtracting, ProcessingVersion: 2}
+		changed, err := book.ApplyProcessingFact(ProcessingFact{Kind: ProcessingIndexingFailed, FailureCategory: FailureInternalIndexingError, OccurredAt: now})
+		if err != nil || !changed || book.ProcessingStatus != BookStatusFailed || book.ProcessingStage != BookStageFailed || book.ProcessingVersion != 3 || book.ProcessingFailureCategory != FailureInternalIndexingError {
+			t.Fatalf("indexing failed = (%+v, %v, %v)", book, changed, err)
+		}
+	})
+}
+
+func TestBookRejectsContradictoryRetrievalFacts(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	book := Book{ProcessingStatus: BookStatusIndexed, ProcessingStage: BookStageIndexed, ProcessingVersion: 4}
+	if changed, err := book.ApplyProcessingFact(ProcessingFact{Kind: ProcessingIndexingFailed, FailureCategory: FailureInternalIndexingError, OccurredAt: now}); err != ErrConflictingProcessingFact || changed {
+		t.Fatalf("ApplyProcessingFact() = %v, %v", changed, err)
 	}
 }
 

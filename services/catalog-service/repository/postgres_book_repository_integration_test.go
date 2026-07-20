@@ -43,7 +43,7 @@ func TestApplyRetrievalTerminalEventIsAtomicAndIdempotent(t *testing.T) {
 		(id,title,author,year,tags,processing_status,created_at,object_reference,checksum,byte_size,media_type,actor_id,
 		 processing_stage,processing_failure_category,processing_updated_at,processing_version)
 		VALUES ($1,'Retrieval terminal fixture','Catalog integration',2026,ARRAY['synthetic'],'processing',$2,$3,$4,1,
-		'application/pdf','integration-test','chunks_ready','',$2,3)`,
+		'application/pdf','integration-test','extracting','',$2,2)`,
 		bookID, now.Add(-time.Minute), "originals/"+bookID+".pdf", sourceChecksum[:])
 	if err != nil {
 		t.Fatalf("insert retrieval book fixture: %v", err)
@@ -72,7 +72,7 @@ func TestApplyRetrievalTerminalEventIsAtomicAndIdempotent(t *testing.T) {
 	repository := NewPostgresBookRepository(pool)
 	book, changed, err := repository.ApplyProcessingEvent(ctx, event, statusEventID, now)
 	if err != nil || !changed || book.ProcessingStatus != catalog.BookStatusIndexed ||
-		book.ProcessingStage != catalog.BookStageIndexed || book.ProcessingVersion != 4 {
+		book.ProcessingStage != catalog.BookStageIndexed || book.ProcessingVersion != 3 {
 		t.Fatalf("ApplyProcessingEvent() = (%+v, %v, %v)", book, changed, err)
 	}
 
@@ -83,7 +83,7 @@ func TestApplyRetrievalTerminalEventIsAtomicAndIdempotent(t *testing.T) {
 	var inboxCount, outboxCount int
 	if err = pool.QueryRow(ctx, `SELECT
 		(SELECT COUNT(*) FROM catalog.processing_inbox WHERE event_id=$1),
-		(SELECT COUNT(*) FROM catalog.outbox WHERE aggregate_id=$2 AND sequence=4)`, eventID, bookID).
+		(SELECT COUNT(*) FROM catalog.outbox WHERE aggregate_id=$2 AND sequence=3)`, eventID, bookID).
 		Scan(&inboxCount, &outboxCount); err != nil {
 		t.Fatalf("read terminal projection counts: %v", err)
 	}

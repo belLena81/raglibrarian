@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -88,6 +89,140 @@ func TestReplayRecoveryTerminalFailureAndVisibilityUseDurableState(t *testing.T)
 	visible, err := repository.FilterIndexed(ctx, []application.Evidence{{EvidenceID: "hidden", JobID: jobID, BookID: bookID, Passage: "must remain hidden"}})
 	if err != nil || len(visible) != 0 {
 		t.Fatalf("failed job visibility=%#v error=%v", visible, err)
+	}
+}
+
+func TestCompleteBatchSerializesFinalBatchCompletion(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+
+	repository := NewPostgres(pool)
+	suffix := randomIntegrationID(t)
+	bookID, jobID := "book-"+suffix, "job-"+suffix
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sourceSHA256 := integrationDigest(1)
+	manifestSHA256 := integrationDigest(2)
+	profileDigest := domain.SupportedIndexProfile().Digest
+	payloadDigest := integrationDigest(3)
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.metadata_facts(book_id,event_id,payload_digest,source_sha256,title,author,publication_year,tags,correlation_id,causation_id,occurred_at)
+		VALUES($1,$2,$3,$4,'Synthetic systems','RAGLibrarian QA',2026,'{}',$5,$6,$7)`, bookID, "metadata-"+suffix, payloadDigest[:], sourceSHA256[:], "correlation-"+suffix, "cause-"+suffix, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_jobs(id,book_id,source_sha256,manifest_sha256,profile_digest,state,expected_batches,correlation_id,created_at,updated_at)
+		VALUES($1,$2,$3,$4,$5,'pending',2,$6,$7,$7)`, jobID, bookID, sourceSHA256[:], manifestSHA256[:], profileDigest[:], "correlation-"+suffix, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batchIDs := []string{"batch-a-" + suffix, "batch-b-" + suffix}
+	for index, batchID := range batchIDs {
+		shardSHA256 := integrationDigest(byte(10 + index))
+		_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_batches(id,job_id,shard_reference,shard_sha256,compressed_byte_size,uncompressed_byte_size,chunk_count,state,updated_at)
+			VALUES($1,$2,$3,$4,10,20,1,'processing',$5)`, batchID, jobID, "books/"+bookID+"/source/profile/shards/00000"+string(rune('0'+index))+".pb.zst", shardSHA256[:], now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.outbox WHERE aggregate_id=$1`, jobID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE id=$1`, jobID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
+	})
+
+	works := make([]application.BatchWork, len(batchIDs))
+	for index, batchID := range batchIDs {
+		works[index] = application.BatchWork{
+			EventID:           "event-" + batchID,
+			JobID:             jobID,
+			BatchID:           batchID,
+			BookID:            bookID,
+			ShardReference:    "books/" + bookID + "/source/profile/shards/00000" + string(rune('0'+index)) + ".pb.zst",
+			ShardSHA256:       integrationDigest(byte(10 + index)),
+			SourceSHA256:      sourceSHA256,
+			ManifestSHA256:    manifestSHA256,
+			ProfileDigest:     profileDigest,
+			CompressedBytes:   10,
+			UncompressedBytes: 20,
+			ChunkCount:        1,
+			CorrelationID:     "correlation-" + suffix,
+			CausationID:       "cause-" + suffix,
+			Producer:          "retrieval-service",
+			SchemaVersion:     "v1",
+			IdempotencyKey:    batchID,
+			OccurredAt:        now,
+		}
+	}
+
+	completed := make(chan bool, len(works))
+	errs := make(chan error, len(works))
+	var waitGroup sync.WaitGroup
+	for index := range works {
+		work := works[index]
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			record := application.EvidenceRecord{
+				Evidence: application.Evidence{
+					EvidenceID: "evidence-" + work.BatchID,
+					ChunkID:    "chunk-" + work.BatchID,
+					JobID:      work.JobID,
+					BookID:     work.BookID,
+					Title:      "Synthetic systems",
+					Author:     "RAGLibrarian QA",
+					Passage:    "synthetic evidence",
+				},
+				JobID:         work.JobID,
+				ContentSHA256: integrationDigest(byte(len(work.BatchID))),
+			}
+			ready, completeErr := repository.CompleteBatch(ctx, work, []application.EvidenceRecord{record}, now)
+			if completeErr != nil {
+				errs <- completeErr
+				return
+			}
+			completed <- ready
+		}()
+	}
+	waitGroup.Wait()
+	close(completed)
+	close(errs)
+	for completeErr := range errs {
+		t.Fatal(completeErr)
+	}
+	finalizers := 0
+	for ready := range completed {
+		if ready {
+			finalizers++
+			if err = repository.FinalizeJob(ctx, works[0], now); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if finalizers != 1 {
+		t.Fatalf("final batch completions = %d, want 1", finalizers)
+	}
+	if err = repository.FinalizeJob(ctx, works[1], now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	var terminalEvents int
+	if err = pool.QueryRow(ctx, `SELECT state FROM retrieval.index_jobs WHERE id=$1`, jobID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.outbox WHERE event_id=$1`, jobID+":indexed").Scan(&terminalEvents); err != nil {
+		t.Fatal(err)
+	}
+	if state != "indexed" || terminalEvents != 1 {
+		t.Fatalf("terminal state = %q, events = %d", state, terminalEvents)
 	}
 }
 
