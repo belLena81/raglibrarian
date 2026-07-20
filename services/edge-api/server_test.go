@@ -21,6 +21,12 @@ import (
 
 type fakeIdentity struct{}
 
+type fakeRetrieval struct{}
+
+func (fakeRetrieval) Search(context.Context, handler.SearchRequest) (handler.SearchResult, error) {
+	return handler.SearchResult{Results: []handler.Evidence{}}, nil
+}
+
 func (fakeIdentity) Register(context.Context, string, string, string, string) error { return nil }
 func (fakeIdentity) VerifyEmail(context.Context, string) error                      { return nil }
 func (fakeIdentity) ResendVerification(context.Context, string) error               { return nil }
@@ -56,7 +62,7 @@ func TestRouterRequiresSessionValidatorAndAppliesSecurityHeaders(t *testing.T) {
 	identity := fakeIdentity{}
 	hub := handler.NewPendingHub(10)
 	router := edgeapi.NewRouter(
-		handler.NewQueryHandler(diagnostics),
+		handler.NewQueryHandler(fakeRetrieval{}),
 		handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: true}),
 		handler.NewHealthHandler(identity),
 		handler.NewSetupHandler(identity),
@@ -83,7 +89,7 @@ func TestRouterPanicsWithoutSessionValidator(t *testing.T) {
 	diagnostics := diagnostic.New(log)
 	identity := fakeIdentity{}
 	assert.Panics(t, func() {
-		edgeapi.NewRouter(handler.NewQueryHandler(diagnostics), handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{}), handler.NewHealthHandler(identity), handler.NewSetupHandler(identity), handler.NewAdminHandler(identity, handler.NewPendingHub(10)), verifier, nil, diagnostics, edgeapi.RouterConfig{})
+		edgeapi.NewRouter(handler.NewQueryHandler(fakeRetrieval{}), handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{}), handler.NewHealthHandler(identity), handler.NewSetupHandler(identity), handler.NewAdminHandler(identity, handler.NewPendingHub(10)), verifier, nil, diagnostics, edgeapi.RouterConfig{})
 	})
 }
 
@@ -145,7 +151,7 @@ func newTestRouter(t *testing.T, identity *passwordResetIdentity) http.Handler {
 	require.NoError(t, err)
 	diagnostics := diagnostic.New(zaptest.NewLogger(t))
 	return edgeapi.NewRouter(
-		handler.NewQueryHandler(diagnostics),
+		handler.NewQueryHandler(fakeRetrieval{}),
 		handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: true}),
 		handler.NewHealthHandler(identity),
 		handler.NewSetupHandler(identity),

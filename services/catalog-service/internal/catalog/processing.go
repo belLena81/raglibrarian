@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
+	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 )
 
 const (
@@ -33,6 +35,29 @@ type processingProfile struct {
 }
 
 var supportedM4Profile = newM4ProcessingProfile()
+
+var supportedM5ProfileDigest = newM5ProfileDigest()
+
+func newM5ProfileDigest() [sha256.Size]byte {
+	values := []string{
+		"jinaai/jina-embeddings-v2-base-code",
+		"516f4baf13dec4ddddda8631e019b5737c8bc250",
+		"768",
+		"cosine",
+		"mean",
+		"normalized",
+		"retrieval-index-v1",
+		"poppler-layout-v1",
+		"nfc-v1",
+		"cl100k_base-v1",
+		"token-window-v2",
+		"heading-carry-v1",
+		"800",
+		"120",
+		"v1",
+	}
+	return sha256.Sum256([]byte(strings.Join(values, "\x00") + "\x00"))
+}
 
 func newM4ProcessingProfile() processingProfile {
 	// #nosec G101 -- token limits and tokenizer identifiers are public processing
@@ -69,7 +94,7 @@ var (
 	ErrProcessingEventConflict = errors.New("processing event conflict")
 )
 
-// ProcessingEvent is the validated Catalog application input for one Ingestion fact.
+// ProcessingEvent is the validated Catalog application input for one asynchronous processing fact.
 type ProcessingEvent struct {
 	EventID       string
 	EventType     string
@@ -81,7 +106,7 @@ type ProcessingEvent struct {
 	Fact          ProcessingFact
 }
 
-// ProcessingEventRepository atomically deduplicates and applies an Ingestion fact.
+// ProcessingEventRepository atomically deduplicates and applies a processing fact.
 type ProcessingEventRepository interface {
 	ApplyProcessingEvent(context.Context, ProcessingEvent, string, time.Time) (Book, bool, error)
 }
@@ -186,15 +211,63 @@ func decodeProcessingEvent(eventType string, payload []byte) (ProcessingEvent, e
 		if !validFailureCategory(event.Fact.FailureCategory) {
 			return ProcessingEvent{}, ErrInvalidProcessingEvent
 		}
+	case "retrieval.book.indexed.v1":
+		message := &retrievalv1.BookIndexedV1{}
+		if err := unmarshalStrict(payload, message); err != nil || !validIndexedDescriptor(message) {
+			return ProcessingEvent{}, ErrInvalidProcessingEvent
+		}
+		event.EventID, event.BookID = message.GetEventId(), message.GetBookId()
+		event.CorrelationID, event.CausationID = message.GetCorrelationId(), message.GetCausationId()
+		producer, schemaVersion, idempotencyKey = message.GetProducer(), message.GetSchemaVersion(), message.GetIdempotencyKey()
+		occurredAt = timestampValue(message.GetOccurredAt())
+		if !copyChecksum(&event.SourceSHA256, message.GetSourceSha256()) {
+			return ProcessingEvent{}, ErrInvalidProcessingEvent
+		}
+		event.Fact.Kind = ProcessingIndexed
+	case "retrieval.book.indexing-failed.v1":
+		message := &retrievalv1.BookIndexingFailedV1{}
+		if err := unmarshalStrict(payload, message); err != nil || !validIndexingFailedDescriptor(message) {
+			return ProcessingEvent{}, ErrInvalidProcessingEvent
+		}
+		event.EventID, event.BookID = message.GetEventId(), message.GetBookId()
+		event.CorrelationID, event.CausationID = message.GetCorrelationId(), message.GetCausationId()
+		producer, schemaVersion, idempotencyKey = message.GetProducer(), message.GetSchemaVersion(), message.GetIdempotencyKey()
+		occurredAt = timestampValue(message.GetOccurredAt())
+		if !copyChecksum(&event.SourceSHA256, message.GetSourceSha256()) {
+			return ProcessingEvent{}, ErrInvalidProcessingEvent
+		}
+		event.Fact.Kind = ProcessingIndexingFailed
+		event.Fact.FailureCategory = indexingFailureCategory(message.GetFailureCategory())
+		if !validIndexingFailureCategory(event.Fact.FailureCategory) {
+			return ProcessingEvent{}, ErrInvalidProcessingEvent
+		}
 	default:
 		return ProcessingEvent{}, ErrInvalidProcessingEvent
 	}
+	expectedProducer := "ingestion-service"
+	if strings.HasPrefix(eventType, "retrieval.") {
+		expectedProducer = "retrieval-service"
+	}
 	if !validEventIdentifier(event.EventID) || !validEventIdentifier(event.BookID) ||
 		!validEventIdentifier(event.CorrelationID) || !validEventIdentifier(event.CausationID) ||
-		!validEventIdentifier(idempotencyKey) || producer != "ingestion-service" || schemaVersion != "v1" || occurredAt.IsZero() {
+		!validEventIdentifier(idempotencyKey) || producer != expectedProducer || schemaVersion != "v1" || occurredAt.IsZero() {
 		return ProcessingEvent{}, ErrInvalidProcessingEvent
 	}
 	return event, nil
+}
+
+func validIndexedDescriptor(message *retrievalv1.BookIndexedV1) bool {
+	return message != nil && validEventIdentifier(message.GetJobId()) &&
+		len(message.GetSourceSha256()) == sha256.Size && len(message.GetManifestSha256()) == sha256.Size &&
+		bytes.Equal(message.GetIndexProfileDigest(), supportedM5ProfileDigest[:]) &&
+		message.GetEvidenceCount() > 0 && message.GetEvidenceCount() <= maxProcessedChunks
+}
+
+func validIndexingFailedDescriptor(message *retrievalv1.BookIndexingFailedV1) bool {
+	return message != nil && validEventIdentifier(message.GetJobId()) &&
+		len(message.GetSourceSha256()) == sha256.Size && len(message.GetManifestSha256()) == sha256.Size &&
+		bytes.Equal(message.GetIndexProfileDigest(), supportedM5ProfileDigest[:]) &&
+		validIndexingFailureCategory(indexingFailureCategory(message.GetFailureCategory()))
 }
 
 type processingProfileDescriptor interface {
@@ -288,6 +361,27 @@ func failureCategory(value ingestionv1.BookProcessingFailureCategory) Processing
 		return FailureDependencyUnavailable
 	case ingestionv1.BookProcessingFailureCategory_BOOK_PROCESSING_FAILURE_CATEGORY_INTERNAL_PROCESSING_ERROR:
 		return FailureInternalProcessingError
+	default:
+		return ""
+	}
+}
+
+func indexingFailureCategory(value retrievalv1.BookIndexingFailureCategory) ProcessingFailureCategory {
+	switch value {
+	case retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_MANIFEST_INTEGRITY:
+		return FailureManifestIntegrity
+	case retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_INCOMPATIBLE_PROFILE:
+		return FailureIncompatibleProfile
+	case retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_EMBEDDING_UNAVAILABLE:
+		return FailureEmbeddingUnavailable
+	case retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_VECTOR_STORE_UNAVAILABLE:
+		return FailureVectorStoreUnavailable
+	case retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_RESOURCE_LIMIT_EXCEEDED:
+		return FailureResourceLimitExceeded
+	case retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_INDEXING_TIMEOUT:
+		return FailureIndexingTimeout
+	case retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_INTERNAL_INDEXING_ERROR:
+		return FailureInternalIndexingError
 	default:
 		return ""
 	}

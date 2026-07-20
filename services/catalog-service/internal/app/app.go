@@ -117,7 +117,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	}
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
 	var workers sync.WaitGroup
-	workers.Add(5)
+	workers.Add(6)
 	go func() {
 		defer workers.Done()
 		outbox.RunWithWake(workerCtx, bookRepository, publisher, recorder, outboxWake)
@@ -126,6 +126,11 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		defer workers.Done()
 		processingService := catalog.NewProcessingService(bookRepository, nil, nil)
 		catalogprocessing.Run(workerCtx, cfg.IngestionRabbitURI, processingService, diagnostics)
+	}()
+	go func() {
+		defer workers.Done()
+		processingService := catalog.NewProcessingService(bookRepository, nil, nil)
+		catalogprocessing.RunQueue(workerCtx, cfg.RetrievalRabbitURI, catalogprocessing.RetrievalQueue, processingService, diagnostics)
 	}()
 	go func() {
 		defer workers.Done()

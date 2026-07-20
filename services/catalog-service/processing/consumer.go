@@ -1,4 +1,4 @@
-// Package processing consumes sanitized Ingestion facts for Catalog.
+// Package processing consumes sanitized Ingestion and Retrieval facts for Catalog.
 package processing
 
 import (
@@ -13,6 +13,7 @@ import (
 )
 
 const Queue = "catalog.book-processing.v1"
+const RetrievalQueue = "catalog.retrieval-terminal.v1"
 
 type handler interface {
 	HandleEnvelope(context.Context, string, string, []byte) (bool, error)
@@ -28,12 +29,17 @@ type Recorder interface {
 // Run reconnects until shutdown. RabbitMQ is asynchronous and therefore does
 // not participate in Catalog readiness.
 func Run(ctx context.Context, uri string, service handler, recorder Recorder) {
-	if uri == "" || service == nil || recorder == nil {
+	RunQueue(ctx, uri, Queue, service, recorder)
+}
+
+// RunQueue consumes one explicitly provisioned queue using the shared delivery policy.
+func RunQueue(ctx context.Context, uri, queue string, service handler, recorder Recorder) {
+	if uri == "" || queue == "" || service == nil || recorder == nil {
 		panic("catalog processing consumer dependencies are required")
 	}
 	backoff := time.Second
 	for ctx.Err() == nil {
-		err := consumeConnection(ctx, uri, service, recorder)
+		err := consumeConnection(ctx, uri, queue, service, recorder)
 		if ctx.Err() != nil {
 			return
 		}
@@ -53,7 +59,7 @@ func Run(ctx context.Context, uri string, service handler, recorder Recorder) {
 	}
 }
 
-func consumeConnection(ctx context.Context, uri string, service handler, recorder Recorder) error {
+func consumeConnection(ctx context.Context, uri, queue string, service handler, recorder Recorder) error {
 	dialer := net.Dialer{Timeout: 5 * time.Second}
 	connection, err := amqp091.DialConfig(uri, amqp091.Config{Heartbeat: 10 * time.Second, Dial: func(network, address string) (net.Conn, error) {
 		return dialer.DialContext(ctx, network, address)
@@ -70,7 +76,7 @@ func consumeConnection(ctx context.Context, uri string, service handler, recorde
 	if err = channel.Qos(1, 0, false); err != nil {
 		return err
 	}
-	deliveries, err := channel.Consume(Queue, "", false, false, false, false, nil)
+	deliveries, err := channel.Consume(queue, "", false, false, false, false, nil)
 	if err != nil {
 		return err
 	}

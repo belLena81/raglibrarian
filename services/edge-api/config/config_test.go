@@ -37,6 +37,7 @@ func TestLoadParsesExplicitSecurityConfiguration(t *testing.T) {
 	assert.False(t, cfg.SecureCookie)
 	require.Len(t, cfg.TrustedProxyCIDRs, 1)
 	assert.Equal(t, 65532, cfg.RunAs.UID)
+	assert.Equal(t, "retrieval-service:50054", cfg.RetrievalAddress)
 }
 
 func TestLoadRejectsInvalidSecurityConfiguration(t *testing.T) {

@@ -31,16 +31,16 @@ var (
 
 // Config is validated Edge runtime configuration.
 type Config struct {
-	Addr, IdentityAddress, CatalogAddress string
-	StatusRabbitURI, StatusQueue          string
-	VerifyKey                             []byte
-	PreviousVerifyKey                     []byte
-	TrustedProxyCIDRs                     []netip.Prefix
-	TLS                                   internaltls.Files
-	SecureCookie                          bool
-	PublicOrigin                          string
-	EnforceBrowserOrigin                  bool
-	RunAs                                 process.Identity
+	Addr, IdentityAddress, CatalogAddress, RetrievalAddress string
+	StatusRabbitURI, StatusQueue                            string
+	VerifyKey                                               []byte
+	PreviousVerifyKey                                       []byte
+	TrustedProxyCIDRs                                       []netip.Prefix
+	TLS                                                     internaltls.Files
+	SecureCookie                                            bool
+	PublicOrigin                                            string
+	EnforceBrowserOrigin                                    bool
+	RunAs                                                   process.Identity
 }
 
 // Load reads Edge configuration from the environment.
@@ -109,6 +109,7 @@ func Load() (Config, error) {
 		Addr:                 optional("QUERY_ADDR", ":8080"),
 		IdentityAddress:      optional("IDENTITY_GRPC_ADDR", "identity-service:50051"),
 		CatalogAddress:       optional("CATALOG_GRPC_ADDR", "catalog-service:50052"),
+		RetrievalAddress:     optional("RETRIEVAL_GRPC_ADDR", "retrieval-service:50054"),
 		StatusRabbitURI:      statusRabbitURI,
 		StatusQueue:          optional("EDGE_STATUS_QUEUE", "edge.book-status.local.1"),
 		VerifyKey:            key,

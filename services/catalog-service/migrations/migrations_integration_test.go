@@ -21,6 +21,8 @@ const (
 	catalog001Down            = "001_catalog_schema.down.sql"
 	catalog002Up              = "002_catalog_processing_events.up.sql"
 	catalog002Down            = "002_catalog_processing_events.down.sql"
+	catalog003Up              = "003_catalog_retrieval_events.up.sql"
+	catalog003Down            = "003_catalog_retrieval_events.down.sql"
 	catalog001UpSHA256        = "c6f6abb116ee62d082f86b335c883ca55edb8ce2ddb310cc9fca301196ccc1c1"
 	catalog001DownSHA256      = "0b9bf8217c2d7f01cfb330a3daf4797d56f3b9c6000aa2c40311364e213b4dc0"
 	catalogMigrationTestLimit = 30 * time.Second
@@ -82,6 +84,38 @@ func TestCatalogMigrationsRebuildCleanly(t *testing.T) {
 			applyCatalogMigration(t, ctx, tx, catalog002Up)
 			assertCatalogLegacyBackfill(t, ctx, tx, fixture)
 			assertCatalogFinalSchema(t, ctx, tx, fixture)
+		})
+	})
+
+	t.Run("003 accepts retrieval terminal projections and rebuilds", func(t *testing.T) {
+		withCatalogMigrationTransaction(t, pool, func(ctx context.Context, tx pgx.Tx) {
+			applyCatalogMigration(t, ctx, tx, catalog001Up)
+			fixture := insertCatalogLegacyFixture(t, ctx, tx)
+			applyCatalogMigration(t, ctx, tx, catalog002Up)
+			applyCatalogMigration(t, ctx, tx, catalog003Up)
+
+			_, err := tx.Exec(ctx, `UPDATE catalog.books
+				SET processing_status='indexed',processing_stage='indexed'
+				WHERE id=$1`, fixture.bookID)
+			if err != nil {
+				t.Fatal("catalog retrieval indexed projection was rejected")
+			}
+			_, err = tx.Exec(ctx, `INSERT INTO catalog.processing_inbox
+				(event_id,event_type,payload_sha256,processed_at)
+				VALUES ('retrieval-terminal','retrieval.book.indexed.v1',$1,$2)`,
+				bytes.Repeat([]byte{1}, sha256.Size), fixture.occurredAt)
+			if err != nil {
+				t.Fatal("catalog retrieval inbox event was rejected")
+			}
+			assertCatalogStatementRejected(t, ctx, tx, `UPDATE catalog.books
+				SET processing_failure_category='provider diagnostic' WHERE id=$1`, fixture.bookID)
+
+			applyCatalogMigration(t, ctx, tx, catalog003Down)
+			var stage string
+			if err = tx.QueryRow(ctx, `SELECT processing_stage FROM catalog.books WHERE id=$1`, fixture.bookID).Scan(&stage); err != nil || stage != "chunks_ready" {
+				t.Fatal("catalog retrieval down migration did not restore the M4 projection")
+			}
+			applyCatalogMigration(t, ctx, tx, catalog003Up)
 		})
 	})
 

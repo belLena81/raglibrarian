@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
+	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 )
 
 func TestProcessingServiceValidatesAndAppliesReadyEvent(t *testing.T) {
@@ -45,6 +46,132 @@ func TestSupportedM4ProfileDigestMatchesProducerContract(t *testing.T) {
 	const expected = "bf78af147282f437086fe289afc14968ef7e20db0546c63672369e6530a18add"
 	if digest := hex.EncodeToString(supportedM4Profile.configDigest[:]); digest != expected {
 		t.Fatalf("M4 config digest = %q, want %q", digest, expected)
+	}
+}
+
+func TestSupportedM5ProfileDigestMatchesProducerContract(t *testing.T) {
+	const expected = "7c986cd0d5eed17f398329c4a09edb7d7909309f1274e1b4ef1766397311681c"
+	if digest := hex.EncodeToString(supportedM5ProfileDigest[:]); digest != expected {
+		t.Fatalf("M5 profile digest = %q, want %q", digest, expected)
+	}
+}
+
+func TestProcessingServiceValidatesRetrievalTerminalEvents(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	checksum := bytes.Repeat([]byte{1}, sha256.Size)
+	manifestChecksum := bytes.Repeat([]byte{2}, sha256.Size)
+	tests := []struct {
+		name        string
+		eventType   string
+		message     proto.Message
+		wantKind    ProcessingFactKind
+		wantFailure ProcessingFailureCategory
+	}{
+		{
+			name: "indexed", eventType: "retrieval.book.indexed.v1", wantKind: ProcessingIndexed,
+			message: &retrievalv1.BookIndexedV1{
+				EventId: "event-indexed", BookId: "book-1", JobId: "job-1", SourceSha256: checksum,
+				ManifestSha256: manifestChecksum, IndexProfileDigest: supportedM5ProfileDigest[:], EvidenceCount: 3,
+				CorrelationId: "correlation-1", CausationId: "batch-1", Producer: "retrieval-service",
+				SchemaVersion: "v1", IdempotencyKey: "book-1:indexed:job-1", OccurredAt: timestamppb.New(now),
+			},
+		},
+		{
+			name: "failed", eventType: "retrieval.book.indexing-failed.v1", wantKind: ProcessingIndexingFailed,
+			wantFailure: FailureEmbeddingUnavailable,
+			message: &retrievalv1.BookIndexingFailedV1{
+				EventId: "event-failed", BookId: "book-1", JobId: "job-1", SourceSha256: checksum,
+				ManifestSha256: manifestChecksum, IndexProfileDigest: supportedM5ProfileDigest[:],
+				FailureCategory: retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_EMBEDDING_UNAVAILABLE,
+				CorrelationId:   "correlation-1", CausationId: "batch-1", Producer: "retrieval-service",
+				SchemaVersion: "v1", IdempotencyKey: "book-1:failed:job-1", OccurredAt: timestamppb.New(now),
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload, err := proto.Marshal(test.message)
+			if err != nil {
+				t.Fatal(err)
+			}
+			repository := &processingRepositoryFake{}
+			service := NewProcessingService(repository, func() time.Time { return now.Add(time.Second) }, func() (string, error) { return "status-1", nil })
+			changed, err := service.Handle(context.Background(), test.eventType, payload)
+			if err != nil || !changed {
+				t.Fatalf("Handle() = %v, %v", changed, err)
+			}
+			if repository.event.Fact.Kind != test.wantKind || repository.event.Fact.FailureCategory != test.wantFailure {
+				t.Fatalf("fact = %+v", repository.event.Fact)
+			}
+		})
+	}
+}
+
+func TestProcessingServiceRejectsUntrustedRetrievalTerminalEvents(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	valid := func() *retrievalv1.BookIndexedV1 {
+		return &retrievalv1.BookIndexedV1{
+			EventId: "event-indexed", BookId: "book-1", JobId: "job-1",
+			SourceSha256: bytes.Repeat([]byte{1}, sha256.Size), ManifestSha256: bytes.Repeat([]byte{2}, sha256.Size),
+			IndexProfileDigest: supportedM5ProfileDigest[:], EvidenceCount: 3,
+			CorrelationId: "correlation-1", CausationId: "batch-1", Producer: "retrieval-service",
+			SchemaVersion: "v1", IdempotencyKey: "book-1:indexed:job-1", OccurredAt: timestamppb.New(now),
+		}
+	}
+	tests := []struct {
+		name   string
+		mutate func(*retrievalv1.BookIndexedV1)
+	}{
+		{name: "wrong producer", mutate: func(message *retrievalv1.BookIndexedV1) { message.Producer = "ingestion-service" }},
+		{name: "wrong schema", mutate: func(message *retrievalv1.BookIndexedV1) { message.SchemaVersion = "v2" }},
+		{name: "wrong profile", mutate: func(message *retrievalv1.BookIndexedV1) {
+			message.IndexProfileDigest = bytes.Repeat([]byte{9}, sha256.Size)
+		}},
+		{name: "short profile", mutate: func(message *retrievalv1.BookIndexedV1) { message.IndexProfileDigest = []byte{1} }},
+		{name: "short source checksum", mutate: func(message *retrievalv1.BookIndexedV1) { message.SourceSha256 = []byte{1} }},
+		{name: "short manifest checksum", mutate: func(message *retrievalv1.BookIndexedV1) { message.ManifestSha256 = []byte{1} }},
+		{name: "missing job", mutate: func(message *retrievalv1.BookIndexedV1) { message.JobId = "" }},
+		{name: "empty evidence", mutate: func(message *retrievalv1.BookIndexedV1) { message.EvidenceCount = 0 }},
+		{name: "too much evidence", mutate: func(message *retrievalv1.BookIndexedV1) { message.EvidenceCount = maxProcessedChunks + 1 }},
+		{name: "invalid occurrence", mutate: func(message *retrievalv1.BookIndexedV1) { message.OccurredAt = nil }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			message := valid()
+			test.mutate(message)
+			payload, err := proto.Marshal(message)
+			if err != nil {
+				t.Fatal(err)
+			}
+			repository := &processingRepositoryFake{}
+			service := NewProcessingService(repository, func() time.Time { return now }, func() (string, error) { return "status-1", nil })
+			changed, handleErr := service.Handle(context.Background(), "retrieval.book.indexed.v1", payload)
+			if handleErr != ErrInvalidProcessingEvent || changed || repository.calls != 0 {
+				t.Fatalf("Handle() = %v, %v; repository calls = %d", changed, handleErr, repository.calls)
+			}
+		})
+	}
+}
+
+func TestIndexingFailureCategoryMappingIsClosedAndSanitized(t *testing.T) {
+	tests := []struct {
+		wire retrievalv1.BookIndexingFailureCategory
+		want ProcessingFailureCategory
+	}{
+		{retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_MANIFEST_INTEGRITY, FailureManifestIntegrity},
+		{retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_INCOMPATIBLE_PROFILE, FailureIncompatibleProfile},
+		{retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_EMBEDDING_UNAVAILABLE, FailureEmbeddingUnavailable},
+		{retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_VECTOR_STORE_UNAVAILABLE, FailureVectorStoreUnavailable},
+		{retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_RESOURCE_LIMIT_EXCEEDED, FailureResourceLimitExceeded},
+		{retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_INDEXING_TIMEOUT, FailureIndexingTimeout},
+		{retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_INTERNAL_INDEXING_ERROR, FailureInternalIndexingError},
+		{retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_UNSPECIFIED, ""},
+		{retrievalv1.BookIndexingFailureCategory(99), ""},
+	}
+	for _, test := range tests {
+		if got := indexingFailureCategory(test.wire); got != test.want {
+			t.Fatalf("indexingFailureCategory(%d) = %q, want %q", test.wire, got, test.want)
+		}
 	}
 }
 

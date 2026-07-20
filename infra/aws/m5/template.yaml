@@ -1,0 +1,325 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: RAGLibrarian M5 exclusive Retrieval preparation adapters.
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedPattern: '^[a-z][a-z0-9-]{1,15}$'
+  ProcessingMode:
+    Type: String
+    Default: paused
+    AllowedValues: [lambda, paused]
+    Description: Deploy paused and verify zero consumers before changing active mode.
+  PlannerImageUri:
+    Type: String
+    AllowedPattern: '^.+@sha256:[0-9a-f]{64}$'
+  IndexImageUri:
+    Type: String
+    AllowedPattern: '^.+@sha256:[0-9a-f]{64}$'
+  DispatcherImageUri:
+    Type: String
+    AllowedPattern: '^.+@sha256:[0-9a-f]{64}$'
+  CleanupImageUri:
+    Type: String
+    AllowedPattern: '^.+@sha256:[0-9a-f]{64}$'
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  RuntimeSecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+  RabbitMQBrokerArn:
+    Type: String
+    AllowedPattern: '^arn:.+:mq:.+:broker:.+$'
+  RabbitMQBasicAuthSecretArn:
+    Type: String
+    AllowedPattern: '^arn:.+:secretsmanager:.+:secret:.+$'
+  RabbitMQVirtualHost:
+    Type: String
+    Default: '/'
+    MaxLength: 128
+  BookUploadedQueueName:
+    Type: String
+    Default: retrieval.book-uploaded.v1
+  ChunksReadyQueueName:
+    Type: String
+    Default: retrieval.chunks-ready.v1
+  IndexBatchQueueName:
+    Type: String
+    Default: retrieval.index-batch.v1
+  PlannerRuntimeSecretArn:
+    Type: String
+    AllowedPattern: '^arn:.+:secretsmanager:.+:secret:.+$'
+  IndexRuntimeSecretArn:
+    Type: String
+    AllowedPattern: '^arn:.+:secretsmanager:.+:secret:.+$'
+  DispatcherRuntimeSecretArn:
+    Type: String
+    AllowedPattern: '^arn:.+:secretsmanager:.+:secret:.+$'
+  CleanupRuntimeSecretArn:
+    Type: String
+    AllowedPattern: '^arn:.+:secretsmanager:.+:secret:.+$'
+  RuntimeSecretKMSKeyArn:
+    Type: String
+    AllowedPattern: '^arn:.+:kms:.+:key/.+$'
+  ArtifactBucketArn:
+    Type: String
+    AllowedPattern: '^arn:.+:s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+  PlannerReservedConcurrency:
+    Type: Number
+    Default: 4
+    MinValue: 1
+    MaxValue: 20
+  IndexReservedConcurrency:
+    Type: Number
+    Default: 4
+    MinValue: 1
+    MaxValue: 20
+    Description: Must not exceed the declared warm TEI/Qdrant/PostgreSQL capacity.
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [7, 14, 30, 60, 90, 120, 180, 365]
+
+Conditions:
+  LambdaMode: !Equals [!Ref ProcessingMode, lambda]
+
+Globals:
+  Function:
+    Architectures: [x86_64]
+    Timeout: 840
+    MemorySize: 2048
+    EphemeralStorage:
+      Size: 2048
+    VpcConfig:
+      SecurityGroupIds: !Ref RuntimeSecurityGroupIds
+      SubnetIds: !Ref PrivateSubnetIds
+    Environment:
+      Variables:
+        LOG_ENV: production
+        LOG_LEVEL: info
+        RETRIEVAL_RUNTIME_BACKEND: aws
+        RETRIEVAL_PROCESSING_MODE: lambda
+        RETRIEVAL_INDEX_PROFILE: m5-jina-code-v1
+        RETRIEVAL_PROCESSING_TIMEOUT: 13m30s
+
+Resources:
+  PlannerRole:
+    Type: AWS::IAM::Role
+    Condition: LambdaMode
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: retrieval-planner-runtime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: [!Ref PlannerRuntimeSecretArn, !Ref RabbitMQBasicAuthSecretArn]
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: !Ref RuntimeSecretKMSKeyArn
+              - Effect: Allow
+                Action: [s3:GetObject]
+                Resource: !Sub '${ArtifactBucketArn}/books/*'
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Ref ArtifactBucketArn
+                Condition: {StringLike: {s3:prefix: 'books/*'}}
+
+  PlannerFunction:
+    Type: AWS::Serverless::Function
+    Condition: LambdaMode
+    Properties:
+      PackageType: Image
+      ImageUri: !Ref PlannerImageUri
+      Role: !GetAtt PlannerRole.Arn
+      ReservedConcurrentExecutions: !Ref PlannerReservedConcurrency
+      Environment:
+        Variables:
+          RETRIEVAL_RUNTIME_SECRET_ARN: !Ref PlannerRuntimeSecretArn
+
+  BookUploadedMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Condition: LambdaMode
+    Properties:
+      BatchSize: 1
+      Enabled: true
+      EventSourceArn: !Ref RabbitMQBrokerArn
+      FunctionName: !Ref PlannerFunction
+      Queues: [!Ref BookUploadedQueueName]
+      SourceAccessConfigurations:
+        - Type: BASIC_AUTH
+          URI: !Ref RabbitMQBasicAuthSecretArn
+        - Type: VIRTUAL_HOST
+          URI: !Ref RabbitMQVirtualHost
+
+  ChunksReadyMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Condition: LambdaMode
+    Properties:
+      BatchSize: 1
+      Enabled: true
+      EventSourceArn: !Ref RabbitMQBrokerArn
+      FunctionName: !Ref PlannerFunction
+      Queues: [!Ref ChunksReadyQueueName]
+      SourceAccessConfigurations:
+        - Type: BASIC_AUTH
+          URI: !Ref RabbitMQBasicAuthSecretArn
+        - Type: VIRTUAL_HOST
+          URI: !Ref RabbitMQVirtualHost
+
+  IndexFunction:
+    Type: AWS::Serverless::Function
+    Condition: LambdaMode
+    Properties:
+      PackageType: Image
+      ImageUri: !Ref IndexImageUri
+      Role: !GetAtt IndexRole.Arn
+      ReservedConcurrentExecutions: !Ref IndexReservedConcurrency
+      Environment:
+        Variables:
+          RETRIEVAL_RUNTIME_SECRET_ARN: !Ref IndexRuntimeSecretArn
+
+  IndexBatchMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Condition: LambdaMode
+    Properties:
+      BatchSize: 1
+      Enabled: true
+      EventSourceArn: !Ref RabbitMQBrokerArn
+      FunctionName: !Ref IndexFunction
+      Queues: [!Ref IndexBatchQueueName]
+      SourceAccessConfigurations:
+        - Type: BASIC_AUTH
+          URI: !Ref RabbitMQBasicAuthSecretArn
+        - Type: VIRTUAL_HOST
+          URI: !Ref RabbitMQVirtualHost
+
+  DispatcherFunction:
+    Type: AWS::Serverless::Function
+    Condition: LambdaMode
+    Properties:
+      PackageType: Image
+      ImageUri: !Ref DispatcherImageUri
+      Role: !GetAtt DispatcherRole.Arn
+      Timeout: 60
+      Environment:
+        Variables:
+          RETRIEVAL_RUNTIME_SECRET_ARN: !Ref DispatcherRuntimeSecretArn
+      Events:
+        DueOutbox:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(1 minute)
+            State: ENABLED
+
+  CleanupFunction:
+    Type: AWS::Serverless::Function
+    Condition: LambdaMode
+    Properties:
+      PackageType: Image
+      ImageUri: !Ref CleanupImageUri
+      Role: !GetAtt CleanupRole.Arn
+      Timeout: 300
+      Environment:
+        Variables:
+          RETRIEVAL_RUNTIME_SECRET_ARN: !Ref CleanupRuntimeSecretArn
+      Events:
+        AbandonedIndexes:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(15 minutes)
+            State: ENABLED
+
+  IndexRole:
+    Type: AWS::IAM::Role
+    Condition: LambdaMode
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: retrieval-index-runtime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: [!Ref IndexRuntimeSecretArn, !Ref RabbitMQBasicAuthSecretArn]
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: !Ref RuntimeSecretKMSKeyArn
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub '${ArtifactBucketArn}/books/*'
+
+  DispatcherRole:
+    Type: AWS::IAM::Role
+    Condition: LambdaMode
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: retrieval-dispatcher-runtime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref DispatcherRuntimeSecretArn
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: !Ref RuntimeSecretKMSKeyArn
+
+  CleanupRole:
+    Type: AWS::IAM::Role
+    Condition: LambdaMode
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: retrieval-cleanup-runtime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref CleanupRuntimeSecretArn
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: !Ref RuntimeSecretKMSKeyArn
+
+Outputs:
+  ActiveProcessingMode:
+    Value: !Ref ProcessingMode
+  PlannerFunctionArn:
+    Condition: LambdaMode
+    Value: !GetAtt PlannerFunction.Arn
+  IndexFunctionArn:
+    Condition: LambdaMode
+    Value: !GetAtt IndexFunction.Arn

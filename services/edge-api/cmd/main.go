@@ -56,6 +56,8 @@ func appFailureReason(err error) diagnostic.ServiceFailureReason {
 		return diagnostic.ServiceFailurePrivilegeDrop
 	case errors.Is(err, app.ErrIdentityClientInitialization):
 		return diagnostic.ServiceFailureIdentityClientInitialization
+	case errors.Is(err, app.ErrRetrievalClientInitialization):
+		return diagnostic.ServiceFailureRetrievalClientInitialization
 	case errors.Is(err, app.ErrHTTPListen):
 		return diagnostic.ServiceFailureHTTPListen
 	case errors.Is(err, app.ErrHTTPServe):

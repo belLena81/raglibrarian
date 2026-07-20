@@ -41,6 +41,7 @@ const (
 	BookStageQueued      BookProcessingStage = "queued"
 	BookStageExtracting  BookProcessingStage = "extracting"
 	BookStageChunksReady BookProcessingStage = "chunks_ready"
+	BookStageIndexed     BookProcessingStage = "indexed"
 	BookStageFailed      BookProcessingStage = "failed"
 )
 
@@ -58,6 +59,12 @@ const (
 	FailureProcessingTimeout       ProcessingFailureCategory = "processing_timeout"
 	FailureDependencyUnavailable   ProcessingFailureCategory = "dependency_unavailable"
 	FailureInternalProcessingError ProcessingFailureCategory = "internal_processing_error"
+	FailureManifestIntegrity       ProcessingFailureCategory = "manifest_integrity"
+	FailureIncompatibleProfile     ProcessingFailureCategory = "incompatible_profile"
+	FailureEmbeddingUnavailable    ProcessingFailureCategory = "embedding_unavailable"
+	FailureVectorStoreUnavailable  ProcessingFailureCategory = "vector_store_unavailable"
+	FailureIndexingTimeout         ProcessingFailureCategory = "indexing_timeout"
+	FailureInternalIndexingError   ProcessingFailureCategory = "internal_indexing_error"
 )
 
 // ProcessingFactKind identifies facts reported by Ingestion.
@@ -67,6 +74,8 @@ const (
 	ProcessingStarted ProcessingFactKind = iota + 1
 	ProcessingChunksReady
 	ProcessingFailed
+	ProcessingIndexed
+	ProcessingIndexingFailed
 )
 
 // ProcessingFact contains only state needed by the Book aggregate.
@@ -129,7 +138,7 @@ func (b *Book) ApplyProcessingFact(fact ProcessingFact) (bool, error) {
 		if b.ProcessingStage == BookStageExtracting {
 			return false, nil
 		}
-		if b.ProcessingStage == BookStageChunksReady || b.ProcessingStage == BookStageFailed {
+		if b.ProcessingStage == BookStageChunksReady || b.ProcessingStage == BookStageIndexed || b.ProcessingStage == BookStageFailed {
 			return false, nil
 		}
 		if b.ProcessingStatus != BookStatusPending || b.ProcessingStage != BookStageQueued {
@@ -140,7 +149,8 @@ func (b *Book) ApplyProcessingFact(fact ProcessingFact) (bool, error) {
 		}
 		b.ProcessingStage = BookStageExtracting
 	case ProcessingChunksReady:
-		if b.ProcessingStage == BookStageChunksReady {
+		if b.ProcessingStage == BookStageChunksReady || b.ProcessingStage == BookStageIndexed ||
+			(b.ProcessingStage == BookStageFailed && validIndexingFailureCategory(b.ProcessingFailureCategory)) {
 			return false, nil
 		}
 		if b.ProcessingStage == BookStageFailed {
@@ -159,6 +169,10 @@ func (b *Book) ApplyProcessingFact(fact ProcessingFact) (bool, error) {
 		if !validFailureCategory(fact.FailureCategory) {
 			return false, ErrConflictingProcessingFact
 		}
+		if b.ProcessingStage == BookStageIndexed ||
+			(b.ProcessingStage == BookStageFailed && validIndexingFailureCategory(b.ProcessingFailureCategory)) {
+			return false, nil
+		}
 		if b.ProcessingStage == BookStageFailed && b.ProcessingFailureCategory == fact.FailureCategory {
 			return false, nil
 		}
@@ -175,12 +189,51 @@ func (b *Book) ApplyProcessingFact(fact ProcessingFact) (bool, error) {
 		}
 		b.ProcessingStage = BookStageFailed
 		b.ProcessingFailureCategory = fact.FailureCategory
+	case ProcessingIndexed:
+		if b.ProcessingStage == BookStageIndexed && b.ProcessingStatus == BookStatusIndexed {
+			return false, nil
+		}
+		if b.ProcessingStage != BookStageChunksReady || b.ProcessingStatus != BookStatusProcessing {
+			return false, ErrConflictingProcessingFact
+		}
+		if err := b.TransitionTo(BookStatusIndexed); err != nil {
+			return false, err
+		}
+		b.ProcessingStage = BookStageIndexed
+		b.ProcessingFailureCategory = ""
+	case ProcessingIndexingFailed:
+		if !validIndexingFailureCategory(fact.FailureCategory) {
+			return false, ErrConflictingProcessingFact
+		}
+		if b.ProcessingStage == BookStageFailed && b.ProcessingStatus == BookStatusFailed &&
+			b.ProcessingFailureCategory == fact.FailureCategory {
+			return false, nil
+		}
+		if b.ProcessingStage != BookStageChunksReady || b.ProcessingStatus != BookStatusProcessing {
+			return false, ErrConflictingProcessingFact
+		}
+		if err := b.TransitionTo(BookStatusFailed); err != nil {
+			return false, err
+		}
+		b.ProcessingStage = BookStageFailed
+		b.ProcessingFailureCategory = fact.FailureCategory
 	default:
 		return false, ErrConflictingProcessingFact
 	}
 	b.ProcessingVersion++
 	b.ProcessingUpdatedAt = fact.OccurredAt.UTC()
 	return true, nil
+}
+
+func validIndexingFailureCategory(category ProcessingFailureCategory) bool {
+	switch category {
+	case FailureManifestIntegrity, FailureIncompatibleProfile, FailureEmbeddingUnavailable,
+		FailureVectorStoreUnavailable, FailureResourceLimitExceeded, FailureIndexingTimeout,
+		FailureInternalIndexingError:
+		return true
+	default:
+		return false
+	}
 }
 
 func validFailureCategory(category ProcessingFailureCategory) bool {

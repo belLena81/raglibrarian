@@ -64,6 +64,14 @@ services:
       - ingestion_runtime_password
       - ingestion_cleanup_password
       - ingestion_e2e_password
+      - retrieval_migration_password
+      - retrieval_runtime_password
+      - retrieval_search_password
+      - retrieval_planner_password
+      - retrieval_indexer_password
+      - retrieval_dispatcher_password
+      - retrieval_cleanup_password
+      - retrieval_e2e_password
     volumes:
       - ./infra/postgres/init.sql:/bootstrap/identity.sql:ro
       - ./scripts/run-postgres-bootstrap.sh:/usr/local/bin/run-postgres-bootstrap:ro
@@ -155,6 +163,8 @@ services:
       - ingestion_cleanup_minio_secret_key
       - ingestion_e2e_minio_access_key
       - ingestion_e2e_minio_secret_key
+      - retrieval_minio_access_key
+      - retrieval_minio_secret_key
     volumes:
       - ./scripts/bootstrap-minio.sh:/usr/local/bin/bootstrap-minio:ro
     networks:
@@ -248,6 +258,7 @@ services:
       CATALOG_MINIO_SECRET_KEY_FILE: /run/secrets/catalog_minio_secret_key
       CATALOG_RABBITMQ_URI_FILE: /run/secrets/catalog_rabbitmq_uri
       CATALOG_INGESTION_RABBITMQ_URI_FILE: /run/secrets/catalog_ingestion_rabbitmq_uri
+      CATALOG_RETRIEVAL_RABBITMQ_URI_FILE: /run/secrets/catalog_retrieval_rabbitmq_uri
       INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
       CATALOG_TLS_CERT_FILE: /run/secrets/catalog_tls_cert
       CATALOG_TLS_KEY_FILE: /run/secrets/catalog_tls_key
@@ -266,6 +277,7 @@ services:
       - catalog_minio_secret_key
       - catalog_rabbitmq_uri
       - catalog_ingestion_rabbitmq_uri
+      - catalog_retrieval_rabbitmq_uri
     networks:
       - backend
       # MinIO and RabbitMQ credentials are development-only plaintext values;
@@ -295,6 +307,7 @@ services:
     environment: &edge-api-environment
       QUERY_ADDR: ":8080"
       IDENTITY_GRPC_ADDR: identity-service:50051
+      RETRIEVAL_GRPC_ADDR: retrieval-service:50054
       CATALOG_GRPC_ADDR: catalog-service:50052
       INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
       EDGE_TLS_CERT_FILE: /run/secrets/edge_tls_cert
@@ -453,6 +466,206 @@ services:
       retries: 12
       start_period: 10s
 
+  retrieval-migrate:
+    <<: *job-hardening
+    profiles: ["m5"]
+    image: postgres:16.9-alpine
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: retrieval
+      PGUSER: retrieval_migrator
+      PGPASSFILE: /run/secrets/retrieval_migration_pgpass
+      MIGRATION_DIRECTION: up
+    secrets:
+      - retrieval_migration_pgpass
+    volumes:
+      - ./services/retrieval-service/migrations:/migrations:ro
+      - ./scripts/run-retrieval-migrations.sh:/usr/local/bin/run-retrieval-migrations:ro
+    networks:
+      - backend
+    depends_on:
+      identity-db-bootstrap:
+        condition: service_completed_successfully
+    command: ["sh", "/usr/local/bin/run-retrieval-migrations"]
+
+  qdrant:
+    profiles: ["m5"]
+    image: ${M5_QDRANT_IMAGE:-qdrant/qdrant:v1.18.3}
+    read_only: true
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - 'export QDRANT__SERVICE__API_KEY="$$(cat /run/secrets/retrieval_qdrant_api_key)"; export QDRANT__SERVICE__READ_ONLY_API_KEY="$$(cat /run/secrets/retrieval_qdrant_read_api_key)"; exec /qdrant/qdrant'
+    environment:
+      QDRANT__SERVICE__ENABLE_TLS: "false"
+      QDRANT__STORAGE__STORAGE_PATH: /qdrant/storage
+    secrets:
+      - retrieval_qdrant_api_key
+      - retrieval_qdrant_read_api_key
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - retrieval-index
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD-SHELL", "test -r /run/secrets/retrieval_qdrant_api_key && : >/dev/tcp/127.0.0.1/6333"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 10s
+
+  text-embeddings-inference:
+    profiles: ["m5"]
+    image: ${M5_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.9}
+    read_only: true
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      HF_HUB_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+    command:
+      - --model-id
+      - /data/model
+      - --auto-truncate
+      - "false"
+      - --max-client-batch-size
+      - "32"
+      - --port
+      - "8080"
+    volumes:
+      - ${M5_MODEL_DIR:-./.dev/models/m5-jina-code-v1}:/data/model:ro
+    networks:
+      - retrieval-index
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m
+    mem_limit: ${M5_TEI_MEMORY_LIMIT:-4g}
+    cpus: ${M5_TEI_CPU_LIMIT:-4.0}
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  retrieval-service:
+    <<: *service-hardening
+    profiles: ["m5"]
+    build:
+      context: .
+      target: retrieval-runtime
+      args:
+        SERVICE: retrieval-service
+        SERVICE_COMMAND: cmd/server
+    environment:
+      RETRIEVAL_POSTGRES_DSN_FILE: /run/secrets/retrieval_search_dsn
+      RETRIEVAL_QDRANT_URL: http://qdrant:6333
+      RETRIEVAL_QDRANT_API_KEY_FILE: /run/secrets/retrieval_qdrant_read_api_key
+      RETRIEVAL_TEI_URL: http://text-embeddings-inference:8080
+      RETRIEVAL_INDEX_PROFILE: m5-jina-code-v1
+      RETRIEVAL_GRPC_ADDR: "0.0.0.0:50054"
+      RETRIEVAL_METRICS_ADDR: "0.0.0.0:9094"
+      RETRIEVAL_TLS_CA_FILE: /run/secrets/internal_ca
+      RETRIEVAL_TLS_CERT_FILE: /run/secrets/retrieval_tls_cert
+      RETRIEVAL_TLS_KEY_FILE: /run/secrets/retrieval_tls_key
+      HEALTHCHECK_HTTP_URL: http://127.0.0.1:9094/readyz
+      RUN_AS_UID: "${RUN_AS_UID:-65532}"
+      RUN_AS_GID: "${RUN_AS_GID:-65532}"
+    secrets:
+      - retrieval_search_dsn
+      - retrieval_qdrant_read_api_key
+      - internal_ca
+      - retrieval_tls_cert
+      - retrieval_tls_key
+    networks:
+      - backend
+      - retrieval-index
+    depends_on:
+      retrieval-migrate:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_healthy
+      text-embeddings-inference:
+        condition: service_healthy
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 10s
+
+  # Local Compose deliberately runs only this portable preparation adapter.
+  # Planner/index/dispatcher/cleanup Lambdas exist only in the AWS M5 stack.
+  retrieval-worker:
+    <<: *service-hardening
+    profiles: ["m5"]
+    build:
+      context: .
+      target: retrieval-runtime
+      args:
+        SERVICE: retrieval-service
+        SERVICE_COMMAND: cmd/worker
+    environment:
+      RETRIEVAL_PROCESSING_MODE: worker
+      RETRIEVAL_POSTGRES_DSN_FILE: /run/secrets/retrieval_runtime_dsn
+      RETRIEVAL_RABBITMQ_CONSUMER_URI_FILE: /run/secrets/retrieval_consumer_rabbitmq_uri
+      RETRIEVAL_RABBITMQ_PUBLISHER_URI_FILE: /run/secrets/retrieval_publisher_rabbitmq_uri
+      RETRIEVAL_MINIO_ENDPOINT: minio:9000
+      RETRIEVAL_MINIO_INSECURE: "true"
+      RETRIEVAL_MINIO_ACCESS_KEY_FILE: /run/secrets/retrieval_minio_access_key
+      RETRIEVAL_MINIO_SECRET_KEY_FILE: /run/secrets/retrieval_minio_secret_key
+      RETRIEVAL_ARTIFACT_BUCKET: ingestion-artifacts
+      RETRIEVAL_QDRANT_URL: http://qdrant:6333
+      RETRIEVAL_QDRANT_API_KEY_FILE: /run/secrets/retrieval_qdrant_api_key
+      RETRIEVAL_TEI_URL: http://text-embeddings-inference:8080
+      RETRIEVAL_INDEX_PROFILE: m5-jina-code-v1
+      RETRIEVAL_METRICS_ADDR: "0.0.0.0:9095"
+      HEALTHCHECK_HTTP_URL: http://127.0.0.1:9095/readyz
+      RETRIEVAL_WORK_CONCURRENCY: "${RETRIEVAL_WORK_CONCURRENCY:-1}"
+      RUN_AS_UID: "${RUN_AS_UID:-65532}"
+      RUN_AS_GID: "${RUN_AS_GID:-65532}"
+    secrets:
+      - retrieval_runtime_dsn
+      - retrieval_consumer_rabbitmq_uri
+      - retrieval_publisher_rabbitmq_uri
+      - retrieval_minio_access_key
+      - retrieval_minio_secret_key
+      - retrieval_qdrant_api_key
+    networks:
+      - backend
+      - catalog-storage
+      - catalog-broker
+      - retrieval-index
+    depends_on:
+      retrieval-migrate:
+        condition: service_completed_successfully
+      minio-bootstrap:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      text-embeddings-inference:
+        condition: service_healthy
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 10s
+
   contract-tests:
     <<: *job-hardening
     tmpfs:
@@ -571,6 +784,7 @@ volumes:
   postgres_data:
   minio_data:
   rabbitmq_data:
+  qdrant_data:
 
 networks:
   frontend:
@@ -579,6 +793,8 @@ networks:
   catalog-storage:
     internal: true
   catalog-broker:
+    internal: true
+  retrieval-index:
     internal: true
 
 secrets:
@@ -616,6 +832,34 @@ secrets:
     file: ${SECRET_DIR:-./.dev/secrets}/ingestion_e2e_dsn
   ingestion_e2e_container_dsn:
     file: ${SECRET_DIR:-./.dev/secrets}/ingestion_e2e_container_dsn
+  retrieval_migration_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_migration_password
+  retrieval_runtime_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_runtime_password
+  retrieval_search_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_search_password
+  retrieval_planner_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_planner_password
+  retrieval_indexer_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_indexer_password
+  retrieval_dispatcher_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_dispatcher_password
+  retrieval_cleanup_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_cleanup_password
+  retrieval_e2e_password:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_e2e_password
+  retrieval_migration_pgpass:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_migration_pgpass
+  retrieval_runtime_dsn:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_runtime_dsn
+  retrieval_search_dsn:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_search_dsn
+  retrieval_cleanup_dsn:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_cleanup_dsn
+  retrieval_e2e_dsn:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_e2e_dsn
+  retrieval_e2e_container_dsn:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_e2e_container_dsn
   minio_root_user:
     file: ${SECRET_DIR:-./.dev/secrets}/minio_root_user
   minio_root_password:
@@ -636,6 +880,10 @@ secrets:
     file: ${SECRET_DIR:-./.dev/secrets}/ingestion_e2e_minio_access_key
   ingestion_e2e_minio_secret_key:
     file: ${SECRET_DIR:-./.dev/secrets}/ingestion_e2e_minio_secret_key
+  retrieval_minio_access_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_minio_access_key
+  retrieval_minio_secret_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_minio_secret_key
   catalog_rabbitmq_uri:
     file: ${SECRET_DIR:-./.dev/secrets}/catalog_rabbitmq_uri
   catalog_ingestion_rabbitmq_uri:
@@ -644,6 +892,18 @@ secrets:
     file: ${SECRET_DIR:-./.dev/secrets}/ingestion_rabbitmq_uri
   ingestion_e2e_rabbitmq_container_uri:
     file: ${SECRET_DIR:-./.dev/secrets}/ingestion_e2e_rabbitmq_container_uri
+  retrieval_consumer_rabbitmq_uri:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_consumer_rabbitmq_uri
+  retrieval_publisher_rabbitmq_uri:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_publisher_rabbitmq_uri
+  catalog_retrieval_rabbitmq_uri:
+    file: ${SECRET_DIR:-./.dev/secrets}/catalog_retrieval_rabbitmq_uri
+  retrieval_e2e_rabbitmq_container_uri:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_e2e_rabbitmq_container_uri
+  retrieval_qdrant_api_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_qdrant_api_key
+  retrieval_qdrant_read_api_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_qdrant_read_api_key
   edge_status_rabbitmq_uri_1:
     file: ${SECRET_DIR:-./.dev/secrets}/edge_status_rabbitmq_uri_1
   edge_status_rabbitmq_uri_2:
@@ -682,6 +942,10 @@ secrets:
     file: ${CERT_DIR:-./.dev/certs}/catalog-service.crt
   catalog_tls_key:
     file: ${CERT_DIR:-./.dev/certs}/catalog-service.key
+  retrieval_tls_cert:
+    file: ${CERT_DIR:-./.dev/certs}/retrieval-service.crt
+  retrieval_tls_key:
+    file: ${CERT_DIR:-./.dev/certs}/retrieval-service.key
   unknown_tls_cert:
     file: ${CERT_DIR:-./.dev/certs}/unknown-client.crt
   unknown_tls_key:

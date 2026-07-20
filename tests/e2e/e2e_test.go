@@ -522,6 +522,7 @@ func TestMilestone2IdentityLifecycle(t *testing.T) {
 	rejectedEmail := uniqueEmail("librarian-rejected")
 	eventEmail := uniqueEmail("librarian-event")
 	var approvedSession authSession
+	var activeReaderSession authSession
 
 	t.Run("bootstrap singleton admin", func(t *testing.T) {
 		invalid := request(t, http.MethodPost, "/setup/admin", map[string]string{
@@ -672,6 +673,7 @@ func TestMilestone2IdentityLifecycle(t *testing.T) {
 			register(t, "Catalog Reader", readerEmail, "reader")
 			verifyEmail(t, readerEmail)
 			readerSession := login(t, readerEmail)
+			activeReaderSession = readerSession
 
 			forbidden := uploadBook(t, readerSession.Token)
 			requireStatus(t, http.StatusForbidden, forbidden)
@@ -784,9 +786,13 @@ func TestMilestone2IdentityLifecycle(t *testing.T) {
 		assert.Equal(t, 1, version)
 	})
 
+	m5AdminSession := login(t, adminEmail)
 	writeM4SessionToken(t, "E2E_M4_ACCESS_TOKEN_OUT", approvedSession.Token)
 	writeM4SessionToken(t, "E2E_M4_REFRESH_COOKIE_OUT", approvedSession.RefreshCookie)
 	writeM4SessionToken(t, "E2E_M4_REVOCABLE_TOKEN_OUT", admin.Token)
+	writeM4SessionToken(t, "E2E_M5_READER_TOKEN_OUT", activeReaderSession.Token)
+	writeM4SessionToken(t, "E2E_M5_LIBRARIAN_TOKEN_OUT", approvedSession.Token)
+	writeM4SessionToken(t, "E2E_M5_ADMIN_TOKEN_OUT", m5AdminSession.Token)
 }
 
 func TestUnknownRouteReturns404(t *testing.T) {

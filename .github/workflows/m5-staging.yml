@@ -1,0 +1,109 @@
+name: M5 protected staging gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      final_mode:
+        description: Final preparation mode after the acceptance handoff
+        required: true
+        default: paused
+        type: choice
+        options: [paused, lambda]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: m5-protected-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: m5-staging
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: aws-actions/configure-aws-credentials@v4.3.1
+        with:
+          role-to-assume: ${{ secrets.M5_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.M5_AWS_REGION }}
+      - name: Validate immutable inputs and exclusive policy
+        env:
+          PLANNER_IMAGE: ${{ vars.M5_PLANNER_IMAGE_URI }}
+          INDEX_IMAGE: ${{ vars.M5_INDEX_IMAGE_URI }}
+          DISPATCHER_IMAGE: ${{ vars.M5_DISPATCHER_IMAGE_URI }}
+          CLEANUP_IMAGE: ${{ vars.M5_CLEANUP_IMAGE_URI }}
+        run: |
+          set -euo pipefail
+          make m5-mode-policy
+          for image in "$PLANNER_IMAGE" "$INDEX_IMAGE" "$DISPATCHER_IMAGE" "$CLEANUP_IMAGE"; do
+            [[ "$image" =~ @sha256:[0-9a-f]{64}$ ]] || { echo 'Every M5 image must use an immutable digest.' >&2; exit 1; }
+          done
+      - name: Exercise paused mode handoffs
+        env:
+          STACK_NAME: ${{ vars.M5_STACK_NAME }}
+          FINAL_MODE: ${{ inputs.final_mode }}
+          ENVIRONMENT: ${{ vars.M5_ENVIRONMENT }}
+          PLANNER_IMAGE: ${{ vars.M5_PLANNER_IMAGE_URI }}
+          INDEX_IMAGE: ${{ vars.M5_INDEX_IMAGE_URI }}
+          DISPATCHER_IMAGE: ${{ vars.M5_DISPATCHER_IMAGE_URI }}
+          CLEANUP_IMAGE: ${{ vars.M5_CLEANUP_IMAGE_URI }}
+          PRIVATE_SUBNETS: ${{ vars.M5_PRIVATE_SUBNET_IDS }}
+          SECURITY_GROUPS: ${{ vars.M5_RUNTIME_SECURITY_GROUP_IDS }}
+          MQ_BROKER_ARN: ${{ vars.M5_RABBITMQ_BROKER_ARN }}
+          MQ_AUTH_SECRET: ${{ vars.M5_RABBITMQ_BASIC_AUTH_SECRET_ARN }}
+          MQ_VHOST: ${{ vars.M5_RABBITMQ_VIRTUAL_HOST }}
+          PLANNER_RUNTIME_SECRET: ${{ vars.M5_PLANNER_RUNTIME_SECRET_ARN }}
+          INDEX_RUNTIME_SECRET: ${{ vars.M5_INDEX_RUNTIME_SECRET_ARN }}
+          DISPATCHER_RUNTIME_SECRET: ${{ vars.M5_DISPATCHER_RUNTIME_SECRET_ARN }}
+          CLEANUP_RUNTIME_SECRET: ${{ vars.M5_CLEANUP_RUNTIME_SECRET_ARN }}
+          KMS_KEY: ${{ vars.M5_RUNTIME_SECRET_KMS_KEY_ARN }}
+          ARTIFACT_BUCKET_ARN: ${{ vars.M5_ARTIFACT_BUCKET_ARN }}
+        run: |
+          set -euo pipefail
+          deploy_mode() {
+            local mode=$1
+            aws cloudformation deploy \
+              --template-file infra/aws/m5/template.yaml \
+              --stack-name "$STACK_NAME" \
+              --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND \
+              --no-fail-on-empty-changeset --no-cli-pager \
+              --parameter-overrides \
+                Environment="$ENVIRONMENT" ProcessingMode="$mode" \
+                PlannerImageUri="$PLANNER_IMAGE" IndexImageUri="$INDEX_IMAGE" \
+                DispatcherImageUri="$DISPATCHER_IMAGE" CleanupImageUri="$CLEANUP_IMAGE" \
+                PrivateSubnetIds="$PRIVATE_SUBNETS" \
+                RuntimeSecurityGroupIds="$SECURITY_GROUPS" RabbitMQBrokerArn="$MQ_BROKER_ARN" \
+                RabbitMQBasicAuthSecretArn="$MQ_AUTH_SECRET" RabbitMQVirtualHost="$MQ_VHOST" \
+                PlannerRuntimeSecretArn="$PLANNER_RUNTIME_SECRET" IndexRuntimeSecretArn="$INDEX_RUNTIME_SECRET" \
+                DispatcherRuntimeSecretArn="$DISPATCHER_RUNTIME_SECRET" CleanupRuntimeSecretArn="$CLEANUP_RUNTIME_SECRET" \
+                RuntimeSecretKMSKeyArn="$KMS_KEY" \
+                ArtifactBucketArn="$ARTIFACT_BUCKET_ARN" >/dev/null
+          }
+          resource_count() {
+            local type=$1
+            aws cloudformation list-stack-resources --stack-name "$STACK_NAME" \
+              --query "length(StackResourceSummaries[?ResourceType=='$type'])" --output text
+          }
+          verify_mode() {
+            local expected=$1 mappings functions actual
+            actual=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+              --query "Stacks[0].Outputs[?OutputKey=='ActiveProcessingMode'].OutputValue | [0]" --output text)
+            [[ "$actual" == "$expected" ]]
+            mappings=$(resource_count AWS::Lambda::EventSourceMapping)
+            functions=$(resource_count AWS::Lambda::Function)
+            case "$expected" in
+              lambda) [[ "$mappings" == 3 && "$functions" == 4 ]] ;;
+              paused) [[ "$mappings" == 0 && "$functions" == 0 ]] ;;
+            esac
+          }
+
+          # The deployment role is protected; this is the only supported
+          # active-mode transition and therefore prevents transient overlap.
+          deploy_mode paused
+          verify_mode paused
+          if [[ "$FINAL_MODE" != paused ]]; then
+            deploy_mode "$FINAL_MODE"
+            verify_mode "$FINAL_MODE"
+          fi

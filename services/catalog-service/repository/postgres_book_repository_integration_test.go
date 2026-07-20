@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"os"
 	"strings"
@@ -13,7 +14,88 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/belLena81/raglibrarian/services/catalog-service/internal/catalog"
 )
+
+func TestApplyRetrievalTerminalEventIsAtomicAndIdempotent(t *testing.T) {
+	if os.Getenv("CATALOG_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set CATALOG_POSTGRES_INTEGRATION=true inside the Compose test network")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	dsn := readCatalogIntegrationSecret(t, "CATALOG_POSTGRES_DSN_FILE")
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect catalog database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	id := randomIntegrationID(t)
+	bookID := "retrieval-book-" + id
+	eventID := "retrieval-event-" + id
+	statusEventID := "retrieval-status-" + id
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sourceChecksum := sha256.Sum256([]byte("synthetic source " + id))
+	payloadDigest := sha256.Sum256([]byte("synthetic retrieval terminal envelope " + id))
+	_, err = pool.Exec(ctx, `INSERT INTO catalog.books
+		(id,title,author,year,tags,processing_status,created_at,object_reference,checksum,byte_size,media_type,actor_id,
+		 processing_stage,processing_failure_category,processing_updated_at,processing_version)
+		VALUES ($1,'Retrieval terminal fixture','Catalog integration',2026,ARRAY['synthetic'],'processing',$2,$3,$4,1,
+		'application/pdf','integration-test','chunks_ready','',$2,3)`,
+		bookID, now.Add(-time.Minute), "originals/"+bookID+".pdf", sourceChecksum[:])
+	if err != nil {
+		t.Fatalf("insert retrieval book fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.outbox WHERE aggregate_id=$1", bookID)
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.processing_inbox WHERE event_id=$1", eventID)
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.books WHERE id=$1", bookID)
+	})
+
+	event := catalog.ProcessingEvent{
+		EventID:       eventID,
+		EventType:     "retrieval.book.indexed.v1",
+		BookID:        bookID,
+		SourceSHA256:  sourceChecksum,
+		PayloadSHA256: payloadDigest,
+		CorrelationID: "correlation-" + id,
+		CausationID:   "job-" + id,
+		Fact: catalog.ProcessingFact{
+			Kind:       catalog.ProcessingIndexed,
+			OccurredAt: now,
+		},
+	}
+	repository := NewPostgresBookRepository(pool)
+	book, changed, err := repository.ApplyProcessingEvent(ctx, event, statusEventID, now)
+	if err != nil || !changed || book.ProcessingStatus != catalog.BookStatusIndexed ||
+		book.ProcessingStage != catalog.BookStageIndexed || book.ProcessingVersion != 4 {
+		t.Fatalf("ApplyProcessingEvent() = (%+v, %v, %v)", book, changed, err)
+	}
+
+	_, changed, err = repository.ApplyProcessingEvent(ctx, event, "unused-status-id", now.Add(time.Second))
+	if err != nil || changed {
+		t.Fatalf("duplicate ApplyProcessingEvent() = (%v, %v)", changed, err)
+	}
+	var inboxCount, outboxCount int
+	if err = pool.QueryRow(ctx, `SELECT
+		(SELECT COUNT(*) FROM catalog.processing_inbox WHERE event_id=$1),
+		(SELECT COUNT(*) FROM catalog.outbox WHERE aggregate_id=$2 AND sequence=4)`, eventID, bookID).
+		Scan(&inboxCount, &outboxCount); err != nil {
+		t.Fatalf("read terminal projection counts: %v", err)
+	}
+	if inboxCount != 1 || outboxCount != 1 {
+		t.Fatalf("terminal projection counts = inbox %d, outbox %d", inboxCount, outboxCount)
+	}
+
+	event.PayloadSHA256 = sha256.Sum256([]byte("conflicting envelope"))
+	if _, _, err = repository.ApplyProcessingEvent(ctx, event, "conflict-status-id", now.Add(2*time.Second)); err != catalog.ErrProcessingEventConflict {
+		t.Fatalf("conflicting ApplyProcessingEvent() error = %v", err)
+	}
+}
 
 func TestListPaginatesBooksWithSharedTimestamp(t *testing.T) {
 	if os.Getenv("CATALOG_POSTGRES_INTEGRATION") != "true" {

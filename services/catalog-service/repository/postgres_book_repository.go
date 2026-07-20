@@ -138,7 +138,7 @@ func (r *PostgresBookRepository) Get(ctx context.Context, id string) (catalog.Bo
 	return book, nil
 }
 
-// ApplyProcessingEvent deduplicates an Ingestion fact, updates the Book
+// ApplyProcessingEvent deduplicates a processing fact, updates the Book
 // aggregate, and creates Catalog's sanitized notification in one transaction.
 func (r *PostgresBookRepository) ApplyProcessingEvent(ctx context.Context, event catalog.ProcessingEvent, statusEventID string, appliedAt time.Time) (catalog.Book, bool, error) {
 	tx, err := r.pool.Begin(ctx)

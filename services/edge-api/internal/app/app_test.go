@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"net"
 	"os"
@@ -8,6 +9,37 @@ import (
 
 	"github.com/stretchr/testify/assert"
 )
+
+type readinessStub struct {
+	err   error
+	calls *[]string
+	name  string
+}
+
+func (s readinessStub) CheckReady(context.Context) error {
+	*s.calls = append(*s.calls, s.name)
+	return s.err
+}
+
+func TestReadinessIncludesRetrievalAndStopsAtFirstFailure(t *testing.T) {
+	calls := []string{}
+	check := readiness{
+		identity:  readinessStub{name: "identity", calls: &calls},
+		catalog:   readinessStub{name: "catalog", calls: &calls},
+		retrieval: readinessStub{name: "retrieval", calls: &calls},
+	}
+
+	err := check.CheckReady(context.Background())
+
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"identity", "catalog", "retrieval"}, calls)
+
+	calls = nil
+	retrievalFailure := errors.New("retrieval down")
+	check.retrieval = readinessStub{name: "retrieval", calls: &calls, err: retrievalFailure}
+	err = check.CheckReady(context.Background())
+	assert.ErrorIs(t, err, retrievalFailure)
+}
 
 func TestTLSFailureClassifiesFileAccessAndMaterialErrors(t *testing.T) {
 	pathFailure := tlsFailure(&os.PathError{Op: "open", Path: "/sensitive/path", Err: os.ErrPermission})

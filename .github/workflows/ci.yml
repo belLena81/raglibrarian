@@ -80,8 +80,8 @@ jobs:
       - uses: actions/checkout@v4.2.2
       - name: Install pinned AWS SAM CLI
         run: pipx install aws-sam-cli==1.145.2
-      - name: Validate the M4 SAM/CloudFormation graph
-        run: make sam-validate
+      - name: Validate the M4 and M5 SAM/CloudFormation graphs
+        run: make sam-validate sam-m5-validate
 
   integration:
     runs-on: ubuntu-latest
@@ -100,6 +100,8 @@ jobs:
         run: |
           cp .env.example .env
           make dev-secrets dev-certs
+          make dev-secrets-m5
+          bash ./scripts/ensure-m5-dev-cert.sh
           umask 077
           openssl rand -base64 24 | tr -d '\n' > .dev/secrets/e2e_bootstrap_code
           { printf 'raglibrarian/admin-bootstrap/v1\0'; cat .dev/secrets/e2e_bootstrap_code; } \
@@ -107,8 +109,10 @@ jobs:
           chmod 400 .dev/secrets/e2e_bootstrap_code .dev/secrets/identity_bootstrap_verifier
       - name: Validate and start the local stack
         run: |
+          pipx install huggingface-hub==0.34.4
+          make m5-model-bootstrap
           make compose-config
-          docker compose --profile m4-ha up -d --build --wait --wait-timeout 180
+          docker compose --profile m4-ha --profile m5 up -d --build --wait --wait-timeout 300
       - name: Run live mTLS service contracts
         run: make m4-contract-test
       - name: Verify MinIO multipart cleanup
@@ -117,7 +121,9 @@ jobs:
         run: |
           E2E_BOOTSTRAP_CODE="$(cat .dev/secrets/e2e_bootstrap_code)" \
           E2E_MAIL_FIXTURE_URL=http://127.0.0.1:8025/view/latest.txt \
-            make m4-integration-test
+            make m4-m5-integration-test
+      - name: Run M5 Retrieval contracts and focused recovery tests
+        run: make m5-contract-test m5-worker-recovery-test
       - name: Verify database-loss readiness behavior
         run: |
           docker compose stop postgres
@@ -156,6 +162,7 @@ jobs:
         run: |
           cp .env.example .env
           make dev-secrets dev-certs
+          make dev-secrets-m5
           umask 077
           openssl rand -base64 24 | tr -d '\n' > .dev/secrets/e2e_bootstrap_code
           { printf 'raglibrarian/admin-bootstrap/v1\0'; cat .dev/secrets/e2e_bootstrap_code; } \

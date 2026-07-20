@@ -39,6 +39,7 @@ func TestAppFailureReasonMapsClosedClasses(t *testing.T) {
 		{err: app.ErrInternalTLSMaterialInvalid, expected: diagnostic.ServiceFailureInternalTLSMaterialInvalid},
 		{err: app.ErrPrivilegeDrop, expected: diagnostic.ServiceFailurePrivilegeDrop},
 		{err: app.ErrIdentityClientInitialization, expected: diagnostic.ServiceFailureIdentityClientInitialization},
+		{err: app.ErrRetrievalClientInitialization, expected: diagnostic.ServiceFailureRetrievalClientInitialization},
 		{err: app.ErrHTTPListen, expected: diagnostic.ServiceFailureHTTPListen},
 		{err: app.ErrHTTPServe, expected: diagnostic.ServiceFailureHTTPServe},
 		{err: app.ErrHTTPShutdown, expected: diagnostic.ServiceFailureHTTPShutdown},

@@ -59,6 +59,8 @@ const (
 	ServiceFailurePrivilegeDrop
 	// ServiceFailureIdentityClientInitialization identifies Identity client construction failure.
 	ServiceFailureIdentityClientInitialization
+	// ServiceFailureRetrievalClientInitialization identifies Retrieval client construction failure.
+	ServiceFailureRetrievalClientInitialization
 	// ServiceFailureHTTPListen identifies HTTP listener creation failure.
 	ServiceFailureHTTPListen
 	// ServiceFailureHTTPServe identifies HTTP serving failure after listener creation.
@@ -311,6 +313,8 @@ func serviceFailureReasonValue(reason ServiceFailureReason) string {
 		return "privilege_drop_failed"
 	case ServiceFailureIdentityClientInitialization:
 		return "identity_client_initialization_failed"
+	case ServiceFailureRetrievalClientInitialization:
+		return "retrieval_client_initialization_failed"
 	case ServiceFailureHTTPListen:
 		return "http_listen_failed"
 	case ServiceFailureHTTPServe:

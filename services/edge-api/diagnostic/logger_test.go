@@ -206,6 +206,13 @@ func TestLifecycleFailuresUseExactSafeReasons(t *testing.T) {
 			emit:   (*diagnostic.Recorder).ServiceRunFailed,
 		},
 		{
+			name:   "retrieval client",
+			event:  "service.run.failed",
+			reason: diagnostic.ServiceFailureRetrievalClientInitialization,
+			value:  "retrieval_client_initialization_failed",
+			emit:   (*diagnostic.Recorder).ServiceRunFailed,
+		},
+		{
 			name:   "HTTP listen",
 			event:  "service.run.failed",
 			reason: diagnostic.ServiceFailureHTTPListen,

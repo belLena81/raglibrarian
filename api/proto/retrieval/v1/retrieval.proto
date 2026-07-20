@@ -1,0 +1,137 @@
+syntax = "proto3";
+
+package retrieval.v1;
+
+option go_package = "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1;retrievalv1";
+
+import "google/protobuf/timestamp.proto";
+
+service RetrievalService {
+  rpc Check(CheckRequest) returns (CheckResponse);
+  rpc Search(SearchRequest) returns (SearchResponse);
+}
+
+message CheckRequest {}
+
+message CheckResponse {
+  string status = 1;
+}
+
+// Actor is asserted by the authenticated Edge service over an authorized mTLS
+// connection. Retrieval never accepts browser-supplied identity or role data.
+message Actor {
+  string user_id = 1;
+  string role = 2;
+  string status = 3;
+}
+
+message SearchFilters {
+  repeated string tags = 1;
+  string author = 2;
+  optional int32 year_from = 3;
+  optional int32 year_to = 4;
+}
+
+message SearchRequest {
+  string question = 1;
+  SearchFilters filters = 2;
+  uint32 limit = 3;
+  Actor actor = 4;
+  string correlation_id = 5;
+}
+
+message SearchResponse {
+  string query = 1;
+  repeated Evidence results = 2;
+}
+
+message BookMetadata {
+  string book_id = 1;
+  string title = 2;
+  string author = 3;
+  int32 year = 4;
+  repeated string tags = 5;
+}
+
+message Evidence {
+  string evidence_id = 1;
+  string chunk_id = 2;
+  BookMetadata book = 3;
+  string chapter = 4;
+  string section = 5;
+  uint32 page_start = 6;
+  uint32 page_end = 7;
+  string passage = 8;
+  double score = 9;
+}
+
+enum BookIndexingFailureCategory {
+  BOOK_INDEXING_FAILURE_CATEGORY_UNSPECIFIED = 0;
+  BOOK_INDEXING_FAILURE_CATEGORY_MANIFEST_INTEGRITY = 1;
+  BOOK_INDEXING_FAILURE_CATEGORY_INCOMPATIBLE_PROFILE = 2;
+  BOOK_INDEXING_FAILURE_CATEGORY_EMBEDDING_UNAVAILABLE = 3;
+  BOOK_INDEXING_FAILURE_CATEGORY_VECTOR_STORE_UNAVAILABLE = 4;
+  BOOK_INDEXING_FAILURE_CATEGORY_RESOURCE_LIMIT_EXCEEDED = 5;
+  BOOK_INDEXING_FAILURE_CATEGORY_INDEXING_TIMEOUT = 6;
+  BOOK_INDEXING_FAILURE_CATEGORY_INTERNAL_INDEXING_ERROR = 7;
+}
+
+// IndexBatchRequestedV1 schedules one bounded, idempotent manifest-shard
+// indexing unit. It contains controlled references and integrity metadata only;
+// raw chunks and embeddings must never be placed on the broker.
+message IndexBatchRequestedV1 {
+  string event_id = 1;
+  string job_id = 2;
+  string batch_id = 3;
+  string book_id = 4;
+  string shard_reference = 5;
+  bytes shard_sha256 = 6;
+  int64 compressed_byte_size = 7;
+  int64 uncompressed_byte_size = 8;
+  uint32 chunk_count = 9;
+  bytes source_sha256 = 10;
+  bytes manifest_sha256 = 11;
+  bytes index_profile_digest = 12;
+  string correlation_id = 13;
+  google.protobuf.Timestamp occurred_at = 14;
+  string causation_id = 15;
+  string producer = 16;
+  string schema_version = 17;
+  string idempotency_key = 18;
+}
+
+// BookIndexedV1 is emitted only after all evidence and vectors for the job are
+// durable and visible to search. It contains no retrieved document content.
+message BookIndexedV1 {
+  string event_id = 1;
+  string book_id = 2;
+  string job_id = 3;
+  bytes source_sha256 = 4;
+  bytes manifest_sha256 = 5;
+  bytes index_profile_digest = 6;
+  uint32 evidence_count = 7;
+  string correlation_id = 8;
+  google.protobuf.Timestamp occurred_at = 9;
+  string causation_id = 10;
+  string producer = 11;
+  string schema_version = 12;
+  string idempotency_key = 13;
+}
+
+// BookIndexingFailedV1 reports a terminal, sanitized outcome. Diagnostics and
+// document content remain in protected service-local state, never in events.
+message BookIndexingFailedV1 {
+  string event_id = 1;
+  string book_id = 2;
+  string job_id = 3;
+  bytes source_sha256 = 4;
+  bytes manifest_sha256 = 5;
+  bytes index_profile_digest = 6;
+  BookIndexingFailureCategory failure_category = 7;
+  string correlation_id = 8;
+  google.protobuf.Timestamp occurred_at = 9;
+  string causation_id = 10;
+  string producer = 11;
+  string schema_version = 12;
+  string idempotency_key = 13;
+}

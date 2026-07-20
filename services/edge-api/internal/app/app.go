@@ -17,6 +17,7 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/process"
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	identityv1 "github.com/belLena81/raglibrarian/pkg/proto/identity/v1"
+	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	edgeapi "github.com/belLena81/raglibrarian/services/edge-api"
 	"github.com/belLena81/raglibrarian/services/edge-api/bookstatus"
 	"github.com/belLena81/raglibrarian/services/edge-api/catalogclient"
@@ -24,6 +25,7 @@ import (
 	"github.com/belLena81/raglibrarian/services/edge-api/diagnostic"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
 	"github.com/belLena81/raglibrarian/services/edge-api/identityclient"
+	"github.com/belLena81/raglibrarian/services/edge-api/retrievalclient"
 )
 
 var (
@@ -37,6 +39,8 @@ var (
 	ErrPrivilegeDrop = errors.New("privilege drop failed")
 	// ErrIdentityClientInitialization identifies Identity gRPC client setup failure.
 	ErrIdentityClientInitialization = errors.New("identity client initialization failed")
+	// ErrRetrievalClientInitialization identifies Retrieval gRPC client setup failure.
+	ErrRetrievalClientInitialization = errors.New("retrieval client initialization failed")
 	// ErrHTTPListen identifies HTTP listener creation failure.
 	ErrHTTPListen = errors.New("HTTP listen failed")
 	// ErrHTTPServe identifies HTTP serving failure after listener creation.
@@ -62,6 +66,10 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	if err != nil {
 		return tlsFailure(err)
 	}
+	retrievalCredentials, err := internaltls.ClientCredentials(cfg.TLS, "retrieval-service")
+	if err != nil {
+		return tlsFailure(err)
+	}
 	if err = process.DropPrivileges(cfg.RunAs); err != nil {
 		return appFailure(ErrPrivilegeDrop, err)
 	}
@@ -75,11 +83,17 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		return appFailure(ErrIdentityClientInitialization, err)
 	}
 	defer func() { _ = catalogConnection.Close() }()
+	retrievalConnection, err := grpc.NewClient(cfg.RetrievalAddress, grpc.WithTransportCredentials(retrievalCredentials))
+	if err != nil {
+		return appFailure(ErrRetrievalClientInitialization, err)
+	}
+	defer func() { _ = retrievalConnection.Close() }()
 	identity := identityclient.New(identityv1.NewIdentityServiceClient(connection), grpc_health_v1.NewHealthClient(connection))
 	catalog := catalogclient.New(catalogv1.NewCatalogServiceClient(catalogConnection))
+	retrieval := retrievalclient.New(retrievalv1.NewRetrievalServiceClient(retrievalConnection))
 	authHandler := handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: cfg.SecureCookie})
-	queryHandler := handler.NewQueryHandler(diagnostics)
-	healthHandler := handler.NewHealthHandler(readiness{identity: identity, catalog: catalog})
+	queryHandler := handler.NewQueryHandler(retrieval)
+	healthHandler := handler.NewHealthHandler(readiness{identity: identity, catalog: catalog, retrieval: retrieval})
 	booksHandler := handler.NewBooksHandler(catalog)
 	bookStatusHub := handler.NewBookStatusHub(200)
 	booksHandler.EnableEvents(handler.BookEventsConfig{
@@ -120,15 +134,19 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 }
 
 type readiness struct {
-	identity interface{ CheckReady(context.Context) error }
-	catalog  interface{ CheckReady(context.Context) error }
+	identity  interface{ CheckReady(context.Context) error }
+	catalog   interface{ CheckReady(context.Context) error }
+	retrieval interface{ CheckReady(context.Context) error }
 }
 
 func (r readiness) CheckReady(ctx context.Context) error {
 	if err := r.identity.CheckReady(ctx); err != nil {
 		return err
 	}
-	return r.catalog.CheckReady(ctx)
+	if err := r.catalog.CheckReady(ctx); err != nil {
+		return err
+	}
+	return r.retrieval.CheckReady(ctx)
 }
 
 type pendingWatcher interface {

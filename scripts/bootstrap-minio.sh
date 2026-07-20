@@ -10,6 +10,8 @@ cleanup_access_key=$(cat /run/secrets/ingestion_cleanup_minio_access_key)
 cleanup_secret_key=$(cat /run/secrets/ingestion_cleanup_minio_secret_key)
 e2e_access_key=$(cat /run/secrets/ingestion_e2e_minio_access_key)
 e2e_secret_key=$(cat /run/secrets/ingestion_e2e_minio_secret_key)
+retrieval_access_key=$(cat /run/secrets/retrieval_minio_access_key)
+retrieval_secret_key=$(cat /run/secrets/retrieval_minio_secret_key)
 mc alias set local http://minio:9000 "$root_user" "$root_password"
 mc mb --ignore-existing local/original-books
 mc anonymous set none local/original-books
@@ -72,3 +74,19 @@ if mc admin user info local "$e2e_access_key" >/dev/null 2>&1; then
 fi
 mc admin user add local "$e2e_access_key" "$e2e_secret_key"
 mc admin policy attach local ingestion-e2e-read --user "$e2e_access_key"
+
+# Retrieval owns no source objects. It can read only versioned Ingestion
+# manifests and shards under the controlled books prefix.
+printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::ingestion-artifacts/books/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::ingestion-artifacts"],"Condition":{"StringLike":{"s3:prefix":["books/*"]}}}]}' > "$policy"
+if mc admin user info local "$retrieval_access_key" >/dev/null 2>&1; then
+  mc admin policy detach local retrieval-artifact-read --user "$retrieval_access_key" >/dev/null 2>&1 || true
+fi
+if mc admin policy info local retrieval-artifact-read >/dev/null 2>&1; then
+  mc admin policy remove local retrieval-artifact-read
+fi
+mc admin policy create local retrieval-artifact-read "$policy"
+if mc admin user info local "$retrieval_access_key" >/dev/null 2>&1; then
+  mc admin user remove local "$retrieval_access_key"
+fi
+mc admin user add local "$retrieval_access_key" "$retrieval_secret_key"
+mc admin policy attach local retrieval-artifact-read --user "$retrieval_access_key"

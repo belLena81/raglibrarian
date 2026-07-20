@@ -59,6 +59,7 @@ if [[ ! -r "$secret_dir/identity_password_reset_hmac_key" ]]; then
 fi
 
 bash ./scripts/ensure-m4-dev-secrets.sh "$secret_dir"
+bash ./scripts/ensure-m5-dev-secrets.sh "$secret_dir"
 
 if [[ ! -r "$secret_dir/identity_bootstrap_verifier" ]]; then
   echo "Creating a local admin bootstrap verifier (interactive)."
@@ -77,13 +78,18 @@ if [[ ! -r "$cert_dir/ca.crt" ]]; then
   fi
   make dev-certs
 fi
+bash ./scripts/ensure-m5-dev-cert.sh "$cert_dir"
+
+# Model acquisition is explicit and revision-pinned. TEI runs offline and will
+# not fetch weights on its serving path.
+bash ./scripts/bootstrap-m5-model.sh
 
 make compose-config
-docker compose up -d --build --wait --wait-timeout 180
+docker compose --profile m5 up -d --build --wait --wait-timeout 300
 
 log_pid_dir=.dev/log-pids
 mkdir -p "$log_pid_dir"
-for service in edge-api identity-service catalog-service ingestion-service; do
+for service in edge-api identity-service catalog-service ingestion-service retrieval-service retrieval-worker; do
   service_log_dir="_logs/$service"
   service_log_file="$service_log_dir/service.log"
   service_pid_file="$log_pid_dir/$service.pid"
@@ -144,6 +150,6 @@ fi
 echo "Backend ready: http://127.0.0.1:8080"
 echo "UI:            http://127.0.0.1:5173"
 echo "Mailpit:       http://127.0.0.1:${MAILPIT_UI_PORT:-8025}"
-echo "Backend logs:  $root_dir/_logs/{edge-api,identity-service,catalog-service,ingestion-service}/service.log"
+echo "Backend logs:  $root_dir/_logs/{edge-api,identity-service,catalog-service,ingestion-service,retrieval-service,retrieval-worker}/service.log"
 echo "Stop backend with: docker compose down"
 echo "Stop local stack:  bash ./scripts/stop-local.sh"
