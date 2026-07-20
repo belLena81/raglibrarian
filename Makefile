@@ -189,6 +189,10 @@ e2e: _require_root
 m4-contract-test: contract-test
 
 m5-contract-test: contract-test
+	@project=raglibrarian-m5-contract-test; \
+	trap 'MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile m5-contract-test down -v --remove-orphans' EXIT; \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile m5-contract-test build retrieval-service retrieval-contract-tests && \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile m5-contract-test run --rm retrieval-contract-tests
 
 m5-integration-test: m5-contract-test m5-e2e m5-worker-recovery-test
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	querymiddleware "github.com/belLena81/raglibrarian/services/edge-api/middleware"
 )
@@ -155,7 +156,7 @@ func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
 func normalizeQueryRequest(request *QueryRequest) error {
 	request.Question = strings.TrimSpace(request.Question)
 	request.Filters.Author = strings.TrimSpace(request.Filters.Author)
-	if request.Question == "" || len(request.Question) > maxQueryQuestionLength || len(request.Filters.Author) > maxQueryAuthorLength {
+	if request.Question == "" || utf8.RuneCountInString(request.Question) > maxQueryQuestionLength || utf8.RuneCountInString(request.Filters.Author) > maxQueryAuthorLength {
 		return ErrInvalidSearch
 	}
 	if len(request.Filters.Tags) > maxQueryTags {
@@ -163,7 +164,7 @@ func normalizeQueryRequest(request *QueryRequest) error {
 	}
 	for index, tag := range request.Filters.Tags {
 		request.Filters.Tags[index] = strings.TrimSpace(tag)
-		if request.Filters.Tags[index] == "" || len(request.Filters.Tags[index]) > maxQueryTagLength {
+		if request.Filters.Tags[index] == "" || utf8.RuneCountInString(request.Filters.Tags[index]) > maxQueryTagLength {
 			return ErrInvalidSearch
 		}
 	}

@@ -3,6 +3,7 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"time"
@@ -436,6 +437,67 @@ func (r *Postgres) FailBatch(ctx context.Context, work application.BatchWork, ca
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+func (r *Postgres) FailManifest(ctx context.Context, event application.ManifestEvent, category domain.FailureCategory, now time.Time) error {
+	protoCategory, ok := failureProto(category)
+	if !ok {
+		return application.ErrInvalidEvent
+	}
+	if err := event.Validate(domain.SupportedIndexProfile()); !errors.Is(err, application.ErrUnsupportedIndexProfile) {
+		if err != nil {
+			return err
+		}
+		return application.ErrInvalidEvent
+	}
+	manifestPayload, err := encodeManifest(event.Manifest)
+	if err != nil {
+		return application.ErrInvalidEvent
+	}
+	jobID := failedManifestJobID(event)
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	command, err := tx.Exec(ctx, `INSERT INTO retrieval.manifest_facts
+		(book_id,event_id,payload_digest,source_sha256,manifest_sha256,manifest_reference,manifest_payload,correlation_id,causation_id,occurred_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING`, event.BookID, event.EventID, event.PayloadDigest[:], event.SourceSHA256[:], event.ManifestSHA256[:], event.ManifestReference, manifestPayload, event.CorrelationID, event.CausationID, event.OccurredAt)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		var digest []byte
+		if err = tx.QueryRow(ctx, `SELECT payload_digest FROM retrieval.manifest_facts WHERE book_id=$1 OR event_id=$2`, event.BookID, event.EventID).Scan(&digest); err != nil || !equalDigest(digest, event.PayloadDigest) {
+			return application.ErrConflictingEvent
+		}
+	}
+	profileDigest := domain.SupportedIndexProfile().Digest
+	command, err = tx.Exec(ctx, `INSERT INTO retrieval.index_jobs
+		(id,book_id,source_sha256,manifest_sha256,profile_digest,state,expected_batches,failure_category,correlation_id,created_at,updated_at)
+		VALUES($1,$2,$3,$4,$5,'failed',0,$6,$7,$8,$8) ON CONFLICT DO NOTHING`, jobID, event.BookID, event.SourceSHA256[:], event.ManifestSHA256[:], profileDigest[:], string(category), event.CorrelationID, now)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 1 {
+		message := &retrievalv1.BookIndexingFailedV1{EventId: jobID + ":failed", BookId: event.BookID, JobId: jobID,
+			SourceSha256: event.SourceSHA256[:], ManifestSha256: event.ManifestSHA256[:], IndexProfileDigest: profileDigest[:], FailureCategory: protoCategory,
+			CorrelationId: event.CorrelationID, OccurredAt: timestamppb.New(now), CausationId: event.EventID, Producer: "retrieval-service", SchemaVersion: "v1", IdempotencyKey: jobID + ":failed"}
+		payload, marshalErr := proto.MarshalOptions{Deterministic: true}.Marshal(message)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO retrieval.outbox(event_id,event_type,aggregate_id,payload,occurred_at,next_attempt_at) VALUES($1,'retrieval.book.indexing-failed.v1',$2,$3,$4,$4) ON CONFLICT DO NOTHING`, message.EventId, jobID, payload, now)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func failedManifestJobID(event application.ManifestEvent) string {
+	digest := sha256.Sum256([]byte(event.BookID + ":" + event.EventID + ":" + string(event.ManifestSHA256[:])))
+	return "incompatible:" + fmt.Sprintf("%x", digest[:])
 }
 
 func failureProto(category domain.FailureCategory) (retrievalv1.BookIndexingFailureCategory, bool) {

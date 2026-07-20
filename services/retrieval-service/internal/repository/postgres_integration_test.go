@@ -13,9 +13,11 @@ import (
 	"testing"
 	"time"
 
+	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestReplayRecoveryTerminalFailureAndVisibilityUseDurableState(t *testing.T) {
@@ -89,6 +91,74 @@ func TestReplayRecoveryTerminalFailureAndVisibilityUseDurableState(t *testing.T)
 	visible, err := repository.FilterIndexed(ctx, []application.Evidence{{EvidenceID: "hidden", JobID: jobID, BookID: bookID, Passage: "must remain hidden"}})
 	if err != nil || len(visible) != 0 {
 		t.Fatalf("failed job visibility=%#v error=%v", visible, err)
+	}
+}
+
+func TestFailManifestEmitsIncompatibleProfileTerminalEvent(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository := NewPostgres(pool)
+	suffix := randomIntegrationID(t)
+	bookID := "book-" + suffix
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sourceSHA256 := integrationDigest(1)
+	manifestSHA256 := integrationDigest(2)
+	processingDigest := integrationDigest(7)
+	processingDigestHex := hex.EncodeToString(processingDigest[:])
+	prefix := "books/" + bookID + "/" + hex.EncodeToString(sourceSHA256[:]) + "/" + processingDigestHex + "/"
+	payloadDigest := integrationDigest(3)
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.metadata_facts(book_id,event_id,payload_digest,source_sha256,title,author,publication_year,tags,correlation_id,causation_id,occurred_at)
+		VALUES($1,$2,$3,$4,'Synthetic systems','RAGLibrarian QA',2026,'{}',$5,$6,$7)`, bookID, "metadata-"+suffix, payloadDigest[:], sourceSHA256[:], "correlation-"+suffix, "cause-"+suffix, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.outbox WHERE aggregate_id LIKE 'incompatible:%'`)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.manifest_facts WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
+	})
+	event := application.ManifestEvent{EventID: "manifest-" + suffix, BookID: bookID, SourceSHA256: sourceSHA256, ManifestSHA256: manifestSHA256,
+		ManifestReference: prefix + "manifest.pb", CorrelationID: "correlation-" + suffix, CausationID: "cause-" + suffix,
+		Producer: "ingestion-service", SchemaVersion: "v1", IdempotencyKey: bookID + ":" + processingDigestHex + ":ready", OccurredAt: now, PayloadDigest: integrationDigest(4),
+		Manifest: application.Manifest{SchemaVersion: "v1", BookID: bookID, SourceSHA256: sourceSHA256, ManifestSHA256: manifestSHA256,
+			ProcessingConfigDigest: processingDigest, PageCount: 1, ChunkCount: 1, GeneratedAt: now.Add(-time.Minute),
+			ExtractionVersion: "poppler-layout-v1", NormalizationVersion: "nfc-v1", TokenizerVersion: "cl100k_base-v1",
+			ChunkingVersion: "token-window-v1", StructureVersion: "heading-carry-v1", MaximumTokens: 800, OverlapTokens: 120,
+			Shards: []application.Shard{{Reference: prefix + "shards/000000.pb.zst", SHA256: integrationDigest(5), CompressedBytes: 10, UncompressedBytes: 20, ChunkCount: 1, FirstChunkOrder: 0, LastChunkOrder: 0}}}}
+
+	if err = repository.FailManifest(ctx, event, domain.FailureIncompatibleProfile, now); err != nil {
+		t.Fatal(err)
+	}
+	if err = repository.FailManifest(ctx, event, domain.FailureIncompatibleProfile, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	var state, category string
+	var outboxPayload []byte
+	if err = pool.QueryRow(ctx, `SELECT state,failure_category FROM retrieval.index_jobs WHERE book_id=$1`, bookID).Scan(&state, &category); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT payload FROM retrieval.outbox WHERE event_type='retrieval.book.indexing-failed.v1' AND aggregate_id=(SELECT id FROM retrieval.index_jobs WHERE book_id=$1)`, bookID).Scan(&outboxPayload); err != nil {
+		t.Fatal(err)
+	}
+	var message retrievalv1.BookIndexingFailedV1
+	if err = proto.Unmarshal(outboxPayload, &message); err != nil {
+		t.Fatal(err)
+	}
+	if state != "failed" || category != string(domain.FailureIncompatibleProfile) ||
+		message.FailureCategory != retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_INCOMPATIBLE_PROFILE {
+		t.Fatalf("unexpected terminal failure: state=%q category=%q message=%s", state, category, message.FailureCategory)
 	}
 }
 

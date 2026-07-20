@@ -6,9 +6,17 @@ import (
 	"errors"
 	"io"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
+
+// ObjectStore is the bounded private-artifact contract shared by local and AWS adapters.
+type ObjectStore interface {
+	Open(context.Context, string) (io.ReadCloser, int64, error)
+	ReadBounded(context.Context, string, int64) ([]byte, error)
+}
 
 type MinIO struct {
 	client *minio.Client
@@ -26,15 +34,32 @@ func NewMinIO(endpoint, accessKey, secretKey, bucket string, secure bool) (*MinI
 	return &MinIO{client: client, bucket: bucket}, nil
 }
 
-func NewAWS(region, bucket string) (*MinIO, error) {
+type s3Client interface {
+	GetObject(context.Context, *s3.GetObjectInput, ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+}
+
+// AWS uses the AWS SDK default credential chain, including Lambda execution-role credentials.
+type AWS struct {
+	client s3Client
+	bucket string
+}
+
+func NewAWS(ctx context.Context, region, bucket string) (*AWS, error) {
 	if region == "" || bucket == "" {
 		return nil, errors.New("invalid AWS artifact storage configuration")
 	}
-	client, err := minio.New("s3."+region+".amazonaws.com", &minio.Options{Creds: credentials.NewIAM(""), Secure: true, Region: region})
+	configuration, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
 	if err != nil {
 		return nil, errors.New("configure AWS artifact storage")
 	}
-	return &MinIO{client: client, bucket: bucket}, nil
+	return NewAWSWithClient(s3.NewFromConfig(configuration), bucket)
+}
+
+func NewAWSWithClient(client s3Client, bucket string) (*AWS, error) {
+	if client == nil || bucket == "" {
+		return nil, errors.New("invalid AWS artifact storage configuration")
+	}
+	return &AWS{client: client, bucket: bucket}, nil
 }
 
 func (m *MinIO) Open(ctx context.Context, reference string) (io.ReadCloser, int64, error) {
@@ -52,6 +77,33 @@ func (m *MinIO) Open(ctx context.Context, reference string) (io.ReadCloser, int6
 
 func (m *MinIO) ReadBounded(ctx context.Context, reference string, maximum int64) ([]byte, error) {
 	object, size, err := m.Open(ctx, reference)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = object.Close() }()
+	if size < 1 || size > maximum {
+		return nil, errors.New("artifact exceeds limit")
+	}
+	contents, err := io.ReadAll(io.LimitReader(object, maximum+1))
+	if err != nil || int64(len(contents)) != size {
+		return nil, errors.New("artifact read failed")
+	}
+	return contents, nil
+}
+
+func (a *AWS) Open(ctx context.Context, reference string) (io.ReadCloser, int64, error) {
+	if reference == "" {
+		return nil, 0, errors.New("artifact unavailable")
+	}
+	object, err := a.client.GetObject(ctx, &s3.GetObjectInput{Bucket: &a.bucket, Key: &reference})
+	if err != nil || object.Body == nil || object.ContentLength == nil {
+		return nil, 0, errors.New("artifact unavailable")
+	}
+	return object.Body, *object.ContentLength, nil
+}
+
+func (a *AWS) ReadBounded(ctx context.Context, reference string, maximum int64) ([]byte, error) {
+	object, size, err := a.Open(ctx, reference)
 	if err != nil {
 		return nil, err
 	}

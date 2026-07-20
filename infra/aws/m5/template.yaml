@@ -30,6 +30,12 @@ Parameters:
   RabbitMQBrokerArn:
     Type: String
     AllowedPattern: '^arn:.+:mq:.+:broker:.+$'
+  RabbitMQBrokerName:
+    Type: String
+    AllowedPattern: '^[A-Za-z0-9_-]{1,100}$'
+  AlarmTopicArn:
+    Type: String
+    AllowedPattern: '^arn:.+:sns:.+:.+:.+$'
   RabbitMQBasicAuthSecretArn:
     Type: String
     AllowedPattern: '^arn:.+:secretsmanager:.+:secret:.+$'
@@ -149,6 +155,13 @@ Resources:
         Variables:
           RETRIEVAL_RUNTIME_SECRET_ARN: !Ref PlannerRuntimeSecretArn
 
+  PlannerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: LambdaMode
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${PlannerFunction}'
+      RetentionInDays: !Ref LogRetentionDays
+
   BookUploadedMapping:
     Type: AWS::Lambda::EventSourceMapping
     Condition: LambdaMode
@@ -191,6 +204,13 @@ Resources:
         Variables:
           RETRIEVAL_RUNTIME_SECRET_ARN: !Ref IndexRuntimeSecretArn
 
+  IndexLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: LambdaMode
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${IndexFunction}'
+      RetentionInDays: !Ref LogRetentionDays
+
   IndexBatchMapping:
     Type: AWS::Lambda::EventSourceMapping
     Condition: LambdaMode
@@ -224,6 +244,13 @@ Resources:
             ScheduleExpression: rate(1 minute)
             State: ENABLED
 
+  DispatcherLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: LambdaMode
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${DispatcherFunction}'
+      RetentionInDays: !Ref LogRetentionDays
+
   CleanupFunction:
     Type: AWS::Serverless::Function
     Condition: LambdaMode
@@ -241,6 +268,94 @@ Resources:
           Properties:
             ScheduleExpression: rate(15 minutes)
             State: ENABLED
+
+  CleanupLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: LambdaMode
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${CleanupFunction}'
+      RetentionInDays: !Ref LogRetentionDays
+
+  PlannerErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: LambdaMode
+    Properties:
+      AlarmActions: [!Ref AlarmTopicArn]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Period: 60
+      Statistic: Sum
+      Threshold: 1
+      TreatMissingData: notBreaching
+      Dimensions: [{Name: FunctionName, Value: !Ref PlannerFunction}]
+
+  IndexErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: LambdaMode
+    Properties:
+      AlarmActions: [!Ref AlarmTopicArn]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Period: 60
+      Statistic: Sum
+      Threshold: 1
+      TreatMissingData: notBreaching
+      Dimensions: [{Name: FunctionName, Value: !Ref IndexFunction}]
+
+  IndexThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: LambdaMode
+    Properties:
+      AlarmActions: [!Ref AlarmTopicArn]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      MetricName: Throttles
+      Namespace: AWS/Lambda
+      Period: 60
+      Statistic: Sum
+      Threshold: 1
+      TreatMissingData: notBreaching
+      Dimensions: [{Name: FunctionName, Value: !Ref IndexFunction}]
+
+  RetrievalDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: LambdaMode
+    Properties:
+      AlarmActions: [!Ref AlarmTopicArn]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      MetricName: MessageReadyCount
+      Namespace: AWS/AmazonMQ
+      Period: 60
+      Statistic: Maximum
+      Threshold: 1
+      TreatMissingData: notBreaching
+      Dimensions:
+        - {Name: Broker, Value: !Ref RabbitMQBrokerName}
+        - {Name: VirtualHost, Value: !Ref RabbitMQVirtualHost}
+        - {Name: Queue, Value: retrieval.index-batch.dlq.v1}
+
+  RetrievalSourceDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: LambdaMode
+    Properties:
+      AlarmActions: [!Ref AlarmTopicArn]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      MetricName: MessageReadyCount
+      Namespace: AWS/AmazonMQ
+      Period: 60
+      Statistic: Maximum
+      Threshold: 1
+      TreatMissingData: notBreaching
+      Dimensions:
+        - {Name: Broker, Value: !Ref RabbitMQBrokerName}
+        - {Name: VirtualHost, Value: !Ref RabbitMQVirtualHost}
+        - {Name: Queue, Value: retrieval.source.dlq.v1}
 
   IndexRole:
     Type: AWS::IAM::Role

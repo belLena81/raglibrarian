@@ -43,8 +43,8 @@ func (a Actor) CanSearch() bool {
 type SearchFilters struct {
 	Tags     []string
 	Author   string
-	YearFrom int
-	YearTo   int
+	YearFrom *int
+	YearTo   *int
 }
 
 // SearchQueryInput is untrusted input to the SearchQuery value object.
@@ -71,8 +71,8 @@ func NewSearchQuery(input SearchQueryInput) (SearchQuery, error) {
 	if limit == 0 {
 		limit = DefaultResultLimit
 	}
-	if limit < 1 || limit > MaximumResultLimit || input.Filters.YearFrom < 0 || input.Filters.YearTo < 0 ||
-		(input.Filters.YearFrom > 0 && input.Filters.YearTo > 0 && input.Filters.YearFrom > input.Filters.YearTo) ||
+	if limit < 1 || limit > MaximumResultLimit || !validYear(input.Filters.YearFrom) || !validYear(input.Filters.YearTo) ||
+		(input.Filters.YearFrom != nil && input.Filters.YearTo != nil && *input.Filters.YearFrom > *input.Filters.YearTo) ||
 		len(input.Filters.Tags) > MaximumFilterTags {
 		return SearchQuery{}, ErrInvalidSearchQuery
 	}
@@ -96,9 +96,21 @@ func NewSearchQuery(input SearchQueryInput) (SearchQuery, error) {
 	sort.Strings(tags)
 	return SearchQuery{
 		question: question,
-		filters:  SearchFilters{Tags: tags, Author: author, YearFrom: input.Filters.YearFrom, YearTo: input.Filters.YearTo},
+		filters:  SearchFilters{Tags: tags, Author: author, YearFrom: cloneInt(input.Filters.YearFrom), YearTo: cloneInt(input.Filters.YearTo)},
 		limit:    limit,
 	}, nil
+}
+
+func validYear(value *int) bool {
+	return value == nil || *value >= 0
+}
+
+func cloneInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
 }
 
 func normalizeFilter(value string) string {
@@ -107,7 +119,7 @@ func normalizeFilter(value string) string {
 
 func (q SearchQuery) Question() string { return q.question }
 func (q SearchQuery) Filters() SearchFilters {
-	return SearchFilters{Tags: append([]string(nil), q.filters.Tags...), Author: q.filters.Author, YearFrom: q.filters.YearFrom, YearTo: q.filters.YearTo}
+	return SearchFilters{Tags: append([]string(nil), q.filters.Tags...), Author: q.filters.Author, YearFrom: cloneInt(q.filters.YearFrom), YearTo: cloneInt(q.filters.YearTo)}
 }
 func (q SearchQuery) Limit() int { return q.limit }
 

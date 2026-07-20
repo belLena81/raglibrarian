@@ -52,6 +52,9 @@ jobs:
           PRIVATE_SUBNETS: ${{ vars.M5_PRIVATE_SUBNET_IDS }}
           SECURITY_GROUPS: ${{ vars.M5_RUNTIME_SECURITY_GROUP_IDS }}
           MQ_BROKER_ARN: ${{ vars.M5_RABBITMQ_BROKER_ARN }}
+
+          MQ_BROKER_NAME: ${{ vars.M5_RABBITMQ_BROKER_NAME }}
+          ALARM_TOPIC_ARN: ${{ vars.M5_ALARM_TOPIC_ARN }}
           MQ_AUTH_SECRET: ${{ vars.M5_RABBITMQ_BASIC_AUTH_SECRET_ARN }}
           MQ_VHOST: ${{ vars.M5_RABBITMQ_VIRTUAL_HOST }}
           PLANNER_RUNTIME_SECRET: ${{ vars.M5_PLANNER_RUNTIME_SECRET_ARN }}
@@ -75,6 +78,7 @@ jobs:
                 DispatcherImageUri="$DISPATCHER_IMAGE" CleanupImageUri="$CLEANUP_IMAGE" \
                 PrivateSubnetIds="$PRIVATE_SUBNETS" \
                 RuntimeSecurityGroupIds="$SECURITY_GROUPS" RabbitMQBrokerArn="$MQ_BROKER_ARN" \
+                RabbitMQBrokerName="$MQ_BROKER_NAME" AlarmTopicArn="$ALARM_TOPIC_ARN" \
                 RabbitMQBasicAuthSecretArn="$MQ_AUTH_SECRET" RabbitMQVirtualHost="$MQ_VHOST" \
                 PlannerRuntimeSecretArn="$PLANNER_RUNTIME_SECRET" IndexRuntimeSecretArn="$INDEX_RUNTIME_SECRET" \
                 DispatcherRuntimeSecretArn="$DISPATCHER_RUNTIME_SECRET" CleanupRuntimeSecretArn="$CLEANUP_RUNTIME_SECRET" \

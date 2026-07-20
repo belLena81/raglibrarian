@@ -35,13 +35,15 @@ func TestActorCanSearchRequiresActiveKnownRole(t *testing.T) {
 }
 
 func TestNewSearchQueryNormalizesAndBoundsInput(t *testing.T) {
+	yearFrom := 2020
+	yearTo := 2026
 	query, err := NewSearchQuery(SearchQueryInput{
 		Question: "  How does replication work?  ",
 		Filters: SearchFilters{
 			Tags:     []string{" Databases ", "distributed-systems", "databases"},
 			Author:   " Example Author ",
-			YearFrom: 2020,
-			YearTo:   2026,
+			YearFrom: &yearFrom,
+			YearTo:   &yearTo,
 		},
 	})
 	if err != nil {
@@ -54,14 +56,21 @@ func TestNewSearchQueryNormalizesAndBoundsInput(t *testing.T) {
 	if filters.Author != "example author" || len(filters.Tags) != 2 || filters.Tags[0] != "databases" {
 		t.Fatalf("unexpected normalized filters: %#v", filters)
 	}
+	if filters.YearFrom == nil || filters.YearTo == nil || *filters.YearFrom != 2020 || *filters.YearTo != 2026 {
+		t.Fatalf("unexpected normalized year filters: %#v", filters)
+	}
 }
 
 func TestNewSearchQueryRejectsInvalidBounds(t *testing.T) {
+	negativeYear := -1
+	yearFrom := 2026
+	yearTo := 2020
 	tests := []SearchQueryInput{
 		{},
 		{Question: strings.Repeat("a", MaximumQuestionCharacters+1)},
 		{Question: "valid", Limit: MaximumResultLimit + 1},
-		{Question: "valid", Filters: SearchFilters{YearFrom: 2026, YearTo: 2020}},
+		{Question: "valid", Filters: SearchFilters{YearFrom: &negativeYear}},
+		{Question: "valid", Filters: SearchFilters{YearFrom: &yearFrom, YearTo: &yearTo}},
 		{Question: "valid", Filters: SearchFilters{Tags: make([]string, MaximumFilterTags+1)}},
 		{Question: "valid", Filters: SearchFilters{Author: strings.Repeat("a", MaximumAuthorCharacters+1)}},
 	}

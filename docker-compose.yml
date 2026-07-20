@@ -469,7 +469,7 @@ services:
 
   retrieval-migrate:
     <<: *job-hardening
-    profiles: ["m5"]
+    profiles: ["m5", "m5-contract-test"]
     image: postgres:16.9-alpine
     environment:
       PGHOST: postgres
@@ -491,7 +491,7 @@ services:
     command: ["sh", "/usr/local/bin/run-retrieval-migrations"]
 
   qdrant:
-    profiles: ["m5"]
+    profiles: ["m5", "m5-contract-test"]
     image: ${M5_QDRANT_IMAGE:-qdrant/qdrant:v1.18.3}
     read_only: true
     user: "65532:65532"
@@ -523,7 +523,7 @@ services:
       start_period: 10s
 
   text-embeddings-inference:
-    profiles: ["m5"]
+    profiles: ["m5", "m5-contract-test"]
     image: ${M5_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.9}
     read_only: true
     user: "65532:65532"
@@ -561,7 +561,7 @@ services:
 
   retrieval-service:
     <<: *service-hardening
-    profiles: ["m5"]
+    profiles: ["m5", "m5-contract-test"]
     build:
       context: .
       target: retrieval-runtime
@@ -754,6 +754,29 @@ services:
         condition: service_healthy
       ingestion-service:
         condition: service_healthy
+
+  retrieval-contract-tests:
+    <<: *job-hardening
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=1g
+    profiles: ["m5-contract-test"]
+    build:
+      context: .
+      target: contract-tests
+      args: { SERVICE: retrieval-service }
+    environment:
+      RETRIEVAL_POSTGRES_INTEGRATION: "true"
+      RETRIEVAL_POSTGRES_DSN_FILE: /run/secrets/retrieval_runtime_dsn
+      GOCACHE: /tmp/go-build
+    secrets:
+      - retrieval_runtime_dsn
+    networks:
+      - backend
+      - retrieval-index
+    depends_on:
+      retrieval-service:
+        condition: service_healthy
+    command: ["grep -q '[^[:space:]]' \"$$RETRIEVAL_POSTGRES_DSN_FILE\" && go -C /src/services/retrieval-service test -count=1 -v ./internal/application ./internal/domain ./internal/grpc ./internal/transport ./internal/vector && go -C /src/services/retrieval-service test -count=1 -v -tags=integration -run 'Replay|Recovery|TerminalFailure|Visibility|Manifest' ./internal/repository"]
 
   catalog-minio-runtime-tests:
     <<: *job-hardening

@@ -58,10 +58,12 @@ func (s *Server) Search(parent context.Context, request *retrievalv1.SearchReque
 		filters.Tags = append([]string(nil), request.Filters.Tags...)
 		filters.Author = request.Filters.Author
 		if request.Filters.YearFrom != nil {
-			filters.YearFrom = int(*request.Filters.YearFrom)
+			value := int(*request.Filters.YearFrom)
+			filters.YearFrom = &value
 		}
 		if request.Filters.YearTo != nil {
-			filters.YearTo = int(*request.Filters.YearTo)
+			value := int(*request.Filters.YearTo)
+			filters.YearTo = &value
 		}
 	}
 	ctx, cancel := context.WithTimeout(parent, 10*time.Second)

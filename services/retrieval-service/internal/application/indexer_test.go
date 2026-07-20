@@ -69,6 +69,55 @@ func TestIndexerUpsertsDocumentCentroidBeforeActivation(t *testing.T) {
 	}
 }
 
+func TestIndexerPreservesTerminalFailureCategories(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*stubBatchRepository, *stubShardReader, *stubDocumentEmbedder, *stubVectorIndex)
+		want      domain.FailureCategory
+	}{
+		{
+			name: "embedding outage",
+			configure: func(_ *stubBatchRepository, _ *stubShardReader, embedder *stubDocumentEmbedder, _ *stubVectorIndex) {
+				embedder.err = errors.New("tei unavailable")
+			},
+			want: domain.FailureEmbeddingUnavailable,
+		},
+		{
+			name: "vector outage",
+			configure: func(_ *stubBatchRepository, _ *stubShardReader, _ *stubDocumentEmbedder, index *stubVectorIndex) {
+				index.upsertChunksErr = errors.New("qdrant unavailable")
+			},
+			want: domain.FailureVectorStoreUnavailable,
+		},
+		{
+			name: "resource limit",
+			configure: func(_ *stubBatchRepository, reader *stubShardReader, _ *stubDocumentEmbedder, _ *stubVectorIndex) {
+				reader.chunks[0].Text = string(make([]byte, (32<<10)+1))
+			},
+			want: domain.FailureResourceLimit,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &stubBatchRepository{metadata: BookProjection{BookID: "book-1", Title: "Systems", Author: "Author", Year: 2026}}
+			reader := &stubShardReader{chunks: []Chunk{{ChunkID: "chunk-1", BookID: "book-1", Text: "Evidence", ContentSHA256: sha256.Sum256([]byte("Evidence")), PageStart: 1, PageEnd: 1}}}
+			embedder := &stubDocumentEmbedder{vectors: [][]float32{make([]float32, domain.EmbeddingDimensions)}}
+			index := &stubVectorIndex{}
+			test.configure(repository, reader, embedder, index)
+			indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) })
+			if err != nil {
+				t.Fatalf("NewIndexer() error = %v", err)
+			}
+
+			err = indexer.Process(context.Background(), validBatchWork())
+
+			if got := FailureCategory(err); got != test.want {
+				t.Fatalf("FailureCategory() = %s, want %s, err=%v", got, test.want, err)
+			}
+		})
+	}
+}
+
 func validBatchWork() BatchWork {
 	profile := domain.SupportedIndexProfile().Digest
 	return BatchWork{EventID: "batch-event-1", JobID: "job-1", BatchID: "job-1:0", BookID: "book-1", ShardReference: "books/book-1/profile/shards/000000.pb.zst",
@@ -100,15 +149,27 @@ func (s *stubBatchRepository) DocumentRecord(_ context.Context, work BatchWork) 
 }
 func (s *stubBatchRepository) FinalizeJob(context.Context, BatchWork, time.Time) error { return nil }
 
-type stubShardReader struct{ chunks []Chunk }
+type stubShardReader struct {
+	chunks []Chunk
+	err    error
+}
 
 func (s *stubShardReader) ReadShard(context.Context, BatchWork) ([]Chunk, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
 	return s.chunks, nil
 }
 
-type stubDocumentEmbedder struct{ vectors [][]float32 }
+type stubDocumentEmbedder struct {
+	vectors [][]float32
+	err     error
+}
 
 func (s *stubDocumentEmbedder) EmbedDocuments(context.Context, []string) ([][]float32, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
 	return s.vectors, nil
 }
 
@@ -116,9 +177,13 @@ type stubVectorIndex struct {
 	chunkCalls      [][]EvidenceRecord
 	documentCalls   []DocumentRecord
 	activationCalls []string
+	upsertChunksErr error
 }
 
 func (s *stubVectorIndex) UpsertChunks(_ context.Context, values []EvidenceRecord) error {
+	if s.upsertChunksErr != nil {
+		return s.upsertChunksErr
+	}
 	copyValues := append([]EvidenceRecord(nil), values...)
 	s.chunkCalls = append(s.chunkCalls, copyValues)
 	return nil
@@ -131,6 +196,7 @@ func (s *stubVectorIndex) ActivateJob(_ context.Context, jobID string) error {
 	s.activationCalls = append(s.activationCalls, jobID)
 	return nil
 }
+func (s *stubVectorIndex) DeactivateJob(context.Context, string) error { return nil }
 
 func mustCentroid(chunkCount int) []float32 {
 	vectors := make([][]float32, chunkCount)

@@ -50,9 +50,10 @@ func (s *Secret) UnmarshalJSON(payload []byte) error {
 
 type Runtime struct {
 	repository *repository.Postgres
-	objects    *storage.MinIO
+	objects    storage.ObjectStore
 	planner    *application.Planner
 	indexer    *application.Indexer
+	vector     *vector.Qdrant
 	secret     Secret
 }
 
@@ -79,7 +80,7 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 		return nil, errors.New("configure retrieval database")
 	}
 	records := repository.NewPostgres(pool)
-	objects, err := storage.NewAWS(secret.Region, secret.ArtifactBucket)
+	objects, err := storage.NewAWS(ctx, secret.Region, secret.ArtifactBucket)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -111,7 +112,7 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 		return nil, errors.New("configure retrieval database")
 	}
 	records := repository.NewPostgres(pool)
-	objects, err := storage.NewAWS(secret.Region, secret.ArtifactBucket)
+	objects, err := storage.NewAWS(ctx, secret.Region, secret.ArtifactBucket)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -140,7 +141,7 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
-	return &Runtime{repository: records, objects: objects, indexer: indexer, secret: secret}, nil
+	return &Runtime{repository: records, objects: objects, indexer: indexer, vector: index, secret: secret}, nil
 }
 
 func NewDispatcherRuntime(ctx context.Context) (*Runtime, error) {
@@ -209,6 +210,9 @@ func (r *Runtime) Plan(ctx context.Context, event RabbitEvent) error {
 	}
 	manifest, err := transport.DecodeManifest(payload, manifestPayload)
 	if err != nil {
+		if errors.Is(err, application.ErrUnsupportedIndexProfile) {
+			return r.repository.FailManifest(ctx, manifest, domain.FailureIncompatibleProfile, time.Now().UTC())
+		}
 		return err
 	}
 	return r.planner.HandleManifest(ctx, manifest)
@@ -225,7 +229,13 @@ func (r *Runtime) Index(ctx context.Context, event RabbitEvent) error {
 	}
 	if err = r.indexer.Process(ctx, work); err != nil {
 		if eventAttempt(event) >= 4 {
-			if failureErr := r.repository.FailBatch(ctx, work, domain.FailureInternalIndexing, time.Now().UTC()); failureErr == nil {
+			if r.vector == nil {
+				return errors.New("retrieval vector indexer unavailable")
+			}
+			if failureErr := r.vector.DeactivateJob(ctx, work.JobID); failureErr != nil {
+				return errors.New("deactivate failed index vectors")
+			}
+			if failureErr := r.repository.FailBatch(ctx, work, application.FailureCategory(err), time.Now().UTC()); failureErr == nil {
 				return nil
 			}
 		}

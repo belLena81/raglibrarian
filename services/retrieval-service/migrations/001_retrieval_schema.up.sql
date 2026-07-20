@@ -36,7 +36,7 @@ CREATE TABLE retrieval.index_jobs (
     manifest_sha256 bytea NOT NULL CHECK (octet_length(manifest_sha256) = 32),
     profile_digest bytea NOT NULL CHECK (octet_length(profile_digest) = 32),
     state text NOT NULL CHECK (state IN ('pending','indexed','failed')),
-    expected_batches integer NOT NULL CHECK (expected_batches > 0),
+    expected_batches integer NOT NULL CHECK (expected_batches >= 0),
     evidence_count integer NOT NULL DEFAULT 0 CHECK (evidence_count >= 0),
     failure_category text,
     correlation_id text NOT NULL,

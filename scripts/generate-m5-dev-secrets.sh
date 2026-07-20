@@ -94,8 +94,12 @@ jq \
     {name:"retrieval.source.dlq.v1",vhost:"/",durable:true,auto_delete:false,arguments:{"x-queue-type":"quorum","x-message-ttl":604800000,"x-max-length-bytes":268435456,"x-overflow":"reject-publish"}},
     {name:"retrieval.index-batch.dlq.v1",vhost:"/",durable:true,auto_delete:false,arguments:{"x-queue-type":"quorum","x-message-ttl":604800000,"x-max-length-bytes":268435456,"x-overflow":"reject-publish"}},
     {name:"catalog.retrieval-terminal.dlq.v1",vhost:"/",durable:true,auto_delete:false,arguments:{"x-queue-type":"quorum","x-message-ttl":604800000,"x-max-length-bytes":67108864,"x-overflow":"reject-publish"}},
-    {name:"retrieval.retry.5s",vhost:"/",durable:true,auto_delete:false,arguments:{"x-queue-type":"quorum","x-message-ttl":5000,"x-dead-letter-exchange":"raglibrarian.retrieval.events.v1","x-dead-letter-routing-key":"retrieval.index-batch.requested.v1","x-dead-letter-strategy":"at-least-once","x-max-length-bytes":268435456,"x-overflow":"reject-publish"}},
-    {name:"retrieval.retry.30s",vhost:"/",durable:true,auto_delete:false,arguments:{"x-queue-type":"quorum","x-message-ttl":30000,"x-dead-letter-exchange":"raglibrarian.retrieval.events.v1","x-dead-letter-routing-key":"retrieval.index-batch.requested.v1","x-dead-letter-strategy":"at-least-once","x-max-length-bytes":268435456,"x-overflow":"reject-publish"}}
+    {name:"retrieval.book-uploaded.v1.retry.5s",vhost:"/",durable:true,auto_delete:false,arguments:{"x-queue-type":"quorum","x-message-ttl":5000,"x-dead-letter-exchange":"raglibrarian.events.v1","x-dead-letter-routing-key":"catalog.book.uploaded.v1","x-dead-letter-strategy":"at-least-once","x-max-length-bytes":268435456,"x-overflow":"reject-publish"}},
+    {name:"retrieval.book-uploaded.v1.retry.30s",vhost:"/",durable:true,auto_delete:false,arguments:{"x-queue-type":"quorum","x-message-ttl":30000,"x-dead-letter-exchange":"raglibrarian.events.v1","x-dead-letter-routing-key":"catalog.book.uploaded.v1","x-dead-letter-strategy":"at-least-once","x-max-length-bytes":268435456,"x-overflow":"reject-publish"}},
+    {name:"retrieval.chunks-ready.v1.retry.5s",vhost:"/",durable:true,auto_delete:false,arguments:{"x-queue-type":"quorum","x-message-ttl":5000,"x-dead-letter-exchange":"raglibrarian.ingestion.events.v1","x-dead-letter-routing-key":"ingestion.book.chunks-ready.v1","x-dead-letter-strategy":"at-least-once","x-max-length-bytes":268435456,"x-overflow":"reject-publish"}},
+    {name:"retrieval.chunks-ready.v1.retry.30s",vhost:"/",durable:true,auto_delete:false,arguments:{"x-queue-type":"quorum","x-message-ttl":30000,"x-dead-letter-exchange":"raglibrarian.ingestion.events.v1","x-dead-letter-routing-key":"ingestion.book.chunks-ready.v1","x-dead-letter-strategy":"at-least-once","x-max-length-bytes":268435456,"x-overflow":"reject-publish"}},
+    {name:"retrieval.index-batch.v1.retry.5s",vhost:"/",durable:true,auto_delete:false,arguments:{"x-queue-type":"quorum","x-message-ttl":5000,"x-dead-letter-exchange":"raglibrarian.retrieval.events.v1","x-dead-letter-routing-key":"retrieval.index-batch.requested.v1","x-dead-letter-strategy":"at-least-once","x-max-length-bytes":268435456,"x-overflow":"reject-publish"}},
+    {name:"retrieval.index-batch.v1.retry.30s",vhost:"/",durable:true,auto_delete:false,arguments:{"x-queue-type":"quorum","x-message-ttl":30000,"x-dead-letter-exchange":"raglibrarian.retrieval.events.v1","x-dead-letter-routing-key":"retrieval.index-batch.requested.v1","x-dead-letter-strategy":"at-least-once","x-max-length-bytes":268435456,"x-overflow":"reject-publish"}}
   ] |
   .bindings += [
     {source:"raglibrarian.events.v1",vhost:"/",destination:"retrieval.book-uploaded.v1",destination_type:"queue",routing_key:"catalog.book.uploaded.v1",arguments:{}},
@@ -108,8 +112,12 @@ jq \
     {source:"raglibrarian.retrieval.events.dlx.v1",vhost:"/",destination:"retrieval.index-batch.dlq.v1",destination_type:"queue",routing_key:"retrieval.index-batch.requested.v1",arguments:{}},
     {source:"raglibrarian.retrieval.events.dlx.v1",vhost:"/",destination:"catalog.retrieval-terminal.dlq.v1",destination_type:"queue",routing_key:"retrieval.book.indexed.v1",arguments:{}},
     {source:"raglibrarian.retrieval.events.dlx.v1",vhost:"/",destination:"catalog.retrieval-terminal.dlq.v1",destination_type:"queue",routing_key:"retrieval.book.indexing-failed.v1",arguments:{}},
-    {source:"raglibrarian.retrieval.retry.v1",vhost:"/",destination:"retrieval.retry.5s",destination_type:"queue",routing_key:"retrieval.retry.5s",arguments:{}},
-    {source:"raglibrarian.retrieval.retry.v1",vhost:"/",destination:"retrieval.retry.30s",destination_type:"queue",routing_key:"retrieval.retry.30s",arguments:{}}
+    {source:"raglibrarian.retrieval.retry.v1",vhost:"/",destination:"retrieval.book-uploaded.v1.retry.5s",destination_type:"queue",routing_key:"retrieval.book-uploaded.v1.retry.5s",arguments:{}},
+    {source:"raglibrarian.retrieval.retry.v1",vhost:"/",destination:"retrieval.book-uploaded.v1.retry.30s",destination_type:"queue",routing_key:"retrieval.book-uploaded.v1.retry.30s",arguments:{}},
+    {source:"raglibrarian.retrieval.retry.v1",vhost:"/",destination:"retrieval.chunks-ready.v1.retry.5s",destination_type:"queue",routing_key:"retrieval.chunks-ready.v1.retry.5s",arguments:{}},
+    {source:"raglibrarian.retrieval.retry.v1",vhost:"/",destination:"retrieval.chunks-ready.v1.retry.30s",destination_type:"queue",routing_key:"retrieval.chunks-ready.v1.retry.30s",arguments:{}},
+    {source:"raglibrarian.retrieval.retry.v1",vhost:"/",destination:"retrieval.index-batch.v1.retry.5s",destination_type:"queue",routing_key:"retrieval.index-batch.v1.retry.5s",arguments:{}},
+    {source:"raglibrarian.retrieval.retry.v1",vhost:"/",destination:"retrieval.index-batch.v1.retry.30s",destination_type:"queue",routing_key:"retrieval.index-batch.v1.retry.30s",arguments:{}}
   ]
 ' "$definitions" > "$updated"
 

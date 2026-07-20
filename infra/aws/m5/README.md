@@ -22,6 +22,11 @@ Planner, indexer, dispatcher, and cleanup each use a separate least-privilege
 runtime secret and database identity, encrypted by the supplied customer-managed
 KMS key. No function receives another function's dependency credentials.
 
+The protected environment supplies an SNS-compatible alarm topic and the Amazon
+MQ broker name. Lambda errors and throttles, plus either Retrieval DLQ receiving
+a message, page the operator. Function log groups use the stack's configured
+retention period.
+
 Validate from the repository root:
 
 ```sh

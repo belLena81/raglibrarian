@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -130,6 +131,19 @@ func TestQueryReturnsSuccessfulEmptyEvidence(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, recorder.Code)
 	assert.JSONEq(t, `{"query":"unrelated","results":[],"documents":[]}`, recorder.Body.String())
+}
+
+func TestQueryCountsUnicodeCharactersForPublicLimits(t *testing.T) {
+	retrieval := &retrievalStub{result: handler.SearchResult{Query: strings.Repeat("🙂", 1000)}}
+	h := handler.NewQueryHandler(retrieval)
+	recorder := httptest.NewRecorder()
+
+	h.Query(recorder, authenticatedQueryRequest(`{"question":"`+strings.Repeat("🙂", 1000)+`","filters":{"author":"`+strings.Repeat("著", 256)+`","tags":["`+strings.Repeat("タグ", 32)+`"]}}`))
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, strings.Repeat("🙂", 1000), retrieval.request.Question)
+	assert.Equal(t, strings.Repeat("著", 256), retrieval.request.Filters.Author)
+	assert.Equal(t, strings.Repeat("タグ", 32), retrieval.request.Filters.Tags[0])
 }
 
 func TestQueryRejectsInvalidPublicRequestsWithoutCallingRetrieval(t *testing.T) {

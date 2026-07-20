@@ -257,13 +257,13 @@ func buildFilter(filters domain.SearchFilters, extra []condition) *filter {
 	for _, tag := range filters.Tags {
 		conditions = append(conditions, condition{Key: "tags_normalized", Match: &matchValue{Value: tag}})
 	}
-	if filters.YearFrom > 0 || filters.YearTo > 0 {
+	if filters.YearFrom != nil || filters.YearTo != nil {
 		yearRange := &rangeValue{}
-		if filters.YearFrom > 0 {
-			yearRange.GreaterThanOrEqual = &filters.YearFrom
+		if filters.YearFrom != nil {
+			yearRange.GreaterThanOrEqual = filters.YearFrom
 		}
-		if filters.YearTo > 0 {
-			yearRange.LessThanOrEqual = &filters.YearTo
+		if filters.YearTo != nil {
+			yearRange.LessThanOrEqual = filters.YearTo
 		}
 		conditions = append(conditions, condition{Key: "year", Range: yearRange})
 	}
@@ -338,16 +338,26 @@ func (q *Qdrant) upsertPoints(ctx context.Context, points []upsertPoint) error {
 }
 
 func (q *Qdrant) ActivateJob(ctx context.Context, jobID string) error {
+	return q.setJobVisibility(ctx, jobID, "true")
+}
+
+// DeactivateJob removes a failed job from Qdrant query visibility without deleting
+// its staged points, making a later idempotent replay safe.
+func (q *Qdrant) DeactivateJob(ctx context.Context, jobID string) error {
+	return q.setJobVisibility(ctx, jobID, "false")
+}
+
+func (q *Qdrant) setJobVisibility(ctx context.Context, jobID, indexed string) error {
 	if jobID == "" {
 		return errors.New("invalid index job")
 	}
-	body, err := json.Marshal(map[string]any{"payload": map[string]string{"indexed": "true"}, "filter": filter{Must: []condition{{Key: "job_id", Match: &matchValue{Value: jobID}}}}})
+	body, err := json.Marshal(map[string]any{"payload": map[string]string{"indexed": indexed}, "filter": filter{Must: []condition{{Key: "job_id", Match: &matchValue{Value: jobID}}}}})
 	if err != nil {
-		return errors.New("encode vector activation")
+		return errors.New("encode vector visibility")
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, q.endpoint+"/collections/"+q.collection+"/points/payload?wait=true", bytes.NewReader(body))
 	if err != nil {
-		return errors.New("create vector activation")
+		return errors.New("create vector visibility")
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if q.apiKey != "" {
@@ -360,7 +370,7 @@ func (q *Qdrant) ActivateJob(ctx context.Context, jobID string) error {
 	defer func() { _ = response.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumQdrantResponseBytes))
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return errors.New("vector dependency rejected activation")
+		return errors.New("vector dependency rejected visibility")
 	}
 	return nil
 }

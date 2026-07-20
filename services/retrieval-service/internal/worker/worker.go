@@ -32,15 +32,17 @@ const (
 	manifestQueue         = "retrieval.chunks-ready.v1"
 	batchQueue            = "retrieval.index-batch.v1"
 	eventExchange         = "raglibrarian.retrieval.events.v1"
+	retryExchange         = "raglibrarian.retrieval.retry.v1"
 	initialReconnectDelay = time.Second
 	maxReconnectDelay     = 30 * time.Second
+	maximumRetryAttempts  = int64(4)
 )
 
 type Runtime struct {
 	configuration config.WorkerConfig
 	pool          *pgxpool.Pool
 	repository    *repository.Postgres
-	objects       *storage.MinIO
+	objects       storage.ObjectStore
 	planner       *application.Planner
 	indexer       *application.Indexer
 	embedder      *embedding.TEI
@@ -208,19 +210,19 @@ func (r *Runtime) runBrokerSession(ctx context.Context) error {
 				sessionCancel()
 				return errors.New("metadata delivery channel closed")
 			}
-			r.handle(sessionContext, semaphore, &handlers, delivery, r.handleMetadata, nil)
+			r.handle(sessionContext, semaphore, &handlers, publisher, metadataQueue, delivery, r.handleMetadata, nil)
 		case delivery, open := <-manifestDeliveries:
 			if !open {
 				sessionCancel()
 				return errors.New("manifest delivery channel closed")
 			}
-			r.handle(sessionContext, semaphore, &handlers, delivery, r.handleManifest, nil)
+			r.handle(sessionContext, semaphore, &handlers, publisher, manifestQueue, delivery, r.handleManifest, nil)
 		case delivery, open := <-batchDeliveries:
 			if !open {
 				sessionCancel()
 				return errors.New("batch delivery channel closed")
 			}
-			r.handle(sessionContext, semaphore, &handlers, delivery, r.handleBatch, r.failBatch)
+			r.handle(sessionContext, semaphore, &handlers, publisher, batchQueue, delivery, r.handleBatch, r.failBatch)
 		case <-dispatchTicker.C:
 			r.dispatchOutbox(sessionContext, publisher)
 		case now := <-cleanupTicker.C:
@@ -254,7 +256,7 @@ func (r *Runtime) serveReadiness(ctx context.Context) {
 	}
 }
 
-func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers *sync.WaitGroup, delivery amqp091.Delivery, handler func(context.Context, []byte) error, terminalFailure func(context.Context, []byte) error) {
+func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers *sync.WaitGroup, publisher *rabbitmq.Publisher, sourceQueue string, delivery amqp091.Delivery, handler func(context.Context, []byte) error, terminalFailure func(context.Context, []byte, domain.FailureCategory) error) {
 	semaphore <- struct{}{}
 	handlers.Add(1)
 	go func() {
@@ -271,21 +273,82 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 			_ = delivery.Ack(false)
 			return
 		}
-		if errors.Is(err, application.ErrInvalidEvent) || errors.Is(err, application.ErrConflictingEvent) || errors.Is(err, application.ErrUnsupportedIndexProfile) {
+		if errors.Is(err, application.ErrInvalidEvent) || errors.Is(err, application.ErrConflictingEvent) {
 			_ = delivery.Nack(false, false)
 			return
 		}
-		if terminalFailure != nil && deliveryAttempt(delivery.Headers) >= 4 {
+		if retryAttempt(delivery.Headers) >= maximumRetryAttempts {
+			if terminalFailure == nil {
+				_ = delivery.Nack(false, false)
+				return
+			}
 			failureContext, failureCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			failureErr := terminalFailure(failureContext, delivery.Body)
+			failureErr := terminalFailure(failureContext, delivery.Body, application.FailureCategory(err))
 			failureCancel()
 			if failureErr == nil {
 				_ = delivery.Ack(false)
 				return
 			}
+			if r.publishRetry(ctx, publisher, sourceQueue, delivery, maximumRetryAttempts) == nil {
+				_ = delivery.Ack(false)
+				return
+			}
+			_ = delivery.Nack(false, true)
+			return
+		}
+		if r.publishRetry(ctx, publisher, sourceQueue, delivery, retryAttempt(delivery.Headers)+1) == nil {
+			_ = delivery.Ack(false)
+			return
 		}
 		_ = delivery.Nack(false, true)
 	}()
+}
+
+func (r *Runtime) publishRetry(ctx context.Context, publisher *rabbitmq.Publisher, sourceQueue string, delivery amqp091.Delivery, attempt int64) error {
+	routingKey, err := retryRoutingKey(sourceQueue, attempt)
+	if err != nil {
+		return err
+	}
+	headers := cloneHeaders(delivery.Headers)
+	headers["x-retry-attempt"] = attempt
+	publishContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return publisher.Publish(publishContext, retryExchange, routingKey, amqp091.Publishing{
+		Headers: headers, ContentType: delivery.ContentType, ContentEncoding: delivery.ContentEncoding,
+		DeliveryMode: amqp091.Persistent, Priority: delivery.Priority, CorrelationId: delivery.CorrelationId,
+		ReplyTo: delivery.ReplyTo, Expiration: delivery.Expiration, MessageId: delivery.MessageId,
+		Timestamp: delivery.Timestamp, Type: delivery.Type, UserId: delivery.UserId, AppId: delivery.AppId,
+		Body: delivery.Body,
+	})
+}
+
+func retryRoutingKey(sourceQueue string, attempt int64) (string, error) {
+	if attempt < 1 || attempt > maximumRetryAttempts {
+		return "", errors.New("invalid retry attempt")
+	}
+	delay := "30s"
+	if attempt == 1 {
+		delay = "5s"
+	}
+	switch sourceQueue {
+	case metadataQueue, manifestQueue, batchQueue:
+		return sourceQueue + ".retry." + delay, nil
+	default:
+		return "", errors.New("unknown retry source queue")
+	}
+}
+
+func cloneHeaders(headers amqp091.Table) amqp091.Table {
+	result := make(amqp091.Table, len(headers)+1)
+	for key, value := range headers {
+		switch key {
+		case "x-death", "x-first-death-exchange", "x-first-death-queue", "x-first-death-reason", "x-delivery-count", "x-retry-attempt":
+			continue
+		default:
+			result[key] = value
+		}
+	}
+	return result
 }
 
 func (r *Runtime) handleMetadata(ctx context.Context, payload []byte) error {
@@ -307,6 +370,9 @@ func (r *Runtime) handleManifest(ctx context.Context, payload []byte) error {
 	}
 	event, err := transport.DecodeManifest(payload, manifestPayload)
 	if err != nil {
+		if errors.Is(err, application.ErrUnsupportedIndexProfile) {
+			return r.repository.FailManifest(ctx, event, domain.FailureIncompatibleProfile, time.Now().UTC())
+		}
 		return err
 	}
 	return r.planner.HandleManifest(ctx, event)
@@ -320,12 +386,15 @@ func (r *Runtime) handleBatch(ctx context.Context, payload []byte) error {
 	return r.indexer.Process(ctx, work)
 }
 
-func (r *Runtime) failBatch(ctx context.Context, payload []byte) error {
+func (r *Runtime) failBatch(ctx context.Context, payload []byte, category domain.FailureCategory) error {
 	work, err := transport.DecodeBatch(payload)
 	if err != nil {
 		return err
 	}
-	return r.repository.FailBatch(ctx, work, domain.FailureInternalIndexing, time.Now().UTC())
+	if err = r.vector.DeactivateJob(ctx, work.JobID); err != nil {
+		return errors.New("deactivate failed index vectors")
+	}
+	return r.repository.FailBatch(ctx, work, category, time.Now().UTC())
 }
 
 func deliveryAttempt(headers amqp091.Table) int64 {
@@ -341,6 +410,24 @@ func deliveryAttempt(headers amqp091.Table) int64 {
 	default:
 		return 5
 	}
+}
+
+func retryAttempt(headers amqp091.Table) int64 {
+	value, found := headers["x-retry-attempt"]
+	if !found {
+		return deliveryAttempt(headers)
+	}
+	switch count := value.(type) {
+	case int64:
+		if count >= 0 && count <= maximumRetryAttempts {
+			return count
+		}
+	case int32:
+		if count >= 0 && int64(count) <= maximumRetryAttempts {
+			return int64(count)
+		}
+	}
+	return maximumRetryAttempts
 }
 
 func (r *Runtime) dispatchOutbox(ctx context.Context, publisher *rabbitmq.Publisher) {

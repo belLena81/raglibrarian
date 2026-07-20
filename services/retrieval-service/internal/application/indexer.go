@@ -75,6 +75,7 @@ type VectorIndex interface {
 	UpsertChunks(context.Context, []EvidenceRecord) error
 	UpsertDocument(context.Context, DocumentRecord) error
 	ActivateJob(context.Context, string) error
+	DeactivateJob(context.Context, string) error
 }
 
 type Indexer struct {
@@ -102,28 +103,28 @@ func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
 	}
 	chunks, err := i.reader.ReadShard(ctx, work)
 	if err != nil {
-		return errors.New("read shard")
+		return Failure(domain.FailureManifestIntegrity, errors.Join(errors.New("read shard"), err))
 	}
 	if len(chunks) != int(work.ChunkCount) {
-		return errors.New("invalid shard chunk count")
+		return Failure(domain.FailureManifestIntegrity, errors.New("invalid shard chunk count"))
 	}
 	texts := make([]string, len(chunks))
 	for index, chunk := range chunks {
 		if chunk.BookID != work.BookID || !safeID(chunk.ChunkID) || chunk.Text == "" || !utf8.ValidString(chunk.Text) || len(chunk.Text) > 32<<10 ||
 			!utf8.ValidString(chunk.Chapter) || len(chunk.Chapter) > 1024 || !utf8.ValidString(chunk.Section) || len(chunk.Section) > 1024 ||
 			chunk.ContentSHA256 != sha256.Sum256([]byte(chunk.Text)) || chunk.PageEnd < chunk.PageStart {
-			return errors.New("invalid chunk")
+			return Failure(domain.FailureResourceLimit, errors.New("invalid chunk"))
 		}
 		texts[index] = chunk.Text
 	}
 	vectors, err := i.embedder.EmbedDocuments(ctx, texts)
 	if err != nil || len(vectors) != len(chunks) {
-		return errors.New("embed shard")
+		return Failure(domain.FailureEmbeddingUnavailable, errors.Join(errors.New("embed shard"), err))
 	}
 	records := make([]EvidenceRecord, len(chunks))
 	for index, chunk := range chunks {
 		if len(vectors[index]) != domain.EmbeddingDimensions {
-			return errors.New("invalid embedding dimensions")
+			return Failure(domain.FailureEmbeddingUnavailable, errors.New("invalid embedding dimensions"))
 		}
 		records[index] = EvidenceRecord{Evidence: Evidence{EvidenceID: work.BookID + ":" + chunk.ChunkID, ChunkID: chunk.ChunkID,
 			BookID: work.BookID, Title: metadata.Title, Author: metadata.Author, Year: metadata.Year, Tags: append([]string(nil), metadata.Tags...),
@@ -131,7 +132,7 @@ func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
 			JobID: work.JobID, ContentSHA256: chunk.ContentSHA256, Vector: append([]float32(nil), vectors[index]...)}
 	}
 	if err = i.index.UpsertChunks(ctx, records); err != nil {
-		return errors.New("upsert vectors")
+		return Failure(domain.FailureVectorStoreUnavailable, errors.Join(errors.New("upsert vectors"), err))
 	}
 	completed, err := i.repository.CompleteBatch(ctx, work, records, i.now().UTC())
 	if err != nil {
@@ -143,13 +144,13 @@ func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
 			return errors.New("build document vector")
 		}
 		if len(document.Vector) != domain.EmbeddingDimensions || !normalized(document.Vector) {
-			return errors.New("invalid document embedding")
+			return Failure(domain.FailureEmbeddingUnavailable, errors.New("invalid document embedding"))
 		}
 		if err = i.index.UpsertDocument(ctx, document); err != nil {
-			return errors.New("upsert document vector")
+			return Failure(domain.FailureVectorStoreUnavailable, errors.Join(errors.New("upsert document vector"), err))
 		}
 		if err = i.index.ActivateJob(ctx, work.JobID); err != nil {
-			return errors.New("activate vectors")
+			return Failure(domain.FailureVectorStoreUnavailable, errors.Join(errors.New("activate vectors"), err))
 		}
 		if err = i.repository.FinalizeJob(ctx, work, i.now().UTC()); err != nil {
 			return errors.New("finalize index job")

@@ -63,6 +63,38 @@ func TestQdrantSearchDocumentsHydratesStoredChunkEvidence(t *testing.T) {
 	}
 }
 
+func TestQdrantPreservesExplicitZeroYearUpperBound(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
+		var body queryRequest
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("invalid request body: %v", err)
+		}
+		var found bool
+		for _, condition := range body.Filter.Must {
+			if condition.Key == "year" {
+				found = true
+				if condition.Range == nil || condition.Range.LessThanOrEqual == nil || *condition.Range.LessThanOrEqual != 0 {
+					t.Fatalf("explicit year_to=0 was not preserved: %#v", condition)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("year filter missing from request: %#v", body.Filter.Must)
+		}
+		return response(http.StatusOK, `{"result":{"points":[]}}`)
+	})}
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	yearTo := 0
+	query, err := domain.NewSearchQuery(domain.SearchQueryInput{Question: "old books", Filters: domain.SearchFilters{YearTo: &yearTo}, Limit: 1})
+	if err != nil {
+		t.Fatalf("NewSearchQuery() error = %v", err)
+	}
+
+	if _, err = store.Search(context.Background(), query, make([]float32, domain.EmbeddingDimensions)); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+}
+
 func TestQdrantEnsureCollectionCreatesExactSchema(t *testing.T) {
 	requests := 0
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
@@ -100,10 +132,16 @@ func TestQdrantStagesBeforeActivatingJob(t *testing.T) {
 			if !bytes.Contains(contents, []byte(`"indexed":"false"`)) || !bytes.Contains(contents, []byte(`"document_id":"document-1"`)) || !bytes.Contains(contents, []byte(`"vector_kind":"document"`)) {
 				t.Fatalf("document upsert did not stage the job: %s", contents)
 			}
-		default:
+		case 3:
 			if !bytes.Contains(contents, []byte(`"indexed":"true"`)) || !bytes.Contains(contents, []byte(`"job_id"`)) {
 				t.Fatalf("activation did not target staged job: %s", contents)
 			}
+		case 4:
+			if !bytes.Contains(contents, []byte(`"indexed":"false"`)) || !bytes.Contains(contents, []byte(`"job_id"`)) {
+				t.Fatalf("deactivation did not target staged job: %s", contents)
+			}
+		default:
+			t.Fatalf("unexpected request %d", requests)
 		}
 		return response(http.StatusOK, `{}`)
 	})}
@@ -118,6 +156,9 @@ func TestQdrantStagesBeforeActivatingJob(t *testing.T) {
 	}
 	if err := store.ActivateJob(context.Background(), "job-1"); err != nil || requests != 3 {
 		t.Fatalf("ActivateJob() requests=%d error=%v", requests, err)
+	}
+	if err := store.DeactivateJob(context.Background(), "job-1"); err != nil || requests != 4 {
+		t.Fatalf("DeactivateJob() requests=%d error=%v", requests, err)
 	}
 }
 
