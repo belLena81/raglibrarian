@@ -77,6 +77,7 @@ type queryResponse struct {
 			Payload struct {
 				EvidenceID string   `json:"evidence_id"`
 				ChunkID    string   `json:"chunk_id"`
+				DocumentID string   `json:"document_id"`
 				JobID      string   `json:"job_id"`
 				BookID     string   `json:"book_id"`
 				Title      string   `json:"title"`
@@ -88,13 +89,67 @@ type queryResponse struct {
 				PageStart  uint32   `json:"page_start"`
 				PageEnd    uint32   `json:"page_end"`
 				Passage    string   `json:"passage"`
+				ChunkCount uint32   `json:"chunk_count"`
 			} `json:"payload"`
 		} `json:"points"`
 	} `json:"result"`
 }
 
 func (q *Qdrant) Search(ctx context.Context, query domain.SearchQuery, vector []float32) ([]application.Evidence, error) {
-	payload, err := json.Marshal(queryRequest{Query: vector, Limit: query.Limit(), WithPayload: true, Filter: buildFilter(query.Filters()), ScoreThreshold: 0.25})
+	return q.searchEvidence(ctx, query, vector, query.Limit(), []condition{{Key: "vector_kind", Match: &matchValue{Value: "chunk"}}})
+}
+
+func (q *Qdrant) SearchDocuments(ctx context.Context, query domain.SearchQuery, vector []float32) ([]application.DocumentResult, error) {
+	payload, err := json.Marshal(queryRequest{Query: vector, Limit: query.Limit(), WithPayload: true, Filter: buildFilter(query.Filters(), []condition{{Key: "vector_kind", Match: &matchValue{Value: "document"}}}), ScoreThreshold: 0.25})
+	if err != nil {
+		return nil, errors.New("encode vector query")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, q.endpoint+"/collections/"+q.collection+"/points/query", bytes.NewReader(payload))
+	if err != nil {
+		return nil, errors.New("create vector query")
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if q.apiKey != "" {
+		request.Header.Set("api-key", q.apiKey)
+	}
+	response, err := q.client.Do(request) // #nosec G704 -- NewQdrant accepts only a validated operator-controlled endpoint.
+	if err != nil {
+		return nil, errors.New("vector dependency unavailable")
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumQdrantResponseBytes))
+		return nil, errors.New("vector dependency rejected query")
+	}
+	var decoded queryResponse
+	if err = json.NewDecoder(io.LimitReader(response.Body, maximumQdrantResponseBytes)).Decode(&decoded); err != nil {
+		return nil, errors.New("invalid vector response")
+	}
+	results := make([]application.DocumentResult, 0, len(decoded.Result.Points))
+	for _, point := range decoded.Result.Points {
+		value := point.Payload
+		if value.DocumentID == "" || value.JobID == "" || value.BookID == "" || value.ChunkCount == 0 {
+			continue
+		}
+		evidence, evidenceErr := q.searchEvidence(ctx, query, vector, 3, []condition{
+			{Key: "vector_kind", Match: &matchValue{Value: "chunk"}},
+			{Key: "job_id", Match: &matchValue{Value: value.JobID}},
+		})
+		if evidenceErr != nil {
+			return nil, evidenceErr
+		}
+		if len(evidence) == 0 {
+			continue
+		}
+		results = append(results, application.DocumentResult{DocumentID: value.DocumentID, JobID: value.JobID, BookID: value.BookID,
+			Title: value.Title, Author: value.Author, Year: value.Year, Tags: value.Tags, ChunkCount: value.ChunkCount,
+			PageStart: value.PageStart, PageEnd: value.PageEnd, Score: point.Score, Evidence: evidence})
+	}
+	return results, nil
+}
+
+func (q *Qdrant) searchEvidence(ctx context.Context, query domain.SearchQuery, vector []float32, limit int, extra []condition) ([]application.Evidence, error) {
+	payload, err := json.Marshal(queryRequest{Query: vector, Limit: limit, WithPayload: true, Filter: buildFilter(query.Filters(), extra), ScoreThreshold: 0.25})
 	if err != nil {
 		return nil, errors.New("encode vector query")
 	}
@@ -192,9 +247,10 @@ func (q *Qdrant) EnsureCollection(ctx context.Context) error {
 	return q.CheckReady(ctx)
 }
 
-func buildFilter(filters domain.SearchFilters) *filter {
-	conditions := make([]condition, 0, len(filters.Tags)+3)
+func buildFilter(filters domain.SearchFilters, extra []condition) *filter {
+	conditions := make([]condition, 0, len(filters.Tags)+3+len(extra))
 	conditions = append(conditions, condition{Key: "indexed", Match: &matchValue{Value: "true"}})
+	conditions = append(conditions, extra...)
 	if filters.Author != "" {
 		conditions = append(conditions, condition{Key: "author_normalized", Match: &matchValue{Value: filters.Author}})
 	}
@@ -224,7 +280,7 @@ type upsertPoint struct {
 	Payload map[string]any `json:"payload"`
 }
 
-func (q *Qdrant) Upsert(ctx context.Context, records []application.EvidenceRecord) error {
+func (q *Qdrant) UpsertChunks(ctx context.Context, records []application.EvidenceRecord) error {
 	if len(records) == 0 || len(records) > 256 {
 		return errors.New("invalid vector batch")
 	}
@@ -237,9 +293,26 @@ func (q *Qdrant) Upsert(ctx context.Context, records []application.EvidenceRecor
 			"evidence_id": record.EvidenceID, "chunk_id": record.ChunkID, "book_id": record.BookID, "title": record.Title,
 			"author": record.Author, "author_normalized": strings.ToLower(strings.Join(strings.Fields(record.Author), " ")), "year": record.Year,
 			"tags": record.Tags, "tags_normalized": normalizedValues(record.Tags), "chapter": record.Chapter, "section": record.Section,
-			"page_start": record.PageStart, "page_end": record.PageEnd, "passage": record.Passage, "job_id": record.JobID, "indexed": "false",
+			"page_start": record.PageStart, "page_end": record.PageEnd, "passage": record.Passage, "job_id": record.JobID, "indexed": "false", "vector_kind": "chunk",
 		}}
 	}
+	return q.upsertPoints(ctx, points)
+}
+
+func (q *Qdrant) UpsertDocument(ctx context.Context, record application.DocumentRecord) error {
+	if record.DocumentID == "" || record.JobID == "" || record.BookID == "" || record.ChunkCount == 0 || len(record.Vector) != domain.EmbeddingDimensions {
+		return errors.New("invalid document vector")
+	}
+	point := upsertPoint{ID: deterministicPointID("document:" + record.DocumentID), Vector: record.Vector, Payload: map[string]any{
+		"document_id": record.DocumentID, "book_id": record.BookID, "title": record.Title, "author": record.Author,
+		"author_normalized": strings.ToLower(strings.Join(strings.Fields(record.Author), " ")), "year": record.Year,
+		"tags": record.Tags, "tags_normalized": normalizedValues(record.Tags), "page_start": record.PageStart, "page_end": record.PageEnd,
+		"chunk_count": record.ChunkCount, "job_id": record.JobID, "indexed": "false", "vector_kind": "document",
+	}}
+	return q.upsertPoints(ctx, []upsertPoint{point})
+}
+
+func (q *Qdrant) upsertPoints(ctx context.Context, points []upsertPoint) error {
 	body, err := json.Marshal(upsertRequest{Points: points})
 	if err != nil {
 		return errors.New("encode vector batch")

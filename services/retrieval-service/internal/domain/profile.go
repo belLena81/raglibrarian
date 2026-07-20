@@ -42,7 +42,7 @@ func SupportedIndexProfile() IndexProfile {
 		"cosine",
 		"mean",
 		"normalized",
-		"retrieval-index-v1",
+		"retrieval-index-v2",
 		"poppler-layout-v1",
 		"nfc-v1",
 		"cl100k_base-v1",
@@ -56,7 +56,7 @@ func SupportedIndexProfile() IndexProfile {
 	return IndexProfile{ // #nosec G101 -- this is a public model compatibility profile, not a credential.
 		Name: IndexProfileName, Model: EmbeddingModel, Revision: EmbeddingRevision,
 		Dimensions: EmbeddingDimensions, Distance: "cosine", Pooling: "mean", Normalized: true,
-		IndexSchema: "retrieval-index-v1", ExtractionVersion: "poppler-layout-v1",
+		IndexSchema: "retrieval-index-v2", ExtractionVersion: "poppler-layout-v1",
 		NormalizationVersion: "nfc-v1", TokenizerVersion: "cl100k_base-v1",
 		ChunkingVersion: "token-window-v2", StructureVersion: "heading-carry-v1",
 		MaximumTokens: 800, OverlapTokens: 120, ManifestSchema: "v1",

@@ -274,8 +274,9 @@ Implementation:
   synchronous search gRPC application. Deploy bounded index batches as a thin
   Lambda handler in AWS and as a RabbitMQ worker in local Compose/CI; both call
   the same Retrieval-owned use case.
-- Consume `BookChunksReadyV1`, generate document embeddings, own the Qdrant
-  collection, and perform idempotent vector upserts.
+- Consume `BookChunksReadyV1`, generate chunk embeddings plus centroid-derived
+  document embeddings, own the Qdrant collection, and perform idempotent vector
+  upserts.
 - Maintain an event-derived evidence/book projection locally so search does not
   synchronously fan out to Catalog.
 - Version embedding provider, model, dimensions, chunking, and index schema;
@@ -286,14 +287,14 @@ Implementation:
 - Emit `BookIndexedV1` or `BookIndexingFailedV1` with a sanitized failure
   category for Catalog.
 - Activate `/query` additively: retain `question`, add optional filters, and
-  return `{query, results}` with retrieved evidence only.
+  return `{query, results, documents}` with retrieved evidence only.
 
 Acceptance:
 
 - Duplicate chunk manifests do not duplicate vectors.
 - Model/dimension mismatch, embedding failure, and Qdrant loss fail predictably.
-- Filters, empty results, ranking fixtures, citation accuracy, and the
-  configured vector-latency objective have automated coverage.
+- Filters, empty results, chunk/document ranking fixtures, citation accuracy,
+  and the configured vector-latency objective have automated coverage.
 - No result or citation is fabricated when retrieval has no evidence.
 
 ## Milestone 6 — optional grounded answers

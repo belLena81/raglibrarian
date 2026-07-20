@@ -46,7 +46,7 @@ func newM5ProfileDigest() [sha256.Size]byte {
 		"cosine",
 		"mean",
 		"normalized",
-		"retrieval-index-v1",
+		"retrieval-index-v2",
 		"poppler-layout-v1",
 		"nfc-v1",
 		"cl100k_base-v1",

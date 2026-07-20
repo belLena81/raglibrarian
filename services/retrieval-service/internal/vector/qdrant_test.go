@@ -15,7 +15,7 @@ import (
 func TestQdrantSearchUsesBoundedLimitAndReturnsEvidence(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
 		var body queryRequest
-		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body.Limit != 2 || body.Filter == nil || len(body.Filter.Must) == 0 || body.Filter.Must[0].Key != "indexed" || body.Filter.Must[0].Match.Value != "true" || body.ScoreThreshold <= 0 {
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body.Limit != 2 || body.Filter == nil || len(body.Filter.Must) < 2 || body.Filter.Must[0].Key != "indexed" || body.Filter.Must[0].Match.Value != "true" || body.Filter.Must[1].Key != "vector_kind" || body.Filter.Must[1].Match.Value != "chunk" || body.ScoreThreshold <= 0 {
 			t.Fatalf("unexpected request body: %#v, %v", body, err)
 		}
 		return response(http.StatusOK, `{"result":{"points":[{"id":"point-1","score":0.9,"payload":{"evidence_id":"evidence-1","chunk_id":"chunk-1","job_id":"job-1","book_id":"book-1","title":"Systems","author":"Author","year":2026,"tags":["distributed"],"chapter":"One","section":"Replication","page_start":3,"page_end":4,"passage":"Copies improve availability."}}]}}`)
@@ -29,6 +29,37 @@ func TestQdrantSearchUsesBoundedLimitAndReturnsEvidence(t *testing.T) {
 	results, err := store.Search(context.Background(), query, make([]float32, domain.EmbeddingDimensions))
 	if err != nil || len(results) != 1 || results[0].EvidenceID != "evidence-1" {
 		t.Fatalf("Search() = %#v, %v", results, err)
+	}
+}
+
+func TestQdrantSearchDocumentsHydratesStoredChunkEvidence(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
+		requests++
+		var body queryRequest
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("invalid request body: %v", err)
+		}
+		switch requests {
+		case 1:
+			if body.Limit != 2 || body.Filter.Must[1].Key != "vector_kind" || body.Filter.Must[1].Match.Value != "document" {
+				t.Fatalf("unexpected document request: %#v", body)
+			}
+			return response(http.StatusOK, `{"result":{"points":[{"id":"document-point","score":0.8,"payload":{"document_id":"document-1","job_id":"job-1","book_id":"book-1","title":"Systems","author":"Author","year":2026,"tags":["distributed"],"page_start":1,"page_end":20,"chunk_count":10}}]}}`)
+		default:
+			if body.Limit != 3 || len(body.Filter.Must) < 3 || body.Filter.Must[1].Match.Value != "chunk" || body.Filter.Must[2].Key != "job_id" || body.Filter.Must[2].Match.Value != "job-1" {
+				t.Fatalf("unexpected evidence hydration request: %#v", body)
+			}
+			return response(http.StatusOK, `{"result":{"points":[{"id":"point-1","score":0.9,"payload":{"evidence_id":"evidence-1","chunk_id":"chunk-1","job_id":"job-1","book_id":"book-1","title":"Systems","author":"Author","year":2026,"tags":["distributed"],"chapter":"One","section":"Replication","page_start":3,"page_end":4,"passage":"Copies improve availability."}}]}}`)
+		}
+	})}
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 2})
+
+	documents, err := store.SearchDocuments(context.Background(), query, make([]float32, domain.EmbeddingDimensions))
+
+	if err != nil || len(documents) != 1 || documents[0].DocumentID != "document-1" || len(documents[0].Evidence) != 1 {
+		t.Fatalf("SearchDocuments() = %#v, %v", documents, err)
 	}
 }
 
@@ -60,21 +91,32 @@ func TestQdrantStagesBeforeActivatingJob(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
 		requests++
 		contents, _ := io.ReadAll(request.Body)
-		if requests == 1 {
-			if !bytes.Contains(contents, []byte(`"indexed":"false"`)) || !bytes.Contains(contents, []byte(`"job_id":"job-1"`)) {
-				t.Fatalf("upsert did not stage the job: %s", contents)
+		switch requests {
+		case 1:
+			if !bytes.Contains(contents, []byte(`"indexed":"false"`)) || !bytes.Contains(contents, []byte(`"job_id":"job-1"`)) || !bytes.Contains(contents, []byte(`"vector_kind":"chunk"`)) {
+				t.Fatalf("chunk upsert did not stage the job: %s", contents)
 			}
-		} else if !bytes.Contains(contents, []byte(`"indexed":"true"`)) || !bytes.Contains(contents, []byte(`"job_id"`)) {
-			t.Fatalf("activation did not target staged job: %s", contents)
+		case 2:
+			if !bytes.Contains(contents, []byte(`"indexed":"false"`)) || !bytes.Contains(contents, []byte(`"document_id":"document-1"`)) || !bytes.Contains(contents, []byte(`"vector_kind":"document"`)) {
+				t.Fatalf("document upsert did not stage the job: %s", contents)
+			}
+		default:
+			if !bytes.Contains(contents, []byte(`"indexed":"true"`)) || !bytes.Contains(contents, []byte(`"job_id"`)) {
+				t.Fatalf("activation did not target staged job: %s", contents)
+			}
 		}
 		return response(http.StatusOK, `{}`)
 	})}
 	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
 	record := application.EvidenceRecord{Evidence: application.Evidence{EvidenceID: "book-1:chunk-1", ChunkID: "chunk-1", BookID: "book-1", Passage: "evidence"}, JobID: "job-1", Vector: make([]float32, domain.EmbeddingDimensions)}
-	if err := store.Upsert(context.Background(), []application.EvidenceRecord{record}); err != nil {
+	if err := store.UpsertChunks(context.Background(), []application.EvidenceRecord{record}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ActivateJob(context.Background(), "job-1"); err != nil || requests != 2 {
+	document := application.DocumentRecord{DocumentResult: application.DocumentResult{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", ChunkCount: 1}, Vector: make([]float32, domain.EmbeddingDimensions)}
+	if err := store.UpsertDocument(context.Background(), document); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ActivateJob(context.Background(), "job-1"); err != nil || requests != 3 {
 		t.Fatalf("ActivateJob() requests=%d error=%v", requests, err)
 	}
 }

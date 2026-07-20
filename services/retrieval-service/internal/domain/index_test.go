@@ -12,7 +12,7 @@ func TestSupportedIndexProfileDigestIsStable(t *testing.T) {
 	if profile.Model != "jinaai/jina-embeddings-v2-base-code" || profile.Dimensions != 768 || profile.Distance != "cosine" {
 		t.Fatalf("unexpected supported profile: %#v", profile)
 	}
-	if got := hex.EncodeToString(profile.Digest[:]); got != "7c986cd0d5eed17f398329c4a09edb7d7909309f1274e1b4ef1766397311681c" {
+	if got := hex.EncodeToString(profile.Digest[:]); got != "096058de661aa9d81b4d8f9bd5005a613a951f9afcaf69400ecbb8079ab27740" {
 		t.Fatalf("profile digest = %s", got)
 	}
 }

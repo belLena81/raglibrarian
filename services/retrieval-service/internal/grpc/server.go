@@ -15,7 +15,7 @@ import (
 )
 
 type SearchService interface {
-	Search(context.Context, domain.Actor, domain.SearchQueryInput) ([]application.Evidence, error)
+	Search(context.Context, domain.Actor, domain.SearchQueryInput) (application.SearchResult, error)
 }
 
 type Server struct {
@@ -70,16 +70,40 @@ func (s *Server) Search(parent context.Context, request *retrievalv1.SearchReque
 	if err != nil {
 		return nil, mapError(err)
 	}
-	response := &retrievalv1.SearchResponse{Query: request.Question, Results: make([]*retrievalv1.Evidence, 0, len(results))}
-	for _, result := range results {
+	response := &retrievalv1.SearchResponse{Query: request.Question, Results: make([]*retrievalv1.Evidence, 0, len(results.Evidence)), Documents: make([]*retrievalv1.DocumentResult, 0, len(results.Documents))}
+	for _, result := range results.Evidence {
+		evidence, mapErr := evidenceToProto(result)
+		if mapErr != nil {
+			return nil, mapErr
+		}
+		response.Results = append(response.Results, evidence)
+	}
+	for _, result := range results.Documents {
 		if result.Year < 0 || result.Year > math.MaxInt32 {
 			return nil, status.Error(codes.Unavailable, "retrieval unavailable")
 		}
-		response.Results = append(response.Results, &retrievalv1.Evidence{EvidenceId: result.EvidenceID, ChunkId: result.ChunkID,
-			Book:    &retrievalv1.BookMetadata{BookId: result.BookID, Title: result.Title, Author: result.Author, Year: int32(result.Year), Tags: append([]string(nil), result.Tags...)}, // #nosec G115 -- range checked above.
-			Chapter: result.Chapter, Section: result.Section, PageStart: result.PageStart, PageEnd: result.PageEnd, Passage: result.Passage, Score: result.Score})
+		evidence := make([]*retrievalv1.Evidence, 0, len(result.Evidence))
+		for _, value := range result.Evidence {
+			mapped, mapErr := evidenceToProto(value)
+			if mapErr != nil {
+				return nil, mapErr
+			}
+			evidence = append(evidence, mapped)
+		}
+		response.Documents = append(response.Documents, &retrievalv1.DocumentResult{DocumentId: result.DocumentID,
+			Book:       &retrievalv1.BookMetadata{BookId: result.BookID, Title: result.Title, Author: result.Author, Year: int32(result.Year), Tags: append([]string(nil), result.Tags...)}, // #nosec G115 -- range checked above.
+			ChunkCount: result.ChunkCount, PageStart: result.PageStart, PageEnd: result.PageEnd, Score: result.Score, Evidence: evidence})
 	}
 	return response, nil
+}
+
+func evidenceToProto(result application.Evidence) (*retrievalv1.Evidence, error) {
+	if result.Year < 0 || result.Year > math.MaxInt32 {
+		return nil, status.Error(codes.Unavailable, "retrieval unavailable")
+	}
+	return &retrievalv1.Evidence{EvidenceId: result.EvidenceID, ChunkId: result.ChunkID,
+		Book:    &retrievalv1.BookMetadata{BookId: result.BookID, Title: result.Title, Author: result.Author, Year: int32(result.Year), Tags: append([]string(nil), result.Tags...)}, // #nosec G115 -- range checked above.
+		Chapter: result.Chapter, Section: result.Section, PageStart: result.PageStart, PageEnd: result.PageEnd, Passage: result.Passage, Score: result.Score}, nil
 }
 
 func mapError(err error) error {

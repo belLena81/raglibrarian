@@ -50,7 +50,7 @@ func TestSupportedM4ProfileDigestMatchesProducerContract(t *testing.T) {
 }
 
 func TestSupportedM5ProfileDigestMatchesProducerContract(t *testing.T) {
-	const expected = "7c986cd0d5eed17f398329c4a09edb7d7909309f1274e1b4ef1766397311681c"
+	const expected = "096058de661aa9d81b4d8f9bd5005a613a951f9afcaf69400ecbb8079ab27740"
 	if digest := hex.EncodeToString(supportedM5ProfileDigest[:]); digest != expected {
 		t.Fatalf("M5 profile digest = %q, want %q", digest, expected)
 	}

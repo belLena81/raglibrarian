@@ -122,7 +122,7 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
-	index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, "evidence_v1", secret.QdrantAPIKey, httpClient)
+	index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, "evidence_v2", secret.QdrantAPIKey, httpClient)
 	if err != nil {
 		pool.Close()
 		return nil, err

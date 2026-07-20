@@ -12,6 +12,7 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -239,6 +240,9 @@ func (r *Postgres) BeginBatch(ctx context.Context, work application.BatchWork) (
 }
 
 func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork, records []application.EvidenceRecord, now time.Time) (bool, error) {
+	if len(records) == 0 {
+		return false, application.ErrInvalidEvent
+	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -262,7 +266,23 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 	if state != "processing" {
 		return false, application.ErrConflictingEvent
 	}
+	batchVectorSum := make([]float32, domain.EmbeddingDimensions)
+	var pageStart, pageEnd uint32
+	havePageStart := false
 	for _, record := range records {
+		if record.JobID != work.JobID || record.BookID != work.BookID || len(record.Vector) != domain.EmbeddingDimensions {
+			return false, application.ErrInvalidEvent
+		}
+		if !havePageStart || record.PageStart < pageStart {
+			pageStart = record.PageStart
+			havePageStart = true
+		}
+		if record.PageEnd > pageEnd {
+			pageEnd = record.PageEnd
+		}
+		for index, value := range record.Vector {
+			batchVectorSum[index] += value
+		}
 		_, err = tx.Exec(ctx, `INSERT INTO retrieval.evidence
 			(evidence_id,chunk_id,job_id,book_id,title,author,publication_year,tags,chapter,section,page_start,page_end,passage,content_sha256,created_at)
 			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
@@ -272,6 +292,21 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 		if err != nil {
 			return false, err
 		}
+	}
+	if err = r.accumulateDocumentVector(ctx, tx, work.JobID, batchVectorSum, len(records), now); err != nil {
+		return false, err
+	}
+	firstRecord := records[0]
+	_, err = tx.Exec(ctx, `INSERT INTO retrieval.documents
+		(document_id,job_id,book_id,title,author,publication_year,tags,chunk_count,page_start,page_end,created_at,updated_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
+		ON CONFLICT(job_id) DO UPDATE SET
+			chunk_count=retrieval.documents.chunk_count + EXCLUDED.chunk_count,
+			page_start=LEAST(retrieval.documents.page_start, EXCLUDED.page_start),
+			page_end=GREATEST(retrieval.documents.page_end, EXCLUDED.page_end),
+			updated_at=EXCLUDED.updated_at`, work.BookID+":"+work.JobID, work.JobID, work.BookID, firstRecord.Title, firstRecord.Author, firstRecord.Year, firstRecord.Tags, len(records), pageStart, pageEnd, now)
+	if err != nil {
+		return false, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE retrieval.index_batches SET state='completed',lease_owner=NULL,lease_expires_at=NULL,updated_at=$2 WHERE id=$1`, work.BatchID, now); err != nil {
 		return false, err
@@ -284,6 +319,53 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 		return false, err
 	}
 	return remaining == 0, nil
+}
+
+type queryExecer interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func (r *Postgres) accumulateDocumentVector(ctx context.Context, tx queryExecer, jobID string, batchVectorSum []float32, chunkCount int, now time.Time) error {
+	var vectorSum []float32
+	var accumulated int
+	err := tx.QueryRow(ctx, `SELECT vector_sum,chunk_count FROM retrieval.document_embedding_accumulators WHERE job_id=$1 FOR UPDATE`, jobID).Scan(&vectorSum, &accumulated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		_, err = tx.Exec(ctx, `INSERT INTO retrieval.document_embedding_accumulators(job_id,vector_sum,chunk_count,updated_at) VALUES($1,$2,$3,$4)`, jobID, batchVectorSum, chunkCount, now)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if len(vectorSum) != domain.EmbeddingDimensions {
+		return application.ErrConflictingEvent
+	}
+	for index, value := range batchVectorSum {
+		vectorSum[index] += value
+	}
+	_, err = tx.Exec(ctx, `UPDATE retrieval.document_embedding_accumulators SET vector_sum=$2,chunk_count=$3,updated_at=$4 WHERE job_id=$1`, jobID, vectorSum, accumulated+chunkCount, now)
+	return err
+}
+
+func (r *Postgres) DocumentRecord(ctx context.Context, work application.BatchWork) (application.DocumentRecord, error) {
+	var document application.DocumentRecord
+	var vectorSum []float32
+	var chunkCount int
+	err := r.pool.QueryRow(ctx, `SELECT d.document_id,d.job_id,d.book_id,d.title,d.author,d.publication_year,d.tags,d.chunk_count,d.page_start,d.page_end,a.vector_sum,a.chunk_count
+		FROM retrieval.documents d JOIN retrieval.document_embedding_accumulators a ON a.job_id=d.job_id
+		WHERE d.job_id=$1`, work.JobID).Scan(&document.DocumentID, &document.JobID, &document.BookID, &document.Title, &document.Author, &document.Year, &document.Tags, &document.ChunkCount, &document.PageStart, &document.PageEnd, &vectorSum, &chunkCount)
+	if err != nil {
+		return application.DocumentRecord{}, err
+	}
+	if document.JobID != work.JobID || document.BookID != work.BookID || int(document.ChunkCount) != chunkCount || len(vectorSum) != domain.EmbeddingDimensions {
+		return application.DocumentRecord{}, application.ErrConflictingEvent
+	}
+	vector, err := application.NormalizedCentroid([][]float32{vectorSum})
+	if err != nil {
+		return application.DocumentRecord{}, err
+	}
+	document.Vector = vector
+	return document, nil
 }
 
 func (r *Postgres) FinalizeJob(ctx context.Context, work application.BatchWork, now time.Time) error {
@@ -398,6 +480,42 @@ func (r *Postgres) FilterIndexed(ctx context.Context, values []application.Evide
 		return nil, err
 	}
 	result := make([]application.Evidence, 0, len(values))
+	for _, value := range values {
+		if _, found := visible[value.JobID]; found {
+			result = append(result, value)
+		}
+	}
+	return result, nil
+}
+
+func (r *Postgres) FilterIndexedDocuments(ctx context.Context, values []application.DocumentResult) ([]application.DocumentResult, error) {
+	if len(values) == 0 {
+		return values, nil
+	}
+	jobIDs := make([]string, 0, len(values))
+	for _, value := range values {
+		if value.JobID == "" {
+			return nil, errors.New("document has no index job")
+		}
+		jobIDs = append(jobIDs, value.JobID)
+	}
+	rows, err := r.pool.Query(ctx, `SELECT id FROM retrieval.index_jobs WHERE id=ANY($1) AND state='indexed'`, jobIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	visible := make(map[string]struct{}, len(jobIDs))
+	for rows.Next() {
+		var jobID string
+		if err = rows.Scan(&jobID); err != nil {
+			return nil, err
+		}
+		visible[jobID] = struct{}{}
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	result := make([]application.DocumentResult, 0, len(values))
 	for _, value := range values {
 		if _, found := visible[value.JobID]; found {
 			result = append(result, value)

@@ -245,10 +245,11 @@ identical application contract and produces the same events.
 
 ### Retrieval
 
-Retrieval consumes a versioned chunk manifest, embeds content, and upserts
-vectors idempotently. The collection schema records embedding provider/model,
-dimensions, distance metric, chunking version, and index version. Incompatible
-data fails before a partial index is advertised.
+Retrieval consumes a versioned chunk manifest, embeds chunk content, derives a
+document embedding from the normalized chunk-vector centroid, and upserts both
+vector levels idempotently. The collection schema records embedding
+provider/model, dimensions, distance metric, chunking version, and index
+version. Incompatible data fails before a partial index is advertised.
 
 The index application divides a manifest into bounded idempotent batches.
 Reserved concurrency prevents Lambda bursts from overwhelming the embedding
@@ -256,8 +257,9 @@ provider or Qdrant. Lambda and worker adapters share contract fixtures and
 produce equivalent results.
 
 Search accepts a bounded question, optional metadata filters, and a bounded
-result limit. It returns only stored evidence. Empty retrieval is a successful
-empty result, not an invitation to synthesize citations.
+result limit. It returns stored chunk evidence and additive document-level hits
+with nested stored evidence. Empty retrieval is a successful empty result, not
+an invitation to synthesize citations.
 
 The public search shape remains compatible with the UI contract:
 
@@ -271,6 +273,23 @@ The public search shape remains compatible with the UI contract:
       "pages": [101, 102],
       "passage": "...",
       "score": 0.87
+    }
+  ],
+  "documents": [
+    {
+      "book": {"title": "...", "author": "...", "year": 2024, "tags": []},
+      "chunk_count": 42,
+      "pages": [1, 250],
+      "score": 0.79,
+      "evidence": [
+        {
+          "book": {"title": "...", "author": "...", "year": 2024, "tags": []},
+          "chapter": "Replication",
+          "pages": [101, 102],
+          "passage": "...",
+          "score": 0.87
+        }
+      ]
     }
   ]
 }

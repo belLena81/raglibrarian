@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"math"
 	"time"
 	"unicode/utf8"
 
@@ -50,9 +51,15 @@ type EvidenceRecord struct {
 	Vector        []float32
 }
 
+type DocumentRecord struct {
+	DocumentResult
+	Vector []float32
+}
+
 type BatchRepository interface {
 	BeginBatch(context.Context, BatchWork) (BookProjection, bool, error)
 	CompleteBatch(context.Context, BatchWork, []EvidenceRecord, time.Time) (bool, error)
+	DocumentRecord(context.Context, BatchWork) (DocumentRecord, error)
 	FinalizeJob(context.Context, BatchWork, time.Time) error
 }
 
@@ -65,7 +72,8 @@ type DocumentEmbedder interface {
 }
 
 type VectorIndex interface {
-	Upsert(context.Context, []EvidenceRecord) error
+	UpsertChunks(context.Context, []EvidenceRecord) error
+	UpsertDocument(context.Context, DocumentRecord) error
 	ActivateJob(context.Context, string) error
 }
 
@@ -122,7 +130,7 @@ func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
 			Chapter: chunk.Chapter, Section: chunk.Section, PageStart: chunk.PageStart, PageEnd: chunk.PageEnd, Passage: chunk.Text},
 			JobID: work.JobID, ContentSHA256: chunk.ContentSHA256, Vector: append([]float32(nil), vectors[index]...)}
 	}
-	if err = i.index.Upsert(ctx, records); err != nil {
+	if err = i.index.UpsertChunks(ctx, records); err != nil {
 		return errors.New("upsert vectors")
 	}
 	completed, err := i.repository.CompleteBatch(ctx, work, records, i.now().UTC())
@@ -130,6 +138,16 @@ func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
 		return errors.New("complete batch")
 	}
 	if completed {
+		document, recordErr := i.repository.DocumentRecord(ctx, work)
+		if recordErr != nil {
+			return errors.New("build document vector")
+		}
+		if len(document.Vector) != domain.EmbeddingDimensions || !normalized(document.Vector) {
+			return errors.New("invalid document embedding")
+		}
+		if err = i.index.UpsertDocument(ctx, document); err != nil {
+			return errors.New("upsert document vector")
+		}
 		if err = i.index.ActivateJob(ctx, work.JobID); err != nil {
 			return errors.New("activate vectors")
 		}
@@ -138,4 +156,47 @@ func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
 		}
 	}
 	return nil
+}
+
+func NormalizedCentroid(vectors [][]float32) ([]float32, error) {
+	if len(vectors) == 0 {
+		return nil, errors.New("empty document embedding")
+	}
+	sum := make([]float32, domain.EmbeddingDimensions)
+	for _, vector := range vectors {
+		if len(vector) != domain.EmbeddingDimensions {
+			return nil, errors.New("invalid embedding dimensions")
+		}
+		for index, value := range vector {
+			sum[index] += value
+		}
+	}
+	for index := range sum {
+		sum[index] /= float32(len(vectors))
+	}
+	return normalizeVector(sum)
+}
+
+func normalizeVector(vector []float32) ([]float32, error) {
+	var norm float64
+	for _, value := range vector {
+		norm += float64(value) * float64(value)
+	}
+	if norm == 0 {
+		return nil, errors.New("empty document embedding")
+	}
+	scale := float32(1 / math.Sqrt(norm))
+	result := make([]float32, len(vector))
+	for index, value := range vector {
+		result[index] = value * scale
+	}
+	return result, nil
+}
+
+func normalized(vector []float32) bool {
+	var norm float64
+	for _, value := range vector {
+		norm += float64(value) * float64(value)
+	}
+	return math.Abs(norm-1) <= 0.001
 }

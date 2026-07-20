@@ -77,10 +77,22 @@ type Evidence struct {
 	Score      float64
 }
 
+// DocumentResult is one document-level hit with Retrieval-owned stored evidence.
+type DocumentResult struct {
+	DocumentID string
+	Book       EvidenceBook
+	ChunkCount uint32
+	PageStart  uint32
+	PageEnd    uint32
+	Score      float64
+	Evidence   []Evidence
+}
+
 // SearchResult contains only evidence returned by Retrieval.
 type SearchResult struct {
-	Query   string
-	Results []Evidence
+	Query     string
+	Results   []Evidence
+	Documents []DocumentResult
 }
 
 // Searcher is the outbound Retrieval use-case port required by the handler.
@@ -175,8 +187,9 @@ func validQueryYear(year *int) bool {
 }
 
 type queryResponse struct {
-	Query   string             `json:"query"`
-	Results []evidenceResponse `json:"results"`
+	Query     string             `json:"query"`
+	Results   []evidenceResponse `json:"results"`
+	Documents []documentResponse `json:"documents"`
 }
 
 type evidenceResponse struct {
@@ -190,19 +203,41 @@ type evidenceResponse struct {
 	Score      float64      `json:"score"`
 }
 
+type documentResponse struct {
+	DocumentID string             `json:"document_id"`
+	Book       EvidenceBook       `json:"book"`
+	ChunkCount uint32             `json:"chunk_count"`
+	Pages      [2]uint32          `json:"pages"`
+	Score      float64            `json:"score"`
+	Evidence   []evidenceResponse `json:"evidence"`
+}
+
 func queryResponseFrom(result SearchResult) queryResponse {
 	results := make([]evidenceResponse, 0, len(result.Results))
 	for _, evidence := range result.Results {
-		results = append(results, evidenceResponse{
-			EvidenceID: evidence.EvidenceID,
-			ChunkID:    evidence.ChunkID,
-			Book:       evidence.Book,
-			Chapter:    evidence.Chapter,
-			Section:    evidence.Section,
-			Pages:      [2]uint32{evidence.PageStart, evidence.PageEnd},
-			Passage:    evidence.Passage,
-			Score:      evidence.Score,
-		})
+		results = append(results, evidenceResponseFrom(evidence))
 	}
-	return queryResponse{Query: result.Query, Results: results}
+	documents := make([]documentResponse, 0, len(result.Documents))
+	for _, document := range result.Documents {
+		evidence := make([]evidenceResponse, 0, len(document.Evidence))
+		for _, value := range document.Evidence {
+			evidence = append(evidence, evidenceResponseFrom(value))
+		}
+		documents = append(documents, documentResponse{DocumentID: document.DocumentID, Book: document.Book, ChunkCount: document.ChunkCount,
+			Pages: [2]uint32{document.PageStart, document.PageEnd}, Score: document.Score, Evidence: evidence})
+	}
+	return queryResponse{Query: result.Query, Results: results, Documents: documents}
+}
+
+func evidenceResponseFrom(evidence Evidence) evidenceResponse {
+	return evidenceResponse{
+		EvidenceID: evidence.EvidenceID,
+		ChunkID:    evidence.ChunkID,
+		Book:       evidence.Book,
+		Chapter:    evidence.Chapter,
+		Section:    evidence.Section,
+		Pages:      [2]uint32{evidence.PageStart, evidence.PageEnd},
+		Passage:    evidence.Passage,
+		Score:      evidence.Score,
+	}
 }

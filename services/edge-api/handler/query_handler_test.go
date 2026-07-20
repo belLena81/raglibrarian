@@ -47,6 +47,37 @@ func TestQueryReturnsRetrievedEvidenceAndUsesTrustedPrincipal(t *testing.T) {
 			Passage:   "A stored evidence passage.",
 			Score:     0.87,
 		}},
+		Documents: []handler.DocumentResult{{
+			DocumentID: "book-1:job-1",
+			Book: handler.EvidenceBook{
+				ID:     "book-1",
+				Title:  "Distributed Systems",
+				Author: "A. Author",
+				Year:   2024,
+				Tags:   []string{"systems"},
+			},
+			ChunkCount: 12,
+			PageStart:  1,
+			PageEnd:    250,
+			Score:      0.79,
+			Evidence: []handler.Evidence{{
+				EvidenceID: "evidence-1",
+				ChunkID:    "chunk-1",
+				Book: handler.EvidenceBook{
+					ID:     "book-1",
+					Title:  "Distributed Systems",
+					Author: "A. Author",
+					Year:   2024,
+					Tags:   []string{"systems"},
+				},
+				Chapter:   "Replication",
+				Section:   "Quorums",
+				PageStart: 101,
+				PageEnd:   102,
+				Passage:   "A stored evidence passage.",
+				Score:     0.87,
+			}},
+		}},
 	}}
 	h := handler.NewQueryHandler(retrieval)
 	req := httptest.NewRequest(http.MethodPost, "/query", bytes.NewBufferString(`{
@@ -69,6 +100,17 @@ func TestQueryReturnsRetrievedEvidenceAndUsesTrustedPrincipal(t *testing.T) {
 			"book":{"id":"book-1","title":"Distributed Systems","author":"A. Author","year":2024,"tags":["systems"]},
 			"chapter":"Replication","section":"Quorums","pages":[101,102],
 			"passage":"A stored evidence passage.","score":0.87
+		}],
+		"documents":[{
+			"document_id":"book-1:job-1",
+			"book":{"id":"book-1","title":"Distributed Systems","author":"A. Author","year":2024,"tags":["systems"]},
+			"chunk_count":12,"pages":[1,250],"score":0.79,
+			"evidence":[{
+				"evidence_id":"evidence-1","chunk_id":"chunk-1",
+				"book":{"id":"book-1","title":"Distributed Systems","author":"A. Author","year":2024,"tags":["systems"]},
+				"chapter":"Replication","section":"Quorums","pages":[101,102],
+				"passage":"A stored evidence passage.","score":0.87
+			}]
 		}]
 	}`, recorder.Body.String())
 	assert.Equal(t, "trusted-user", retrieval.request.Actor.UserID)
@@ -79,7 +121,7 @@ func TestQueryReturnsRetrievedEvidenceAndUsesTrustedPrincipal(t *testing.T) {
 }
 
 func TestQueryReturnsSuccessfulEmptyEvidence(t *testing.T) {
-	retrieval := &retrievalStub{result: handler.SearchResult{Query: "unrelated", Results: []handler.Evidence{}}}
+	retrieval := &retrievalStub{result: handler.SearchResult{Query: "unrelated", Results: []handler.Evidence{}, Documents: []handler.DocumentResult{}}}
 	h := handler.NewQueryHandler(retrieval)
 	req := authenticatedQueryRequest(`{"question":"unrelated"}`)
 	recorder := httptest.NewRecorder()
@@ -87,7 +129,7 @@ func TestQueryReturnsSuccessfulEmptyEvidence(t *testing.T) {
 	h.Query(recorder, req)
 
 	assert.Equal(t, http.StatusOK, recorder.Code)
-	assert.JSONEq(t, `{"query":"unrelated","results":[]}`, recorder.Body.String())
+	assert.JSONEq(t, `{"query":"unrelated","results":[],"documents":[]}`, recorder.Body.String())
 }
 
 func TestQueryRejectsInvalidPublicRequestsWithoutCallingRetrieval(t *testing.T) {

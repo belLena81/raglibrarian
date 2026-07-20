@@ -109,34 +109,55 @@ func mapError(err error) error {
 
 func fromProto(response *retrievalv1.SearchResponse) handler.SearchResult {
 	if response == nil {
-		return handler.SearchResult{Results: []handler.Evidence{}}
+		return handler.SearchResult{Results: []handler.Evidence{}, Documents: []handler.DocumentResult{}}
 	}
 	results := make([]handler.Evidence, 0, len(response.Results))
 	for _, evidence := range response.Results {
 		if evidence == nil {
 			continue
 		}
-		book := handler.EvidenceBook{Tags: []string{}}
-		if evidence.Book != nil {
-			book = handler.EvidenceBook{
-				ID:     evidence.Book.BookId,
-				Title:  evidence.Book.Title,
-				Author: evidence.Book.Author,
-				Year:   int(evidence.Book.Year),
-				Tags:   append([]string(nil), evidence.Book.Tags...),
+		results = append(results, evidenceFromProto(evidence))
+	}
+	documents := make([]handler.DocumentResult, 0, len(response.Documents))
+	for _, document := range response.Documents {
+		if document == nil {
+			continue
+		}
+		evidence := make([]handler.Evidence, 0, len(document.Evidence))
+		for _, value := range document.Evidence {
+			if value != nil {
+				evidence = append(evidence, evidenceFromProto(value))
 			}
 		}
-		results = append(results, handler.Evidence{
-			EvidenceID: evidence.EvidenceId,
-			ChunkID:    evidence.ChunkId,
-			Book:       book,
-			Chapter:    evidence.Chapter,
-			Section:    evidence.Section,
-			PageStart:  evidence.PageStart,
-			PageEnd:    evidence.PageEnd,
-			Passage:    evidence.Passage,
-			Score:      evidence.Score,
-		})
+		documents = append(documents, handler.DocumentResult{DocumentID: document.DocumentId, Book: bookFromProto(document.Book),
+			ChunkCount: document.ChunkCount, PageStart: document.PageStart, PageEnd: document.PageEnd, Score: document.Score, Evidence: evidence})
 	}
-	return handler.SearchResult{Query: response.Query, Results: results}
+	return handler.SearchResult{Query: response.Query, Results: results, Documents: documents}
+}
+
+func evidenceFromProto(evidence *retrievalv1.Evidence) handler.Evidence {
+	return handler.Evidence{
+		EvidenceID: evidence.EvidenceId,
+		ChunkID:    evidence.ChunkId,
+		Book:       bookFromProto(evidence.Book),
+		Chapter:    evidence.Chapter,
+		Section:    evidence.Section,
+		PageStart:  evidence.PageStart,
+		PageEnd:    evidence.PageEnd,
+		Passage:    evidence.Passage,
+		Score:      evidence.Score,
+	}
+}
+
+func bookFromProto(book *retrievalv1.BookMetadata) handler.EvidenceBook {
+	if book == nil {
+		return handler.EvidenceBook{Tags: []string{}}
+	}
+	return handler.EvidenceBook{
+		ID:     book.BookId,
+		Title:  book.Title,
+		Author: book.Author,
+		Year:   int(book.Year),
+		Tags:   append([]string(nil), book.Tags...),
+	}
 }

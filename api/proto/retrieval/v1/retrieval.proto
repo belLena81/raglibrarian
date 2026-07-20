@@ -43,6 +43,7 @@ message SearchRequest {
 message SearchResponse {
   string query = 1;
   repeated Evidence results = 2;
+  repeated DocumentResult documents = 3;
 }
 
 message BookMetadata {
@@ -63,6 +64,16 @@ message Evidence {
   uint32 page_end = 7;
   string passage = 8;
   double score = 9;
+}
+
+message DocumentResult {
+  string document_id = 1;
+  BookMetadata book = 2;
+  uint32 chunk_count = 3;
+  uint32 page_start = 4;
+  uint32 page_end = 5;
+  double score = 6;
+  repeated Evidence evidence = 7;
 }
 
 enum BookIndexingFailureCategory {

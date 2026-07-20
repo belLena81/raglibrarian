@@ -43,7 +43,7 @@ func Load() (Config, error) {
 	}
 	collection := os.Getenv("RETRIEVAL_QDRANT_COLLECTION")
 	if collection == "" {
-		collection = "evidence_v1"
+		collection = "evidence_v2"
 	}
 	uid, uidErr := positiveInteger(os.Getenv("RUN_AS_UID"), 65532)
 	gid, gidErr := positiveInteger(os.Getenv("RUN_AS_GID"), 65532)
@@ -107,7 +107,7 @@ func LoadWorker() (WorkerConfig, error) {
 	minioInsecure, insecureErr := strconv.ParseBool(os.Getenv("RETRIEVAL_MINIO_INSECURE"))
 	configuration := WorkerConfig{DSN: dsn, ConsumerRabbitURI: consumerURI, PublisherRabbitURI: publisherURI,
 		MinIOEndpoint: os.Getenv("RETRIEVAL_MINIO_ENDPOINT"), MinIOAccessKey: accessKey, MinIOSecretKey: secretKey, ArtifactBucket: os.Getenv("RETRIEVAL_ARTIFACT_BUCKET"), MinIOInsecure: minioInsecure,
-		TEIURL: os.Getenv("RETRIEVAL_TEI_URL"), QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: "evidence_v1", QdrantAPIKey: qdrantAPIKey,
+		TEIURL: os.Getenv("RETRIEVAL_TEI_URL"), QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: "evidence_v2", QdrantAPIKey: qdrantAPIKey,
 		MetricsAddress: os.Getenv("RETRIEVAL_METRICS_ADDR"), Concurrency: concurrency, RunAs: process.Identity{UID: uid, GID: gid}}
 	if uidErr != nil || gidErr != nil || concurrencyErr != nil || concurrency > 16 || insecureErr != nil || configuration.MinIOEndpoint == "" ||
 		configuration.ArtifactBucket == "" || configuration.MetricsAddress == "" || !privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) {

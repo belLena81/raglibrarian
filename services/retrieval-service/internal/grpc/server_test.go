@@ -12,11 +12,15 @@ import (
 )
 
 func TestSearchMapsAuthorizedRequestAndEvidence(t *testing.T) {
-	service := &stubSearchService{results: []application.Evidence{{EvidenceID: "evidence-1", BookID: "book-1", Title: "Systems", Passage: "Evidence", PageStart: 2, PageEnd: 3, Score: .8}}}
+	service := &stubSearchService{result: application.SearchResult{
+		Evidence: []application.Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Evidence", PageStart: 2, PageEnd: 3, Score: .8}},
+		Documents: []application.DocumentResult{{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems",
+			ChunkCount: 2, PageStart: 1, PageEnd: 3, Score: .7, Evidence: []application.Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Evidence"}}}},
+	}}
 	server := NewServer(service)
 	response, err := server.Search(context.Background(), &retrievalv1.SearchRequest{Question: "replication", Limit: 2,
 		Actor: &retrievalv1.Actor{UserId: "user-1", Role: "reader", Status: "active"}})
-	if err != nil || len(response.Results) != 1 || response.Results[0].Book.BookId != "book-1" {
+	if err != nil || len(response.Results) != 1 || response.Results[0].Book.BookId != "book-1" || len(response.Documents) != 1 || response.Documents[0].DocumentId != "document-1" {
 		t.Fatalf("Search() = %#v, %v", response, err)
 	}
 }
@@ -30,10 +34,10 @@ func TestSearchSanitizesAuthorizationFailure(t *testing.T) {
 }
 
 type stubSearchService struct {
-	results []application.Evidence
-	err     error
+	result application.SearchResult
+	err    error
 }
 
-func (s *stubSearchService) Search(_ context.Context, _ domain.Actor, _ domain.SearchQueryInput) ([]application.Evidence, error) {
-	return s.results, s.err
+func (s *stubSearchService) Search(_ context.Context, _ domain.Actor, _ domain.SearchQueryInput) (application.SearchResult, error) {
+	return s.result, s.err
 }
