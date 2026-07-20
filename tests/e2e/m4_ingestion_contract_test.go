@@ -122,6 +122,7 @@ func TestM4SyntheticPDFCorpusReachesDeterministicStatus(t *testing.T) {
 		{fixture: "blank_middle_page.pdf", wantStatus: "processing", wantStage: "chunks_ready"},
 		{fixture: "image_only.pdf", wantStatus: "failed", wantStage: "failed", wantFailure: "no_extractable_text"},
 		{fixture: "encrypted.pdf", wantStatus: "failed", wantStage: "failed", wantFailure: "encrypted_document"},
+		{fixture: "encrypted_password.pdf", wantStatus: "failed", wantStage: "failed", wantFailure: "encrypted_document"},
 		{fixture: "malformed.pdf", wantStatus: "failed", wantStage: "failed", wantFailure: "malformed_document"},
 	}
 

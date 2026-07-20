@@ -11,7 +11,21 @@ import (
 	"github.com/belLena81/raglibrarian/services/ingestion-service/config"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/diagnostic"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/application"
+	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/extractor"
 )
+
+func TestNewFailsFastWhenParserSandboxIsUnavailable(t *testing.T) {
+	original := verifyParserSandbox
+	verifyParserSandbox = func(context.Context) error {
+		return extractor.ErrSandboxUnavailable
+	}
+	t.Cleanup(func() { verifyParserSandbox = original })
+
+	_, err := New(context.Background(), config.Config{})
+	if !errors.Is(err, extractor.ErrSandboxUnavailable) {
+		t.Fatalf("New() error = %v, want %v", err, extractor.ErrSandboxUnavailable)
+	}
+}
 
 func TestRuntimeValidatesEventBeforeLoggingIdentifiers(t *testing.T) {
 	const marker = "malicious-log-marker"

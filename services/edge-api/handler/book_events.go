@@ -27,11 +27,22 @@ type BookStatusEvent struct {
 // BookStatusHub bounds and fans out latest-only status notifications.
 type BookStatusHub struct {
 	mu          sync.Mutex
-	subscribers map[chan BookStatusEvent]subscription
+	subscribers map[*bookStatusSubscriber]subscription
 	bySession   map[string]int
 	byIP        map[string]int
 	limit       int
 	available   bool
+}
+
+const maxPendingBookStatusEvents = 64
+
+// bookStatusSubscriber stores its pending state under BookStatusHub.mu. wake is
+// only a notification: the SSE writer drains the state from the hub before it
+// writes frames, so a slow writer cannot make Publish block.
+type bookStatusSubscriber struct {
+	wake    chan struct{}
+	pending map[string]BookStatusEvent
+	resync  bool
 }
 
 func NewBookStatusHub(limit int) *BookStatusHub {
@@ -39,7 +50,7 @@ func NewBookStatusHub(limit int) *BookStatusHub {
 		panic("handler: positive book SSE limit is required")
 	}
 	return &BookStatusHub{
-		subscribers: make(map[chan BookStatusEvent]subscription),
+		subscribers: make(map[*bookStatusSubscriber]subscription),
 		bySession:   make(map[string]int),
 		byIP:        make(map[string]int),
 		limit:       limit,
@@ -62,11 +73,13 @@ func (h *BookStatusHub) SetAvailable(available bool) {
 		delete(h.subscribers, subscriber)
 		h.bySession[details.sessionID]--
 		h.byIP[details.ip]--
-		close(subscriber)
+		close(subscriber.wake)
 	}
 }
 
-// Publish retains the newest notification for every slow subscriber.
+// Publish retains the newest notification for every book for slow subscribers.
+// If a subscriber falls more than maxPendingBookStatusEvents books behind, it
+// receives one resync notification instead of an incomplete status snapshot.
 func (h *BookStatusHub) Publish(event BookStatusEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -75,46 +88,81 @@ func (h *BookStatusHub) Publish(event BookStatusEvent) {
 	}
 	event.SchemaVersion = 1
 	for subscriber := range h.subscribers {
-		select {
-		case subscriber <- event:
-		default:
-			replaceLatestBookStatusEvent(subscriber, event)
+		h.queueBookStatusEvent(subscriber, event)
+	}
+}
+
+func (h *BookStatusHub) queueBookStatusEvent(subscriber *bookStatusSubscriber, event BookStatusEvent) {
+	if subscriber.resync {
+		return
+	}
+	if current, ok := subscriber.pending[event.BookID]; ok {
+		if current.ProcessingVersion >= event.ProcessingVersion {
+			return
 		}
+		subscriber.pending[event.BookID] = event
+		h.signalBookStatusSubscriber(subscriber)
+		return
+	}
+	if len(subscriber.pending) >= maxPendingBookStatusEvents {
+		clear(subscriber.pending)
+		subscriber.resync = true
+		h.signalBookStatusSubscriber(subscriber)
+		return
+	}
+	subscriber.pending[event.BookID] = event
+	h.signalBookStatusSubscriber(subscriber)
+}
+
+func (h *BookStatusHub) signalBookStatusSubscriber(subscriber *bookStatusSubscriber) {
+	select {
+	case subscriber.wake <- struct{}{}:
+	default:
 	}
 }
 
-func replaceLatestBookStatusEvent(subscriber chan BookStatusEvent, event BookStatusEvent) {
-	select {
-	case <-subscriber:
-	default:
-	}
-	select {
-	case subscriber <- event:
-	default:
-	}
-}
-
-func (h *BookStatusHub) subscribe(sessionID, ip string) (<-chan BookStatusEvent, func(), bool) {
+func (h *BookStatusHub) subscribe(sessionID, ip string) (*bookStatusSubscriber, func(), bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if !h.available || len(h.subscribers) >= h.limit || h.bySession[sessionID] >= 1 || h.byIP[ip] >= 10 {
 		return nil, nil, false
 	}
-	channel := make(chan BookStatusEvent, 1)
-	h.subscribers[channel] = subscription{sessionID: sessionID, ip: ip}
+	subscriber := &bookStatusSubscriber{
+		wake:    make(chan struct{}, 1),
+		pending: make(map[string]BookStatusEvent),
+	}
+	h.subscribers[subscriber] = subscription{sessionID: sessionID, ip: ip}
 	h.bySession[sessionID]++
 	h.byIP[ip]++
 	remove := func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		if details, ok := h.subscribers[channel]; ok {
-			delete(h.subscribers, channel)
+		if details, ok := h.subscribers[subscriber]; ok {
+			delete(h.subscribers, subscriber)
 			h.bySession[details.sessionID]--
 			h.byIP[details.ip]--
-			close(channel)
+			close(subscriber.wake)
 		}
 	}
-	return channel, remove, true
+	return subscriber, remove, true
+}
+
+func (h *BookStatusHub) drain(subscriber *bookStatusSubscriber) ([]BookStatusEvent, bool, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.subscribers[subscriber]; !ok {
+		return nil, false, false
+	}
+	if subscriber.resync {
+		subscriber.resync = false
+		return nil, true, true
+	}
+	events := make([]BookStatusEvent, 0, len(subscriber.pending))
+	for _, event := range subscriber.pending {
+		events = append(events, event)
+	}
+	clear(subscriber.pending)
+	return events, false, true
 }
 
 type bookEventSessions interface {
@@ -150,7 +198,7 @@ func (h *BooksHandler) Events(w http.ResponseWriter, r *http.Request) {
 		writeBookError(w, r, http.StatusServiceUnavailable, "stream_unavailable", "stream unavailable")
 		return
 	}
-	if h.events.enforceOrigin && r.Header.Get("Origin") != h.events.publicOrigin {
+	if !h.events.originAllowed(r) {
 		writeBookError(w, r, http.StatusForbidden, "origin_forbidden", "origin forbidden")
 		return
 	}
@@ -180,7 +228,7 @@ func (h *BooksHandler) Events(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		ip = "unknown"
 	}
-	events, remove, ok := h.events.hub.subscribe(principal.SessionID, ip)
+	subscriber, remove, ok := h.events.hub.subscribe(principal.SessionID, ip)
 	if !ok {
 		writeBookError(w, r, http.StatusServiceUnavailable, "stream_unavailable", "stream unavailable")
 		return
@@ -219,19 +267,39 @@ func (h *BooksHandler) Events(w http.ResponseWriter, r *http.Request) {
 			if err = stream.writeFrame([]byte(": heartbeat\n\n")); err != nil {
 				return
 			}
-		case event, open := <-events:
+		case _, open := <-subscriber.wake:
 			if !open {
 				return
 			}
-			body, marshalErr := json.Marshal(event)
-			if marshalErr != nil {
+			events, resync, subscribed := h.events.hub.drain(subscriber)
+			if !subscribed {
 				return
 			}
-			frame := append([]byte("id: "+event.EventID+"\nevent: book-processing-status-changed\ndata: "), body...)
-			frame = append(frame, '\n', '\n')
-			if err = stream.writeFrame(frame); err != nil {
-				return
+			if resync {
+				if err = stream.writeFrame([]byte("event: books-resync\ndata: {\"version\":1,\"reason\":\"subscriber_overflow\"}\n\n")); err != nil {
+					return
+				}
+				continue
+			}
+			for _, event := range events {
+				body, marshalErr := json.Marshal(event)
+				if marshalErr != nil {
+					return
+				}
+				frame := append([]byte("id: "+event.EventID+"\nevent: book-processing-status-changed\ndata: "), body...)
+				frame = append(frame, '\n', '\n')
+				if err = stream.writeFrame(frame); err != nil {
+					return
+				}
 			}
 		}
 	}
+}
+
+func (e *bookEvents) originAllowed(r *http.Request) bool {
+	if !e.enforceOrigin {
+		return true
+	}
+	origin := r.Header.Get("Origin")
+	return origin != "" && origin == e.publicOrigin
 }

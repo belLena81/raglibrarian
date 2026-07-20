@@ -24,6 +24,12 @@ test -n "$files" || { echo 'no ingestion migrations found' >&2; exit 1; }
   echo 'CREATE SCHEMA IF NOT EXISTS ingestion;'
   echo 'CREATE TABLE IF NOT EXISTS ingestion.schema_migrations (version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW());'
   echo 'REVOKE ALL ON ingestion.schema_migrations FROM ingestion_runtime;'
+  if [ "$direction" = up ]; then
+    echo "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ingestion_e2e') AS ingestion_e2e_exists \\gset"
+    echo '\if :ingestion_e2e_exists'
+    echo 'ALTER DEFAULT PRIVILEGES IN SCHEMA ingestion GRANT SELECT ON TABLES TO ingestion_e2e;'
+    echo '\endif'
+  fi
 } > "$sql_file"
 for file in $files; do
   name=$(basename "$file"); version=${name%%_*}; checksum=$(sha256sum "$file" | awk '{print $1}')
@@ -36,12 +42,14 @@ for file in $files; do
       echo '\if :should_apply'; printf '\ir %s\n' "$file"; echo "INSERT INTO ingestion.schema_migrations (version, checksum) VALUES (:'migration_version', :'migration_checksum');"; echo '\endif'
     else
       echo "SELECT EXISTS (SELECT 1 FROM ingestion.schema_migrations WHERE version = :'migration_version') AS should_apply \\gset"
-      echo '\if :should_apply'; printf '\ir %s\n' "$file"; echo "DELETE FROM ingestion.schema_migrations WHERE version = :'migration_version';"; echo '\endif'
+      echo '\if :should_apply'; echo "DELETE FROM ingestion.schema_migrations WHERE version = :'migration_version';"; printf '\ir %s\n' "$file"; echo '\endif'
     fi
   } >> "$sql_file"
 done
 if [ "$direction" = up ]; then
+  echo '\if :ingestion_e2e_exists' >> "$sql_file"
   echo 'GRANT SELECT ON ingestion.inbox, ingestion.jobs, ingestion.artifact_sets TO ingestion_e2e;' >> "$sql_file"
+  echo '\endif' >> "$sql_file"
 fi
 echo 'COMMIT;' >> "$sql_file"
 psql --no-password --file "$sql_file"

@@ -69,6 +69,73 @@ func TestBookEventsSurvivesServerAndFrameWriteDeadlines(t *testing.T) {
 	})
 }
 
+func TestBookEventsSendsOverflowResyncForSlowSubscriber(t *testing.T) {
+	principal := authflow.Principal{
+		UserID:    "reader-1",
+		SessionID: "session-1",
+		Role:      "reader",
+		Status:    "active",
+	}
+	hub := NewBookStatusHub(1)
+	hub.SetAvailable(true)
+	handler := &BooksHandler{events: &bookEvents{
+		sessions: sseSessionStub{principal: principal},
+		hub:      hub,
+		timing: sseTiming{
+			heartbeatInterval:  time.Second,
+			revalidateInterval: time.Second,
+			maximumDuration:    time.Second,
+			writeTimeout:       testSSEWriteTimeout,
+		},
+	}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := edgemiddleware.WithClaims(r.Context(), auth.Claims{
+			UserID:    principal.UserID,
+			SessionID: principal.SessionID,
+			Role:      auth.RoleReader,
+			ExpiresAt: time.Now().Add(time.Minute),
+		})
+		handler.Events(w, r.WithContext(ctx))
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("create SSE request: %v", err)
+	}
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatalf("open SSE stream: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("SSE response status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+
+	scanner := bufio.NewScanner(response.Body)
+	if !scanner.Scan() || scanner.Text() != "event: books-resync" {
+		t.Fatalf("first SSE line = %q, want initial books-resync", scanner.Text())
+	}
+	if !scanner.Scan() || scanner.Text() != "data: {\"version\":1}" {
+		t.Fatalf("initial SSE data = %q, want version", scanner.Text())
+	}
+	if !scanner.Scan() {
+		t.Fatal("initial SSE frame was incomplete")
+	}
+
+	for book := 0; book <= maxPendingBookStatusEvents; book++ {
+		hub.Publish(BookStatusEvent{BookID: string(rune(book + 1)), ProcessingVersion: 1})
+	}
+	if !scanner.Scan() || scanner.Text() != "event: books-resync" {
+		t.Fatalf("overflow SSE event = %q, want books-resync", scanner.Text())
+	}
+	if !scanner.Scan() || scanner.Text() != "data: {\"version\":1,\"reason\":\"subscriber_overflow\"}" {
+		t.Fatalf("overflow SSE data = %q, want subscriber-overflow resync", scanner.Text())
+	}
+}
+
 func TestAdminEventsSurvivesServerAndFrameWriteDeadlines(t *testing.T) {
 	principal := authflow.Principal{
 		UserID:    "admin-1",
@@ -238,6 +305,45 @@ func TestBookEventsSanitizesUnsupportedDeadlineFailure(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(body), "deadline") || strings.Contains(strings.ToLower(body), "unsupported") {
 		t.Fatalf("SSE response body exposed internal failure: %q", body)
+	}
+}
+
+func TestBookEventsOriginRejectsMissingOrigin(t *testing.T) {
+	handler := &bookEvents{
+		publicOrigin:  "https://app.example",
+		enforceOrigin: true,
+	}
+	request := httptest.NewRequest(http.MethodGet, "/books/events", nil)
+
+	if handler.originAllowed(request) {
+		t.Fatal("stream without Origin was allowed")
+	}
+}
+
+func TestBookEventsOriginRejectsCrossSiteFetchWithoutOrigin(t *testing.T) {
+	handler := &bookEvents{
+		publicOrigin:  "https://app.example",
+		enforceOrigin: true,
+	}
+	request := httptest.NewRequest(http.MethodGet, "/books/events", nil)
+	request.Header.Set("Sec-Fetch-Site", "cross-site")
+
+	if handler.originAllowed(request) {
+		t.Fatal("cross-site GET stream without Origin was allowed")
+	}
+}
+
+func TestBookEventsOriginRejectsMismatchedOrigin(t *testing.T) {
+	handler := &bookEvents{
+		publicOrigin:  "https://app.example",
+		enforceOrigin: true,
+	}
+	request := httptest.NewRequest(http.MethodGet, "/books/events", nil)
+	request.Header.Set("Origin", "https://evil.example")
+	request.Header.Set("Sec-Fetch-Site", "same-origin")
+
+	if handler.originAllowed(request) {
+		t.Fatal("mismatched Origin was allowed")
 	}
 }
 

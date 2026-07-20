@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os/exec"
 	"strconv"
@@ -18,7 +17,10 @@ import (
 
 const ExtractionVersion = "poppler-layout-v1"
 
-var errIncompletePageStream = errors.New("incomplete page stream")
+var (
+	ErrSandboxUnavailable   = errors.New("parser sandbox unavailable")
+	errIncompletePageStream = errors.New("incomplete page stream")
+)
 
 type Page struct {
 	Number uint32
@@ -48,6 +50,17 @@ type categorizedError struct {
 
 func (e *categorizedError) Error() string { return string(e.category) }
 func (e *categorizedError) Unwrap() error { return e.cause }
+
+// commandError retains bounded command diagnostics for local classification.
+// Its Error method deliberately omits stderr so untrusted parser output cannot
+// escape through application errors or logs.
+type commandError struct {
+	cause  error
+	stderr []byte
+}
+
+func (e *commandError) Error() string { return "extractor command failed" }
+func (e *commandError) Unwrap() error { return e.cause }
 
 func FailureCategory(err error) (domain.FailureCategory, bool) {
 	var target *categorizedError
@@ -176,6 +189,9 @@ func classifyCommandError(ctx context.Context, err error) error {
 	if errors.As(err, &exitErr) {
 		switch exitErr.ExitCode() {
 		case 1:
+			if hasIncorrectPasswordDiagnostic(err) {
+				return &categorizedError{category: domain.FailureEncryptedDocument, cause: err}
+			}
 			return &categorizedError{category: domain.FailureMalformedDocument, cause: err}
 		case 3:
 			return &categorizedError{category: domain.FailureExtractionNotPermitted, cause: err}
@@ -191,7 +207,23 @@ func classifyCommandError(ctx context.Context, err error) error {
 	return &categorizedError{category: domain.FailureInternalProcessing, cause: err}
 }
 
+func hasIncorrectPasswordDiagnostic(err error) bool {
+	var commandErr *commandError
+	return errors.As(err, &commandErr) && bytes.Contains(commandErr.stderr, []byte("Incorrect password"))
+}
+
 type ExecRunner struct{}
+
+func VerifySandbox(ctx context.Context) error {
+	return verifySandbox(ctx, ExecRunner{})
+}
+
+func verifySandbox(ctx context.Context, runner Runner) error {
+	if _, err := runner.Run(ctx, "/parser-sandbox", []string{"--landlock-preflight"}, 1); err != nil {
+		return ErrSandboxUnavailable
+	}
+	return nil
+}
 
 // SandboxedExecRunner runs the untrusted parser without network access and
 // with hard per-process resource limits. Failure to create the sandbox fails
@@ -219,7 +251,9 @@ func (ExecRunner) StreamPages(ctx context.Context, path string, args []string, l
 	if err != nil {
 		return err
 	}
-	command.Stderr = &boundedBuffer{maximum: 8 << 10}
+	var stderr boundedBuffer
+	stderr.maximum = 8 << 10
+	command.Stderr = &stderr
 	command.Cancel = func() error {
 		if command.Process == nil {
 			return nil
@@ -234,7 +268,7 @@ func (ExecRunner) StreamPages(ctx context.Context, path string, args []string, l
 		if errors.Is(streamErr, errIncompletePageStream) {
 			waitErr := command.Wait()
 			if waitErr != nil {
-				return waitErr
+				return newCommandError(waitErr, stderr.Bytes())
 			}
 			return streamErr
 		}
@@ -242,7 +276,10 @@ func (ExecRunner) StreamPages(ctx context.Context, path string, args []string, l
 		_ = command.Wait()
 		return streamErr
 	}
-	return command.Wait()
+	if err = command.Wait(); err != nil {
+		return newCommandError(err, stderr.Bytes())
+	}
+	return nil
 }
 
 func consumePageStream(input io.Reader, limits Limits, expectedPages uint32, consume func(Page) error) error {
@@ -296,7 +333,9 @@ func (ExecRunner) Run(ctx context.Context, path string, args []string, maximumOu
 	var stdout boundedBuffer
 	stdout.maximum = maximumOutput
 	command.Stdout = &stdout
-	command.Stderr = &boundedBuffer{maximum: 8 << 10}
+	var stderr boundedBuffer
+	stderr.maximum = 8 << 10
+	command.Stderr = &stderr
 	command.Cancel = func() error {
 		if command.Process == nil {
 			return nil
@@ -304,12 +343,16 @@ func (ExecRunner) Run(ctx context.Context, path string, args []string, maximumOu
 		return syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 	}
 	if err := command.Run(); err != nil {
-		return nil, fmt.Errorf("extractor command failed: %w", err)
+		return nil, newCommandError(err, stderr.Bytes())
 	}
 	if stdout.exceeded {
 		return stdout.Bytes(), &categorizedError{category: domain.FailureResourceLimitExceeded}
 	}
 	return stdout.Bytes(), nil
+}
+
+func newCommandError(cause error, stderr []byte) error {
+	return &commandError{cause: cause, stderr: append([]byte(nil), stderr...)}
 }
 
 type boundedBuffer struct {

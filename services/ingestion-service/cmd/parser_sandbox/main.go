@@ -13,7 +13,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const landlockPreflightArgument = "--landlock-preflight"
+
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == landlockPreflightArgument {
+		if preflightFilesystemPolicy() != nil {
+			os.Exit(122)
+		}
+		os.Exit(0)
+	}
 	path, arguments, sourcePath, err := validatedCommand(os.Args[1:])
 	if err != nil {
 		os.Exit(120)
@@ -69,25 +77,9 @@ func validatedCommand(arguments []string) (string, []string, string, error) {
 // only the selected Poppler binary. In particular, /tmp siblings, /proc and
 // /run/secrets remain inaccessible even after a parser compromise.
 func applyFilesystemPolicy(executablePath, sourcePath string) error {
-	handled := uint64(unix.LANDLOCK_ACCESS_FS_EXECUTE |
-		unix.LANDLOCK_ACCESS_FS_WRITE_FILE |
-		unix.LANDLOCK_ACCESS_FS_READ_FILE |
-		unix.LANDLOCK_ACCESS_FS_READ_DIR |
-		unix.LANDLOCK_ACCESS_FS_REMOVE_DIR |
-		unix.LANDLOCK_ACCESS_FS_REMOVE_FILE |
-		unix.LANDLOCK_ACCESS_FS_MAKE_CHAR |
-		unix.LANDLOCK_ACCESS_FS_MAKE_DIR |
-		unix.LANDLOCK_ACCESS_FS_MAKE_REG |
-		unix.LANDLOCK_ACCESS_FS_MAKE_SOCK |
-		unix.LANDLOCK_ACCESS_FS_MAKE_FIFO |
-		unix.LANDLOCK_ACCESS_FS_MAKE_BLOCK |
-		unix.LANDLOCK_ACCESS_FS_MAKE_SYM |
-		unix.LANDLOCK_ACCESS_FS_REFER |
-		unix.LANDLOCK_ACCESS_FS_TRUNCATE)
-	attr := unix.LandlockRulesetAttr{Access_fs: handled}
-	ruleset, _, errno := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET, uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr), 0) // #nosec G103 -- kernel ABI struct owned for the syscall duration.
-	if errno != 0 {
-		return errno
+	ruleset, err := createLandlockRuleset()
+	if err != nil {
+		return err
 	}
 	defer func() { _ = unix.Close(int(ruleset)) }() // #nosec G115 -- successful syscall return is a Linux file descriptor.
 
@@ -111,14 +103,55 @@ func applyFilesystemPolicy(executablePath, sourcePath string) error {
 		{"/dev/null", readFile | unix.LANDLOCK_ACCESS_FS_WRITE_FILE},
 	}
 	for _, rule := range rules {
-		if err := addLandlockPathRule(ruleset, rule.path, rule.access); err != nil {
+		if err = addLandlockPathRule(ruleset, rule.path, rule.access); err != nil {
 			return err
 		}
 	}
+	return restrictWithLandlock(ruleset)
+}
+
+func preflightFilesystemPolicy() error {
+	ruleset, err := createLandlockRuleset()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unix.Close(int(ruleset)) }() // #nosec G115 -- successful syscall return is a Linux file descriptor.
+	return restrictWithLandlock(ruleset)
+}
+
+func createLandlockRuleset() (uintptr, error) {
+	handled := landlockAccessFS()
+	attr := unix.LandlockRulesetAttr{Access_fs: handled}
+	ruleset, _, errno := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET, uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr), 0) // #nosec G103 -- kernel ABI struct owned for the syscall duration.
+	if errno != 0 {
+		return 0, errno
+	}
+	return ruleset, nil
+}
+
+func landlockAccessFS() uint64 {
+	return uint64(unix.LANDLOCK_ACCESS_FS_EXECUTE |
+		unix.LANDLOCK_ACCESS_FS_WRITE_FILE |
+		unix.LANDLOCK_ACCESS_FS_READ_FILE |
+		unix.LANDLOCK_ACCESS_FS_READ_DIR |
+		unix.LANDLOCK_ACCESS_FS_REMOVE_DIR |
+		unix.LANDLOCK_ACCESS_FS_REMOVE_FILE |
+		unix.LANDLOCK_ACCESS_FS_MAKE_CHAR |
+		unix.LANDLOCK_ACCESS_FS_MAKE_DIR |
+		unix.LANDLOCK_ACCESS_FS_MAKE_REG |
+		unix.LANDLOCK_ACCESS_FS_MAKE_SOCK |
+		unix.LANDLOCK_ACCESS_FS_MAKE_FIFO |
+		unix.LANDLOCK_ACCESS_FS_MAKE_BLOCK |
+		unix.LANDLOCK_ACCESS_FS_MAKE_SYM |
+		unix.LANDLOCK_ACCESS_FS_REFER |
+		unix.LANDLOCK_ACCESS_FS_TRUNCATE)
+}
+
+func restrictWithLandlock(ruleset uintptr) error {
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		return err
 	}
-	_, _, errno = unix.Syscall(unix.SYS_LANDLOCK_RESTRICT_SELF, ruleset, 0, 0)
+	_, _, errno := unix.Syscall(unix.SYS_LANDLOCK_RESTRICT_SELF, ruleset, 0, 0)
 	if errno != 0 {
 		return errno
 	}

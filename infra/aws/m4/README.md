@@ -109,6 +109,12 @@ endpoint. The workflow writes parameter and E2E material only below a
 mode-0700 temporary directory with mode-0600 files, emits only sanitized gate
 results, and removes the files on every exit.
 
+Active processing hosts must support Landlock filesystem restrictions. The
+processing image runs `/parser-sandbox --landlock-preflight` during bootstrap;
+Lambda or Fargate environments that do not expose the required Landlock kernel
+support fail deployment/runtime validation before consuming PDF work. Do not
+replace this with unsandboxed Poppler execution.
+
 Only these four ECR repositories are trusted in the protected account and
 region: `raglibrarian/m4-processing`, `raglibrarian/m4-dispatcher`,
 `raglibrarian/m4-cleanup`, and `raglibrarian/m4-worker`. Every input must be a

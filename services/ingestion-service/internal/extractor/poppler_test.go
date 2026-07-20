@@ -2,6 +2,7 @@ package extractor
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -16,6 +17,19 @@ func (r *fakeRunner) Run(context.Context, string, []string, int64) ([]byte, erro
 	output := r.outputs[0]
 	r.outputs = r.outputs[1:]
 	return output, nil
+}
+
+type failingRunner struct{ err error }
+
+func (r failingRunner) Run(context.Context, string, []string, int64) ([]byte, error) {
+	return nil, r.err
+}
+
+func TestVerifySandboxReportsUnavailable(t *testing.T) {
+	err := verifySandbox(context.Background(), failingRunner{err: exec.ErrNotFound})
+	if !errors.Is(err, ErrSandboxUnavailable) {
+		t.Fatalf("expected sandbox unavailable, got %v", err)
+	}
 }
 
 func TestStreamPagesTreatsParentCancellationAsRetryable(t *testing.T) {
@@ -57,6 +71,43 @@ func TestClassifySandboxSetupFailures(t *testing.T) {
 				t.Fatalf("expected %q, got %q", test.expected, category)
 			}
 		})
+	}
+}
+
+func TestClassifyCommandErrorRecognizesIncorrectPasswordDiagnostic(t *testing.T) {
+	_, err := (ExecRunner{}).Run(
+		context.Background(),
+		"sh",
+		[]string{"-c", "printf 'Command Line Error: Incorrect password\\n' >&2; exit 1"},
+		1024,
+	)
+	if err == nil {
+		t.Fatal("expected command failure")
+	}
+	if strings.Contains(err.Error(), "Incorrect password") {
+		t.Fatalf("command error exposed stderr: %v", err)
+	}
+	classified := classifyCommandError(context.Background(), err)
+	category, ok := FailureCategory(classified)
+	if !ok || category != domain.FailureEncryptedDocument {
+		t.Fatalf("expected encrypted document, got %q", category)
+	}
+}
+
+func TestClassifyCommandErrorKeepsOtherExitOneFailuresMalformed(t *testing.T) {
+	_, err := (ExecRunner{}).Run(
+		context.Background(),
+		"sh",
+		[]string{"-c", "printf 'Syntax Error: damaged document\\n' >&2; exit 1"},
+		1024,
+	)
+	if err == nil {
+		t.Fatal("expected command failure")
+	}
+	classified := classifyCommandError(context.Background(), err)
+	category, ok := FailureCategory(classified)
+	if !ok || category != domain.FailureMalformedDocument {
+		t.Fatalf("expected malformed document, got %q", category)
 	}
 }
 

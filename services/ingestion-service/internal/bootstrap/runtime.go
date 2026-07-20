@@ -28,6 +28,8 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
+var verifyParserSandbox = extractor.VerifySandbox
+
 type Runtime struct {
 	Config       config.Config
 	Processor    *application.Processor
@@ -125,6 +127,9 @@ func NewCleanup(ctx context.Context, cfg config.CleanupConfig) (*CleanupRuntime,
 func (r *CleanupRuntime) Close() { r.pool.Close() }
 
 func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
+	if err := verifyParserSandbox(ctx); err != nil {
+		return nil, err
+	}
 	poolConfig, err := pgxpool.ParseConfig(cfg.DSN)
 	if err != nil {
 		return nil, errors.New("database configuration invalid")

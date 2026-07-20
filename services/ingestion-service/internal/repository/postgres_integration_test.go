@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -15,8 +16,44 @@ import (
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/chunking"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/domain"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestE2ERoleCanReadOnlyRequiredM4IngestionTables(t *testing.T) {
+	if os.Getenv("INGESTION_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set INGESTION_POSTGRES_INTEGRATION=true inside the Compose test network")
+	}
+	if os.Getenv("M4_E2E_INGESTION_POSTGRES_DSN_FILE") == "" {
+		t.Skip("set M4_E2E_INGESTION_POSTGRES_DSN_FILE inside the Compose test network")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, readIngestionIntegrationSecret(t, "M4_E2E_INGESTION_POSTGRES_DSN_FILE"))
+	if err != nil {
+		t.Fatalf("connect ingestion e2e database role: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	for _, statement := range []string{
+		`SELECT COUNT(*) FROM ingestion.inbox`,
+		`SELECT COUNT(*) FROM ingestion.jobs`,
+		`SELECT COUNT(*) FROM ingestion.artifact_sets`,
+	} {
+		var count int
+		if err = pool.QueryRow(ctx, statement).Scan(&count); err != nil {
+			t.Fatalf("e2e role cannot read with %q: %v", statement, err)
+		}
+	}
+
+	_, err = pool.Exec(ctx, `INSERT INTO ingestion.inbox
+		(event_id,payload_digest,payload,business_key,source_sha256,processing_config_digest,received_at)
+		VALUES('e2e-write-denied',decode(repeat('00',32),'hex'),decode('01','hex'),'e2e-write-denied',decode(repeat('00',32),'hex'),decode(repeat('00',32),'hex'),NOW())`)
+	if !isInsufficientPrivilege(err) {
+		t.Fatalf("e2e role write error = %v, want insufficient_privilege", err)
+	}
+}
 
 func TestRetryAdvancesPendingActiveLeaseRecoveryDispatch(t *testing.T) {
 	if os.Getenv("INGESTION_POSTGRES_INTEGRATION") != "true" {
@@ -116,4 +153,9 @@ func randomRepositoryIntegrationID(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return hex.EncodeToString(value)
+}
+
+func isInsufficientPrivilege(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42501"
 }

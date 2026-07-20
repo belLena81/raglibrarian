@@ -49,10 +49,11 @@ func main() {
 			{blank: true},
 			{text: "After the intentionally blank page."},
 		}),
-		"image_only.pdf": imageOnlyPDF(),
-		"encrypted.pdf":  encryptedPDF(),
-		"malformed.pdf":  []byte("%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages"),
-		"oversize.pdf":   oversizedPDF(),
+		"image_only.pdf":         imageOnlyPDF(),
+		"encrypted.pdf":          encryptedPDF(nil),
+		"encrypted_password.pdf": encryptedPDF([]byte("m4-synthetic-user-password")),
+		"malformed.pdf":          []byte("%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages"),
+		"oversize.pdf":           oversizedPDF(),
 	}
 
 	names := make([]string, 0, len(fixtures))
@@ -114,9 +115,9 @@ func imageOnlyPDF() []byte {
 	return serialize(objects, false)
 }
 
-func encryptedPDF() []byte {
+func encryptedPDF(userPassword []byte) []byte {
 	const contentObjectID = 5
-	owner, user, fileKey := legacyPDFEncryption([]byte("synthetic-owner"), nil)
+	owner, user, fileKey := legacyPDFEncryption([]byte("synthetic-owner"), userPassword)
 	content := []byte("BT /F1 12 Tf 72 720 Td (Synthetic encrypted fixture.) Tj ET\n")
 	objectKeyMaterial := append(append([]byte(nil), fileKey...), byte(contentObjectID), 0, 0, 0, 0)
 	objectDigest := md5.Sum(objectKeyMaterial)      // #nosec G401 -- mandated by the synthetic PDF R2 fixture format.

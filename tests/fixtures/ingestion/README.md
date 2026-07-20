@@ -11,11 +11,12 @@ go run ./tests/fixtures/ingestion/generate.go -out /tmp/raglibrarian-m4-fixtures
 ```
 
 The corpus covers a minimal text PDF, structured cross-page text, an intentional
-blank middle page, an artifact-confidentiality canary, an image-only page, a PDF
-carrying a Standard encryption dictionary, a truncated malformed PDF, and a
-syntactically valid file larger than 64 MiB that remains safely above the
-frozen 25 MiB upload bound. Generated binaries are intentionally not committed;
-black-box tests receive their directory through `M4_E2E_FIXTURE_DIR`.
+blank middle page, an artifact-confidentiality canary, an image-only page, PDFs
+carrying a Standard encryption dictionary with both empty and non-empty user
+passwords, a truncated malformed PDF, and a syntactically valid file larger
+than 64 MiB that remains safely above the frozen 25 MiB upload bound. Generated
+binaries are intentionally not committed; black-box tests receive their
+directory through `M4_E2E_FIXTURE_DIR`.
 
 Run the dedicated black-box contract after starting an M4 stack:
 
@@ -87,5 +88,6 @@ Expected processing outcomes:
 | `blank_middle_page.pdf` | chunks ready without a synthetic blank chunk |
 | `image_only.pdf` | failed: no extractable text |
 | `encrypted.pdf` | failed: encrypted PDF |
+| `encrypted_password.pdf` | failed: encrypted PDF |
 | `malformed.pdf` | failed: malformed PDF |
 | `oversize.pdf` | rejected by the upload boundary |

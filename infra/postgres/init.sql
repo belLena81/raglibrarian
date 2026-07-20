@@ -77,8 +77,11 @@ GRANT USAGE ON SCHEMA ingestion TO ingestion_runtime;
 GRANT USAGE ON SCHEMA ingestion TO ingestion_cleanup;
 GRANT USAGE ON SCHEMA ingestion TO ingestion_e2e;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ingestion TO ingestion_runtime;
+GRANT SELECT ON ALL TABLES IN SCHEMA ingestion TO ingestion_e2e;
 ALTER DEFAULT PRIVILEGES FOR ROLE ingestion_migrator IN SCHEMA ingestion
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ingestion_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE ingestion_migrator IN SCHEMA ingestion
+    GRANT SELECT ON TABLES TO ingestion_e2e;
 
 \unset identity_migration_password
 \unset identity_runtime_password
