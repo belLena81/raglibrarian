@@ -124,6 +124,7 @@ func uploadM5Fixture(t *testing.T, token, name string) m5Book {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, baseURL()+"/books", &body)
+	addBrowserMutationHeaders(req)
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	response, err := http.DefaultClient.Do(req)

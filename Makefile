@@ -24,6 +24,7 @@ M4_E2E_RABBITMQ_URI_FILE ?= $(CURDIR)/.dev/secrets/ingestion_e2e_rabbitmq_uri
 M4_E2E_FIXTURE_DIR ?= /tmp/raglibrarian-m4-fixtures
 M4_E2E_EDGE_BASE_URLS ?= http://127.0.0.1:8080,http://127.0.0.1:8081
 M4_E2E_PUBLIC_ORIGIN ?= http://localhost:5173
+E2E_PUBLIC_ORIGIN ?= $(M4_E2E_PUBLIC_ORIGIN)
 
 # Service/library modules — looped over by test, lint, tidy, fmt.
 MODULES := \
@@ -181,7 +182,7 @@ tidy: _require_root
 # The complete M2 lifecycle additionally needs E2E_BOOTSTRAP_CODE and a local
 # Mailpit latest-message URL such as http://127.0.0.1:8025/view/latest.txt.
 e2e: _require_root
-	cd tests/e2e && go test -v -tags e2e ./...
+	cd tests/e2e && E2E_PUBLIC_ORIGIN="$(E2E_PUBLIC_ORIGIN)" go test -v -tags e2e ./...
 
 # M4 suites are deliberately separate because their files require both the
 # e2e and m4 build constraints. All targets expect a running local stack.

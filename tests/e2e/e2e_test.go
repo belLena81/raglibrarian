@@ -86,6 +86,21 @@ func baseURL() string {
 	return "http://localhost:8080"
 }
 
+func publicOrigin() string {
+	if value := strings.TrimSpace(os.Getenv("E2E_PUBLIC_ORIGIN")); value != "" {
+		return strings.TrimRight(value, "/")
+	}
+	return "http://localhost:5173"
+}
+
+func addBrowserMutationHeaders(req *http.Request) {
+	if req.Method != http.MethodPost && req.Method != http.MethodPut && req.Method != http.MethodPatch && req.Method != http.MethodDelete {
+		return
+	}
+	req.Header.Set("Origin", publicOrigin())
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+}
+
 func uniqueEmail(prefix string) string {
 	return fmt.Sprintf("%s+%d@e2e.example.com", prefix, time.Now().UnixNano())
 }
@@ -102,6 +117,7 @@ func request(t *testing.T, method, path string, body any, token string) *http.Re
 
 	req, err := http.NewRequestWithContext(context.Background(), method, baseURL()+path, reader)
 	require.NoError(t, err)
+	addBrowserMutationHeaders(req)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -136,6 +152,7 @@ func uploadBook(t *testing.T, token string) *http.Response {
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL()+"/books", &body)
 	require.NoError(t, err)
+	addBrowserMutationHeaders(req)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := http.DefaultClient.Do(req)
