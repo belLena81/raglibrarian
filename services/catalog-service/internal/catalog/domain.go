@@ -193,7 +193,12 @@ func (b *Book) ApplyProcessingFact(fact ProcessingFact) (bool, error) {
 		if b.ProcessingStage == BookStageIndexed && b.ProcessingStatus == BookStatusIndexed {
 			return false, nil
 		}
-		if (b.ProcessingStage != BookStageExtracting && b.ProcessingStage != BookStageChunksReady) || b.ProcessingStatus != BookStatusProcessing {
+		if b.ProcessingStatus == BookStatusPending && b.ProcessingStage == BookStageQueued {
+			if err := b.TransitionTo(BookStatusProcessing); err != nil {
+				return false, err
+			}
+		}
+		if (b.ProcessingStage != BookStageQueued && b.ProcessingStage != BookStageExtracting && b.ProcessingStage != BookStageChunksReady) || b.ProcessingStatus != BookStatusProcessing {
 			return false, ErrConflictingProcessingFact
 		}
 		if err := b.TransitionTo(BookStatusIndexed); err != nil {
@@ -209,7 +214,12 @@ func (b *Book) ApplyProcessingFact(fact ProcessingFact) (bool, error) {
 			b.ProcessingFailureCategory == fact.FailureCategory {
 			return false, nil
 		}
-		if (b.ProcessingStage != BookStageExtracting && b.ProcessingStage != BookStageChunksReady) || b.ProcessingStatus != BookStatusProcessing {
+		if b.ProcessingStatus == BookStatusPending && b.ProcessingStage == BookStageQueued {
+			if err := b.TransitionTo(BookStatusProcessing); err != nil {
+				return false, err
+			}
+		}
+		if (b.ProcessingStage != BookStageQueued && b.ProcessingStage != BookStageExtracting && b.ProcessingStage != BookStageChunksReady) || b.ProcessingStatus != BookStatusProcessing {
 			return false, ErrConflictingProcessingFact
 		}
 		if err := b.TransitionTo(BookStatusFailed); err != nil {

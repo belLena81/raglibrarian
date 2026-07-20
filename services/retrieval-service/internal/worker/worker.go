@@ -18,6 +18,7 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/artifact"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/embedding"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/rabbitmq"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/storage"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/transport"
@@ -27,10 +28,12 @@ import (
 )
 
 const (
-	metadataQueue = "retrieval.book-uploaded.v1"
-	manifestQueue = "retrieval.chunks-ready.v1"
-	batchQueue    = "retrieval.index-batch.v1"
-	eventExchange = "raglibrarian.retrieval.events.v1"
+	metadataQueue         = "retrieval.book-uploaded.v1"
+	manifestQueue         = "retrieval.chunks-ready.v1"
+	batchQueue            = "retrieval.index-batch.v1"
+	eventExchange         = "raglibrarian.retrieval.events.v1"
+	initialReconnectDelay = time.Second
+	maxReconnectDelay     = 30 * time.Second
 )
 
 type Runtime struct {
@@ -101,6 +104,39 @@ func (r *Runtime) Run(ctx context.Context) error {
 		return errors.New("initialize vector collection")
 	}
 	go r.serveReadiness(ctx)
+	return r.runBrokerLoop(ctx, r.runBrokerSession, initialReconnectDelay, maxReconnectDelay)
+}
+
+func (r *Runtime) runBrokerLoop(ctx context.Context, run func(context.Context) error, initialBackoff, maximumBackoff time.Duration) error {
+	backoff := initialBackoff
+	for ctx.Err() == nil {
+		err := run(ctx)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err != nil {
+			log.Print("retrieval worker broker session stopped; reconnecting")
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+		if backoff < maximumBackoff {
+			backoff *= 2
+			if backoff > maximumBackoff {
+				backoff = maximumBackoff
+			}
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) runBrokerSession(ctx context.Context) error {
+	sessionContext, sessionCancel := context.WithCancel(ctx)
+	defer sessionCancel()
 	consumerConnection, err := dial(ctx, r.configuration.ConsumerRabbitURI)
 	if err != nil {
 		return errors.New("retrieval consumer broker unavailable")
@@ -127,6 +163,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if err = publisherChannel.Confirm(false); err != nil {
 		return errors.New("enable retrieval publisher confirms")
 	}
+	publisher := rabbitmq.NewPublisher(publisherChannel)
 	metadataDeliveries, err := consumerChannel.Consume(metadataQueue, "", false, false, false, false, nil)
 	if err != nil {
 		return errors.New("consume metadata queue")
@@ -139,8 +176,13 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if err != nil {
 		return errors.New("consume batch queue")
 	}
+	consumerConnectionClosed := consumerConnection.NotifyClose(make(chan *amqp091.Error, 1))
+	publisherConnectionClosed := publisherConnection.NotifyClose(make(chan *amqp091.Error, 1))
+	consumerChannelClosed := consumerChannel.NotifyClose(make(chan *amqp091.Error, 1))
+	publisherChannelClosed := publisherChannel.NotifyClose(make(chan *amqp091.Error, 1))
 	semaphore := make(chan struct{}, r.configuration.Concurrency)
 	var handlers sync.WaitGroup
+	defer handlers.Wait()
 	dispatchTicker := time.NewTicker(500 * time.Millisecond)
 	defer dispatchTicker.Stop()
 	cleanupTicker := time.NewTicker(15 * time.Minute)
@@ -148,27 +190,41 @@ func (r *Runtime) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			handlers.Wait()
 			return nil
+		case <-consumerConnectionClosed:
+			sessionCancel()
+			return errors.New("retrieval consumer connection closed")
+		case <-publisherConnectionClosed:
+			sessionCancel()
+			return errors.New("retrieval publisher connection closed")
+		case <-consumerChannelClosed:
+			sessionCancel()
+			return errors.New("retrieval consumer channel closed")
+		case <-publisherChannelClosed:
+			sessionCancel()
+			return errors.New("retrieval publisher channel closed")
 		case delivery, open := <-metadataDeliveries:
 			if !open {
+				sessionCancel()
 				return errors.New("metadata delivery channel closed")
 			}
-			r.handle(ctx, semaphore, &handlers, delivery, r.handleMetadata, nil)
+			r.handle(sessionContext, semaphore, &handlers, delivery, r.handleMetadata, nil)
 		case delivery, open := <-manifestDeliveries:
 			if !open {
+				sessionCancel()
 				return errors.New("manifest delivery channel closed")
 			}
-			r.handle(ctx, semaphore, &handlers, delivery, r.handleManifest, nil)
+			r.handle(sessionContext, semaphore, &handlers, delivery, r.handleManifest, nil)
 		case delivery, open := <-batchDeliveries:
 			if !open {
+				sessionCancel()
 				return errors.New("batch delivery channel closed")
 			}
-			r.handle(ctx, semaphore, &handlers, delivery, r.handleBatch, r.failBatch)
+			r.handle(sessionContext, semaphore, &handlers, delivery, r.handleBatch, r.failBatch)
 		case <-dispatchTicker.C:
-			r.dispatchOutbox(ctx, publisherChannel)
+			r.dispatchOutbox(sessionContext, publisher)
 		case now := <-cleanupTicker.C:
-			cleanupContext, cleanupCancel := context.WithTimeout(ctx, 30*time.Second)
+			cleanupContext, cleanupCancel := context.WithTimeout(sessionContext, 30*time.Second)
 			_, _ = r.repository.RecoverStaleBatches(cleanupContext, now.UTC().Add(-15*time.Minute), now.UTC())
 			cleanupCancel()
 		}
@@ -287,23 +343,16 @@ func deliveryAttempt(headers amqp091.Table) int64 {
 	}
 }
 
-func (r *Runtime) dispatchOutbox(ctx context.Context, channel *amqp091.Channel) {
+func (r *Runtime) dispatchOutbox(ctx context.Context, publisher *rabbitmq.Publisher) {
 	records, err := r.repository.PendingOutbox(ctx, 20, time.Now().UTC())
 	if err != nil {
 		return
 	}
 	for _, record := range records {
 		publishContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-		confirmation, publishErr := channel.PublishWithDeferredConfirmWithContext(publishContext, eventExchange, record.EventType, true, false, amqp091.Publishing{
+		publishErr := publisher.Publish(publishContext, eventExchange, record.EventType, amqp091.Publishing{
 			ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent, Type: record.EventType, MessageId: record.EventID, Timestamp: time.Now().UTC(), Body: record.Payload,
 		})
-		if publishErr == nil && confirmation != nil {
-			var confirmed bool
-			confirmed, publishErr = confirmation.WaitContext(publishContext)
-			if publishErr == nil && !confirmed {
-				publishErr = errors.New("retrieval event was not confirmed")
-			}
-		}
 		cancel()
 		if publishErr != nil {
 			_ = r.repository.DeferOutbox(ctx, record.EventID, time.Now().UTC())

@@ -24,9 +24,10 @@ func (s readinessStub) CheckReady(context.Context) error {
 func TestReadinessIncludesRetrievalAndStopsAtFirstFailure(t *testing.T) {
 	calls := []string{}
 	check := readiness{
-		identity:  readinessStub{name: "identity", calls: &calls},
-		catalog:   readinessStub{name: "catalog", calls: &calls},
-		retrieval: readinessStub{name: "retrieval", calls: &calls},
+		identity:                   readinessStub{name: "identity", calls: &calls},
+		catalog:                    readinessStub{name: "catalog", calls: &calls},
+		retrieval:                  readinessStub{name: "retrieval", calls: &calls},
+		retrievalReadinessRequired: true,
 	}
 
 	err := check.CheckReady(context.Background())
@@ -39,6 +40,20 @@ func TestReadinessIncludesRetrievalAndStopsAtFirstFailure(t *testing.T) {
 	check.retrieval = readinessStub{name: "retrieval", calls: &calls, err: retrievalFailure}
 	err = check.CheckReady(context.Background())
 	assert.ErrorIs(t, err, retrievalFailure)
+}
+
+func TestReadinessCanSkipRetrievalForM4OnlyStacks(t *testing.T) {
+	calls := []string{}
+	check := readiness{
+		identity:  readinessStub{name: "identity", calls: &calls},
+		catalog:   readinessStub{name: "catalog", calls: &calls},
+		retrieval: readinessStub{name: "retrieval", calls: &calls, err: errors.New("retrieval is disabled")},
+	}
+
+	err := check.CheckReady(context.Background())
+
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"identity", "catalog"}, calls)
 }
 
 func TestTLSFailureClassifiesFileAccessAndMaterialErrors(t *testing.T) {

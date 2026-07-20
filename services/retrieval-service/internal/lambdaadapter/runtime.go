@@ -20,6 +20,7 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/artifact"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/embedding"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/rabbitmq"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/storage"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/transport"
@@ -247,19 +248,13 @@ func (r *Runtime) Dispatch(ctx context.Context) error {
 	if err = channel.Confirm(false); err != nil {
 		return errors.New("enable publisher confirms")
 	}
+	publisher := rabbitmq.NewPublisher(channel)
 	records, err := r.repository.PendingOutbox(ctx, 100, time.Now().UTC())
 	if err != nil {
 		return err
 	}
 	for _, record := range records {
-		confirmation, publishErr := channel.PublishWithDeferredConfirmWithContext(ctx, "raglibrarian.retrieval.events.v1", record.EventType, true, false, amqp091.Publishing{ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent, Type: record.EventType, MessageId: record.EventID, Body: record.Payload})
-		if publishErr == nil && confirmation != nil {
-			var confirmed bool
-			confirmed, publishErr = confirmation.WaitContext(ctx)
-			if publishErr == nil && !confirmed {
-				publishErr = errors.New("retrieval event was not confirmed")
-			}
-		}
+		publishErr := publisher.Publish(ctx, "raglibrarian.retrieval.events.v1", record.EventType, amqp091.Publishing{ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent, Type: record.EventType, MessageId: record.EventID, Body: record.Payload})
 		if publishErr != nil {
 			_ = r.repository.DeferOutbox(ctx, record.EventID, time.Now().UTC())
 			return errors.New("publish retrieval event")

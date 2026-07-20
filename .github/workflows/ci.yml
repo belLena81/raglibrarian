@@ -112,7 +112,7 @@ jobs:
           pipx install huggingface-hub==0.34.4
           make m5-model-bootstrap
           make compose-config
-          docker compose --profile m4-ha --profile m5 up -d --build --wait --wait-timeout 300
+          EDGE_RETRIEVAL_READINESS_REQUIRED=true docker compose --profile m4-ha --profile m5 up -d --build --wait --wait-timeout 300
       - name: Run live mTLS service contracts
         run: make m4-contract-test
       - name: Verify MinIO multipart cleanup

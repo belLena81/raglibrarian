@@ -93,7 +93,12 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	retrieval := retrievalclient.New(retrievalv1.NewRetrievalServiceClient(retrievalConnection))
 	authHandler := handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: cfg.SecureCookie})
 	queryHandler := handler.NewQueryHandler(retrieval)
-	healthHandler := handler.NewHealthHandler(readiness{identity: identity, catalog: catalog, retrieval: retrieval})
+	healthHandler := handler.NewHealthHandler(readiness{
+		identity:                   identity,
+		catalog:                    catalog,
+		retrieval:                  retrieval,
+		retrievalReadinessRequired: cfg.RetrievalReadinessRequired,
+	})
 	booksHandler := handler.NewBooksHandler(catalog)
 	bookStatusHub := handler.NewBookStatusHub(200)
 	booksHandler.EnableEvents(handler.BookEventsConfig{
@@ -134,9 +139,10 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 }
 
 type readiness struct {
-	identity  interface{ CheckReady(context.Context) error }
-	catalog   interface{ CheckReady(context.Context) error }
-	retrieval interface{ CheckReady(context.Context) error }
+	identity                   interface{ CheckReady(context.Context) error }
+	catalog                    interface{ CheckReady(context.Context) error }
+	retrieval                  interface{ CheckReady(context.Context) error }
+	retrievalReadinessRequired bool
 }
 
 func (r readiness) CheckReady(ctx context.Context) error {
@@ -145,6 +151,9 @@ func (r readiness) CheckReady(ctx context.Context) error {
 	}
 	if err := r.catalog.CheckReady(ctx); err != nil {
 		return err
+	}
+	if !r.retrievalReadinessRequired {
+		return nil
 	}
 	return r.retrieval.CheckReady(ctx)
 }

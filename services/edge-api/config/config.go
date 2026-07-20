@@ -40,6 +40,7 @@ type Config struct {
 	SecureCookie                                            bool
 	PublicOrigin                                            string
 	EnforceBrowserOrigin                                    bool
+	RetrievalReadinessRequired                              bool
 	RunAs                                                   process.Identity
 }
 
@@ -76,6 +77,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("EDGE_ENFORCE_BROWSER_ORIGIN: %w", err)
 	}
+	retrievalReadinessRequired, err := strconv.ParseBool(optional("EDGE_RETRIEVAL_READINESS_REQUIRED", "true"))
+	if err != nil {
+		return Config{}, fmt.Errorf("EDGE_RETRIEVAL_READINESS_REQUIRED: %w", err)
+	}
 	publicOrigin := strings.TrimRight(strings.TrimSpace(os.Getenv("EDGE_PUBLIC_ORIGIN")), "/")
 	if enforceOrigin && publicOrigin == "" {
 		return Config{}, fmt.Errorf("EDGE_PUBLIC_ORIGIN is required when browser origin enforcement is enabled")
@@ -106,20 +111,21 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return Config{
-		Addr:                 optional("QUERY_ADDR", ":8080"),
-		IdentityAddress:      optional("IDENTITY_GRPC_ADDR", "identity-service:50051"),
-		CatalogAddress:       optional("CATALOG_GRPC_ADDR", "catalog-service:50052"),
-		RetrievalAddress:     optional("RETRIEVAL_GRPC_ADDR", "retrieval-service:50054"),
-		StatusRabbitURI:      statusRabbitURI,
-		StatusQueue:          optional("EDGE_STATUS_QUEUE", "edge.book-status.local.1"),
-		VerifyKey:            key,
-		PreviousVerifyKey:    previousKey,
-		TrustedProxyCIDRs:    prefixes,
-		TLS:                  internaltls.Files{CA: ca, Certificate: cert, Key: keyFile},
-		SecureCookie:         !insecureCookie,
-		PublicOrigin:         publicOrigin,
-		EnforceBrowserOrigin: enforceOrigin,
-		RunAs:                runAs,
+		Addr:                       optional("QUERY_ADDR", ":8080"),
+		IdentityAddress:            optional("IDENTITY_GRPC_ADDR", "identity-service:50051"),
+		CatalogAddress:             optional("CATALOG_GRPC_ADDR", "catalog-service:50052"),
+		RetrievalAddress:           optional("RETRIEVAL_GRPC_ADDR", "retrieval-service:50054"),
+		StatusRabbitURI:            statusRabbitURI,
+		StatusQueue:                optional("EDGE_STATUS_QUEUE", "edge.book-status.local.1"),
+		VerifyKey:                  key,
+		PreviousVerifyKey:          previousKey,
+		TrustedProxyCIDRs:          prefixes,
+		TLS:                        internaltls.Files{CA: ca, Certificate: cert, Key: keyFile},
+		SecureCookie:               !insecureCookie,
+		PublicOrigin:               publicOrigin,
+		EnforceBrowserOrigin:       enforceOrigin,
+		RetrievalReadinessRequired: retrievalReadinessRequired,
+		RunAs:                      runAs,
 	}, nil
 }
 

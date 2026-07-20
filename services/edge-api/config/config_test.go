@@ -38,6 +38,17 @@ func TestLoadParsesExplicitSecurityConfiguration(t *testing.T) {
 	require.Len(t, cfg.TrustedProxyCIDRs, 1)
 	assert.Equal(t, 65532, cfg.RunAs.UID)
 	assert.Equal(t, "retrieval-service:50054", cfg.RetrievalAddress)
+	assert.True(t, cfg.RetrievalReadinessRequired)
+}
+
+func TestLoadParsesRetrievalReadinessPolicy(t *testing.T) {
+	setRequired(t)
+	t.Setenv("EDGE_RETRIEVAL_READINESS_REQUIRED", "false")
+
+	cfg, err := config.Load()
+
+	require.NoError(t, err)
+	assert.False(t, cfg.RetrievalReadinessRequired)
 }
 
 func TestLoadRejectsInvalidSecurityConfiguration(t *testing.T) {
@@ -82,6 +93,13 @@ func TestLoadClassifiesConfigurationFailures(t *testing.T) {
 			expected: config.ErrRefreshCookieConfiguration,
 		},
 		{
+			name: "retrieval readiness policy invalid",
+			configure: func(t *testing.T) {
+				t.Setenv("EDGE_RETRIEVAL_READINESS_REQUIRED", "sometimes")
+			},
+			expected: nil,
+		},
+		{
 			name: "run identity invalid",
 			configure: func(t *testing.T) {
 				t.Setenv("RUN_AS_UID", "root")
@@ -98,7 +116,11 @@ func TestLoadClassifiesConfigurationFailures(t *testing.T) {
 			_, err := config.Load()
 
 			require.Error(t, err)
-			assert.True(t, errors.Is(err, test.expected))
+			if test.expected != nil {
+				assert.True(t, errors.Is(err, test.expected))
+			} else {
+				assert.Contains(t, err.Error(), "EDGE_RETRIEVAL_READINESS_REQUIRED")
+			}
 		})
 	}
 }

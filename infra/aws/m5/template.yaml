@@ -124,6 +124,9 @@ Resources:
                 Action: secretsmanager:GetSecretValue
                 Resource: [!Ref PlannerRuntimeSecretArn, !Ref RabbitMQBasicAuthSecretArn]
               - Effect: Allow
+                Action: mq:DescribeBroker
+                Resource: !Ref RabbitMQBrokerArn
+              - Effect: Allow
                 Action: kms:Decrypt
                 Resource: !Ref RuntimeSecretKMSKeyArn
               - Effect: Allow
@@ -259,6 +262,9 @@ Resources:
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
                 Resource: [!Ref IndexRuntimeSecretArn, !Ref RabbitMQBasicAuthSecretArn]
+              - Effect: Allow
+                Action: mq:DescribeBroker
+                Resource: !Ref RabbitMQBrokerArn
               - Effect: Allow
                 Action: kms:Decrypt
                 Resource: !Ref RuntimeSecretKMSKeyArn
