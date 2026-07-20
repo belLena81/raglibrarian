@@ -27,6 +27,8 @@ var (
 	ErrUnsupportedProcessingProfile = errors.New("unsupported processing profile")
 )
 
+const persistenceTimeout = 10 * time.Second
+
 type operationalError struct {
 	code  string
 	cause error
@@ -233,12 +235,16 @@ func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
 	if processErr == nil {
 		ready, readyErr := p.events.Ready(event, job, result, p.now().UTC())
 		if readyErr != nil {
-			return p.persistFailure(parent, event, &job, claim, domain.FailureInternalProcessing)
+			persistCtx, persistCancel := persistenceContext(parent)
+			defer persistCancel()
+			return p.persistFailure(persistCtx, event, &job, claim, domain.FailureInternalProcessing)
 		}
 		if err = job.Complete(p.workerID, result.ManifestReference, result.ManifestSHA256, result.ManifestByteSize, p.now().UTC()); err != nil {
 			return err
 		}
-		return operational("complete_failed", p.repository.Complete(parent, job, claim, result, ready))
+		persistCtx, persistCancel := persistenceContext(parent)
+		defer persistCancel()
+		return operational("complete_failed", p.repository.Complete(persistCtx, job, claim, result, ready))
 	}
 	category, permanent := classify(processErr, ctx)
 	if !permanent && job.Attempts() < p.config.MaximumAttempts {
@@ -246,12 +252,23 @@ func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
 		if err = job.ScheduleRetry(p.workerID, retryAt, p.now().UTC()); err != nil {
 			return err
 		}
-		if err = p.repository.Retry(parent, job, claim); err != nil {
+		persistCtx, persistCancel := persistenceContext(parent)
+		defer persistCancel()
+		if err = p.repository.Retry(persistCtx, job, claim); err != nil {
 			return err
 		}
 		return NewDeferredError(retryAt)
 	}
-	return p.persistFailure(parent, event, &job, claim, category)
+	persistCtx, persistCancel := persistenceContext(parent)
+	defer persistCancel()
+	return p.persistFailure(persistCtx, event, &job, claim, category)
+}
+
+func persistenceContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent.Err() != nil {
+		return context.WithTimeout(context.Background(), persistenceTimeout)
+	}
+	return context.WithTimeout(parent, persistenceTimeout)
 }
 
 func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, generatedAt time.Time) (artifact.Result, error) {

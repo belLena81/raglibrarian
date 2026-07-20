@@ -66,6 +66,62 @@ func TestChunkerUsesBoundedOverlappingWindows(t *testing.T) {
 	}
 }
 
+func TestChunkerEmitsExactFinalWindowOnce(t *testing.T) {
+	chunker, err := New(wordTokenizer{}, Policy{MaximumTokens: 4, OverlapTokens: 1, MaximumChunks: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, err := chunker.AddPage("book-1", Page{Number: 1, Text: "one two three four"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 0 {
+		t.Fatalf("AddPage emitted %d chunks, want none before final exact window", len(chunks))
+	}
+	final, err := chunker.Finish("book-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(final) != 1 {
+		t.Fatalf("Finish emitted %d chunks, want one exact final window", len(final))
+	}
+	if final[0].TokenStart() != 0 || final[0].TokenEnd() != 4 {
+		t.Fatalf("unexpected exact token bounds %d-%d", final[0].TokenStart(), final[0].TokenEnd())
+	}
+}
+
+func TestChunkerDoesNotEmitOverlapOnlyChunkBeforeHeading(t *testing.T) {
+	chunker, err := New(wordTokenizer{}, Policy{MaximumTokens: 4, OverlapTokens: 1, MaximumChunks: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := chunker.AddPage("book-1", Page{Number: 1, Text: "one two three four"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 0 {
+		t.Fatalf("first page emitted %d chunks, want none before boundary", len(first))
+	}
+	flushed, err := chunker.AddPage("book-1", Page{Number: 2, Text: "Chapter I Fresh Start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := chunker.Finish("book-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks := append(flushed, final...)
+	if len(chunks) != 2 {
+		t.Fatalf("expected exact pre-heading chunk and heading chunk, got %d", len(chunks))
+	}
+	if chunks[0].TokenStart() != 0 || chunks[0].TokenEnd() != 4 {
+		t.Fatalf("unexpected pre-heading token bounds %d-%d", chunks[0].TokenStart(), chunks[0].TokenEnd())
+	}
+	if chunks[1].TokenStart() != 4 || chunks[1].TokenEnd() != 8 {
+		t.Fatalf("unexpected heading token bounds %d-%d", chunks[1].TokenStart(), chunks[1].TokenEnd())
+	}
+}
+
 func TestChunkerCarriesStructureAcrossPagesAndSpansPages(t *testing.T) {
 	chunker, err := New(wordTokenizer{}, Policy{MaximumTokens: 7, OverlapTokens: 1, MaximumChunks: 10})
 	if err != nil {
@@ -84,8 +140,8 @@ func TestChunkerCarriesStructureAcrossPagesAndSpansPages(t *testing.T) {
 		t.Fatal(err)
 	}
 	chunks := append(append(first, second...), final...)
-	if len(chunks) != 2 {
-		t.Fatalf("expected two chunks, got %d", len(chunks))
+	if len(chunks) != 1 {
+		t.Fatalf("expected one exact-window chunk, got %d", len(chunks))
 	}
 	if chunks[0].PageStart() != 1 || chunks[0].PageEnd() != 2 {
 		t.Fatalf("expected cross-page span, got %d-%d", chunks[0].PageStart(), chunks[0].PageEnd())

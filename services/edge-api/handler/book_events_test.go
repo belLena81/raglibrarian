@@ -112,6 +112,63 @@ func TestBookStatusHubRemainsLiveAcrossPublishAndSubscriptionLifecycle(t *testin
 	unsubscribeThird()
 }
 
+func TestBookStatusHubRemovesLimiterKeysOnUnsubscribe(t *testing.T) {
+	hub := NewBookStatusHub(2)
+	hub.SetAvailable(true)
+
+	first, unsubscribeFirst, ok := hub.subscribe("session-1", "192.0.2.1")
+	if !ok {
+		t.Fatal("first subscription was rejected")
+	}
+	second, unsubscribeSecond, ok := hub.subscribe("session-2", "192.0.2.1")
+	if !ok {
+		t.Fatal("second subscription was rejected")
+	}
+
+	unsubscribeFirst()
+	assertBookStatusChannelClosed(t, first.wake)
+	if _, ok := hub.bySession["session-1"]; ok {
+		t.Fatal("session-1 limiter key remained after unsubscribe")
+	}
+	if got := hub.byIP["192.0.2.1"]; got != 1 {
+		t.Fatalf("IP limiter count after first unsubscribe = %d, want 1", got)
+	}
+
+	unsubscribeSecond()
+	assertBookStatusChannelClosed(t, second.wake)
+	if _, ok := hub.bySession["session-2"]; ok {
+		t.Fatal("session-2 limiter key remained after unsubscribe")
+	}
+	if _, ok := hub.byIP["192.0.2.1"]; ok {
+		t.Fatal("IP limiter key remained after final unsubscribe")
+	}
+}
+
+func TestBookStatusHubRemovesLimiterKeysOnBrokerLoss(t *testing.T) {
+	hub := NewBookStatusHub(2)
+	hub.SetAvailable(true)
+
+	first, _, ok := hub.subscribe("session-1", "192.0.2.1")
+	if !ok {
+		t.Fatal("first subscription was rejected")
+	}
+	second, _, ok := hub.subscribe("session-2", "192.0.2.2")
+	if !ok {
+		t.Fatal("second subscription was rejected")
+	}
+
+	hub.SetAvailable(false)
+	assertBookStatusChannelClosed(t, first.wake)
+	assertBookStatusChannelClosed(t, second.wake)
+
+	if len(hub.bySession) != 0 {
+		t.Fatalf("session limiter keys after broker loss = %v, want none", hub.bySession)
+	}
+	if len(hub.byIP) != 0 {
+		t.Fatalf("IP limiter keys after broker loss = %v, want none", hub.byIP)
+	}
+}
+
 func receiveBookStatusEvent(t *testing.T, hub *BookStatusHub, subscriber *bookStatusSubscriber) BookStatusEvent {
 	t.Helper()
 	waitForBookStatusWake(t, subscriber)

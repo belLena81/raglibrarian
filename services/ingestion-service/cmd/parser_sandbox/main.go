@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -81,7 +82,7 @@ func applyFilesystemPolicy(executablePath, sourcePath string) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = unix.Close(int(ruleset)) }() // #nosec G115 -- successful syscall return is a Linux file descriptor.
+	defer func() { _ = closeLandlockFD(ruleset) }()
 
 	readFile := uint64(unix.LANDLOCK_ACCESS_FS_READ_FILE)
 	readTree := readFile | unix.LANDLOCK_ACCESS_FS_READ_DIR
@@ -115,12 +116,15 @@ func preflightFilesystemPolicy() error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = unix.Close(int(ruleset)) }() // #nosec G115 -- successful syscall return is a Linux file descriptor.
+	defer func() { _ = closeLandlockFD(ruleset) }()
 	return restrictWithLandlock(ruleset)
 }
 
 func createLandlockRuleset() (uintptr, error) {
-	handled := landlockAccessFS()
+	handled, err := negotiatedLandlockAccess(landlockABIVersion)
+	if err != nil {
+		return 0, err
+	}
 	attr := unix.LandlockRulesetAttr{Access_fs: handled}
 	ruleset, _, errno := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET, uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr), 0) // #nosec G103 -- kernel ABI struct owned for the syscall duration.
 	if errno != 0 {
@@ -129,8 +133,35 @@ func createLandlockRuleset() (uintptr, error) {
 	return ruleset, nil
 }
 
-func landlockAccessFS() uint64 {
-	return uint64(unix.LANDLOCK_ACCESS_FS_EXECUTE |
+func closeLandlockFD(fileDescriptor uintptr) error {
+	_, _, errno := unix.Syscall(unix.SYS_CLOSE, fileDescriptor, 0, 0)
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+func landlockABIVersion() (uintptr, error) {
+	version, _, errno := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET, 0, 0, unix.LANDLOCK_CREATE_RULESET_VERSION)
+	if errno != 0 {
+		return 0, errno
+	}
+	return version, nil
+}
+
+func negotiatedLandlockAccess(queryABIVersion func() (uintptr, error)) (uint64, error) {
+	abiVersion, err := queryABIVersion()
+	if err != nil {
+		return 0, err
+	}
+	return landlockAccessFS(abiVersion)
+}
+
+func landlockAccessFS(abiVersion uintptr) (uint64, error) {
+	if abiVersion < 1 {
+		return 0, fmt.Errorf("unsupported Landlock ABI version %d", abiVersion)
+	}
+	handled := uint64(unix.LANDLOCK_ACCESS_FS_EXECUTE |
 		unix.LANDLOCK_ACCESS_FS_WRITE_FILE |
 		unix.LANDLOCK_ACCESS_FS_READ_FILE |
 		unix.LANDLOCK_ACCESS_FS_READ_DIR |
@@ -142,9 +173,14 @@ func landlockAccessFS() uint64 {
 		unix.LANDLOCK_ACCESS_FS_MAKE_SOCK |
 		unix.LANDLOCK_ACCESS_FS_MAKE_FIFO |
 		unix.LANDLOCK_ACCESS_FS_MAKE_BLOCK |
-		unix.LANDLOCK_ACCESS_FS_MAKE_SYM |
-		unix.LANDLOCK_ACCESS_FS_REFER |
-		unix.LANDLOCK_ACCESS_FS_TRUNCATE)
+		unix.LANDLOCK_ACCESS_FS_MAKE_SYM)
+	if abiVersion >= 2 {
+		handled |= unix.LANDLOCK_ACCESS_FS_REFER
+	}
+	if abiVersion >= 3 {
+		handled |= unix.LANDLOCK_ACCESS_FS_TRUNCATE
+	}
+	return handled, nil
 }
 
 func restrictWithLandlock(ruleset uintptr) error {

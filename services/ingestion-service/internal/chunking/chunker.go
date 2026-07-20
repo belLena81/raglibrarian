@@ -110,7 +110,7 @@ func (c *Chunker) AddPage(bookID string, page Page) ([]domain.Chunk, error) {
 		c.buffer = append(c.buffer, bufferedToken{value: token, page: page.Number, global: c.nextToken})
 		c.nextToken++
 	}
-	for len(c.buffer) >= c.policy.MaximumTokens {
+	for len(c.buffer) > c.policy.MaximumTokens {
 		chunk, err := c.emit(bookID, c.policy.MaximumTokens)
 		if err != nil {
 			return nil, err

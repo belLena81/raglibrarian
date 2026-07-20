@@ -74,10 +74,6 @@ func (c *Consumer) handle(ctx context.Context, delivery amqp091.Delivery) {
 		return
 	}
 	err = c.processor.Process(ctx, event)
-	if ctx.Err() != nil {
-		_ = delivery.Nack(false, true)
-		return
-	}
 	switch application.DeliveryDisposition(err) {
 	case application.DeliveryAcknowledge:
 		_ = delivery.Ack(false)

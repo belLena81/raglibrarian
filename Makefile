@@ -22,7 +22,7 @@ M4_E2E_MINIO_ARTIFACT_BUCKET ?= ingestion-artifacts
 M4_E2E_RABBITMQ_URI_FILE ?= $(CURDIR)/.dev/secrets/ingestion_e2e_rabbitmq_uri
 M4_E2E_FIXTURE_DIR ?= /tmp/raglibrarian-m4-fixtures
 M4_E2E_EDGE_BASE_URLS ?= http://127.0.0.1:8080,http://127.0.0.1:8081
-M4_E2E_PUBLIC_ORIGIN ?= http://127.0.0.1:5173
+M4_E2E_PUBLIC_ORIGIN ?= http://localhost:5173
 
 # Service/library modules — looped over by test, lint, tidy, fmt.
 MODULES := \

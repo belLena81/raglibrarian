@@ -308,15 +308,16 @@ func TestBookEventsSanitizesUnsupportedDeadlineFailure(t *testing.T) {
 	}
 }
 
-func TestBookEventsOriginRejectsMissingOrigin(t *testing.T) {
+func TestBookEventsOriginAllowsSameOriginFetchWithoutOrigin(t *testing.T) {
 	handler := &bookEvents{
 		publicOrigin:  "https://app.example",
 		enforceOrigin: true,
 	}
 	request := httptest.NewRequest(http.MethodGet, "/books/events", nil)
+	request.Header.Set("Sec-Fetch-Site", "same-origin")
 
-	if handler.originAllowed(request) {
-		t.Fatal("stream without Origin was allowed")
+	if !handler.originAllowed(request) {
+		t.Fatal("same-origin GET stream without Origin was rejected")
 	}
 }
 
@@ -330,6 +331,18 @@ func TestBookEventsOriginRejectsCrossSiteFetchWithoutOrigin(t *testing.T) {
 
 	if handler.originAllowed(request) {
 		t.Fatal("cross-site GET stream without Origin was allowed")
+	}
+}
+
+func TestBookEventsOriginRejectsUnverifiableFetchWithoutOrigin(t *testing.T) {
+	handler := &bookEvents{
+		publicOrigin:  "https://app.example",
+		enforceOrigin: true,
+	}
+	request := httptest.NewRequest(http.MethodGet, "/books/events", nil)
+
+	if handler.originAllowed(request) {
+		t.Fatal("GET stream without Origin or fetch metadata was allowed")
 	}
 }
 

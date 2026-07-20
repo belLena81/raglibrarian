@@ -27,6 +27,8 @@ type processorRepository struct {
 	retries     int
 	fails       int
 	failedJob   domain.ProcessingJob
+	retryCtxErr error
+	failCtxErr  error
 }
 
 func (r *processorRepository) Accept(_ context.Context, _ UploadedEvent, _ [32]byte, job domain.ProcessingJob, _ OutboxEvent) (domain.ProcessingJob, bool, error) {
@@ -39,14 +41,16 @@ func (r *processorRepository) Complete(_ context.Context, _ domain.ProcessingJob
 	return r.completeErr
 }
 
-func (r *processorRepository) Retry(_ context.Context, _ domain.ProcessingJob, _ ClaimToken) error {
+func (r *processorRepository) Retry(ctx context.Context, _ domain.ProcessingJob, _ ClaimToken) error {
 	r.retries++
+	r.retryCtxErr = ctx.Err()
 	return r.retryErr
 }
 
-func (r *processorRepository) Fail(_ context.Context, job domain.ProcessingJob, _ ClaimToken, _ OutboxEvent) error {
+func (r *processorRepository) Fail(ctx context.Context, job domain.ProcessingJob, _ ClaimToken, _ OutboxEvent) error {
 	r.fails++
 	r.failedJob = job
+	r.failCtxErr = ctx.Err()
 	return r.failErr
 }
 
@@ -212,6 +216,31 @@ func TestProcessorRetriesInternalExtractorFailure(t *testing.T) {
 	err := processor.Process(context.Background(), validProcessorEvent())
 	if !errors.Is(err, ErrProcessingDeferred) || repository.retries != 1 || repository.fails != 0 || writer.aborts != 1 {
 		t.Fatalf("internal extraction retry: err=%v repo=%#v writer=%#v", err, repository, writer)
+	}
+}
+
+func TestProcessorPersistsRetryAfterParentCancellation(t *testing.T) {
+	processor, repository, _, _, _ := newTestProcessor(t, processorOptions{waitForContext: true, maximumAttempts: 2})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := processor.Process(ctx, validProcessorEvent())
+	if !errors.Is(err, ErrProcessingDeferred) || repository.retries != 1 || repository.retryCtxErr != nil {
+		t.Fatalf("shutdown retry result: err=%v retries=%d retryCtxErr=%v", err, repository.retries, repository.retryCtxErr)
+	}
+}
+
+func TestProcessorPersistsFailureAfterParentCancellation(t *testing.T) {
+	processor, repository, _, _, _ := newTestProcessor(t, processorOptions{waitForContext: true, maximumAttempts: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := processor.Process(ctx, validProcessorEvent())
+	if err != nil || repository.fails != 1 || repository.failCtxErr != nil {
+		t.Fatalf("shutdown failure result: err=%v fails=%d failCtxErr=%v", err, repository.fails, repository.failCtxErr)
+	}
+	if repository.failedJob.Failure() != domain.FailureInternalProcessing {
+		t.Fatalf("failure category = %q, want %q", repository.failedJob.Failure(), domain.FailureInternalProcessing)
 	}
 }
 

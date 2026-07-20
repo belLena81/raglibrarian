@@ -109,11 +109,13 @@ endpoint. The workflow writes parameter and E2E material only below a
 mode-0700 temporary directory with mode-0600 files, emits only sanitized gate
 results, and removes the files on every exit.
 
-Active processing hosts must support Landlock filesystem restrictions. The
-processing image runs `/parser-sandbox --landlock-preflight` during bootstrap;
-Lambda or Fargate environments that do not expose the required Landlock kernel
-support fail deployment/runtime validation before consuming PDF work. Do not
-replace this with unsandboxed Poppler execution.
+Active processing hosts must support Landlock filesystem restrictions with ABI
+version 1 or newer. The processing image runs `/parser-sandbox
+--landlock-preflight` during bootstrap; Lambda or Fargate environments that do
+not expose a supported Landlock kernel fail deployment/runtime validation before
+consuming PDF work. ABI 2 adds rename/link mediation and ABI 3 adds truncation
+mediation; older supported ABIs retain the available filesystem restrictions.
+Do not replace this with unsandboxed Poppler execution.
 
 Only these four ECR repositories are trusted in the protected account and
 region: `raglibrarian/m4-processing`, `raglibrarian/m4-dispatcher`,

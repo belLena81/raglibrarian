@@ -96,3 +96,40 @@ func TestConsumerAppliesSharedDeliveryDisposition(t *testing.T) {
 		})
 	}
 }
+
+func TestConsumerAppliesDispositionAfterShutdownCancellation(t *testing.T) {
+	payload, err := proto.Marshal(validUploadMessage())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name        string
+		processErr  error
+		wantAck     bool
+		wantRequeue bool
+	}{
+		{name: "durable retry", processErr: application.ErrProcessingDeferred, wantAck: true},
+		{name: "non-durable transient", processErr: errors.New("database unavailable"), wantRequeue: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			acknowledger := &recordingAcknowledger{}
+			processor := &countingProcessor{err: test.processErr}
+			consumer := &Consumer{processor: processor, now: time.Now}
+
+			consumer.handle(ctx, amqp091.Delivery{
+				Acknowledger: acknowledger,
+				ContentType:  "application/x-protobuf",
+				Type:         UploadRoute,
+				MessageId:    validUploadMessage().EventId,
+				Body:         payload,
+			})
+
+			if acknowledger.acked != test.wantAck || acknowledger.rejected || acknowledger.requeued != test.wantRequeue || processor.calls != 1 {
+				t.Fatalf("shutdown disposition result = %#v calls=%d", acknowledger, processor.calls)
+			}
+		})
+	}
+}

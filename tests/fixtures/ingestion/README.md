@@ -24,7 +24,7 @@ Run the dedicated black-box contract after starting an M4 stack:
 M4_E2E_FIXTURE_DIR=/tmp/raglibrarian-m4-fixtures \
 M4_E2E_ACCESS_TOKEN_FILE='/tmp/raglibrarian-m4/access-token' \
 M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE='/tmp/raglibrarian-m4/revocable-token' \
-M4_E2E_PUBLIC_ORIGIN='http://127.0.0.1:5173' \
+M4_E2E_PUBLIC_ORIGIN='http://localhost:5173' \
 M4_E2E_EDGE_BASE_URLS='http://127.0.0.1:8080,http://127.0.0.1:8081' \
 go -C tests/e2e test -count=1 -v -tags='e2e m4' ./...
 ```

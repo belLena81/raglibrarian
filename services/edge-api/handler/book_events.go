@@ -71,8 +71,8 @@ func (h *BookStatusHub) SetAvailable(available bool) {
 	}
 	for subscriber, details := range h.subscribers {
 		delete(h.subscribers, subscriber)
-		h.bySession[details.sessionID]--
-		h.byIP[details.ip]--
+		releaseBookStatusLimit(h.bySession, details.sessionID)
+		releaseBookStatusLimit(h.byIP, details.ip)
 		close(subscriber.wake)
 	}
 }
@@ -139,12 +139,21 @@ func (h *BookStatusHub) subscribe(sessionID, ip string) (*bookStatusSubscriber, 
 		defer h.mu.Unlock()
 		if details, ok := h.subscribers[subscriber]; ok {
 			delete(h.subscribers, subscriber)
-			h.bySession[details.sessionID]--
-			h.byIP[details.ip]--
+			releaseBookStatusLimit(h.bySession, details.sessionID)
+			releaseBookStatusLimit(h.byIP, details.ip)
 			close(subscriber.wake)
 		}
 	}
 	return subscriber, remove, true
+}
+
+func releaseBookStatusLimit(counts map[string]int, key string) {
+	remaining := counts[key] - 1
+	if remaining <= 0 {
+		delete(counts, key)
+		return
+	}
+	counts[key] = remaining
 }
 
 func (h *BookStatusHub) drain(subscriber *bookStatusSubscriber) ([]BookStatusEvent, bool, bool) {
@@ -301,5 +310,8 @@ func (e *bookEvents) originAllowed(r *http.Request) bool {
 		return true
 	}
 	origin := r.Header.Get("Origin")
-	return origin != "" && origin == e.publicOrigin
+	if origin != "" {
+		return origin == e.publicOrigin
+	}
+	return r.Header.Get("Sec-Fetch-Site") == "same-origin"
 }
