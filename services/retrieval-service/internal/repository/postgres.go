@@ -235,13 +235,16 @@ func (r *Postgres) BeginBatch(ctx context.Context, work application.BatchWork) (
 	var state, jobState, bookID, title, author string
 	var year int
 	var tags []string
-	var shardSHA256, sourceSHA256, manifestSHA256, profileDigest []byte
+	var shardSHA256, sourceSHA256, manifestSHA256, profileDigest, manifestPayload []byte
 	var compressedBytes, uncompressedBytes int64
 	var chunkCount int
-	err = tx.QueryRow(ctx, `SELECT b.state,j.state,j.book_id,m.title,m.author,m.publication_year,m.tags,b.shard_sha256,b.compressed_byte_size,b.uncompressed_byte_size,b.chunk_count,j.source_sha256,j.manifest_sha256,j.profile_digest
-		FROM retrieval.index_batches b JOIN retrieval.index_jobs j ON j.id=b.job_id JOIN retrieval.metadata_facts m ON m.book_id=j.book_id
+	err = tx.QueryRow(ctx, `SELECT b.state,j.state,j.book_id,m.title,m.author,m.publication_year,m.tags,b.shard_sha256,b.compressed_byte_size,b.uncompressed_byte_size,b.chunk_count,j.source_sha256,j.manifest_sha256,j.profile_digest,f.manifest_payload
+		FROM retrieval.index_batches b
+		JOIN retrieval.index_jobs j ON j.id=b.job_id
+		JOIN retrieval.metadata_facts m ON m.book_id=j.book_id
+		JOIN retrieval.manifest_facts f ON f.book_id=j.book_id AND f.manifest_sha256=j.manifest_sha256
 		WHERE b.id=$1 AND b.job_id=$2 FOR UPDATE OF b`, work.BatchID, work.JobID).
-		Scan(&state, &jobState, &bookID, &title, &author, &year, &tags, &shardSHA256, &compressedBytes, &uncompressedBytes, &chunkCount, &sourceSHA256, &manifestSHA256, &profileDigest)
+		Scan(&state, &jobState, &bookID, &title, &author, &year, &tags, &shardSHA256, &compressedBytes, &uncompressedBytes, &chunkCount, &sourceSHA256, &manifestSHA256, &profileDigest, &manifestPayload)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return application.BookProjection{}, false, application.ErrInvalidEvent
@@ -251,6 +254,14 @@ func (r *Postgres) BeginBatch(ctx context.Context, work application.BatchWork) (
 	if bookID != work.BookID || !equalDigest(shardSHA256, work.ShardSHA256) || !equalDigest(sourceSHA256, work.SourceSHA256) ||
 		!equalDigest(manifestSHA256, work.ManifestSHA256) || !equalDigest(profileDigest, work.ProfileDigest) || compressedBytes != work.CompressedBytes ||
 		uncompressedBytes != work.UncompressedBytes || chunkCount != int(work.ChunkCount) {
+		return application.BookProjection{}, false, application.ErrConflictingEvent
+	}
+	manifest, err := decodeManifest(manifestPayload, digestBytes(manifestSHA256))
+	if err != nil {
+		return application.BookProjection{}, false, application.ErrConflictingEvent
+	}
+	bounds, ok := shardBounds(manifest, work)
+	if !ok || work.ManifestPageCount != manifest.PageCount || work.FirstChunkOrder != bounds.FirstChunkOrder || work.LastChunkOrder != bounds.LastChunkOrder {
 		return application.BookProjection{}, false, application.ErrConflictingEvent
 	}
 	if state == "failed" || jobState == "indexed" || jobState == "failed" {
@@ -264,6 +275,17 @@ func (r *Postgres) BeginBatch(ctx context.Context, work application.BatchWork) (
 		return application.BookProjection{}, false, err
 	}
 	return application.BookProjection{BookID: bookID, Title: title, Author: author, Year: year, Tags: tags}, true, tx.Commit(ctx)
+}
+
+func shardBounds(manifest application.Manifest, work application.BatchWork) (application.Shard, bool) {
+	for _, shard := range manifest.Shards {
+		if shard.Reference != work.ShardReference || shard.SHA256 != work.ShardSHA256 || shard.CompressedBytes != work.CompressedBytes ||
+			shard.UncompressedBytes != work.UncompressedBytes || shard.ChunkCount != work.ChunkCount {
+			continue
+		}
+		return shard, true
+	}
+	return application.Shard{}, false
 }
 
 func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork, records []application.EvidenceRecord, now time.Time) (bool, error) {

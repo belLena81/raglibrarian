@@ -54,6 +54,8 @@ services:
       PGDATABASE: raglibrarian_platform
       PGUSER: raglibrarian_bootstrap
       PGPASSFILE: /run/secrets/postgres_pgpass
+      BOOTSTRAP_SQL_FILE: /bootstrap/core-init.sql
+      BOOTSTRAP_COMPLETE_MESSAGE: Identity, Catalog, and Ingestion database roles and privileges are ready
     secrets:
       - postgres_pgpass
       - identity_migration_password
@@ -64,6 +66,30 @@ services:
       - ingestion_runtime_password
       - ingestion_cleanup_password
       - ingestion_e2e_password
+    volumes:
+      - ./infra/postgres/core-init.sql:/bootstrap/core-init.sql:ro
+      - ./scripts/run-postgres-bootstrap.sh:/usr/local/bin/run-postgres-bootstrap:ro
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["/usr/local/bin/run-postgres-bootstrap"]
+
+  retrieval-db-bootstrap:
+    <<: *job-hardening
+    profiles: ["m5", "m5-contract-test"]
+    image: postgres:16.9-alpine
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: raglibrarian_platform
+      PGUSER: raglibrarian_bootstrap
+      PGPASSFILE: /run/secrets/postgres_pgpass
+      BOOTSTRAP_SQL_FILE: /bootstrap/retrieval-init.sql
+      BOOTSTRAP_COMPLETE_MESSAGE: Retrieval database roles and privileges are ready
+    secrets:
+      - postgres_pgpass
       - retrieval_migration_password
       - retrieval_runtime_password
       - retrieval_search_password
@@ -73,13 +99,13 @@ services:
       - retrieval_cleanup_password
       - retrieval_e2e_password
     volumes:
-      - ./infra/postgres/init.sql:/bootstrap/identity.sql:ro
+      - ./infra/postgres/retrieval-init.sql:/bootstrap/retrieval-init.sql:ro
       - ./scripts/run-postgres-bootstrap.sh:/usr/local/bin/run-postgres-bootstrap:ro
     networks:
       - backend
     depends_on:
-      postgres:
-        condition: service_healthy
+      identity-db-bootstrap:
+        condition: service_completed_successfully
     command: ["/usr/local/bin/run-postgres-bootstrap"]
 
   identity-migrate:
@@ -486,7 +512,7 @@ services:
     networks:
       - backend
     depends_on:
-      identity-db-bootstrap:
+      retrieval-db-bootstrap:
         condition: service_completed_successfully
     command: ["sh", "/usr/local/bin/run-retrieval-migrations"]
 

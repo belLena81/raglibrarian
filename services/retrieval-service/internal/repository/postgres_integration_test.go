@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -39,6 +40,10 @@ func TestReplayRecoveryTerminalFailureAndVisibilityUseDurableState(t *testing.T)
 	work := application.BatchWork{EventID: "event-" + suffix, JobID: jobID, BatchID: batchID, BookID: bookID,
 		ShardReference: "books/" + bookID + "/source/profile/shards/000000.pb.zst", ShardSHA256: integrationDigest(1), SourceSHA256: integrationDigest(2),
 		ManifestSHA256: integrationDigest(3), ProfileDigest: domain.SupportedIndexProfile().Digest, CompressedBytes: 10, UncompressedBytes: 20, ChunkCount: 1,
+		ManifestPageCount: 1, FirstChunkOrder: 0, LastChunkOrder: 0, ExtractionVersion: domain.SupportedIndexProfile().ExtractionVersion,
+		NormalizationVersion: domain.SupportedIndexProfile().NormalizationVersion, TokenizerVersion: domain.SupportedIndexProfile().TokenizerVersion,
+		ChunkingVersion: domain.SupportedIndexProfile().ChunkingVersion, StructureVersion: domain.SupportedIndexProfile().StructureVersion,
+		MaximumTokens: uint32(domain.SupportedIndexProfile().MaximumTokens), OverlapTokens: uint32(domain.SupportedIndexProfile().OverlapTokens),
 		CorrelationID: "correlation-" + suffix, CausationID: "cause-" + suffix, Producer: "retrieval-service", SchemaVersion: "v1", IdempotencyKey: batchID, OccurredAt: now}
 	payloadDigest := integrationDigest(4)
 
@@ -47,6 +52,7 @@ func TestReplayRecoveryTerminalFailureAndVisibilityUseDurableState(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	insertManifestFact(t, ctx, pool, bookID, work.SourceSHA256, work.ManifestSHA256, "correlation-"+suffix, "cause-"+suffix, now, manifestForWork(work))
 	_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_jobs(id,book_id,source_sha256,manifest_sha256,profile_digest,state,expected_batches,correlation_id,created_at,updated_at)
 		VALUES($1,$2,$3,$4,$5,'pending',1,$6,$7,$7)`, jobID, bookID, work.SourceSHA256[:], work.ManifestSHA256[:], work.ProfileDigest[:], work.CorrelationID, now)
 	if err != nil {
@@ -67,6 +73,7 @@ func TestReplayRecoveryTerminalFailureAndVisibilityUseDurableState(t *testing.T)
 		defer cleanupCancel()
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.outbox WHERE aggregate_id=$1`, jobID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE id=$1`, jobID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.manifest_facts WHERE book_id=$1`, bookID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
 	})
 
@@ -111,6 +118,69 @@ func TestReplayRecoveryTerminalFailureAndVisibilityUseDurableState(t *testing.T)
 	if err != nil || len(visible) != 0 {
 		t.Fatalf("failed job visibility=%#v error=%v", visible, err)
 	}
+}
+
+func TestBeginBatchRejectsTamperedManifestBounds(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository := NewPostgres(pool)
+	suffix := randomIntegrationID(t)
+	bookID, jobID, batchID := "book-"+suffix, "job-"+suffix, "batch-"+suffix
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	work := validIntegrationBatchWork(bookID, jobID, batchID, now)
+	payloadDigest := integrationDigest(4)
+
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.metadata_facts(book_id,event_id,payload_digest,source_sha256,title,author,publication_year,tags,correlation_id,causation_id,occurred_at)
+		VALUES($1,$2,$3,$4,'Synthetic systems','RAGLibrarian QA',2026,'{}',$5,$6,$7)`, bookID, "metadata-"+suffix, payloadDigest[:], work.SourceSHA256[:], work.CorrelationID, work.CausationID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertManifestFact(t, ctx, pool, bookID, work.SourceSHA256, work.ManifestSHA256, work.CorrelationID, work.CausationID, now, manifestForWork(work))
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_jobs(id,book_id,source_sha256,manifest_sha256,profile_digest,state,expected_batches,correlation_id,created_at,updated_at)
+		VALUES($1,$2,$3,$4,$5,'pending',1,$6,$7,$7)`, jobID, bookID, work.SourceSHA256[:], work.ManifestSHA256[:], work.ProfileDigest[:], work.CorrelationID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_batches(id,job_id,shard_reference,shard_sha256,compressed_byte_size,uncompressed_byte_size,chunk_count,updated_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, batchID, jobID, work.ShardReference, work.ShardSHA256[:], work.CompressedBytes, work.UncompressedBytes, work.ChunkCount, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.outbox WHERE aggregate_id=$1`, jobID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_batches WHERE job_id=$1`, jobID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE id=$1`, jobID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.manifest_facts WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
+	})
+
+	t.Run("tampered page count", func(t *testing.T) {
+		tampered := work
+		tampered.ManifestPageCount++
+		_, accepted, beginErr := repository.BeginBatch(ctx, tampered)
+		if accepted || !errors.Is(beginErr, application.ErrConflictingEvent) {
+			t.Fatalf("BeginBatch() accepted=%v error=%v", accepted, beginErr)
+		}
+	})
+
+	t.Run("tampered order bounds", func(t *testing.T) {
+		tampered := work
+		tampered.LastChunkOrder++
+		_, accepted, beginErr := repository.BeginBatch(ctx, tampered)
+		if accepted || !errors.Is(beginErr, application.ErrConflictingEvent) {
+			t.Fatalf("BeginBatch() accepted=%v error=%v", accepted, beginErr)
+		}
+	})
 }
 
 func TestFailManifestEmitsIncompatibleProfileTerminalEvent(t *testing.T) {
@@ -972,4 +1042,92 @@ func integrationDigest(value byte) [32]byte {
 	var digest [32]byte
 	digest[0] = value
 	return digest
+}
+
+func validIntegrationBatchWork(bookID, jobID, batchID string, now time.Time) application.BatchWork {
+	profile := domain.SupportedIndexProfile()
+	return application.BatchWork{
+		EventID:              "event-" + batchID,
+		JobID:                jobID,
+		BatchID:              batchID,
+		BookID:               bookID,
+		ShardReference:       "books/" + bookID + "/source/profile/shards/000000.pb.zst",
+		ShardSHA256:          integrationDigest(1),
+		SourceSHA256:         integrationDigest(2),
+		ManifestSHA256:       integrationDigest(3),
+		ProfileDigest:        profile.Digest,
+		CompressedBytes:      10,
+		UncompressedBytes:    20,
+		ChunkCount:           1,
+		ManifestPageCount:    1,
+		FirstChunkOrder:      0,
+		LastChunkOrder:       0,
+		ExtractionVersion:    profile.ExtractionVersion,
+		NormalizationVersion: profile.NormalizationVersion,
+		TokenizerVersion:     profile.TokenizerVersion,
+		ChunkingVersion:      profile.ChunkingVersion,
+		StructureVersion:     profile.StructureVersion,
+		MaximumTokens:        uint32(profile.MaximumTokens),
+		OverlapTokens:        uint32(profile.OverlapTokens),
+		CorrelationID:        "correlation-" + batchID,
+		CausationID:          "cause-" + batchID,
+		Producer:             "retrieval-service",
+		SchemaVersion:        "v1",
+		IdempotencyKey:       batchID,
+		OccurredAt:           now,
+	}
+}
+
+func manifestForWork(work application.BatchWork) application.Manifest {
+	return application.Manifest{
+		SchemaVersion:          "v1",
+		BookID:                 work.BookID,
+		SourceSHA256:           work.SourceSHA256,
+		ManifestSHA256:         work.ManifestSHA256,
+		ProcessingConfigDigest: integrationDigest(7),
+		PageCount:              work.ManifestPageCount,
+		ChunkCount:             work.ChunkCount,
+		GeneratedAt:            work.OccurredAt.Add(-time.Minute),
+		ExtractionVersion:      work.ExtractionVersion,
+		NormalizationVersion:   work.NormalizationVersion,
+		TokenizerVersion:       work.TokenizerVersion,
+		ChunkingVersion:        work.ChunkingVersion,
+		StructureVersion:       work.StructureVersion,
+		MaximumTokens:          work.MaximumTokens,
+		OverlapTokens:          work.OverlapTokens,
+		Shards: []application.Shard{{
+			Reference:         work.ShardReference,
+			SHA256:            work.ShardSHA256,
+			CompressedBytes:   work.CompressedBytes,
+			UncompressedBytes: work.UncompressedBytes,
+			ChunkCount:        work.ChunkCount,
+			FirstChunkOrder:   work.FirstChunkOrder,
+			LastChunkOrder:    work.LastChunkOrder,
+		}},
+	}
+}
+
+func insertManifestFact(t *testing.T, ctx context.Context, pool *pgxpool.Pool, bookID string, sourceSHA256, manifestSHA256 [32]byte, correlationID, causationID string, occurredAt time.Time, manifest application.Manifest) {
+	t.Helper()
+	payload, err := encodeManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadDigest := integrationDigest(9)
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.manifest_facts(book_id,event_id,payload_digest,source_sha256,manifest_sha256,manifest_reference,manifest_payload,correlation_id,causation_id,occurred_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		bookID,
+		"manifest-"+bookID,
+		payloadDigest[:],
+		sourceSHA256[:],
+		manifestSHA256[:],
+		"books/"+bookID+"/source/profile/manifest.pb",
+		payload,
+		correlationID,
+		causationID,
+		occurredAt,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 }
