@@ -139,13 +139,17 @@ Delivered:
 - TLS 1.3 mTLS, SAN-based peer authorization, service-specific secrets,
   dependency-aware readiness, and graceful shutdown.
 - Live Identity and Catalog contract tests and black-box HTTP E2E.
-- Authenticated `/query` returns truthful `501` until Retrieval exists.
+- Authenticated `/query` returned truthful `501` in this foundation slice until
+  Retrieval was delivered; the current checkout now routes `/query` to
+  Retrieval for evidence-only search.
 
 The foundation invariants remain mandatory in all later milestones.
 
 ## Milestone 2 — Identity RBAC and approval
 
 **Owning service:** Identity.
+
+**Status:** complete.
 
 **Outcome:** an operator securely creates the singleton admin; verified readers
 become active; verified librarians become pending; an admin lists, approves, or
@@ -180,6 +184,8 @@ Acceptance:
 ## Milestone 3 — Catalog upload and durable publication
 
 **Owning service:** Catalog.
+
+**Status:** complete.
 
 **Outcome:** an approved librarian or admin uploads a PDF; authenticated users
 can list books and retrieve metadata while processing status remains visible.
@@ -265,29 +271,33 @@ Acceptance:
 
 **Owning service:** Retrieval.
 
+**Status:** complete in the current checkout.
+
 **Outcome:** authenticated readers submit `/query` and receive real ranked
 passages with book, chapter, page, and relevance evidence.
 
 Implementation:
 
-- Introduce one Retrieval module with an asynchronous index application and a
-  synchronous search gRPC application. Deploy bounded index batches as a thin
-  Lambda handler in AWS and as a RabbitMQ worker in local Compose/CI; both call
-  the same Retrieval-owned use case.
+- One Retrieval module contains an asynchronous index application and a
+  synchronous search gRPC application. Bounded index batches run through thin
+  Lambda adapters in AWS and a RabbitMQ worker in local Compose/CI; both call
+  the same Retrieval-owned use cases.
 - Consume `BookChunksReadyV1`, generate chunk embeddings plus centroid-derived
   document embeddings, own the Qdrant collection, and perform idempotent vector
   upserts.
 - Maintain an event-derived evidence/book projection locally so search does not
   synchronously fan out to Catalog.
-- Version embedding provider, model, dimensions, chunking, and index schema;
-  reject incompatible writes and queries.
+- Version embedding provider, model, dimensions, chunking, and index schema
+  through the Retrieval index profile digest; reject incompatible writes and
+  queries.
 - Bound manifest work into idempotent chunk batches so a Lambda invocation does
   not approach its payload, memory, temporary-storage, or duration limits.
   Reserved concurrency protects the embedding provider and Qdrant.
 - Emit `BookIndexedV1` or `BookIndexingFailedV1` with a sanitized failure
   category for Catalog.
-- Activate `/query` additively: retain `question`, add optional filters, and
-  return `{query, results, documents}` with retrieved evidence only.
+- `/query` is active and additive: it retains `question`, accepts optional
+  filters, and returns `{query, results, documents}` with retrieved evidence
+  only.
 
 Acceptance:
 
@@ -296,6 +306,13 @@ Acceptance:
 - Filters, empty results, chunk/document ranking fixtures, citation accuracy,
   and the configured vector-latency objective have automated coverage.
 - No result or citation is fabricated when retrieval has no evidence.
+
+## Current planned work
+
+The remaining product roadmap starts with Milestone 6 optional grounded answers,
+then Milestone 7 lifecycle/format completion, then Milestone 8 Internet-ready
+hardening. Milestone 4 remains in release-candidate status until its protected
+AWS staging and controlled restart/DLQ gates pass.
 
 ## Milestone 6 — optional grounded answers
 

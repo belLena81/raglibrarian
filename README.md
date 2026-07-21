@@ -83,14 +83,14 @@ race, contract, integration, and security checks pass.
 
 Milestones 2, 3, and 5 are complete in the current checkout. Milestone 4 is a
 release candidate; protected AWS staging plus controlled restart/DLQ acceptance
-remain release gates. Milestone 4 adds asynchronous PDF
-extraction and deterministic chunk manifests through one application shared by
-worker and Lambda adapters. Catalog projects monotonic processing state, while
-Edge gives authenticated clients low-latency SSE hints backed by authoritative
-polling reconciliation. Processing and notification queues are bounded;
-duplicate, out-of-order, poison, malformed, encrypted, image-only, and timeout
-paths terminate with stable behavior. M4 accepts text-bearing PDFs only; OCR
-and EPUB remain later work.
+remain release gates before it is marked complete. Milestone 4 adds
+asynchronous PDF extraction and deterministic chunk manifests through one
+application shared by worker and Lambda adapters. Catalog projects monotonic
+processing state, while Edge gives authenticated clients low-latency SSE hints
+backed by authoritative polling reconciliation. Processing and notification
+queues are bounded; duplicate, out-of-order, poison, malformed, encrypted,
+image-only, and timeout paths terminate with stable behavior. M4 accepts
+text-bearing PDFs only; OCR and EPUB remain later work.
 
 The canonical service-by-service roadmap, data ownership, Lambda/worker
 deployment policy, contracts, and acceptance gates are in
@@ -98,6 +98,9 @@ deployment policy, contracts, and acceptance gates are in
 [docs/spec_rag_tech_books.md](docs/spec_rag_tech_books.md). UI routes for admin,
 books, and evidence search are implemented; answer generation and later
 lifecycle operations remain staged until their owning milestones are delivered.
+The next planned product slice is the additive Answer service for optional
+grounded synthesis; lifecycle commands, EPUB support, and Internet-ready
+hardening follow after that.
 
 ## Security model
 
@@ -159,7 +162,9 @@ services/edge-api/   Public HTTP boundary and query routing
 services/identity-service/
 				     Identity domain, gRPC adapter, Postgres repository, schema baseline
 services/catalog-service/
-                     Independent catalog gRPC scaffold
+                     Catalog upload, metadata, object storage, processing status, and outbox
+services/ingestion-service/
+                     PDF extraction, chunking, worker/Lambda adapters, and artifacts
 services/retrieval-service/
                      Retrieval indexing/search, evidence projection, and Qdrant ownership
 tools/healthcheck/   Operational HTTP/gRPC probe binary
