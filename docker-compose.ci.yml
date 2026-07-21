@@ -20,9 +20,17 @@ services:
       RUN_AS_UID: "${RUN_AS_UID:-65532}"
       RUN_AS_GID: "${RUN_AS_GID:-65532}"
     command: []
+    volumes:
+      - m5_ci_empty_model:/data/model:ro
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 128
     healthcheck:
       test: ["CMD", "/healthcheck"]
       interval: 5s
       timeout: 4s
       retries: 20
       start_period: 5s
+
+volumes:
+  m5_ci_empty_model:

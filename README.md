@@ -206,6 +206,10 @@ is an alias for this workflow.
 For Milestone 5, run `make m5-model-bootstrap` before `make stack-up`; the
 stack preflight verifies the pinned host model cache and refuses to download it
 implicitly.
+`make m5-search-quality-test` uses the deterministic TEI-compatible stub so it
+is reliable without a local model cache. To validate the pinned real model,
+run `make m5-search-quality-test-real` after configuring Docker with at least
+8 GiB of memory.
 Identity and Catalog expose standard gRPC health services inside the private
 Compose network. `make contract-test` verifies both services over mTLS.
 

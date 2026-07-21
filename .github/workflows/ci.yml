@@ -96,8 +96,6 @@ jobs:
           sudo apt-get install --yes protobuf-compiler
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
-      - name: Install pinned Hugging Face CLI
-        run: pipx install huggingface-hub==0.36.0
       - name: Create ephemeral file-backed local configuration
         run: |
           cp .env.example .env
@@ -108,10 +106,8 @@ jobs:
           { printf 'raglibrarian/admin-bootstrap/v1\0'; cat .dev/secrets/e2e_bootstrap_code; } \
             | openssl dgst -sha256 -binary > .dev/secrets/identity_bootstrap_verifier
           chmod 400 .dev/secrets/e2e_bootstrap_code .dev/secrets/identity_bootstrap_verifier
-      - name: Bootstrap pinned M5 embedding model
-        run: make m5-model-bootstrap
       - name: Run M5 configured-embedder quality benchmark
-        run: M5_TEI_MEMORY_LIMIT=6g make m5-search-quality-test
+        run: make m5-search-quality-test
       - name: Validate and start the local stack
         run: |
           make compose-config
