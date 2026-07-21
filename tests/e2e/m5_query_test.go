@@ -25,17 +25,33 @@ type m5Book struct {
 }
 
 type m5QueryResponse struct {
-	Query   string `json:"query"`
-	Results []struct {
-		EvidenceID string `json:"evidence_id"`
-		ChunkID    string `json:"chunk_id"`
+	Query     string             `json:"query"`
+	Results   []m5EvidenceResult `json:"results"`
+	Documents []struct {
+		DocumentID string `json:"document_id"`
 		Book       struct {
-			ID string `json:"id"`
+			ID     string   `json:"id"`
+			Title  string   `json:"title"`
+			Author string   `json:"author"`
+			Year   int      `json:"year"`
+			Tags   []string `json:"tags"`
 		} `json:"book"`
-		Pages   [2]uint32 `json:"pages"`
-		Passage string    `json:"passage"`
-		Score   float64   `json:"score"`
-	} `json:"results"`
+		ChunkCount uint32             `json:"chunk_count"`
+		Pages      [2]uint32          `json:"pages"`
+		Score      float64            `json:"score"`
+		Evidence   []m5EvidenceResult `json:"evidence"`
+	} `json:"documents"`
+}
+
+type m5EvidenceResult struct {
+	EvidenceID string `json:"evidence_id"`
+	ChunkID    string `json:"chunk_id"`
+	Book       struct {
+		ID string `json:"id"`
+	} `json:"book"`
+	Pages   [2]uint32 `json:"pages"`
+	Passage string    `json:"passage"`
+	Score   float64   `json:"score"`
 }
 
 func TestM5AuthenticatedUploadIndexesAndReturnsExactEvidence(t *testing.T) {
@@ -47,9 +63,20 @@ func TestM5AuthenticatedUploadIndexesAndReturnsExactEvidence(t *testing.T) {
 	if result.Query != "Why are deterministic retries harmless?" || len(result.Results) == 0 {
 		t.Fatalf("semantic query returned no evidence for indexed fixture")
 	}
+	assertM5ExactEvidence(t, result.Results, book.ID)
+	assertM5DocumentEvidence(t, result, book.ID)
+
+	empty := queryM5(t, token, map[string]any{"question": "deterministic retries", "filters": map[string]any{"author": "No Such Synthetic Author"}})
+	if len(empty.Results) != 0 || len(empty.Documents) != 0 {
+		t.Fatalf("unrelated metadata filter returned %d evidence results and %d document results", len(empty.Results), len(empty.Documents))
+	}
+}
+
+func assertM5ExactEvidence(t *testing.T, results []m5EvidenceResult, bookID string) {
+	t.Helper()
 	found := false
-	for _, evidence := range result.Results {
-		if evidence.Book.ID == book.ID && strings.Contains(evidence.Passage, "Deterministic output makes retries harmless") {
+	for _, evidence := range results {
+		if evidence.Book.ID == bookID && strings.Contains(evidence.Passage, "Deterministic output makes retries harmless") {
 			if evidence.EvidenceID == "" || evidence.ChunkID == "" || evidence.Score < 0.25 || evidence.Pages[1] < evidence.Pages[0] {
 				t.Fatal("matching evidence had an invalid citation contract")
 			}
@@ -59,10 +86,28 @@ func TestM5AuthenticatedUploadIndexesAndReturnsExactEvidence(t *testing.T) {
 	if !found {
 		t.Fatal("query did not return the exact indexed synthetic passage and citation")
 	}
+}
 
-	empty := queryM5(t, token, map[string]any{"question": "deterministic retries", "filters": map[string]any{"author": "No Such Synthetic Author"}})
-	if len(empty.Results) != 0 {
-		t.Fatalf("unrelated metadata filter returned %d results", len(empty.Results))
+func assertM5DocumentEvidence(t *testing.T, result m5QueryResponse, bookID string) {
+	t.Helper()
+	if len(result.Documents) == 0 {
+		t.Fatal("semantic query returned no document-level matches")
+	}
+	found := false
+	for _, document := range result.Documents {
+		if document.Book.ID != bookID {
+			continue
+		}
+		if document.DocumentID == "" || document.Book.Title != "M5 deterministic systems" || document.Book.Author != "RAGLibrarian QA" ||
+			document.Book.Year != 2026 || len(document.Book.Tags) == 0 || document.ChunkCount == 0 ||
+			document.Score < 0.25 || document.Pages[1] < document.Pages[0] || len(document.Evidence) == 0 {
+			t.Fatal("matching document result had an invalid retrieval contract")
+		}
+		assertM5ExactEvidence(t, document.Evidence, bookID)
+		found = true
+	}
+	if !found {
+		t.Fatal("query did not return the indexed synthetic book as a document-level match")
 	}
 }
 

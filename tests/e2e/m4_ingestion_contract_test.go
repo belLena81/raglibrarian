@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -56,6 +57,8 @@ const (
 	m4TinyDocumentTerminalSLO    = 10 * time.Second
 	m4AverageDocumentTerminalSLO = 120 * time.Second
 )
+
+var m4SecretURLPattern = regexp.MustCompile(`(postgres|amqps?)://([^:@/[:space:]]+):([^@/[:space:]]+)@`)
 
 type m4Environment struct {
 	accessToken  string
@@ -724,7 +727,7 @@ func fetchM4Manifest(t *testing.T, bookID string) []byte {
 	case errors.Is(err, pgx.ErrNoRows):
 		t.Fatal("completed M4 artifact receipt was not available in Ingestion Postgres")
 	case err != nil:
-		t.Fatal("completed M4 artifact receipt query failed")
+		t.Fatalf("completed M4 artifact receipt query failed: %s", sanitizeM4Diagnostic(err))
 	}
 	contents := fetchM4Artifact(t, environment, receipt.reference)
 	actualSHA := sha256.Sum256(contents)
@@ -995,6 +998,13 @@ func readM4SecretFile(t *testing.T, path string, maximumBytes int64) string {
 	return value
 }
 
+func sanitizeM4Diagnostic(err error) string {
+	if err == nil {
+		return ""
+	}
+	return m4SecretURLPattern.ReplaceAllString(err.Error(), `$1://$2:<redacted>@`)
+}
+
 func fetchM4AcceptedEnvelope(t *testing.T, bookID string) ([]byte, string) {
 	t.Helper()
 	environment := loadM4ArtifactEnvironment(t)
@@ -1012,7 +1022,7 @@ func fetchM4AcceptedEnvelope(t *testing.T, bookID string) ([]byte, string) {
 	case errors.Is(err, pgx.ErrNoRows):
 		t.Fatal("bounded original M4 envelope was not available for replay")
 	case err != nil:
-		t.Fatal("bounded original M4 envelope query failed")
+		t.Fatalf("bounded original M4 envelope query failed: %s", sanitizeM4Diagnostic(err))
 	case eventID == "" || len(payload) == 0 || len(payload) > 256<<10:
 		t.Fatal("bounded original M4 envelope was invalid for replay")
 	}
@@ -1025,7 +1035,7 @@ func publishM4UploadedEnvelope(t *testing.T, eventID string, payload []byte) {
 	uri := readM4SecretFile(t, uriFile, 4096)
 	connection, err := amqp091.DialConfig(uri, amqp091.Config{Dial: amqp091.DefaultDial(5 * time.Second)})
 	if err != nil {
-		t.Fatal("M4 replay broker connection failed")
+		t.Fatalf("M4 replay broker connection failed: %s", sanitizeM4Diagnostic(err))
 	}
 	defer connection.Close()
 	channel, err := connection.Channel()
@@ -1081,7 +1091,7 @@ func waitForM4DeadLetter(t *testing.T, eventID string, timeout time.Duration) am
 	uri := readM4SecretFile(t, uriFile, 4096)
 	connection, err := amqp091.DialConfig(uri, amqp091.Config{Dial: amqp091.DefaultDial(5 * time.Second)})
 	if err != nil {
-		t.Fatal("M4 dead-letter broker connection failed")
+		t.Fatalf("M4 dead-letter broker connection failed: %s", sanitizeM4Diagnostic(err))
 	}
 	defer connection.Close()
 	channel, err := connection.Channel()

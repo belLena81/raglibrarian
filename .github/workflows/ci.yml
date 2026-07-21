@@ -110,7 +110,26 @@ jobs:
         run: |
           make compose-config
           docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 config --quiet
-          EDGE_RETRIEVAL_READINESS_REQUIRED=true docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 up -d --build --wait --wait-timeout 300
+          POSTGRES_PORT=5432 MINIO_API_PORT=9000 RABBITMQ_AMQP_PORT=5672 EDGE_RETRIEVAL_READINESS_REQUIRED=true \
+            docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 up -d --build --wait --wait-timeout 300
+      - name: Verify host-side integration ports
+        run: |
+          for endpoint in 127.0.0.1:5432 127.0.0.1:5672 127.0.0.1:9000; do
+            host="${endpoint%:*}"
+            port="${endpoint#*:}"
+            ready=false
+            for attempt in $(seq 1 30); do
+              if timeout 2 bash -c ":</dev/tcp/$host/$port" 2>/dev/null; then
+                ready=true
+                break
+              fi
+              sleep 1
+            done
+            if [ "$ready" != "true" ]; then
+              echo "host-side integration port is not reachable: $endpoint" >&2
+              exit 1
+            fi
+          done
       - name: Show TEI startup diagnostics
         if: failure()
         run: |
@@ -126,7 +145,7 @@ jobs:
           E2E_MAIL_FIXTURE_URL=http://127.0.0.1:8025/view/latest.txt \
             make m4-m5-integration-test
       - name: Run M5 Retrieval contracts and focused recovery tests
-        run: make m5-contract-test m5-worker-recovery-test
+        run: make m5-search-quality-test m5-contract-test m5-worker-recovery-test
       - name: Verify database-loss readiness behavior
         run: |
           docker compose stop postgres
@@ -141,10 +160,10 @@ jobs:
           exit 1
       - name: Show container state
         if: failure()
-        run: docker compose ps --all
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 ps --all
       - name: Tear down stack
         if: always()
-        run: docker compose --profile m4-ha down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 down -v
 
   m4-performance:
     if: github.event_name == 'schedule'
