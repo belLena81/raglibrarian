@@ -162,6 +162,190 @@ func TestFailManifestEmitsIncompatibleProfileTerminalEvent(t *testing.T) {
 	}
 }
 
+func TestFailManifestIntegrityDoesNotPersistCorruptManifestPayload(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository := NewPostgres(pool)
+	suffix := randomIntegrationID(t)
+	bookID := "book-" + suffix
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sourceSHA256 := integrationDigest(1)
+	manifestSHA256 := integrationDigest(2)
+	processingDigest := integrationDigest(7)
+	metadataPayloadDigest := integrationDigest(3)
+	processingDigestHex := hex.EncodeToString(processingDigest[:])
+	prefix := "books/" + bookID + "/" + hex.EncodeToString(sourceSHA256[:]) + "/" + processingDigestHex + "/"
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.metadata_facts(book_id,event_id,payload_digest,source_sha256,title,author,publication_year,tags,correlation_id,causation_id,occurred_at)
+		VALUES($1,$2,$3,$4,'Synthetic systems','RAGLibrarian QA',2026,'{}',$5,$6,$7)`, bookID, "metadata-"+suffix, metadataPayloadDigest[:], sourceSHA256[:], "correlation-"+suffix, "cause-"+suffix, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.outbox WHERE aggregate_id IN (SELECT id FROM retrieval.index_jobs WHERE book_id=$1)`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.manifest_facts WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
+	})
+	event := application.ManifestEvent{EventID: "manifest-" + suffix, BookID: bookID, SourceSHA256: sourceSHA256, ManifestSHA256: manifestSHA256,
+		ManifestReference: prefix + "manifest.pb", CorrelationID: "correlation-" + suffix, CausationID: "cause-" + suffix,
+		Producer: "ingestion-service", SchemaVersion: "v1", IdempotencyKey: bookID + ":" + processingDigestHex + ":ready", OccurredAt: now, PayloadDigest: integrationDigest(4)}
+	if err = repository.FailManifest(ctx, event, domain.FailureManifestIntegrity, now); err != nil {
+		t.Fatal(err)
+	}
+	if err = repository.FailManifest(ctx, event, domain.FailureManifestIntegrity, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var payloadBytes, terminalEvents int
+	var category string
+	if err = pool.QueryRow(ctx, `SELECT octet_length(manifest_payload) FROM retrieval.manifest_facts WHERE book_id=$1`, bookID).Scan(&payloadBytes); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT failure_category FROM retrieval.index_jobs WHERE book_id=$1`, bookID).Scan(&category); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.outbox WHERE aggregate_id IN (SELECT id FROM retrieval.index_jobs WHERE book_id=$1)`, bookID).Scan(&terminalEvents); err != nil {
+		t.Fatal(err)
+	}
+	if payloadBytes != 0 || category != string(domain.FailureManifestIntegrity) || terminalEvents != 1 {
+		t.Fatalf("manifest payload bytes=%d category=%q terminal events=%d", payloadBytes, category, terminalEvents)
+	}
+}
+
+func TestFailManifestDefersFailedJobUntilMetadataExists(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository := NewPostgres(pool)
+	suffix := randomIntegrationID(t)
+	bookID := "book-" + suffix
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sourceSHA256 := integrationDigest(1)
+	manifestSHA256 := integrationDigest(2)
+	processingDigest := integrationDigest(7)
+	processingDigestHex := hex.EncodeToString(processingDigest[:])
+	prefix := "books/" + bookID + "/" + hex.EncodeToString(sourceSHA256[:]) + "/" + processingDigestHex + "/"
+	event := application.ManifestEvent{EventID: "manifest-" + suffix, BookID: bookID, SourceSHA256: sourceSHA256, ManifestSHA256: manifestSHA256,
+		ManifestReference: prefix + "manifest.pb", CorrelationID: "correlation-" + suffix, CausationID: "cause-" + suffix,
+		Producer: "ingestion-service", SchemaVersion: "v1", IdempotencyKey: bookID + ":" + processingDigestHex + ":ready", OccurredAt: now, PayloadDigest: integrationDigest(4)}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.outbox WHERE aggregate_id LIKE 'incompatible:%'`)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.manifest_facts WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
+	})
+
+	if err = repository.FailManifest(ctx, event, domain.FailureManifestIntegrity, now); err != nil {
+		t.Fatal(err)
+	}
+
+	var storedCategory string
+	var recordedAt time.Time
+	var jobs, terminalEvents int
+	if err = pool.QueryRow(ctx, `SELECT failure_category,failure_recorded_at FROM retrieval.manifest_facts WHERE book_id=$1`, bookID).Scan(&storedCategory, &recordedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.index_jobs WHERE book_id=$1`, bookID).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.outbox WHERE event_type='retrieval.book.indexing-failed.v1'`).Scan(&terminalEvents); err != nil {
+		t.Fatal(err)
+	}
+	if storedCategory != string(domain.FailureManifestIntegrity) || !recordedAt.Equal(now) || jobs != 0 || terminalEvents != 0 {
+		t.Fatalf("stored category=%q recorded_at=%s jobs=%d terminal events=%d", storedCategory, recordedAt, jobs, terminalEvents)
+	}
+}
+
+func TestProjectMetadataMaterializesDeferredFailedManifestOnce(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository := NewPostgres(pool)
+	suffix := randomIntegrationID(t)
+	bookID := "book-" + suffix
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sourceSHA256 := integrationDigest(1)
+	manifestSHA256 := integrationDigest(2)
+	processingDigest := integrationDigest(7)
+	processingDigestHex := hex.EncodeToString(processingDigest[:])
+	prefix := "books/" + bookID + "/" + hex.EncodeToString(sourceSHA256[:]) + "/" + processingDigestHex + "/"
+	event := application.ManifestEvent{EventID: "manifest-" + suffix, BookID: bookID, SourceSHA256: sourceSHA256, ManifestSHA256: manifestSHA256,
+		ManifestReference: prefix + "manifest.pb", CorrelationID: "correlation-" + suffix, CausationID: "cause-" + suffix,
+		Producer: "ingestion-service", SchemaVersion: "v1", IdempotencyKey: bookID + ":" + processingDigestHex + ":ready", OccurredAt: now, PayloadDigest: integrationDigest(4)}
+	metadata := application.MetadataEvent{EventID: "metadata-" + suffix, BookID: bookID, Title: "Synthetic systems", Author: "RAGLibrarian QA", Year: 2026,
+		SourceSHA256: sourceSHA256, PayloadDigest: integrationDigest(3), CorrelationID: "correlation-" + suffix, CausationID: "cause-" + suffix,
+		Producer: "catalog-service", SchemaVersion: "v1", IdempotencyKey: bookID, OccurredAt: now.Add(time.Second)}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.outbox WHERE aggregate_id LIKE 'incompatible:%'`)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.manifest_facts WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
+	})
+
+	if err = repository.FailManifest(ctx, event, domain.FailureManifestIntegrity, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repository.ProjectMetadata(ctx, metadata); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repository.ProjectMetadata(ctx, metadata); err != nil {
+		t.Fatal(err)
+	}
+
+	jobID := failedManifestJobID(event)
+	var state, category string
+	var createdAt time.Time
+	var outboxPayload []byte
+	var jobs, terminalEvents int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.index_jobs WHERE id=$1`, jobID).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT state,failure_category,created_at FROM retrieval.index_jobs WHERE id=$1`, jobID).Scan(&state, &category, &createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.outbox WHERE event_id=$1`, jobID+":failed").Scan(&terminalEvents); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT payload FROM retrieval.outbox WHERE event_id=$1`, jobID+":failed").Scan(&outboxPayload); err != nil {
+		t.Fatal(err)
+	}
+	var message retrievalv1.BookIndexingFailedV1
+	if err = proto.Unmarshal(outboxPayload, &message); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 1 || terminalEvents != 1 || state != "failed" || category != string(domain.FailureManifestIntegrity) || !createdAt.Equal(now) ||
+		message.BookId != bookID || message.FailureCategory != retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_MANIFEST_INTEGRITY {
+		t.Fatalf("jobs=%d events=%d state=%q category=%q created_at=%s message=%s", jobs, terminalEvents, state, category, createdAt, message.FailureCategory)
+	}
+}
+
 func TestCompleteBatchRejectsDuplicateChunkID(t *testing.T) {
 	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
 		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")

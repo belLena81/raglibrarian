@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
@@ -69,10 +70,56 @@ func TestQdrantSearchDocumentsHydratesStoredChunkEvidence(t *testing.T) {
 	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
 	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 2})
 
-	documents, err := store.SearchDocuments(context.Background(), query, make([]float32, domain.EmbeddingDimensions), 4, 2)
+	page, err := store.SearchDocuments(context.Background(), query, make([]float32, domain.EmbeddingDimensions), 4, 2)
 
-	if err != nil || len(documents) != 2 || documents[0].DocumentID != "document-1" || len(documents[0].Evidence) != 1 || requests != 2 {
-		t.Fatalf("SearchDocuments() = %#v, %v", documents, err)
+	if err != nil || len(page.Documents) != 2 || page.Documents[0].DocumentID != "document-1" || len(page.Documents[0].Evidence) != 1 || !page.Exhausted || requests != 2 {
+		t.Fatalf("SearchDocuments() = %#v, %v", page, err)
+	}
+}
+
+func TestQdrantSearchDocumentsKeepsFullRawPageOpenAfterHydrationDrops(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
+		requests++
+		switch requests {
+		case 1:
+			return response(http.StatusOK, `{"result":{"points":[{"id":"document-point-1","score":0.8,"payload":{"document_id":"document-1","job_id":"job-1","book_id":"book-1","chunk_count":1}},{"id":"document-point-2","score":0.7,"payload":{"document_id":"document-2","job_id":"job-2","book_id":"book-2","chunk_count":1}}]}}`)
+		case 2:
+			return response(http.StatusOK, `{"result":[{"points":[]},{"points":[]}]}`)
+		default:
+			t.Fatalf("unexpected request %d", requests)
+			return response(http.StatusInternalServerError, `{}`)
+		}
+	})}
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 1})
+
+	page, err := store.SearchDocuments(context.Background(), query, make([]float32, domain.EmbeddingDimensions), 2, 0)
+
+	if err != nil || len(page.Documents) != 0 || page.Exhausted || requests != 2 {
+		t.Fatalf("SearchDocuments() = %#v, %v", page, err)
+	}
+}
+
+func TestQdrantSearchEvidenceBatchAcceptsHydrationResponseLargerThanFourMiB(t *testing.T) {
+	passage := strings.Repeat("e", maximumQdrantResponseBytes)
+	batchResponse := `{"result":[{"points":[{"score":0.9,"payload":{"evidence_id":"evidence-1","chunk_id":"chunk-1","job_id":"job-1","book_id":"book-1","passage":"` + passage + `"}}]}]}`
+	if len(batchResponse) <= maximumQdrantResponseBytes || len(batchResponse) >= maximumEvidenceBatchResponseBytes {
+		t.Fatalf("batch response size = %d, want between %d and %d", len(batchResponse), maximumQdrantResponseBytes, maximumEvidenceBatchResponseBytes)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
+		if request.URL.Path != "/collections/evidence/points/query/batch" {
+			t.Fatalf("request path = %q", request.URL.Path)
+		}
+		return response(http.StatusOK, batchResponse)
+	})}
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 1})
+
+	results, err := store.searchEvidenceBatch(context.Background(), query, make([]float32, domain.EmbeddingDimensions), []string{"job-1"}, 3)
+
+	if err != nil || len(results) != 1 || len(results[0]) != 1 || results[0][0].Passage != passage {
+		t.Fatalf("searchEvidenceBatch() = %#v, %v", results, err)
 	}
 }
 

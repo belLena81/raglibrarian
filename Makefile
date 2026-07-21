@@ -154,7 +154,7 @@ stack-up: _require_root
 	@test -r "$${M5_MODEL_DIR:-.dev/models/m5-jina-code-v1}/.revision" || { echo "M5 model cache is missing; run make m5-model-bootstrap"; exit 1; }
 	@test -r "$${CERT_DIR:-.dev/certs}/retrieval-service.crt" && test -r "$${CERT_DIR:-.dev/certs}/retrieval-service.key" || { echo "M5 Retrieval certificate is missing; run bash scripts/ensure-m5-dev-cert.sh"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/identity_bootstrap_verifier" || { echo "bootstrap verifier is missing; run make bootstrap-verifier"; exit 1; }
-	@docker compose --profile m5 up -d --build
+	@EDGE_RETRIEVAL_READINESS_REQUIRED=true docker compose --profile m5 up -d --build
 
 # dev is retained as a convenient alias for the full Compose workflow.
 dev: stack-up

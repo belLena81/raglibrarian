@@ -85,7 +85,7 @@ bash ./scripts/ensure-m5-dev-cert.sh "$cert_dir"
 bash ./scripts/bootstrap-m5-model.sh
 
 make compose-config
-docker compose --profile m5 up -d --build --wait --wait-timeout 300
+EDGE_RETRIEVAL_READINESS_REQUIRED=true docker compose --profile m5 up -d --build --wait --wait-timeout 300
 
 log_pid_dir=.dev/log-pids
 mkdir -p "$log_pid_dir"

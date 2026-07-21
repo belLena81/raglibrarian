@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	maximumQdrantResponseBytes = 4 << 20
-	collectionProfileDigestKey = "raglibrarian_index_profile_digest"
+	maximumQdrantResponseBytes        = 4 << 20
+	maximumEvidenceBatchResponseBytes = 8 << 20
+	collectionProfileDigestKey        = "raglibrarian_index_profile_digest"
 )
 
 type Qdrant struct {
@@ -117,14 +118,14 @@ func (q *Qdrant) Search(ctx context.Context, query domain.SearchQuery, vector []
 	return q.searchEvidence(ctx, query, vector, limit, offset, []condition{{Key: "vector_kind", Match: &matchValue{Value: "chunk"}}})
 }
 
-func (q *Qdrant) SearchDocuments(ctx context.Context, query domain.SearchQuery, vector []float32, limit, offset int) ([]application.DocumentResult, error) {
+func (q *Qdrant) SearchDocuments(ctx context.Context, query domain.SearchQuery, vector []float32, limit, offset int) (application.DocumentPage, error) {
 	payload, err := json.Marshal(queryRequest{Query: vector, Limit: limit, Offset: offset, WithPayload: true, Filter: buildFilter(query.Filters(), []condition{{Key: "vector_kind", Match: &matchValue{Value: "document"}}}), ScoreThreshold: 0.25})
 	if err != nil {
-		return nil, errors.New("encode vector query")
+		return application.DocumentPage{}, errors.New("encode vector query")
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, q.endpoint+"/collections/"+q.collection+"/points/query", bytes.NewReader(payload))
 	if err != nil {
-		return nil, errors.New("create vector query")
+		return application.DocumentPage{}, errors.New("create vector query")
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if q.apiKey != "" {
@@ -132,16 +133,16 @@ func (q *Qdrant) SearchDocuments(ctx context.Context, query domain.SearchQuery, 
 	}
 	response, err := q.client.Do(request) // #nosec G704 -- NewQdrant accepts only a validated operator-controlled endpoint.
 	if err != nil {
-		return nil, errors.New("vector dependency unavailable")
+		return application.DocumentPage{}, errors.New("vector dependency unavailable")
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumQdrantResponseBytes))
-		return nil, errors.New("vector dependency rejected query")
+		return application.DocumentPage{}, errors.New("vector dependency rejected query")
 	}
 	var decoded queryResponse
 	if err = json.NewDecoder(io.LimitReader(response.Body, maximumQdrantResponseBytes)).Decode(&decoded); err != nil {
-		return nil, errors.New("invalid vector response")
+		return application.DocumentPage{}, errors.New("invalid vector response")
 	}
 	results := make([]application.DocumentResult, 0, len(decoded.Result.Points))
 	jobIDs := make([]string, 0, len(decoded.Result.Points))
@@ -157,7 +158,7 @@ func (q *Qdrant) SearchDocuments(ctx context.Context, query domain.SearchQuery, 
 	}
 	evidence, err := q.searchEvidenceBatch(ctx, query, vector, jobIDs, 3)
 	if err != nil {
-		return nil, err
+		return application.DocumentPage{}, err
 	}
 	hydrated := make([]application.DocumentResult, 0, len(results))
 	for index, result := range results {
@@ -167,7 +168,7 @@ func (q *Qdrant) SearchDocuments(ctx context.Context, query domain.SearchQuery, 
 		result.Evidence = evidence[index]
 		hydrated = append(hydrated, result)
 	}
-	return hydrated, nil
+	return application.DocumentPage{Documents: hydrated, Exhausted: len(decoded.Result.Points) < limit}, nil
 }
 
 func (q *Qdrant) searchEvidence(ctx context.Context, query domain.SearchQuery, vector []float32, limit, offset int, extra []condition) ([]application.Evidence, error) {
@@ -243,7 +244,7 @@ func (q *Qdrant) searchEvidenceBatch(ctx context.Context, query domain.SearchQue
 		return nil, errors.New("vector dependency rejected query")
 	}
 	var decoded queryBatchResponse
-	if err = json.NewDecoder(io.LimitReader(response.Body, maximumQdrantResponseBytes)).Decode(&decoded); err != nil || len(decoded.Result) != len(jobIDs) {
+	if err = json.NewDecoder(io.LimitReader(response.Body, maximumEvidenceBatchResponseBytes)).Decode(&decoded); err != nil || len(decoded.Result) != len(jobIDs) {
 		return nil, errors.New("invalid vector response")
 	}
 	for index, result := range decoded.Result {

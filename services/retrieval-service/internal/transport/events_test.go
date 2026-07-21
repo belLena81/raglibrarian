@@ -3,10 +3,12 @@ package transport
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"testing"
 	"time"
 
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -25,6 +27,66 @@ func TestDecodeManifestBindsOuterDescriptorAndProcessingIdentity(t *testing.T) {
 	conflicting, _ := proto.MarshalOptions{Deterministic: true}.Marshal(&outer)
 	if _, err := DecodeManifest(conflicting, manifest); err == nil {
 		t.Fatal("DecodeManifest() accepted conflicting outer chunk count")
+	}
+}
+
+func TestDecodeManifestEnvelopeValidatesOuterDescriptorWithoutArtifact(t *testing.T) {
+	payload, _ := validManifestPayloads(t)
+
+	event, err := DecodeManifestEnvelope(payload)
+	if err != nil {
+		t.Fatalf("DecodeManifestEnvelope() error = %v", err)
+	}
+	if event.BookID != "book-1" || event.ManifestReference == "" || event.ManifestSHA256 == ([sha256.Size]byte{}) {
+		t.Fatalf("DecodeManifestEnvelope() event = %#v", event)
+	}
+	if len(event.Manifest.Shards) != 0 {
+		t.Fatal("DecodeManifestEnvelope() retained manifest artifact data")
+	}
+}
+
+func TestDecodeManifestRetainsValidatedEnvelopeForCorruptArtifact(t *testing.T) {
+	payload, manifest := validManifestPayloads(t)
+	manifest[0] ^= 0xff
+
+	event, err := DecodeManifest(payload, manifest)
+	if !errors.Is(err, application.ErrInvalidEvent) {
+		t.Fatalf("DecodeManifest() error = %v, want invalid event", err)
+	}
+	if err := event.ValidateEnvelope(); err != nil {
+		t.Fatalf("corrupt manifest lost validated envelope: %v", err)
+	}
+	if len(event.Manifest.Shards) != 0 {
+		t.Fatal("corrupt manifest was retained")
+	}
+}
+
+func TestDecodeManifestRejectsInvalidOuterEventWithoutEnvelope(t *testing.T) {
+	payload, manifest := validManifestPayloads(t)
+	var outer ingestionv1.BookChunksReadyV1
+	if err := proto.Unmarshal(payload, &outer); err != nil {
+		t.Fatal(err)
+	}
+	outer.BookId = "invalid/book"
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(&outer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	event, err := DecodeManifest(payload, manifest)
+	if !errors.Is(err, application.ErrInvalidEvent) {
+		t.Fatalf("DecodeManifest() error = %v, want invalid event", err)
+	}
+	if event.EventID != "" || event.BookID != "" || event.ManifestReference != "" {
+		t.Fatalf("invalid outer event retained identity: %#v", event)
+	}
+
+	event, err = DecodeManifestEnvelope(payload)
+	if !errors.Is(err, application.ErrInvalidEvent) {
+		t.Fatalf("DecodeManifestEnvelope() error = %v, want invalid event", err)
+	}
+	if event.EventID != "" || event.BookID != "" || event.ManifestReference != "" {
+		t.Fatalf("invalid outer envelope retained identity: %#v", event)
 	}
 }
 

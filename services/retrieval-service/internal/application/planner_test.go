@@ -56,6 +56,19 @@ func TestPlannerRejectsIncompatibleManifestProfile(t *testing.T) {
 	}
 }
 
+func TestManifestFailureCategoryRequiresValidatedEnvelope(t *testing.T) {
+	event := validManifestEvent()
+	event.Manifest = Manifest{}
+	category, terminal := ManifestFailureCategory(event, ErrInvalidEvent)
+	if !terminal || category != domain.FailureManifestIntegrity {
+		t.Fatalf("ManifestFailureCategory() = %q, %v", category, terminal)
+	}
+	event.BookID = "invalid/book"
+	if _, terminal = ManifestFailureCategory(event, ErrInvalidEvent); terminal {
+		t.Fatal("invalid outer event was classified as a terminal manifest failure")
+	}
+}
+
 func TestPlannerRejectsArtifactSubstitutionAndResourceBombs(t *testing.T) {
 	for name, mutate := range map[string]func(*ManifestEvent){
 		"manifest path": func(event *ManifestEvent) { event.ManifestReference = "books/other/manifest.pb" },

@@ -49,12 +49,19 @@ func (s *Secret) UnmarshalJSON(payload []byte) error {
 }
 
 type Runtime struct {
-	repository *repository.Postgres
-	objects    storage.ObjectStore
-	planner    *application.Planner
-	indexer    *application.Indexer
-	vector     *vector.Qdrant
-	secret     Secret
+	repository    *repository.Postgres
+	manifestFails manifestFailureRecorder
+	objects       storage.ObjectStore
+	planner       *application.Planner
+	indexer       *application.Indexer
+	vector        *vector.Qdrant
+	secret        Secret
+}
+
+var errManifestArtifactRead = errors.New("manifest artifact read failed")
+
+type manifestFailureRecorder interface {
+	FailManifest(context.Context, application.ManifestEvent, domain.FailureCategory, time.Time) error
 }
 
 func validateMode() error {
@@ -90,7 +97,7 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
-	return &Runtime{repository: records, objects: objects, planner: planner, secret: secret}, nil
+	return &Runtime{repository: records, manifestFails: records, objects: objects, planner: planner, secret: secret}, nil
 }
 
 func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
@@ -141,7 +148,7 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
-	return &Runtime{repository: records, objects: objects, indexer: indexer, vector: index, secret: secret}, nil
+	return &Runtime{repository: records, manifestFails: records, objects: objects, indexer: indexer, vector: index, secret: secret}, nil
 }
 
 func NewDispatcherRuntime(ctx context.Context) (*Runtime, error) {
@@ -169,7 +176,8 @@ func newDatabaseRuntime(ctx context.Context, publisher bool) (*Runtime, error) {
 	if err != nil {
 		return nil, errors.New("configure retrieval database")
 	}
-	return &Runtime{repository: repository.NewPostgres(pool), secret: secret}, nil
+	records := repository.NewPostgres(pool)
+	return &Runtime{repository: records, manifestFails: records, secret: secret}, nil
 }
 
 type RabbitEvent struct {
@@ -200,22 +208,36 @@ func (r *Runtime) Plan(ctx context.Context, event RabbitEvent) error {
 	if !queueContains(queue, "retrieval.chunks-ready.v1") {
 		return application.ErrInvalidEvent
 	}
-	reference, err := transport.ManifestReference(payload)
+	manifest, err := transport.DecodeManifestEnvelope(payload)
 	if err != nil {
 		return err
 	}
-	manifestPayload, err := r.objects.ReadBounded(ctx, reference, 4<<20)
+	manifestPayload, err := r.objects.ReadBounded(ctx, manifest.ManifestReference, 4<<20)
 	if err != nil {
+		if eventAttempt(event) >= 4 {
+			return r.recordManifestArtifactRead(ctx, payload, errors.Join(errManifestArtifactRead, err))
+		}
 		return err
 	}
-	manifest, err := transport.DecodeManifest(payload, manifestPayload)
+	manifest, err = transport.DecodeManifest(payload, manifestPayload)
 	if err != nil {
-		if errors.Is(err, application.ErrUnsupportedIndexProfile) {
-			return r.repository.FailManifest(ctx, manifest, domain.FailureIncompatibleProfile, time.Now().UTC())
+		if category, terminal := application.ManifestFailureCategory(manifest, err); terminal {
+			return r.manifestFailureRecorder().FailManifest(ctx, manifest, category, time.Now().UTC())
 		}
 		return err
 	}
 	return r.planner.HandleManifest(ctx, manifest)
+}
+
+func (r *Runtime) recordManifestArtifactRead(ctx context.Context, payload []byte, err error) error {
+	if !errors.Is(err, errManifestArtifactRead) {
+		return err
+	}
+	event, decodeErr := transport.DecodeManifestEnvelope(payload)
+	if decodeErr != nil {
+		return decodeErr
+	}
+	return r.manifestFailureRecorder().FailManifest(ctx, event, domain.FailureManifestIntegrity, time.Now().UTC())
 }
 
 func (r *Runtime) Index(ctx context.Context, event RabbitEvent) error {
@@ -333,6 +355,13 @@ func eventAttempt(event RabbitEvent) int64 {
 		}
 	}
 	return 5
+}
+
+func (r *Runtime) manifestFailureRecorder() manifestFailureRecorder {
+	if r.manifestFails != nil {
+		return r.manifestFails
+	}
+	return r.repository
 }
 
 func queueContains(value, queue string) bool {

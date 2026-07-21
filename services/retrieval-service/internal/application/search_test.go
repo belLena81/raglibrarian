@@ -89,6 +89,30 @@ func TestSearcherBackfillsAfterVisibilityFiltering(t *testing.T) {
 	}
 }
 
+func TestSearcherContinuesDocumentPaginationAfterHydrationDropsCandidates(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{documentPages: []DocumentPage{
+		{Exhausted: false},
+		{Documents: []DocumentResult{{DocumentID: "document-2", JobID: "job-2", BookID: "book-2", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "evidence-2"}}}}, Exhausted: true},
+	}}
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	if err != nil {
+		t.Fatalf("NewSearcher() error = %v", err)
+	}
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 1})
+
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Documents) != 1 || result.Documents[0].DocumentID != "document-2" {
+		t.Fatalf("documents = %#v", result.Documents)
+	}
+	if store.documentCalls != 2 {
+		t.Fatalf("document calls = %d, want 2", store.documentCalls)
+	}
+}
+
 type stubEmbedder struct {
 	calls  int
 	vector []float32
@@ -108,6 +132,7 @@ type stubEvidenceStore struct {
 	documents       []DocumentResult
 	resultsByPage   [][]Evidence
 	documentsByPage [][]DocumentResult
+	documentPages   []DocumentPage
 	requests        []searchRequest
 	err             error
 }
@@ -131,18 +156,25 @@ func (s *stubEvidenceStore) Search(_ context.Context, query domain.SearchQuery, 
 	return s.results, s.err
 }
 
-func (s *stubEvidenceStore) SearchDocuments(_ context.Context, query domain.SearchQuery, _ []float32, limit, offset int) ([]DocumentResult, error) {
+func (s *stubEvidenceStore) SearchDocuments(_ context.Context, query domain.SearchQuery, _ []float32, limit, offset int) (DocumentPage, error) {
 	s.documentCalls++
 	s.query = query
 	s.requests = append(s.requests, searchRequest{limit: limit, offset: offset})
+	if len(s.documentPages) > 0 {
+		index := offset / limit
+		if index < len(s.documentPages) {
+			return s.documentPages[index], s.err
+		}
+		return DocumentPage{Exhausted: true}, s.err
+	}
 	if len(s.documentsByPage) > 0 {
 		index := offset / limit
 		if index < len(s.documentsByPage) {
-			return s.documentsByPage[index], s.err
+			return DocumentPage{Documents: s.documentsByPage[index], Exhausted: index == len(s.documentsByPage)-1}, s.err
 		}
-		return nil, s.err
+		return DocumentPage{Exhausted: true}, s.err
 	}
-	return s.documents, s.err
+	return DocumentPage{Documents: s.documents, Exhausted: true}, s.err
 }
 
 type visibleIndexes struct{}

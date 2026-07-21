@@ -684,6 +684,8 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_healthy
+      retrieval-qdrant-init:
+        condition: service_completed_successfully
       text-embeddings-inference:
         condition: service_healthy
     pids_limit: 128

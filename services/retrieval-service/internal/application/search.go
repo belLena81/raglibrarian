@@ -31,6 +31,13 @@ type DocumentResult struct {
 	Evidence                                 []Evidence
 }
 
+// DocumentPage is a hydrated document-search page. Exhausted reflects the raw
+// Qdrant page, before candidates without usable chunk evidence are omitted.
+type DocumentPage struct {
+	Documents []DocumentResult
+	Exhausted bool
+}
+
 // SearchResult contains Retrieval-owned search projections.
 type SearchResult struct {
 	Evidence  []Evidence
@@ -43,7 +50,7 @@ type QueryEmbedder interface {
 
 type EvidenceStore interface {
 	Search(context.Context, domain.SearchQuery, []float32, int, int) ([]Evidence, error)
-	SearchDocuments(context.Context, domain.SearchQuery, []float32, int, int) ([]DocumentResult, error)
+	SearchDocuments(context.Context, domain.SearchQuery, []float32, int, int) (DocumentPage, error)
 }
 
 type IndexVisibility interface {
@@ -114,16 +121,16 @@ func (s *Searcher) searchVisibleDocuments(ctx context.Context, query domain.Sear
 	results := make([]DocumentResult, 0, query.Limit())
 	for offset, pageLimit := 0, searchPageLimit(query.Limit()); len(results) < query.Limit() && offset < maximumSearchCandidates; offset += pageLimit {
 		candidateLimit := searchCandidateLimit(pageLimit, offset)
-		candidates, err := s.store.SearchDocuments(ctx, query, vector, candidateLimit, offset)
+		page, err := s.store.SearchDocuments(ctx, query, vector, candidateLimit, offset)
 		if err != nil {
 			return nil, errors.New("search documents")
 		}
-		visible, err := s.visibility.FilterIndexedDocuments(ctx, candidates)
+		visible, err := s.visibility.FilterIndexedDocuments(ctx, page.Documents)
 		if err != nil {
 			return nil, errors.New("validate document visibility")
 		}
 		results = append(results, visible...)
-		if len(candidates) < candidateLimit {
+		if page.Exhausted {
 			break
 		}
 	}

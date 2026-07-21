@@ -40,7 +40,12 @@ func (r *Postgres) CheckReady(ctx context.Context) error {
 }
 
 func (r *Postgres) ProjectMetadata(ctx context.Context, event application.MetadataEvent) (application.PlanningSnapshot, error) {
-	command, err := r.pool.Exec(ctx, `INSERT INTO retrieval.metadata_facts
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return application.PlanningSnapshot{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	command, err := tx.Exec(ctx, `INSERT INTO retrieval.metadata_facts
 		(book_id,event_id,payload_digest,source_sha256,title,author,publication_year,tags,correlation_id,causation_id,occurred_at)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT DO NOTHING`, event.BookID, event.EventID, event.PayloadDigest[:], event.SourceSHA256[:], event.Title, event.Author, event.Year, event.Tags, event.CorrelationID, event.CausationID, event.OccurredAt)
 	if err != nil {
@@ -48,9 +53,15 @@ func (r *Postgres) ProjectMetadata(ctx context.Context, event application.Metada
 	}
 	if command.RowsAffected() == 0 {
 		var digest []byte
-		if err = r.pool.QueryRow(ctx, `SELECT payload_digest FROM retrieval.metadata_facts WHERE book_id=$1 OR event_id=$2`, event.BookID, event.EventID).Scan(&digest); err != nil || !equalDigest(digest, event.PayloadDigest) {
+		if err = tx.QueryRow(ctx, `SELECT payload_digest FROM retrieval.metadata_facts WHERE book_id=$1 OR event_id=$2`, event.BookID, event.EventID).Scan(&digest); err != nil || !equalDigest(digest, event.PayloadDigest) {
 			return application.PlanningSnapshot{}, application.ErrConflictingEvent
 		}
+	}
+	if err = r.materializeDeferredFailedManifest(ctx, tx, event.BookID); err != nil {
+		return application.PlanningSnapshot{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return application.PlanningSnapshot{}, err
 	}
 	return r.loadSnapshot(ctx, event.BookID)
 }
@@ -90,18 +101,22 @@ func (r *Postgres) loadSnapshot(ctx context.Context, bookID string) (application
 	}
 	manifest := application.ManifestEvent{BookID: bookID, Producer: "ingestion-service", SchemaVersion: "v1"}
 	var manifestDigest, manifestSource, manifestSHA256, manifestPayload []byte
-	err = r.pool.QueryRow(ctx, `SELECT event_id,payload_digest,source_sha256,manifest_sha256,manifest_reference,manifest_payload,correlation_id,causation_id,occurred_at FROM retrieval.manifest_facts WHERE book_id=$1`, bookID).
-		Scan(&manifest.EventID, &manifestDigest, &manifestSource, &manifestSHA256, &manifest.ManifestReference, &manifestPayload, &manifest.CorrelationID, &manifest.CausationID, &manifest.OccurredAt)
+	var manifestFailureCategory string
+	err = r.pool.QueryRow(ctx, `SELECT event_id,payload_digest,source_sha256,manifest_sha256,manifest_reference,manifest_payload,correlation_id,causation_id,occurred_at,coalesce(failure_category,'')
+		FROM retrieval.manifest_facts WHERE book_id=$1`, bookID).
+		Scan(&manifest.EventID, &manifestDigest, &manifestSource, &manifestSHA256, &manifest.ManifestReference, &manifestPayload, &manifest.CorrelationID, &manifest.CausationID, &manifest.OccurredAt, &manifestFailureCategory)
 	if err == nil {
 		manifest.IdempotencyKey = bookID + ":stored:ready"
 		copy(manifest.PayloadDigest[:], manifestDigest)
 		copy(manifest.SourceSHA256[:], manifestSource)
 		copy(manifest.ManifestSHA256[:], manifestSHA256)
-		manifest.Manifest, err = decodeManifest(manifestPayload, manifest.ManifestSHA256)
-		if err != nil {
-			return application.PlanningSnapshot{}, err
+		if manifestFailureCategory == "" {
+			manifest.Manifest, err = decodeManifest(manifestPayload, manifest.ManifestSHA256)
+			if err != nil {
+				return application.PlanningSnapshot{}, err
+			}
+			snapshot.Manifest = &manifest
 		}
-		snapshot.Manifest = &manifest
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return application.PlanningSnapshot{}, err
 	}
@@ -334,6 +349,12 @@ type queryExecer interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }
 
+type storedManifestFailure struct {
+	event      application.ManifestEvent
+	category   domain.FailureCategory
+	recordedAt time.Time
+}
+
 func (r *Postgres) accumulateDocumentVector(ctx context.Context, tx queryExecer, jobID string, batchVectorSum []float32, chunkCount int, now time.Time) error {
 	var vectorSum []float32
 	var accumulated int
@@ -451,25 +472,32 @@ func (r *Postgres) FailManifest(ctx context.Context, event application.ManifestE
 	if !ok {
 		return application.ErrInvalidEvent
 	}
-	if err := event.Validate(domain.SupportedIndexProfile()); !errors.Is(err, application.ErrUnsupportedIndexProfile) {
-		if err != nil {
+	manifestPayload := []byte{}
+	if category == domain.FailureManifestIntegrity {
+		if err := event.ValidateEnvelope(); err != nil {
 			return err
 		}
-		return application.ErrInvalidEvent
+	} else {
+		if err := event.Validate(domain.SupportedIndexProfile()); !errors.Is(err, application.ErrUnsupportedIndexProfile) {
+			if err != nil {
+				return err
+			}
+			return application.ErrInvalidEvent
+		}
+		var err error
+		manifestPayload, err = encodeManifest(event.Manifest)
+		if err != nil {
+			return application.ErrInvalidEvent
+		}
 	}
-	manifestPayload, err := encodeManifest(event.Manifest)
-	if err != nil {
-		return application.ErrInvalidEvent
-	}
-	jobID := failedManifestJobID(event)
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	command, err := tx.Exec(ctx, `INSERT INTO retrieval.manifest_facts
-		(book_id,event_id,payload_digest,source_sha256,manifest_sha256,manifest_reference,manifest_payload,correlation_id,causation_id,occurred_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING`, event.BookID, event.EventID, event.PayloadDigest[:], event.SourceSHA256[:], event.ManifestSHA256[:], event.ManifestReference, manifestPayload, event.CorrelationID, event.CausationID, event.OccurredAt)
+		(book_id,event_id,payload_digest,source_sha256,manifest_sha256,manifest_reference,manifest_payload,correlation_id,causation_id,occurred_at,failure_category,failure_recorded_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING`, event.BookID, event.EventID, event.PayloadDigest[:], event.SourceSHA256[:], event.ManifestSHA256[:], event.ManifestReference, manifestPayload, event.CorrelationID, event.CausationID, event.OccurredAt, string(category), now)
 	if err != nil {
 		return err
 	}
@@ -479,27 +507,86 @@ func (r *Postgres) FailManifest(ctx context.Context, event application.ManifestE
 			return application.ErrConflictingEvent
 		}
 	}
-	profileDigest := domain.SupportedIndexProfile().Digest
-	command, err = tx.Exec(ctx, `INSERT INTO retrieval.index_jobs
-		(id,book_id,source_sha256,manifest_sha256,profile_digest,state,expected_batches,failure_category,correlation_id,created_at,updated_at)
-		VALUES($1,$2,$3,$4,$5,'failed',0,$6,$7,$8,$8) ON CONFLICT DO NOTHING`, jobID, event.BookID, event.SourceSHA256[:], event.ManifestSHA256[:], profileDigest[:], string(category), event.CorrelationID, now)
+	metadataExists, err := metadataExists(ctx, tx, event.BookID)
 	if err != nil {
 		return err
 	}
-	if command.RowsAffected() == 1 {
-		message := &retrievalv1.BookIndexingFailedV1{EventId: jobID + ":failed", BookId: event.BookID, JobId: jobID,
-			SourceSha256: event.SourceSHA256[:], ManifestSha256: event.ManifestSHA256[:], IndexProfileDigest: profileDigest[:], FailureCategory: protoCategory,
-			CorrelationId: event.CorrelationID, OccurredAt: timestamppb.New(now), CausationId: event.EventID, Producer: "retrieval-service", SchemaVersion: "v1", IdempotencyKey: jobID + ":failed"}
-		payload, marshalErr := proto.MarshalOptions{Deterministic: true}.Marshal(message)
-		if marshalErr != nil {
-			return marshalErr
-		}
-		_, err = tx.Exec(ctx, `INSERT INTO retrieval.outbox(event_id,event_type,aggregate_id,payload,occurred_at,next_attempt_at) VALUES($1,'retrieval.book.indexing-failed.v1',$2,$3,$4,$4) ON CONFLICT DO NOTHING`, message.EventId, jobID, payload, now)
-		if err != nil {
+	if metadataExists {
+		failure := storedManifestFailure{event: event, category: category, recordedAt: now}
+		if err = r.materializeStoredFailedManifest(ctx, tx, failure, protoCategory); err != nil {
 			return err
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+func metadataExists(ctx context.Context, tx queryExecer, bookID string) (bool, error) {
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM retrieval.metadata_facts WHERE book_id=$1)`, bookID).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func loadStoredManifestFailure(ctx context.Context, tx queryExecer, bookID string) (*storedManifestFailure, error) {
+	var failure storedManifestFailure
+	var digest, sourceSHA256, manifestSHA256 []byte
+	var category string
+	err := tx.QueryRow(ctx, `SELECT event_id,payload_digest,source_sha256,manifest_sha256,manifest_reference,correlation_id,causation_id,occurred_at,failure_category,failure_recorded_at
+		FROM retrieval.manifest_facts WHERE book_id=$1 AND failure_category IS NOT NULL`, bookID).
+		Scan(&failure.event.EventID, &digest, &sourceSHA256, &manifestSHA256, &failure.event.ManifestReference, &failure.event.CorrelationID, &failure.event.CausationID, &failure.event.OccurredAt, &category, &failure.recordedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	failure.event.BookID = bookID
+	failure.event.Producer = "ingestion-service"
+	failure.event.SchemaVersion = "v1"
+	copy(failure.event.PayloadDigest[:], digest)
+	copy(failure.event.SourceSHA256[:], sourceSHA256)
+	copy(failure.event.ManifestSHA256[:], manifestSHA256)
+	failure.category = domain.FailureCategory(category)
+	if _, ok := failureProto(failure.category); !ok {
+		return nil, application.ErrConflictingEvent
+	}
+	return &failure, nil
+}
+
+func (r *Postgres) materializeDeferredFailedManifest(ctx context.Context, tx queryExecer, bookID string) error {
+	failure, err := loadStoredManifestFailure(ctx, tx, bookID)
+	if err != nil || failure == nil {
+		return err
+	}
+	protoCategory, ok := failureProto(failure.category)
+	if !ok {
+		return application.ErrConflictingEvent
+	}
+	return r.materializeStoredFailedManifest(ctx, tx, *failure, protoCategory)
+}
+
+func (r *Postgres) materializeStoredFailedManifest(ctx context.Context, tx queryExecer, failure storedManifestFailure, protoCategory retrievalv1.BookIndexingFailureCategory) error {
+	profileDigest := domain.SupportedIndexProfile().Digest
+	jobID := failedManifestJobID(failure.event)
+	command, err := tx.Exec(ctx, `INSERT INTO retrieval.index_jobs
+		(id,book_id,source_sha256,manifest_sha256,profile_digest,state,expected_batches,failure_category,correlation_id,created_at,updated_at)
+		VALUES($1,$2,$3,$4,$5,'failed',0,$6,$7,$8,$8) ON CONFLICT DO NOTHING`, jobID, failure.event.BookID, failure.event.SourceSHA256[:], failure.event.ManifestSHA256[:], profileDigest[:], string(failure.category), failure.event.CorrelationID, failure.recordedAt)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return nil
+	}
+	message := &retrievalv1.BookIndexingFailedV1{EventId: jobID + ":failed", BookId: failure.event.BookID, JobId: jobID,
+		SourceSha256: failure.event.SourceSHA256[:], ManifestSha256: failure.event.ManifestSHA256[:], IndexProfileDigest: profileDigest[:], FailureCategory: protoCategory,
+		CorrelationId: failure.event.CorrelationID, OccurredAt: timestamppb.New(failure.recordedAt), CausationId: failure.event.EventID, Producer: "retrieval-service", SchemaVersion: "v1", IdempotencyKey: jobID + ":failed"}
+	payload, marshalErr := proto.MarshalOptions{Deterministic: true}.Marshal(message)
+	if marshalErr != nil {
+		return marshalErr
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO retrieval.outbox(event_id,event_type,aggregate_id,payload,occurred_at,next_attempt_at) VALUES($1,'retrieval.book.indexing-failed.v1',$2,$3,$4,$4) ON CONFLICT DO NOTHING`, message.EventId, jobID, payload, failure.recordedAt)
+	return err
 }
 
 func failedManifestJobID(event application.ManifestEvent) string {

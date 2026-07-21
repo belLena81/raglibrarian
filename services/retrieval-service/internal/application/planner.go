@@ -59,17 +59,33 @@ type ManifestEvent struct {
 	Manifest                                                                                                Manifest
 }
 
-func (e ManifestEvent) Validate(profile domain.IndexProfile) error {
+// ValidateEnvelope verifies the trusted BookChunksReady descriptor without
+// relying on the referenced manifest artifact.
+func (e ManifestEvent) ValidateEnvelope() error {
 	if !safeID(e.EventID) || !safeID(e.BookID) || !safeID(e.CorrelationID) || !safeID(e.CausationID) ||
 		e.Producer != "ingestion-service" || e.SchemaVersion != "v1" || !safeID(e.IdempotencyKey) || !strings.HasPrefix(e.IdempotencyKey, e.BookID+":") || e.OccurredAt.IsZero() ||
-		e.SourceSHA256 == ([32]byte{}) || e.ManifestSHA256 == ([32]byte{}) || e.PayloadDigest == ([32]byte{}) ||
-		e.Manifest.BookID != e.BookID || e.Manifest.SourceSHA256 != e.SourceSHA256 || e.Manifest.ManifestSHA256 != e.ManifestSHA256 || len(e.Manifest.Shards) == 0 || len(e.Manifest.Shards) > 2048 {
+		e.SourceSHA256 == ([32]byte{}) || e.ManifestSHA256 == ([32]byte{}) || e.PayloadDigest == ([32]byte{}) {
 		return ErrInvalidEvent
 	}
 	idempotencyParts := strings.Split(e.IdempotencyKey, ":")
 	if len(idempotencyParts) != 3 || idempotencyParts[0] != e.BookID || idempotencyParts[2] != "ready" || len(idempotencyParts[1]) != 64 {
 		return ErrInvalidEvent
 	}
+	if _, err := hex.DecodeString(idempotencyParts[1]); err != nil {
+		return ErrInvalidEvent
+	}
+	expectedDirectory := "books/" + e.BookID + "/" + hex.EncodeToString(e.SourceSHA256[:]) + "/" + idempotencyParts[1] + "/"
+	if e.ManifestReference != expectedDirectory+"manifest.pb" || !validArtifactReference(e.ManifestReference) {
+		return ErrInvalidEvent
+	}
+	return nil
+}
+
+func (e ManifestEvent) Validate(profile domain.IndexProfile) error {
+	if err := e.ValidateEnvelope(); err != nil || e.Manifest.BookID != e.BookID || e.Manifest.SourceSHA256 != e.SourceSHA256 || e.Manifest.ManifestSHA256 != e.ManifestSHA256 || len(e.Manifest.Shards) == 0 || len(e.Manifest.Shards) > 2048 {
+		return ErrInvalidEvent
+	}
+	idempotencyParts := strings.Split(e.IdempotencyKey, ":")
 	processingDigest, decodeErr := hex.DecodeString(idempotencyParts[1])
 	if decodeErr != nil || len(processingDigest) != 32 || string(processingDigest) != string(e.Manifest.ProcessingConfigDigest[:]) {
 		return ErrInvalidEvent
@@ -113,6 +129,21 @@ func (e ManifestEvent) Validate(profile domain.IndexProfile) error {
 		return ErrInvalidEvent
 	}
 	return nil
+}
+
+// ManifestFailureCategory identifies terminal failures that can be safely
+// reported from a validated descriptor even when its artifact is corrupt.
+func ManifestFailureCategory(event ManifestEvent, err error) (domain.FailureCategory, bool) {
+	if event.ValidateEnvelope() != nil {
+		return "", false
+	}
+	if errors.Is(err, ErrUnsupportedIndexProfile) {
+		return domain.FailureIncompatibleProfile, true
+	}
+	if errors.Is(err, ErrInvalidEvent) {
+		return domain.FailureManifestIntegrity, true
+	}
+	return "", false
 }
 
 func matchesProfileNumbers(manifest Manifest, profile domain.IndexProfile) bool {

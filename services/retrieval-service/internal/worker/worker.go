@@ -38,10 +38,17 @@ const (
 	maximumRetryAttempts  = int64(4)
 )
 
+var errManifestArtifactRead = errors.New("manifest artifact read failed")
+
+type manifestFailureRecorder interface {
+	FailManifest(context.Context, application.ManifestEvent, domain.FailureCategory, time.Time) error
+}
+
 type Runtime struct {
 	configuration config.WorkerConfig
 	pool          *pgxpool.Pool
 	repository    *repository.Postgres
+	manifestFails manifestFailureRecorder
 	objects       storage.ObjectStore
 	planner       *application.Planner
 	indexer       *application.Indexer
@@ -96,7 +103,7 @@ func New(ctx context.Context, configuration config.WorkerConfig) (*Runtime, erro
 		pool.Close()
 		return nil, err
 	}
-	return &Runtime{configuration: configuration, pool: pool, repository: records, objects: objects, planner: planner, indexer: indexer, embedder: embedder, vector: index}, nil
+	return &Runtime{configuration: configuration, pool: pool, repository: records, manifestFails: records, objects: objects, planner: planner, indexer: indexer, embedder: embedder, vector: index}, nil
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
@@ -220,7 +227,7 @@ func (r *Runtime) runBrokerSession(ctx context.Context) error {
 				sessionCancel()
 				return errors.New("manifest delivery channel closed")
 			}
-			r.handle(sessionContext, semaphore, &handlers, publisher, manifestQueue, delivery, r.handleManifest, nil)
+			r.handle(sessionContext, semaphore, &handlers, publisher, manifestQueue, delivery, r.handleManifest, r.failManifestArtifactRead)
 		case delivery, open := <-batchDeliveries:
 			if !open {
 				sessionCancel()
@@ -260,7 +267,7 @@ func (r *Runtime) serveReadiness(ctx context.Context) {
 	}
 }
 
-func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers *sync.WaitGroup, publisher retryPublisher, sourceQueue string, delivery amqp091.Delivery, handler func(context.Context, []byte) error, terminalFailure func(context.Context, []byte, domain.FailureCategory) error) {
+func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers *sync.WaitGroup, publisher retryPublisher, sourceQueue string, delivery amqp091.Delivery, handler func(context.Context, []byte) error, terminalFailure func(context.Context, []byte, error) error) {
 	semaphore <- struct{}{}
 	handlers.Add(1)
 	go func() {
@@ -279,7 +286,7 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 		}
 		if terminalFailure != nil && application.TerminalIndexingFailure(err) {
 			failureContext, failureCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			failureErr := terminalFailure(failureContext, delivery.Body, application.FailureCategory(err))
+			failureErr := terminalFailure(failureContext, delivery.Body, err)
 			failureCancel()
 			if failureErr == nil {
 				_ = delivery.Ack(false)
@@ -307,7 +314,7 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 				return
 			}
 			failureContext, failureCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			failureErr := terminalFailure(failureContext, delivery.Body, application.FailureCategory(err))
+			failureErr := terminalFailure(failureContext, delivery.Body, err)
 			failureCancel()
 			if failureErr == nil {
 				_ = delivery.Ack(false)
@@ -388,18 +395,18 @@ func (r *Runtime) handleMetadata(ctx context.Context, payload []byte) error {
 }
 
 func (r *Runtime) handleManifest(ctx context.Context, payload []byte) error {
-	reference, err := transport.ManifestReference(payload)
+	event, err := transport.DecodeManifestEnvelope(payload)
 	if err != nil {
 		return err
 	}
-	manifestPayload, err := r.objects.ReadBounded(ctx, reference, 4<<20)
+	manifestPayload, err := r.objects.ReadBounded(ctx, event.ManifestReference, 4<<20)
 	if err != nil {
-		return err
+		return errors.Join(errManifestArtifactRead, err)
 	}
-	event, err := transport.DecodeManifest(payload, manifestPayload)
+	event, err = transport.DecodeManifest(payload, manifestPayload)
 	if err != nil {
-		if errors.Is(err, application.ErrUnsupportedIndexProfile) {
-			return r.repository.FailManifest(ctx, event, domain.FailureIncompatibleProfile, time.Now().UTC())
+		if category, terminal := application.ManifestFailureCategory(event, err); terminal {
+			return r.manifestFailureRecorder().FailManifest(ctx, event, category, time.Now().UTC())
 		}
 		return err
 	}
@@ -414,7 +421,18 @@ func (r *Runtime) handleBatch(ctx context.Context, payload []byte) error {
 	return r.indexer.Process(ctx, work)
 }
 
-func (r *Runtime) failBatch(ctx context.Context, payload []byte, category domain.FailureCategory) error {
+func (r *Runtime) failManifestArtifactRead(ctx context.Context, payload []byte, err error) error {
+	if !errors.Is(err, errManifestArtifactRead) {
+		return err
+	}
+	event, decodeErr := transport.DecodeManifestEnvelope(payload)
+	if decodeErr != nil {
+		return decodeErr
+	}
+	return r.manifestFailureRecorder().FailManifest(ctx, event, domain.FailureManifestIntegrity, time.Now().UTC())
+}
+
+func (r *Runtime) failBatch(ctx context.Context, payload []byte, failure error) error {
 	work, err := transport.DecodeBatch(payload)
 	if err != nil {
 		return err
@@ -422,7 +440,14 @@ func (r *Runtime) failBatch(ctx context.Context, payload []byte, category domain
 	if err = r.vector.DeactivateJob(ctx, work.JobID); err != nil {
 		return errors.New("deactivate failed index vectors")
 	}
-	return r.repository.FailBatch(ctx, work, category, time.Now().UTC())
+	return r.repository.FailBatch(ctx, work, application.FailureCategory(failure), time.Now().UTC())
+}
+
+func (r *Runtime) manifestFailureRecorder() manifestFailureRecorder {
+	if r.manifestFails != nil {
+		return r.manifestFails
+	}
+	return r.repository
 }
 
 func deliveryAttempt(headers amqp091.Table) int64 {
