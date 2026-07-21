@@ -111,8 +111,8 @@ func TestCatalogMigrationsRebuildCleanly(t *testing.T) {
 				SET processing_failure_category='provider diagnostic' WHERE id=$1`, fixture.bookID)
 
 			applyCatalogMigration(t, ctx, tx, catalog003Down)
-			var stage string
-			if err = tx.QueryRow(ctx, `SELECT processing_stage FROM catalog.books WHERE id=$1`, fixture.bookID).Scan(&stage); err != nil || stage != "chunks_ready" {
+			var status, stage string
+			if err = tx.QueryRow(ctx, `SELECT processing_status,processing_stage FROM catalog.books WHERE id=$1`, fixture.bookID).Scan(&status, &stage); err != nil || status != "processing" || stage != "chunks_ready" {
 				t.Fatal("catalog retrieval down migration did not restore the M4 projection")
 			}
 			applyCatalogMigration(t, ctx, tx, catalog003Up)

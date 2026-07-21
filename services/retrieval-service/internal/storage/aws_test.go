@@ -3,10 +3,12 @@ package storage
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 )
 
 func TestAWSReadBoundedUsesS3ObjectMetadata(t *testing.T) {
@@ -29,6 +31,17 @@ func TestAWSReadBoundedRejectsMissingOrOversizedObjects(t *testing.T) {
 	store, _ := NewAWSWithClient(&stubS3Client{output: &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader([]byte("too large"))), ContentLength: ptr(int64(9))}}, "artifact-bucket")
 	if _, err := store.ReadBounded(context.Background(), "books/book-1/shard", 8); err == nil {
 		t.Fatal("ReadBounded() error = nil")
+	}
+}
+
+func TestAWSOpenMarksDependencyFailuresUnavailable(t *testing.T) {
+	store, _ := NewAWSWithClient(&stubS3Client{err: context.DeadlineExceeded}, "artifact-bucket")
+	if _, _, err := store.Open(context.Background(), "books/book-1/shard"); !errors.Is(err, application.ErrArtifactUnavailable) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Open() error = %v, want artifact unavailable deadline", err)
+	}
+	store, _ = NewAWSWithClient(&stubS3Client{output: &s3.GetObjectOutput{}}, "artifact-bucket")
+	if _, _, err := store.Open(context.Background(), "books/book-1/shard"); !errors.Is(err, application.ErrArtifactUnavailable) {
+		t.Fatalf("Open() error = %v, want artifact unavailable", err)
 	}
 }
 

@@ -49,6 +49,10 @@ type Runtime struct {
 	vector        *vector.Qdrant
 }
 
+type retryPublisher interface {
+	Publish(context.Context, string, string, amqp091.Publishing) error
+}
+
 func New(ctx context.Context, configuration config.WorkerConfig) (*Runtime, error) {
 	pool, err := pgxpool.New(ctx, configuration.DSN)
 	if err != nil {
@@ -256,7 +260,7 @@ func (r *Runtime) serveReadiness(ctx context.Context) {
 	}
 }
 
-func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers *sync.WaitGroup, publisher *rabbitmq.Publisher, sourceQueue string, delivery amqp091.Delivery, handler func(context.Context, []byte) error, terminalFailure func(context.Context, []byte, domain.FailureCategory) error) {
+func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers *sync.WaitGroup, publisher retryPublisher, sourceQueue string, delivery amqp091.Delivery, handler func(context.Context, []byte) error, terminalFailure func(context.Context, []byte, domain.FailureCategory) error) {
 	semaphore <- struct{}{}
 	handlers.Add(1)
 	go func() {
@@ -281,7 +285,12 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 				_ = delivery.Ack(false)
 				return
 			}
-			if r.publishRetry(ctx, publisher, sourceQueue, delivery, maximumRetryAttempts) == nil {
+			nextAttempt, retry := failureRecordingRetryAttempt(delivery.Headers)
+			if !retry {
+				_ = delivery.Nack(false, false)
+				return
+			}
+			if r.publishRetry(ctx, publisher, sourceQueue, delivery, nextAttempt) == nil {
 				_ = delivery.Ack(false)
 				return
 			}
@@ -304,11 +313,7 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 				_ = delivery.Ack(false)
 				return
 			}
-			if r.publishRetry(ctx, publisher, sourceQueue, delivery, maximumRetryAttempts) == nil {
-				_ = delivery.Ack(false)
-				return
-			}
-			_ = delivery.Nack(false, true)
+			_ = delivery.Nack(false, false)
 			return
 		}
 		if r.publishRetry(ctx, publisher, sourceQueue, delivery, retryAttempt(delivery.Headers)+1) == nil {
@@ -319,7 +324,7 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 	}()
 }
 
-func (r *Runtime) publishRetry(ctx context.Context, publisher *rabbitmq.Publisher, sourceQueue string, delivery amqp091.Delivery, attempt int64) error {
+func (r *Runtime) publishRetry(ctx context.Context, publisher retryPublisher, sourceQueue string, delivery amqp091.Delivery, attempt int64) error {
 	routingKey, err := retryRoutingKey(sourceQueue, attempt)
 	if err != nil {
 		return err
@@ -335,6 +340,14 @@ func (r *Runtime) publishRetry(ctx context.Context, publisher *rabbitmq.Publishe
 		Timestamp: delivery.Timestamp, Type: delivery.Type, UserId: delivery.UserId, AppId: delivery.AppId,
 		Body: delivery.Body,
 	})
+}
+
+func failureRecordingRetryAttempt(headers amqp091.Table) (int64, bool) {
+	attempt := retryAttempt(headers)
+	if attempt >= maximumRetryAttempts {
+		return 0, false
+	}
+	return attempt + 1, true
 }
 
 func retryRoutingKey(sourceQueue string, attempt int64) (string, error) {

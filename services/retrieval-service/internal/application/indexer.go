@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"math"
 	"time"
 	"unicode/utf8"
@@ -103,6 +104,9 @@ func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
 	}
 	chunks, err := i.reader.ReadShard(ctx, work)
 	if err != nil {
+		if errors.Is(err, ErrArtifactUnavailable) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return errors.Join(errors.New("read shard"), err)
+		}
 		return Failure(domain.FailureManifestIntegrity, errors.Join(errors.New("read shard"), err))
 	}
 	if len(chunks) != int(work.ChunkCount) {
@@ -110,9 +114,12 @@ func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
 	}
 	texts := make([]string, len(chunks))
 	for index, chunk := range chunks {
-		if chunk.BookID != work.BookID || !safeID(chunk.ChunkID) || chunk.Text == "" || !utf8.ValidString(chunk.Text) || len(chunk.Text) > 32<<10 ||
-			!utf8.ValidString(chunk.Chapter) || len(chunk.Chapter) > 1024 || !utf8.ValidString(chunk.Section) || len(chunk.Section) > 1024 ||
-			chunk.ContentSHA256 != sha256.Sum256([]byte(chunk.Text)) || chunk.PageEnd < chunk.PageStart {
+		if chunk.BookID != work.BookID || !safeID(chunk.ChunkID) || chunk.Text == "" || !utf8.ValidString(chunk.Text) ||
+			!utf8.ValidString(chunk.Chapter) || !utf8.ValidString(chunk.Section) || chunk.ContentSHA256 != sha256.Sum256([]byte(chunk.Text)) ||
+			chunk.PageEnd < chunk.PageStart {
+			return Failure(domain.FailureManifestIntegrity, errors.New("invalid chunk"))
+		}
+		if len(chunk.Text) > 32<<10 || len(chunk.Chapter) > 1024 || len(chunk.Section) > 1024 {
 			return Failure(domain.FailureResourceLimit, errors.New("invalid chunk"))
 		}
 		texts[index] = chunk.Text
@@ -136,7 +143,7 @@ func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
 	}
 	completed, err := i.repository.CompleteBatch(ctx, work, records, i.now().UTC())
 	if err != nil {
-		return errors.New("complete batch")
+		return fmt.Errorf("complete batch: %w", err)
 	}
 	if completed {
 		document, recordErr := i.repository.DocumentRecord(ctx, work)

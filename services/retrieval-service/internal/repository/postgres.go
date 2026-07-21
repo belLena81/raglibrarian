@@ -270,10 +270,15 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 	batchVectorSum := make([]float32, domain.EmbeddingDimensions)
 	var pageStart, pageEnd uint32
 	havePageStart := false
+	seenChunkIDs := make(map[string]struct{}, len(records))
 	for _, record := range records {
 		if record.JobID != work.JobID || record.BookID != work.BookID || len(record.Vector) != domain.EmbeddingDimensions {
 			return false, application.ErrInvalidEvent
 		}
+		if _, seen := seenChunkIDs[record.ChunkID]; seen {
+			return false, application.Failure(domain.FailureManifestIntegrity, application.ErrConflictingEvent)
+		}
+		seenChunkIDs[record.ChunkID] = struct{}{}
 		if !havePageStart || record.PageStart < pageStart {
 			pageStart = record.PageStart
 			havePageStart = true
@@ -287,8 +292,7 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 		command, err := tx.Exec(ctx, `INSERT INTO retrieval.evidence
 			(evidence_id,chunk_id,job_id,book_id,title,author,publication_year,tags,chapter,section,page_start,page_end,passage,content_sha256,created_at)
 			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-			ON CONFLICT(job_id,chunk_id) DO UPDATE SET content_sha256=EXCLUDED.content_sha256
-			WHERE retrieval.evidence.content_sha256=EXCLUDED.content_sha256`, record.EvidenceID, record.ChunkID, work.JobID, record.BookID, record.Title, record.Author,
+			ON CONFLICT(job_id,chunk_id) DO NOTHING`, record.EvidenceID, record.ChunkID, work.JobID, record.BookID, record.Title, record.Author,
 			record.Year, record.Tags, record.Chapter, record.Section, record.PageStart, record.PageEnd, record.Passage, record.ContentSHA256[:], now)
 		if err != nil {
 			return false, err

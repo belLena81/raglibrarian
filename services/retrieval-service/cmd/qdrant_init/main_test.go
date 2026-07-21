@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -32,7 +33,8 @@ func TestRunCreatesMissingQdrantCollection(t *testing.T) {
 			if request.Method != http.MethodPut || request.URL.Path != "/collections/evidence_v2" || json.NewDecoder(request.Body).Decode(&body) != nil {
 				t.Fatalf("unexpected collection creation request: %s %s %#v", request.Method, request.URL.Path, body)
 			}
-			if body["vectors"]["size"] != float64(domain.EmbeddingDimensions) || body["vectors"]["distance"] != "Cosine" {
+			if body["vectors"]["size"] != float64(domain.EmbeddingDimensions) || body["vectors"]["distance"] != "Cosine" ||
+				body["metadata"]["raglibrarian_index_profile_digest"] != supportedProfileDigestHex() {
 				t.Fatalf("unexpected collection schema: %#v", body)
 			}
 			return response(http.StatusOK, `{}`)
@@ -40,7 +42,7 @@ func TestRunCreatesMissingQdrantCollection(t *testing.T) {
 			if request.Method != http.MethodGet || request.URL.Path != "/collections/evidence_v2" {
 				t.Fatalf("unexpected post-create readiness request: %s %s", request.Method, request.URL.Path)
 			}
-			return response(http.StatusOK, `{"result":{"config":{"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
+			return response(http.StatusOK, `{"result":{"config":{"metadata":{"raglibrarian_index_profile_digest":"`+supportedProfileDigestHex()+`"},"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
 		default:
 			t.Fatalf("unexpected request %d", requests)
 		}
@@ -67,7 +69,7 @@ func TestRunAcceptsExistingQdrantCollection(t *testing.T) {
 		if request.Method != http.MethodGet || request.URL.Path != "/collections/evidence_v2" {
 			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
 		}
-		return response(http.StatusOK, `{"result":{"config":{"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
+		return response(http.StatusOK, `{"result":{"config":{"metadata":{"raglibrarian_index_profile_digest":"`+supportedProfileDigestHex()+`"},"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
 	})}
 
 	err := run(context.Background(), env(map[string]string{
@@ -93,7 +95,7 @@ func TestRunRetriesTransientQdrantReadinessFailure(t *testing.T) {
 		case 2:
 			return response(http.StatusServiceUnavailable, `{}`)
 		case 3:
-			return response(http.StatusOK, `{"result":{"config":{"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
+			return response(http.StatusOK, `{"result":{"config":{"metadata":{"raglibrarian_index_profile_digest":"`+supportedProfileDigestHex()+`"},"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
 		default:
 			t.Fatalf("unexpected request %d", requests)
 			return response(http.StatusInternalServerError, `{}`)
@@ -169,4 +171,9 @@ func response(status int, body string) *http.Response {
 		Body:       io.NopCloser(bytes.NewBufferString(body)),
 		Header:     make(http.Header),
 	}
+}
+
+func supportedProfileDigestHex() string {
+	digest := domain.SupportedIndexProfile().Digest
+	return hex.EncodeToString(digest[:])
 }

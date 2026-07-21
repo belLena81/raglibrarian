@@ -494,12 +494,15 @@ services:
     profiles: ["m5", "m5-contract-test"]
     image: ${M5_QDRANT_IMAGE:-qdrant/qdrant:v1.18.3}
     read_only: true
-    user: "65532:65532"
+    user: "0:0"
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      - DAC_READ_SEARCH
     entrypoint: ["/bin/sh", "-ec"]
+    working_dir: /qdrant/storage
     command:
       - 'export QDRANT__SERVICE__API_KEY="$$(cat /run/secrets/retrieval_qdrant_api_key)"; export QDRANT__SERVICE__READ_ONLY_API_KEY="$$(cat /run/secrets/retrieval_qdrant_read_api_key)"; exec /qdrant/qdrant'
     environment:
@@ -516,7 +519,7 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=32m
     pids_limit: 256
     healthcheck:
-      test: ["CMD-SHELL", "test -r /run/secrets/retrieval_qdrant_api_key && : >/dev/tcp/127.0.0.1/6333"]
+      test: ["CMD", "/usr/bin/bash", "-ec", "test -r /run/secrets/retrieval_qdrant_api_key && : >/dev/tcp/127.0.0.1/6333"]
       interval: 5s
       timeout: 4s
       retries: 20
@@ -787,7 +790,9 @@ services:
     build:
       context: .
       target: contract-tests
-      args: { SERVICE: retrieval-service }
+      args:
+        SERVICE: retrieval-service
+        SERVICE_COMMAND: cmd/server
     environment:
       RETRIEVAL_POSTGRES_INTEGRATION: "true"
       RETRIEVAL_POSTGRES_DSN_FILE: /run/secrets/retrieval_runtime_dsn

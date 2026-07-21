@@ -32,14 +32,17 @@ func NewReader(objects ObjectReader) (*Reader, error) {
 func (r *Reader) ReadShard(ctx context.Context, work application.BatchWork) ([]application.Chunk, error) {
 	object, size, err := r.objects.Open(ctx, work.ShardReference)
 	if err != nil {
-		return nil, errors.New("open shard")
+		return nil, errors.Join(errors.New("open shard"), application.ErrArtifactUnavailable, err)
 	}
 	defer func() { _ = object.Close() }()
 	if size != work.CompressedBytes || size > 32<<20 {
 		return nil, errors.New("invalid compressed shard size")
 	}
 	compressed, err := io.ReadAll(io.LimitReader(object, work.CompressedBytes+1))
-	if err != nil || int64(len(compressed)) != work.CompressedBytes || sha256.Sum256(compressed) != work.ShardSHA256 {
+	if err != nil {
+		return nil, errors.Join(errors.New("read shard"), application.ErrArtifactUnavailable, err)
+	}
+	if int64(len(compressed)) != work.CompressedBytes || sha256.Sum256(compressed) != work.ShardSHA256 {
 		return nil, errors.New("invalid compressed shard integrity")
 	}
 	decoder, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(uint64(work.UncompressedBytes+1))) // #nosec G115 -- BatchWork.Validate caps the positive size at 64 MiB.

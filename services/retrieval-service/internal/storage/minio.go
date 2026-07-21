@@ -8,6 +8,7 @@ import (
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
@@ -65,12 +66,12 @@ func NewAWSWithClient(client s3Client, bucket string) (*AWS, error) {
 func (m *MinIO) Open(ctx context.Context, reference string) (io.ReadCloser, int64, error) {
 	object, err := m.client.GetObject(ctx, m.bucket, reference, minio.GetObjectOptions{})
 	if err != nil {
-		return nil, 0, errors.New("artifact unavailable")
+		return nil, 0, errors.Join(application.ErrArtifactUnavailable, err)
 	}
 	information, err := object.Stat()
 	if err != nil {
 		_ = object.Close()
-		return nil, 0, errors.New("artifact unavailable")
+		return nil, 0, errors.Join(application.ErrArtifactUnavailable, err)
 	}
 	return object, information.Size, nil
 }
@@ -93,11 +94,14 @@ func (m *MinIO) ReadBounded(ctx context.Context, reference string, maximum int64
 
 func (a *AWS) Open(ctx context.Context, reference string) (io.ReadCloser, int64, error) {
 	if reference == "" {
-		return nil, 0, errors.New("artifact unavailable")
+		return nil, 0, application.ErrArtifactUnavailable
 	}
 	object, err := a.client.GetObject(ctx, &s3.GetObjectInput{Bucket: &a.bucket, Key: &reference})
-	if err != nil || object.Body == nil || object.ContentLength == nil {
-		return nil, 0, errors.New("artifact unavailable")
+	if err != nil {
+		return nil, 0, errors.Join(application.ErrArtifactUnavailable, err)
+	}
+	if object.Body == nil || object.ContentLength == nil {
+		return nil, 0, application.ErrArtifactUnavailable
 	}
 	return object.Body, *object.ContentLength, nil
 }

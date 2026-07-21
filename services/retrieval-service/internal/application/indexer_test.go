@@ -92,9 +92,33 @@ func TestIndexerPreservesTerminalFailureCategories(t *testing.T) {
 		{
 			name: "resource limit",
 			configure: func(_ *stubBatchRepository, reader *stubShardReader, _ *stubDocumentEmbedder, _ *stubVectorIndex) {
-				reader.chunks[0].Text = string(make([]byte, (32<<10)+1))
+				text := string(make([]byte, (32<<10)+1))
+				reader.chunks[0].Text = text
+				reader.chunks[0].ContentSHA256 = sha256.Sum256([]byte(text))
 			},
 			want: domain.FailureResourceLimit,
+		},
+		{
+			name: "wrong book id",
+			configure: func(_ *stubBatchRepository, reader *stubShardReader, _ *stubDocumentEmbedder, _ *stubVectorIndex) {
+				reader.chunks[0].BookID = "book-2"
+			},
+			want: domain.FailureManifestIntegrity,
+		},
+		{
+			name: "content digest mismatch",
+			configure: func(_ *stubBatchRepository, reader *stubShardReader, _ *stubDocumentEmbedder, _ *stubVectorIndex) {
+				reader.chunks[0].ContentSHA256 = sum(99)
+			},
+			want: domain.FailureManifestIntegrity,
+		},
+		{
+			name: "invalid page range",
+			configure: func(_ *stubBatchRepository, reader *stubShardReader, _ *stubDocumentEmbedder, _ *stubVectorIndex) {
+				reader.chunks[0].PageStart = 2
+				reader.chunks[0].PageEnd = 1
+			},
+			want: domain.FailureManifestIntegrity,
 		},
 	}
 	for _, test := range tests {
@@ -115,6 +139,59 @@ func TestIndexerPreservesTerminalFailureCategories(t *testing.T) {
 				t.Fatalf("FailureCategory() = %s, want %s, err=%v", got, test.want, err)
 			}
 		})
+	}
+}
+
+func TestIndexerKeepsArtifactOutagesRetryable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want domain.FailureCategory
+	}{
+		{name: "artifact unavailable", err: ErrArtifactUnavailable, want: domain.FailureInternalIndexing},
+		{name: "artifact timeout", err: errors.Join(ErrArtifactUnavailable, context.DeadlineExceeded), want: domain.FailureIndexingTimeout},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &stubBatchRepository{metadata: BookProjection{BookID: "book-1", Title: "Systems", Author: "Author", Year: 2026}}
+			reader := &stubShardReader{err: test.err}
+			embedder := &stubDocumentEmbedder{vectors: [][]float32{make([]float32, domain.EmbeddingDimensions)}}
+			index := &stubVectorIndex{}
+			indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) })
+			if err != nil {
+				t.Fatalf("NewIndexer() error = %v", err)
+			}
+
+			err = indexer.Process(context.Background(), validBatchWork())
+
+			if got := FailureCategory(err); got != test.want {
+				t.Fatalf("FailureCategory() = %s, want %s, err=%v", got, test.want, err)
+			}
+			if TerminalIndexingFailure(err) {
+				t.Fatalf("TerminalIndexingFailure() = true for retryable error %v", err)
+			}
+		})
+	}
+}
+
+func TestIndexerPreservesCompleteBatchTypedFailures(t *testing.T) {
+	repository := &stubBatchRepository{metadata: BookProjection{BookID: "book-1", Title: "Systems", Author: "Author", Year: 2026}}
+	repository.completeErr = Failure(domain.FailureManifestIntegrity, ErrConflictingEvent)
+	reader := &stubShardReader{chunks: []Chunk{{ChunkID: "chunk-1", BookID: "book-1", Text: "Evidence", ContentSHA256: sha256.Sum256([]byte("Evidence")), PageStart: 1, PageEnd: 1}}}
+	embedder := &stubDocumentEmbedder{vectors: [][]float32{make([]float32, domain.EmbeddingDimensions)}}
+	index := &stubVectorIndex{}
+	indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) })
+	if err != nil {
+		t.Fatalf("NewIndexer() error = %v", err)
+	}
+
+	err = indexer.Process(context.Background(), validBatchWork())
+
+	if got := FailureCategory(err); got != domain.FailureManifestIntegrity {
+		t.Fatalf("FailureCategory() = %s, want %s, err=%v", got, domain.FailureManifestIntegrity, err)
+	}
+	if !TerminalIndexingFailure(err) {
+		t.Fatalf("TerminalIndexingFailure() = false for %v", err)
 	}
 }
 

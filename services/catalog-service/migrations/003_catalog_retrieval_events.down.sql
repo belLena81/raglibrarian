@@ -2,7 +2,8 @@ DELETE FROM catalog.processing_inbox
 WHERE event_type IN ('retrieval.book.indexed.v1', 'retrieval.book.indexing-failed.v1');
 
 UPDATE catalog.books
-SET processing_stage = 'chunks_ready'
+SET processing_status = 'processing',
+    processing_stage = 'chunks_ready'
 WHERE processing_stage = 'indexed';
 
 UPDATE catalog.books

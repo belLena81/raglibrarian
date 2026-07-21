@@ -16,6 +16,7 @@ var (
 	ErrInvalidEvent            = errors.New("invalid retrieval event")
 	ErrConflictingEvent        = errors.New("conflicting retrieval event")
 	ErrUnsupportedIndexProfile = errors.New("unsupported index profile")
+	ErrArtifactUnavailable     = errors.New("artifact unavailable")
 )
 
 type MetadataEvent struct {

@@ -9,6 +9,8 @@ import (
 
 var ErrSearchForbidden = errors.New("search forbidden")
 
+const maximumSearchCandidates = domain.MaximumResultLimit * 5
+
 // Evidence is Retrieval's controlled local chunk projection returned to an authorized caller.
 type Evidence struct {
 	EvidenceID, ChunkID, JobID, BookID, Title, Author, Chapter, Section, Passage string
@@ -40,8 +42,8 @@ type QueryEmbedder interface {
 }
 
 type EvidenceStore interface {
-	Search(context.Context, domain.SearchQuery, []float32) ([]Evidence, error)
-	SearchDocuments(context.Context, domain.SearchQuery, []float32) ([]DocumentResult, error)
+	Search(context.Context, domain.SearchQuery, []float32, int, int) ([]Evidence, error)
+	SearchDocuments(context.Context, domain.SearchQuery, []float32, int, int) ([]DocumentResult, error)
 }
 
 type IndexVisibility interface {
@@ -77,21 +79,82 @@ func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.
 	if len(vector) != domain.EmbeddingDimensions {
 		return SearchResult{}, errors.New("invalid embedding dimensions")
 	}
-	results, err := s.store.Search(ctx, query, vector)
+	results, err := s.searchVisibleEvidence(ctx, query, vector)
 	if err != nil {
-		return SearchResult{}, errors.New("search evidence")
+		return SearchResult{}, err
 	}
-	results, err = s.visibility.FilterIndexed(ctx, results)
+	documents, err := s.searchVisibleDocuments(ctx, query, vector)
 	if err != nil {
-		return SearchResult{}, errors.New("validate index visibility")
-	}
-	documents, err := s.store.SearchDocuments(ctx, query, vector)
-	if err != nil {
-		return SearchResult{}, errors.New("search documents")
-	}
-	documents, err = s.visibility.FilterIndexedDocuments(ctx, documents)
-	if err != nil {
-		return SearchResult{}, errors.New("validate document visibility")
+		return SearchResult{}, err
 	}
 	return SearchResult{Evidence: results, Documents: documents}, nil
+}
+
+func (s *Searcher) searchVisibleEvidence(ctx context.Context, query domain.SearchQuery, vector []float32) ([]Evidence, error) {
+	results := make([]Evidence, 0, query.Limit())
+	for offset, pageLimit := 0, searchPageLimit(query.Limit()); len(results) < query.Limit() && offset < maximumSearchCandidates; offset += pageLimit {
+		candidateLimit := searchCandidateLimit(pageLimit, offset)
+		candidates, err := s.store.Search(ctx, query, vector, candidateLimit, offset)
+		if err != nil {
+			return nil, errors.New("search evidence")
+		}
+		visible, err := s.visibility.FilterIndexed(ctx, candidates)
+		if err != nil {
+			return nil, errors.New("validate index visibility")
+		}
+		results = append(results, visible...)
+		if len(candidates) < candidateLimit {
+			break
+		}
+	}
+	return trimEvidence(results, query.Limit()), nil
+}
+
+func (s *Searcher) searchVisibleDocuments(ctx context.Context, query domain.SearchQuery, vector []float32) ([]DocumentResult, error) {
+	results := make([]DocumentResult, 0, query.Limit())
+	for offset, pageLimit := 0, searchPageLimit(query.Limit()); len(results) < query.Limit() && offset < maximumSearchCandidates; offset += pageLimit {
+		candidateLimit := searchCandidateLimit(pageLimit, offset)
+		candidates, err := s.store.SearchDocuments(ctx, query, vector, candidateLimit, offset)
+		if err != nil {
+			return nil, errors.New("search documents")
+		}
+		visible, err := s.visibility.FilterIndexedDocuments(ctx, candidates)
+		if err != nil {
+			return nil, errors.New("validate document visibility")
+		}
+		results = append(results, visible...)
+		if len(candidates) < candidateLimit {
+			break
+		}
+	}
+	return trimDocuments(results, query.Limit()), nil
+}
+
+func searchPageLimit(limit int) int {
+	pageLimit := limit * 2
+	if pageLimit > maximumSearchCandidates {
+		return maximumSearchCandidates
+	}
+	return pageLimit
+}
+
+func searchCandidateLimit(pageLimit, offset int) int {
+	if offset+pageLimit > maximumSearchCandidates {
+		return maximumSearchCandidates - offset
+	}
+	return pageLimit
+}
+
+func trimEvidence(values []Evidence, limit int) []Evidence {
+	if len(values) <= limit {
+		return values
+	}
+	return values[:limit]
+}
+
+func trimDocuments(values []DocumentResult, limit int) []DocumentResult {
+	if len(values) <= limit {
+		return values
+	}
+	return values[:limit]
 }
