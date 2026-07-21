@@ -7,9 +7,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/process"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
 )
 
@@ -19,7 +21,10 @@ type initConfig struct {
 	URL        string
 	Collection string
 	APIKeyFile string
+	RunAs      process.Identity
 }
+
+var dropPrivileges = process.DropPrivileges
 
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -43,6 +48,9 @@ func run(ctx context.Context, getenv func(string) string, readFile func(string) 
 	}
 	apiKey, err := readSecret(configuration.APIKeyFile, readFile)
 	if err != nil {
+		return err
+	}
+	if err = dropPrivileges(configuration.RunAs); err != nil {
 		return err
 	}
 	store, err := vector.NewAuthenticatedQdrant(configuration.URL, configuration.Collection, apiKey, client)
@@ -83,11 +91,26 @@ func loadConfig(getenv func(string) string) (initConfig, error) {
 		URL:        strings.TrimSpace(getenv("RETRIEVAL_QDRANT_URL")),
 		Collection: collection,
 		APIKeyFile: strings.TrimSpace(getenv("RETRIEVAL_QDRANT_API_KEY_FILE")),
+		RunAs: process.Identity{
+			UID: positiveInteger(strings.TrimSpace(getenv("RUN_AS_UID")), 65532),
+			GID: positiveInteger(strings.TrimSpace(getenv("RUN_AS_GID")), 65532),
+		},
 	}
-	if configuration.URL == "" || configuration.APIKeyFile == "" {
+	if configuration.URL == "" || configuration.APIKeyFile == "" || configuration.RunAs.UID < 1 || configuration.RunAs.GID < 1 {
 		return initConfig{}, errors.New("invalid qdrant initializer configuration")
 	}
 	return configuration, nil
+}
+
+func positiveInteger(value string, fallback int) int {
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 {
+		return 0
+	}
+	return parsed
 }
 
 func readSecret(path string, readFile func(string) ([]byte, error)) (string, error) {

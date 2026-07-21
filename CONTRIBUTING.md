@@ -53,6 +53,7 @@ cp .env.example .env
 make dev-secrets # file-backed local DB, signing, email, and SMTP secrets
 make bootstrap-verifier # interactive echo-disabled admin verifier
 make dev-certs
+make m5-model-bootstrap # pinned local Retrieval model cache
 make stack-up       # start and health-check the complete local stack
 make e2e            # run black-box HTTP workflows
 make contract-test  # run live mTLS and database adapter contracts

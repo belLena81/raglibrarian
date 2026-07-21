@@ -181,6 +181,7 @@ cp .env.example .env
 make dev-secrets
 make bootstrap-verifier
 make dev-certs
+make m5-model-bootstrap
 make stack-up
 make e2e
 ```
@@ -195,6 +196,9 @@ Identity migrations with the migration-only role, and then starts Identity
 with its bounded runtime role. A disposable Mailpit SMTP fixture is private to
 the backend network; its inspection UI is loopback-only on `:8025`. `make dev`
 is an alias for this workflow.
+For Milestone 5, run `make m5-model-bootstrap` before `make stack-up`; the
+stack preflight verifies the pinned host model cache and refuses to download it
+implicitly.
 Identity and Catalog expose standard gRPC health services inside the private
 Compose network. `make contract-test` verifies both services over mTLS.
 

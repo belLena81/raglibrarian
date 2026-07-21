@@ -8,9 +8,11 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/process"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 )
 
@@ -129,9 +131,65 @@ func TestRunRetriesTransientQdrantReadinessFailure(t *testing.T) {
 	}
 }
 
+func TestRunDropsPrivilegesBeforeCreatingQdrantClient(t *testing.T) {
+	withoutRetryDelay(t)
+	steps := make([]string, 0, 8)
+	previousDrop := dropPrivileges
+	dropPrivileges = func(identity process.Identity) error {
+		if identity != (process.Identity{UID: 123, GID: 456}) {
+			t.Fatalf("dropPrivileges() identity = %#v", identity)
+		}
+		steps = append(steps, "drop")
+		return nil
+	}
+	t.Cleanup(func() {
+		dropPrivileges = previousDrop
+	})
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
+		steps = append(steps, request.Method)
+		switch len(steps) {
+		case 2:
+			return response(http.StatusOK, `{"result":{"config":{"metadata":{"raglibrarian_index_profile_digest":"`+supportedProfileDigestHex()+`"},"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
+		case 3, 4, 5, 6, 7, 8:
+			assertFieldIndexRequest(t, request, len(steps)-3)
+			return response(http.StatusOK, `{}`)
+		default:
+			t.Fatalf("unexpected request sequence: %#v", steps)
+			return response(http.StatusInternalServerError, `{}`)
+		}
+	})}
+
+	err := run(context.Background(), env(map[string]string{
+		"RETRIEVAL_QDRANT_URL":          "http://qdrant.test",
+		"RETRIEVAL_QDRANT_API_KEY_FILE": "/run/secrets/retrieval_qdrant_api_key",
+		"RUN_AS_UID":                    "123",
+		"RUN_AS_GID":                    "456",
+	}), secret(map[string]string{
+		"/run/secrets/retrieval_qdrant_api_key": "writer-key\n",
+	}), client)
+
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	want := []string{"drop", "GET", "PUT", "PUT", "PUT", "PUT", "PUT", "PUT"}
+	if !reflect.DeepEqual(steps, want) {
+		t.Fatalf("run() steps = %#v, want %#v", steps, want)
+	}
+}
+
 func TestLoadConfigRejectsIncompleteInitializerConfiguration(t *testing.T) {
 	if _, err := loadConfig(env(map[string]string{"RETRIEVAL_QDRANT_API_KEY_FILE": "/secret"})); err == nil {
 		t.Fatalf("loadConfig() accepted missing Qdrant URL")
+	}
+}
+
+func TestLoadConfigRejectsInvalidRuntimeIdentity(t *testing.T) {
+	if _, err := loadConfig(env(map[string]string{
+		"RETRIEVAL_QDRANT_URL":          "http://qdrant.test",
+		"RETRIEVAL_QDRANT_API_KEY_FILE": "/secret",
+		"RUN_AS_UID":                    "0",
+	})); err == nil {
+		t.Fatal("loadConfig() accepted invalid UID")
 	}
 }
 

@@ -49,18 +49,27 @@ func (s *Secret) UnmarshalJSON(payload []byte) error {
 }
 
 type Runtime struct {
-	repository    *repository.Postgres
-	manifestFails manifestFailureRecorder
-	batchFails    batchFailureRecorder
-	vectorJobs    vectorCleanupRepository
-	objects       storage.ObjectStore
-	planner       *application.Planner
-	indexer       batchProcessor
-	vector        vectorDeactivator
-	secret        Secret
+	repository         *repository.Postgres
+	manifestFails      manifestFailureRecorder
+	batchFails         batchFailureRecorder
+	vectorJobs         vectorCleanupRepository
+	objects            storage.ObjectStore
+	planner            *application.Planner
+	indexer            batchProcessor
+	vector             vectorDeactivator
+	secret             Secret
+	processingTimeout  time.Duration
+	failureRecordLimit time.Duration
 }
 
 var errManifestArtifactRead = errors.New("manifest artifact read failed")
+
+const (
+	minimumProcessingTimeout = time.Minute
+	maximumProcessingTimeout = 13*time.Minute + 30*time.Second
+	defaultProcessingTimeout = 13*time.Minute + 30*time.Second
+	defaultFailureRecordTime = 10 * time.Second
+)
 
 type manifestFailureRecorder interface {
 	FailManifest(context.Context, application.ManifestEvent, domain.FailureCategory, time.Time) error
@@ -124,6 +133,10 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 	if err := validateMode(); err != nil {
 		return nil, err
 	}
+	processingTimeout, err := retrievalProcessingTimeout()
+	if err != nil {
+		return nil, err
+	}
 	secret, err := loadSecret(ctx, os.Getenv("RETRIEVAL_RUNTIME_SECRET_ARN"))
 	if err != nil || secret.PostgresDSN == "" || secret.Region == "" || secret.ArtifactBucket == "" || secret.TEIURL == "" || secret.QdrantURL == "" || secret.QdrantAPIKey == "" {
 		return nil, errors.New("invalid indexer runtime secret")
@@ -168,7 +181,18 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
-	return &Runtime{repository: records, manifestFails: records, batchFails: records, vectorJobs: records, objects: objects, indexer: indexer, vector: index, secret: secret}, nil
+	return &Runtime{
+		repository:         records,
+		manifestFails:      records,
+		batchFails:         records,
+		vectorJobs:         records,
+		objects:            objects,
+		indexer:            indexer,
+		vector:             index,
+		secret:             secret,
+		processingTimeout:  processingTimeout,
+		failureRecordLimit: defaultFailureRecordTime,
+	}, nil
 }
 
 func NewDispatcherRuntime(ctx context.Context) (*Runtime, error) {
@@ -290,14 +314,23 @@ func (r *Runtime) Index(ctx context.Context, event RabbitEvent) error {
 	if err != nil {
 		return err
 	}
-	if err = r.indexer.Process(ctx, work); err != nil {
-		if application.TerminalIndexingFailure(err) || eventAttempt(event) >= 4 {
-			if failureErr := r.batchFailureRecorder().FailBatch(ctx, work, application.FailureCategory(err), time.Now().UTC()); failureErr != nil {
+	processCtx := ctx
+	processCancel := func() {}
+	if r.processingTimeout > 0 {
+		processCtx, processCancel = context.WithTimeout(ctx, r.processingTimeout)
+	}
+	defer processCancel()
+	if err = r.indexer.Process(processCtx, work); err != nil {
+		processingTimedOut := errors.Is(processCtx.Err(), context.DeadlineExceeded) && !errors.Is(ctx.Err(), context.DeadlineExceeded)
+		if application.TerminalIndexingFailure(err) || eventAttempt(event) >= 4 || processingTimedOut {
+			failureCtx, failureCancel := r.failureRecordingContext()
+			defer failureCancel()
+			if failureErr := r.batchFailureRecorder().FailBatch(failureCtx, work, application.FailureCategory(err), time.Now().UTC()); failureErr != nil {
 				return errors.New("record terminal indexing failure")
 			}
 			if r.vector != nil {
-				if cleanupErr := r.vector.DeactivateJob(ctx, work.JobID); cleanupErr == nil {
-					if completeErr := r.vectorCleanupRepository().CompleteVectorCleanup(ctx, work.JobID); completeErr != nil {
+				if cleanupErr := r.vector.DeactivateJob(failureCtx, work.JobID); cleanupErr == nil {
+					if completeErr := r.vectorCleanupRepository().CompleteVectorCleanup(failureCtx, work.JobID); completeErr != nil {
 						return errors.New("complete vector cleanup")
 					}
 				}
@@ -307,6 +340,30 @@ func (r *Runtime) Index(ctx context.Context, event RabbitEvent) error {
 		return err
 	}
 	return nil
+}
+
+func retrievalProcessingTimeout() (time.Duration, error) {
+	value, err := time.ParseDuration(optionalEnv("RETRIEVAL_PROCESSING_TIMEOUT", defaultProcessingTimeout.String()))
+	if err != nil || value < minimumProcessingTimeout || value > maximumProcessingTimeout {
+		return 0, errors.New("invalid retrieval processing timeout")
+	}
+	return value, nil
+}
+
+func optionalEnv(key, fallback string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func (r *Runtime) failureRecordingContext() (context.Context, context.CancelFunc) {
+	limit := r.failureRecordLimit
+	if limit <= 0 {
+		limit = defaultFailureRecordTime
+	}
+	return context.WithTimeout(context.Background(), limit)
 }
 
 func (r *Runtime) Dispatch(ctx context.Context) error {

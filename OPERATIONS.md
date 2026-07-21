@@ -15,6 +15,7 @@ cp .env.example .env
 make dev-secrets
 make bootstrap-verifier
 make dev-certs
+make m5-model-bootstrap
 make compose-config
 make stack-up
 ```

@@ -142,7 +142,7 @@ run-retrieval: _require_root
 stack-up: _require_root
 	@test -f .env || { \
 		echo ""; \
-		echo "  !! .env not found. Run: cp .env.example .env && make dev-secrets bootstrap-verifier dev-certs !!"; \
+		echo "  !! .env not found. Run: cp .env.example .env && make dev-secrets bootstrap-verifier dev-certs m5-model-bootstrap !!"; \
 		echo ""; \
 		exit 1; \
 	}
@@ -150,7 +150,7 @@ stack-up: _require_root
 	@test -r "$${SECRET_DIR:-.dev/secrets}/catalog_migration_password" && test -r "$${SECRET_DIR:-.dev/secrets}/catalog_runtime_password" && test -r "$${SECRET_DIR:-.dev/secrets}/catalog_migration_pgpass" && test -r "$${SECRET_DIR:-.dev/secrets}/catalog_runtime_dsn" || { echo "Catalog database development secrets are missing; run make dev-secrets-catalog-db"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/catalog_minio_access_key" || { echo "MinIO/RabbitMQ development secrets are missing; run make dev-secrets-m3"; exit 1; }
 	@bash ./scripts/check-m4-dev-secrets.sh "$${SECRET_DIR:-.dev/secrets}" || { echo "M4 ingestion development secrets are incomplete; run make dev-secrets for a fresh checkout or scripts/run-local.sh for an additive upgrade"; exit 1; }
-	@bash ./scripts/check-m5-dev-secrets.sh "$${SECRET_DIR:-.dev/secrets}" || { echo "M5 Retrieval development secrets are incomplete; run make dev-secrets-m5"; exit 1; }
+	@bash ./scripts/check-m5-dev-secrets.sh "$${SECRET_DIR:-.dev/secrets}" || { echo "M5 Retrieval development secrets are incomplete; run make dev-secrets for a fresh checkout or make dev-secrets-m5 for an additive upgrade"; exit 1; }
 	@test -r "$${M5_MODEL_DIR:-.dev/models/m5-jina-code-v1}/.revision" || { echo "M5 model cache is missing; run make m5-model-bootstrap"; exit 1; }
 	@test -r "$${CERT_DIR:-.dev/certs}/retrieval-service.crt" && test -r "$${CERT_DIR:-.dev/certs}/retrieval-service.key" || { echo "M5 Retrieval certificate is missing; run bash scripts/ensure-m5-dev-cert.sh"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/identity_bootstrap_verifier" || { echo "bootstrap verifier is missing; run make bootstrap-verifier"; exit 1; }

@@ -154,6 +154,57 @@ func TestIndexCompletesVectorCleanupAfterSuccessfulDeactivate(t *testing.T) {
 	}
 }
 
+func TestIndexRecordsTimeoutWithFreshFailureContext(t *testing.T) {
+	recorder := &lambdaBatchFailureRecorder{}
+	cleanup := &lambdaVectorCleanupRepository{}
+	vectors := &lambdaVectorDeactivator{}
+	runtime := &Runtime{
+		indexer: lambdaBatchProcessor{process: func(ctx context.Context, _ application.BatchWork) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}},
+		batchFails:         recorder,
+		vectorJobs:         cleanup,
+		vector:             vectors,
+		processingTimeout:  time.Nanosecond,
+		failureRecordLimit: time.Second,
+	}
+
+	err := runtime.Index(context.Background(), batchRabbitEvent(t, validLambdaBatchPayload(t), 1))
+	if err != nil {
+		t.Fatalf("Index() error = %v", err)
+	}
+	if recorder.calls != 1 || recorder.category != domain.FailureIndexingTimeout {
+		t.Fatalf("recorded timeout calls=%d category=%q", recorder.calls, recorder.category)
+	}
+	if recorder.ctxErr != nil {
+		t.Fatalf("failure context already expired: %v", recorder.ctxErr)
+	}
+	if vectors.calls != 1 || cleanup.completed != 1 {
+		t.Fatalf("vector cleanup calls=%d completed=%d", vectors.calls, cleanup.completed)
+	}
+}
+
+func TestRetrievalProcessingTimeoutRejectsInvalidValue(t *testing.T) {
+	t.Setenv("RETRIEVAL_PROCESSING_TIMEOUT", "30s")
+
+	if _, err := retrievalProcessingTimeout(); err == nil {
+		t.Fatal("retrievalProcessingTimeout() error = nil")
+	}
+}
+
+func TestRetrievalProcessingTimeoutUsesDefault(t *testing.T) {
+	t.Setenv("RETRIEVAL_PROCESSING_TIMEOUT", "")
+
+	value, err := retrievalProcessingTimeout()
+	if err != nil {
+		t.Fatalf("retrievalProcessingTimeout() error = %v", err)
+	}
+	if value != defaultProcessingTimeout {
+		t.Fatalf("retrievalProcessingTimeout() = %v, want %v", value, defaultProcessingTimeout)
+	}
+}
+
 func TestCleanupRetriesFailedJobsAndCompletesSuccessfulOnes(t *testing.T) {
 	cleanup := &lambdaVectorCleanupRepository{
 		jobs: []repository.VectorCleanupJob{
@@ -207,10 +258,14 @@ func (s *lambdaManifestFailureRecorder) FailManifest(_ context.Context, event ap
 }
 
 type lambdaBatchProcessor struct {
-	err error
+	err     error
+	process func(context.Context, application.BatchWork) error
 }
 
-func (s lambdaBatchProcessor) Process(context.Context, application.BatchWork) error {
+func (s lambdaBatchProcessor) Process(ctx context.Context, work application.BatchWork) error {
+	if s.process != nil {
+		return s.process(ctx, work)
+	}
 	return s.err
 }
 
@@ -219,12 +274,14 @@ type lambdaBatchFailureRecorder struct {
 	work     application.BatchWork
 	category domain.FailureCategory
 	err      error
+	ctxErr   error
 }
 
-func (s *lambdaBatchFailureRecorder) FailBatch(_ context.Context, work application.BatchWork, category domain.FailureCategory, _ time.Time) error {
+func (s *lambdaBatchFailureRecorder) FailBatch(ctx context.Context, work application.BatchWork, category domain.FailureCategory, _ time.Time) error {
 	s.calls++
 	s.work = work
 	s.category = category
+	s.ctxErr = ctx.Err()
 	return s.err
 }
 

@@ -27,6 +27,16 @@ m4_files=(
   rabbitmq_definitions.json rabbitmq.conf
 )
 
+m5_files=(
+  retrieval_migration_password retrieval_runtime_password retrieval_search_password retrieval_planner_password
+  retrieval_indexer_password retrieval_dispatcher_password retrieval_cleanup_password retrieval_e2e_password
+  retrieval_migration_pgpass retrieval_runtime_dsn retrieval_runtime_host_dsn retrieval_search_dsn
+  retrieval_cleanup_dsn retrieval_e2e_dsn retrieval_e2e_container_dsn retrieval_minio_access_key
+  retrieval_minio_secret_key retrieval_consumer_rabbitmq_uri retrieval_publisher_rabbitmq_uri
+  catalog_retrieval_rabbitmq_uri retrieval_e2e_rabbitmq_uri retrieval_e2e_rabbitmq_container_uri
+  retrieval_qdrant_api_key retrieval_qdrant_read_api_key
+)
+
 assert_complete_and_private() {
   local dir=$1
   local file
@@ -53,6 +63,13 @@ assert_complete_and_private() {
     echo "ingestion_e2e RabbitMQ permissions exceed the release-test boundary" >&2
     exit 1
   }
+  for file in "${m5_files[@]}"; do
+    [[ "$(stat -c '%a' "$dir/$file")" == 400 ]] || {
+      echo "M5 secret permissions are not 0400: $dir/$file" >&2
+      exit 1
+    }
+  done
+  bash ./scripts/check-m5-dev-secrets.sh "$dir"
 }
 
 # Fresh checkout: the normal generator must produce the complete M4 set.
@@ -61,14 +78,17 @@ bash ./scripts/generate-dev-secrets.sh "$fresh_dir" >/dev/null
 assert_complete_and_private "$fresh_dir"
 
 # Identity-only upgrade: the M3 generator adds non-database M4 credentials,
-# then the database helper must fill the complete database set without clashes.
+# then the additive helpers must fill the complete M4 and M5 sets without
+# clashes.
 identity_dir="$test_root/identity-upgrade"
 bash ./scripts/generate-catalog-dev-secrets.sh "$identity_dir" >/dev/null
 bash ./scripts/ensure-m4-dev-secrets.sh "$identity_dir" >/dev/null
+bash ./scripts/ensure-m5-dev-secrets.sh "$identity_dir" >/dev/null
 assert_complete_and_private "$identity_dir"
 
 # Legacy M3-only upgrade: M4 adds its non-database and ingestion credentials
-# first; the database helper then adds only the absent Catalog group.
+# first, M5 adds only its absent Retrieval group, and the database helper then
+# adds only the absent Catalog group.
 m3_dir="$test_root/m3-upgrade"
 mkdir -p "$m3_dir"
 chmod 700 "$m3_dir"
@@ -76,6 +96,7 @@ printf '%s\n' '{"users":[],"permissions":[],"exchanges":[],"queues":[],"bindings
 printf '%s\n' 'management.load_definitions = /etc/rabbitmq/definitions.json' > "$m3_dir/rabbitmq.conf"
 chmod 400 "$m3_dir/rabbitmq_definitions.json" "$m3_dir/rabbitmq.conf"
 bash ./scripts/ensure-m4-dev-secrets.sh "$m3_dir" >/dev/null
+bash ./scripts/ensure-m5-dev-secrets.sh "$m3_dir" >/dev/null
 assert_complete_and_private "$m3_dir"
 for file in catalog_migration_password catalog_runtime_password catalog_migration_pgpass catalog_runtime_dsn; do
   [[ -r "$m3_dir/$file" ]] || { echo "Catalog database secret is missing after M3 upgrade: $file" >&2; exit 1; }
@@ -111,6 +132,22 @@ if bash ./scripts/ensure-m4-dev-secrets.sh "$partial_m4_dir" >/dev/null 2>&1; th
 fi
 [[ "$(cat "$partial_m4_dir/ingestion_minio_access_key")" == sentinel ]] || {
   echo "existing M4 non-database secret was modified" >&2
+  exit 1
+}
+
+partial_m5_dir="$test_root/partial-m5"
+mkdir -p "$partial_m5_dir"
+chmod 700 "$partial_m5_dir"
+printf '%s\n' '{"users":[],"permissions":[],"exchanges":[],"queues":[],"bindings":[]}' > "$partial_m5_dir/rabbitmq_definitions.json"
+printf '%s\n' 'management.load_definitions = /etc/rabbitmq/definitions.json' > "$partial_m5_dir/rabbitmq.conf"
+printf '%s\n' sentinel > "$partial_m5_dir/retrieval_runtime_password"
+chmod 400 "$partial_m5_dir/rabbitmq_definitions.json" "$partial_m5_dir/rabbitmq.conf" "$partial_m5_dir/retrieval_runtime_password"
+if bash ./scripts/ensure-m5-dev-secrets.sh "$partial_m5_dir" >/dev/null 2>&1; then
+  echo "partial M5 secret set was unexpectedly accepted" >&2
+  exit 1
+fi
+[[ "$(cat "$partial_m5_dir/retrieval_runtime_password")" == sentinel ]] || {
+  echo "existing M5 secret was modified" >&2
   exit 1
 }
 
