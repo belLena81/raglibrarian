@@ -203,9 +203,16 @@ m5-integration-test: m5-search-quality-test m5-contract-test m5-e2e m5-worker-re
 m5-search-quality-test: _require_root
 	@test -r "$${M5_MODEL_DIR:-.dev/models/m5-jina-code-v1}/.revision" || { echo "M5 model cache is missing; run make m5-model-bootstrap"; exit 1; }
 	@project=raglibrarian-m5-search-quality-test; \
-	trap 'MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile m5-contract-test down -v --remove-orphans' EXIT; \
-	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile m5-contract-test build retrieval-qdrant-init retrieval-service retrieval-contract-tests && \
-	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile m5-contract-test run --rm -e RETRIEVAL_TEI_URL=http://text-embeddings-inference:8080 retrieval-contract-tests "go -C /src/services/retrieval-service test -count=1 -v -run '^TestSearchQualityBenchmark$$' ./internal/application"
+	status=0; \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile m5-contract-test build retrieval-contract-tests && \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile m5-contract-test up -d --wait text-embeddings-inference && \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile m5-contract-test run --rm --no-deps -e RETRIEVAL_TEI_URL=http://text-embeddings-inference:8080 retrieval-contract-tests "go -C /src/services/retrieval-service test -count=1 -v -run '^TestSearchQualityBenchmark$$' ./internal/application" || status=$$?; \
+	if [ "$$status" -ne 0 ]; then \
+		docker inspect --format 'exit={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{.State.Error}} memory_bytes={{.HostConfig.Memory}} nano_cpus={{.HostConfig.NanoCPUs}}' "$${project}-text-embeddings-inference-1" || true; \
+		MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile m5-contract-test logs --no-color --tail=200 text-embeddings-inference || true; \
+	fi; \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile m5-contract-test down -v --remove-orphans; \
+	exit $$status
 
 m5-worker-recovery-test: _require_root
 	cd services/retrieval-service && RETRIEVAL_POSTGRES_INTEGRATION=true RETRIEVAL_POSTGRES_DSN_FILE=../../.dev/secrets/retrieval_runtime_host_dsn go test -count=1 -v -tags=integration -run 'Replay|Recovery|TerminalFailure|Visibility|Manifest|FailBatch|CompleteBatch' ./internal/repository
