@@ -1,4 +1,12 @@
 services:
+  edge-api:
+    environment:
+      EDGE_INSECURE_REFRESH_COOKIE: "true"
+
+  edge-api-2:
+    environment:
+      EDGE_INSECURE_REFRESH_COOKIE: "true"
+
   text-embeddings-inference:
     image: raglibrarian-tei-stub:local
     build:

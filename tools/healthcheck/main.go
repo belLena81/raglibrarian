@@ -28,17 +28,19 @@ func main() {
 	}
 }
 
+var httpClient = http.DefaultClient
+
 func checkHTTP(ctx context.Context, url string) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil) // #nosec G704 -- local operator-controlled probe
 	if err != nil {
 		return err
 	}
-	response, err := http.DefaultClient.Do(request) // #nosec G704 -- local operator-controlled probe
+	response, err := httpClient.Do(request) // #nosec G704 -- local operator-controlled probe
 	if err != nil {
 		return err
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return errors.New("health endpoint is not ready")
 	}
 	return nil
