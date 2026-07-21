@@ -12,7 +12,9 @@ HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
 # publishing incident. Do not move this pin without reviewing the advisory.
 TRIVY_IMAGE := aquasec/trivy:0.69.2
 SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-ingestion-lambda:local raglibrarian-ingestion-dispatcher-lambda:local raglibrarian-ingestion-cleanup-lambda:local raglibrarian-retrieval-service:local raglibrarian-retrieval-worker:local raglibrarian-retrieval-qdrant-init:local raglibrarian-retrieval-planner-lambda:local raglibrarian-retrieval-index-lambda:local raglibrarian-retrieval-dispatcher-lambda:local raglibrarian-retrieval-cleanup-lambda:local
-M5_PROVIDER_IMAGES := qdrant/qdrant:v1.18.3 ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+QDRANT_IMAGE := qdrant/qdrant:v1.18.3
+QDRANT_TRIVY_IGNORE_FILE := security/trivy/qdrant-v1.18.3.ignore.yaml
+M5_PROVIDER_IMAGES := $(QDRANT_IMAGE) ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
 M4_E2E_INGESTION_POSTGRES_DSN_FILE ?= $(CURDIR)/.dev/secrets/ingestion_e2e_dsn
 M4_E2E_MINIO_ENDPOINT ?= 127.0.0.1:9000
 M4_E2E_MINIO_INSECURE ?= true
@@ -473,8 +475,11 @@ image-build: _require_root
 
 image-scan: image-build
 	@for image in $(SERVICE_IMAGES) $(M5_PROVIDER_IMAGES); do \
+		ignorefile=""; \
+		if [ "$$image" = "$(QDRANT_IMAGE)" ]; then ignorefile="--ignorefile /trivyignore/qdrant-v1.18.3.ignore.yaml"; fi; \
 		docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-			$(TRIVY_IMAGE) image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL "$$image" || exit 1; \
+			-v "$(CURDIR)/$(QDRANT_TRIVY_IGNORE_FILE):/trivyignore/qdrant-v1.18.3.ignore.yaml:ro" \
+			$(TRIVY_IMAGE) image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL $$ignorefile "$$image" || exit 1; \
 	done
 
 security-check: secret-scan dockerfile-lint image-scan ui-audit

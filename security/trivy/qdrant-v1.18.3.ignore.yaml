@@ -1,0 +1,9 @@
+vulnerabilities:
+  - id: GHSA-36hh-v3qg-5jq4
+    purls:
+      - pkg:cargo/pyo3@0.28.3
+    expired_at: 2026-08-20
+    statement: >-
+      The official qdrant/qdrant:v1.18.3 image bundles PyO3 0.28.3. No
+      patched official Qdrant image is available; remove this exception when
+      Qdrant publishes an image with PyO3 0.29.0 or later.

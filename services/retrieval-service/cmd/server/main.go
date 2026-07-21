@@ -118,7 +118,7 @@ func serveReadiness(ctx context.Context, address string, dependencies ...readine
 	server := &http.Server{Addr: address, Handler: mux, ReadHeaderTimeout: 2 * time.Second, IdleTimeout: 30 * time.Second}
 	go func() {
 		<-ctx.Done()
-		shutdownContext, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		shutdownContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownContext)
 	}()

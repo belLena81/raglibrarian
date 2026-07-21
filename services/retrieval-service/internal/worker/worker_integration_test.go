@@ -20,6 +20,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+type terminalFailureContextKey struct{}
+
 func TestDeliveryAttemptParsesBoundedBrokerHeader(t *testing.T) {
 	if got := deliveryAttempt(amqp091.Table{"x-delivery-count": int64(4)}); got != 4 {
 		t.Fatalf("deliveryAttempt() = %d", got)
@@ -105,6 +107,31 @@ func TestHandleRetriesTerminalFailureRecordingBelowBudget(t *testing.T) {
 	}
 	if len(publisher.messages) != 1 || publisher.messages[0].RoutingKey != "retrieval.index-batch.v1.retry.30s" || publisher.messages[0].Headers["x-retry-attempt"] != int64(2) {
 		t.Fatalf("published retry = %#v", publisher.messages)
+	}
+}
+
+func TestHandleUsesRuntimeContextForTerminalFailureRecording(t *testing.T) {
+	acknowledger := &stubAcknowledger{}
+	delivery := amqp091.Delivery{Acknowledger: acknowledger, DeliveryTag: 1, ContentType: "application/x-protobuf", Body: []byte{1}}
+	semaphore := make(chan struct{}, 1)
+	var handlers sync.WaitGroup
+	ctx := context.WithValue(context.Background(), terminalFailureContextKey{}, "worker-session")
+
+	(&Runtime{}).handle(ctx, semaphore, &handlers, &stubRetryPublisher{}, batchQueue, delivery, func(context.Context, []byte) error {
+		return application.Failure(domain.FailureManifestIntegrity, errors.New("malformed shard"))
+	}, func(failureContext context.Context, _ []byte, _ error) error {
+		if got := failureContext.Value(terminalFailureContextKey{}); got != "worker-session" {
+			t.Fatalf("terminal failure context value = %v", got)
+		}
+		if _, ok := failureContext.Deadline(); !ok {
+			t.Fatal("terminal failure context has no deadline")
+		}
+		return nil
+	})
+	handlers.Wait()
+
+	if acknowledger.acks != 1 || acknowledger.nacks != 0 {
+		t.Fatalf("settlement acks=%d nacks=%d", acknowledger.acks, acknowledger.nacks)
 	}
 }
 

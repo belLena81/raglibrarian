@@ -35,6 +35,35 @@ func TestIndexerReplayUsesStableEvidenceIDsAndCompletesOnce(t *testing.T) {
 	}
 }
 
+func TestBatchWorkValidateRejectsProfileTokenMismatch(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*BatchWork)
+	}{
+		{
+			name: "maximum tokens",
+			mutate: func(work *BatchWork) {
+				work.MaximumTokens++
+			},
+		},
+		{
+			name: "overlap tokens",
+			mutate: func(work *BatchWork) {
+				work.OverlapTokens++
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			work := validBatchWork()
+			test.mutate(&work)
+			if err := work.Validate(); !errors.Is(err, ErrInvalidEvent) {
+				t.Fatalf("Validate() error = %v, want ErrInvalidEvent", err)
+			}
+		})
+	}
+}
+
 func TestIndexerUpsertsDocumentCentroidBeforeActivation(t *testing.T) {
 	first := make([]float32, domain.EmbeddingDimensions)
 	first[0] = 1

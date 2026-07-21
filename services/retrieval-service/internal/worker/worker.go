@@ -280,7 +280,7 @@ func (r *Runtime) serveReadiness(ctx context.Context) {
 	server := &http.Server{Addr: r.configuration.MetricsAddress, Handler: mux, ReadHeaderTimeout: 2 * time.Second, IdleTimeout: 30 * time.Second}
 	go func() {
 		<-ctx.Done()
-		shutdownContext, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		shutdownContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownContext)
 	}()
@@ -308,7 +308,7 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 			return
 		}
 		if terminalFailure != nil && application.TerminalIndexingFailure(err) {
-			failureContext, failureCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			failureContext, failureCancel := context.WithTimeout(ctx, 10*time.Second)
 			failureErr := terminalFailure(failureContext, delivery.Body, err)
 			failureCancel()
 			if failureErr == nil {
@@ -340,7 +340,7 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 				_ = delivery.Nack(false, false)
 				return
 			}
-			failureContext, failureCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			failureContext, failureCancel := context.WithTimeout(ctx, 10*time.Second)
 			failureErr := terminalFailure(failureContext, delivery.Body, err)
 			failureCancel()
 			if failureErr == nil {

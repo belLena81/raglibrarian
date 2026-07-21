@@ -30,7 +30,7 @@ func (w BatchWork) Validate() error {
 		w.ManifestSHA256 == ([32]byte{}) || w.ProfileDigest != profile.Digest || w.CompressedBytes < 1 ||
 		w.CompressedBytes > 32<<20 || w.UncompressedBytes < 1 || w.UncompressedBytes > 64<<20 ||
 		w.ChunkCount < 1 || w.ChunkCount > 256 || w.ManifestPageCount < 1 || w.ManifestPageCount > maxManifestPages ||
-		w.MaximumTokens == 0 || w.MaximumTokens != uint32(profile.MaximumTokens) || w.OverlapTokens != uint32(profile.OverlapTokens) ||
+		w.MaximumTokens == 0 || int64(w.MaximumTokens) != int64(profile.MaximumTokens) || int64(w.OverlapTokens) != int64(profile.OverlapTokens) ||
 		w.ExtractionVersion != profile.ExtractionVersion || w.NormalizationVersion != profile.NormalizationVersion ||
 		w.TokenizerVersion != profile.TokenizerVersion || w.ChunkingVersion != profile.ChunkingVersion || w.StructureVersion != profile.StructureVersion ||
 		w.OccurredAt.IsZero() {

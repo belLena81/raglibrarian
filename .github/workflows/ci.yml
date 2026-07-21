@@ -85,6 +85,9 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
+    env:
+      M5_TEI_MEMORY_LIMIT: 3g
+      M5_TEI_CPU_LIMIT: "2.0"
     steps:
       - uses: actions/checkout@v4.2.2
       - uses: actions/setup-go@v5.5.0
@@ -112,6 +115,11 @@ jobs:
           make m5-model-bootstrap
           make compose-config
           EDGE_RETRIEVAL_READINESS_REQUIRED=true docker compose --profile m4-ha --profile m5 up -d --build --wait --wait-timeout 300
+      - name: Show TEI startup diagnostics
+        if: failure()
+        run: |
+          docker inspect --format 'exit={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{.State.Error}} memory_bytes={{.HostConfig.Memory}} nano_cpus={{.HostConfig.NanoCPUs}}' raglibrarian-text-embeddings-inference-1 || true
+          docker compose logs --no-color --tail=200 text-embeddings-inference || true
       - name: Run live mTLS service contracts
         run: make m4-contract-test
       - name: Verify MinIO multipart cleanup
