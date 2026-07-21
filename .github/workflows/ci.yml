@@ -96,6 +96,8 @@ jobs:
           sudo apt-get install --yes protobuf-compiler
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+      - name: Install pinned Hugging Face CLI
+        run: pipx install huggingface-hub==0.36.0
       - name: Create ephemeral file-backed local configuration
         run: |
           cp .env.example .env
@@ -106,6 +108,10 @@ jobs:
           { printf 'raglibrarian/admin-bootstrap/v1\0'; cat .dev/secrets/e2e_bootstrap_code; } \
             | openssl dgst -sha256 -binary > .dev/secrets/identity_bootstrap_verifier
           chmod 400 .dev/secrets/e2e_bootstrap_code .dev/secrets/identity_bootstrap_verifier
+      - name: Bootstrap pinned M5 embedding model
+        run: make m5-model-bootstrap
+      - name: Run M5 configured-embedder quality benchmark
+        run: make m5-search-quality-test
       - name: Validate and start the local stack
         run: |
           make compose-config
@@ -145,7 +151,7 @@ jobs:
           E2E_MAIL_FIXTURE_URL=http://127.0.0.1:8025/view/latest.txt \
             make m4-m5-integration-test
       - name: Run M5 Retrieval contracts and focused recovery tests
-        run: make m5-search-quality-test m5-contract-test m5-worker-recovery-test
+        run: make m5-contract-test m5-worker-recovery-test
       - name: Verify database-loss readiness behavior
         run: |
           docker compose stop postgres
