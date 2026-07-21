@@ -7,3 +7,43 @@ vulnerabilities:
       The official qdrant/qdrant:v1.18.3 image bundles PyO3 0.28.3. No
       patched official Qdrant image is available; remove this exception when
       Qdrant publishes an image with PyO3 0.29.0 or later.
+  - id: GHSA-gcfj-64vw-6mp9
+    purls:
+      - pkg:npm/axios@1.16.0
+    expired_at: 2026-08-20
+    statement: >-
+      The official qdrant/qdrant:v1.18.3 image bundles this Node.js dependency
+      in upstream SBOM metadata. Remove this exception when Qdrant publishes an
+      image with axios 1.18.0 or later.
+  - id: CVE-2026-13149
+    purls:
+      - pkg:npm/brace-expansion@1.1.13
+    expired_at: 2026-08-20
+    statement: >-
+      The official qdrant/qdrant:v1.18.3 image bundles this Node.js dependency
+      in upstream SBOM metadata. Remove this exception when Qdrant publishes an
+      image with brace-expansion 1.1.16, 2.1.2, or 5.0.7 or later.
+  - id: CVE-2026-59869
+    purls:
+      - pkg:npm/js-yaml@4.2.0
+    expired_at: 2026-08-20
+    statement: >-
+      The official qdrant/qdrant:v1.18.3 image bundles this Node.js dependency
+      in upstream SBOM metadata. Remove this exception when Qdrant publishes an
+      image with js-yaml 4.3.0 or later.
+  - id: CVE-2026-59873
+    purls:
+      - pkg:npm/tar@7.5.16
+    expired_at: 2026-08-20
+    statement: >-
+      The official qdrant/qdrant:v1.18.3 image bundles this Node.js dependency
+      in upstream SBOM metadata. Remove this exception when Qdrant publishes an
+      image with tar 7.5.19 or later.
+  - id: CVE-2026-59874
+    purls:
+      - pkg:npm/tar@7.5.16
+    expired_at: 2026-08-20
+    statement: >-
+      The official qdrant/qdrant:v1.18.3 image bundles this Node.js dependency
+      in upstream SBOM metadata. Remove this exception when Qdrant publishes an
+      image with tar 7.5.18 or later.

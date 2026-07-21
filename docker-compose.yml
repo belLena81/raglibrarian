@@ -579,7 +579,7 @@ services:
 
   text-embeddings-inference:
     profiles: ["m5", "m5-contract-test"]
-    image: ${M5_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.9}
+    image: ${M5_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference@sha256:cb570aabbfa016b86684f576b5bd72d1ee96cc0b7a00b0ad221b298762b32157}
     read_only: true
     user: "65532:65532"
     security_opt:

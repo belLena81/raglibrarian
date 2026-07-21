@@ -1,0 +1,11 @@
+vulnerabilities:
+  - id: CVE-2026-5773
+    purls:
+      - pkg:deb/debian/curl@7.88.1-10%2Bdeb12u14?arch=amd64&distro=debian-12.14
+      - pkg:deb/debian/libcurl4@7.88.1-10%2Bdeb12u14?arch=amd64&distro=debian-12.14
+    expired_at: 2026-08-20
+    statement: >-
+      The current HuggingFace text-embeddings-inference CPU image digest bundles
+      Debian curl/libcurl 7.88.1-10+deb12u14. Remove this exception when a
+      pinned upstream CPU image digest is available with curl/libcurl
+      7.88.1-10+deb12u15 or later.
