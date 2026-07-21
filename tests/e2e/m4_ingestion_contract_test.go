@@ -21,7 +21,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +32,7 @@ import (
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/klauspost/compress/zstd"
 	"github.com/minio/minio-go/v7"
@@ -57,8 +57,6 @@ const (
 	m4TinyDocumentTerminalSLO    = 10 * time.Second
 	m4AverageDocumentTerminalSLO = 120 * time.Second
 )
-
-var m4SecretURLPattern = regexp.MustCompile(`(postgres|amqps?)://([^:@/[:space:]]+):([^@/[:space:]]+)@`)
 
 type m4Environment struct {
 	accessToken  string
@@ -727,7 +725,7 @@ func fetchM4Manifest(t *testing.T, bookID string) []byte {
 	case errors.Is(err, pgx.ErrNoRows):
 		t.Fatal("completed M4 artifact receipt was not available in Ingestion Postgres")
 	case err != nil:
-		t.Fatalf("completed M4 artifact receipt query failed: %s", sanitizeM4Diagnostic(err))
+		t.Fatalf("completed M4 artifact receipt query failed: %s", safeM4PostgresDiagnostic(err))
 	}
 	contents := fetchM4Artifact(t, environment, receipt.reference)
 	actualSHA := sha256.Sum256(contents)
@@ -998,11 +996,38 @@ func readM4SecretFile(t *testing.T, path string, maximumBytes int64) string {
 	return value
 }
 
-func sanitizeM4Diagnostic(err error) string {
-	if err == nil {
-		return ""
+func safeM4PostgresDiagnostic(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && safeM4SQLState(pgErr.Code) {
+		return "sqlstate=" + pgErr.Code
 	}
-	return m4SecretURLPattern.ReplaceAllString(err.Error(), `$1://$2:<redacted>@`)
+	return "database query failed"
+}
+
+func safeM4SQLState(value string) bool {
+	if len(value) != 5 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'A' || character > 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
+func TestM4SafePostgresDiagnosticNeverEchoesRawConnectionMaterial(t *testing.T) {
+	raw := "failed to parse postgres://ingestion_e2e:pass/with/slash@127.0.0.1:5432/ingestion"
+	if diagnostic := safeM4PostgresDiagnostic(errors.New(raw)); diagnostic != "database query failed" {
+		t.Fatalf("diagnostic = %q, want generic database failure", diagnostic)
+	}
+	diagnostic := safeM4PostgresDiagnostic(&pgconn.PgError{
+		Code:    "42501",
+		Message: raw,
+	})
+	if diagnostic != "sqlstate=42501" || strings.Contains(diagnostic, "pass/with/slash") || strings.Contains(diagnostic, "127.0.0.1") {
+		t.Fatalf("diagnostic exposed raw connection material: %q", diagnostic)
+	}
 }
 
 func fetchM4AcceptedEnvelope(t *testing.T, bookID string) ([]byte, string) {
@@ -1022,7 +1047,7 @@ func fetchM4AcceptedEnvelope(t *testing.T, bookID string) ([]byte, string) {
 	case errors.Is(err, pgx.ErrNoRows):
 		t.Fatal("bounded original M4 envelope was not available for replay")
 	case err != nil:
-		t.Fatalf("bounded original M4 envelope query failed: %s", sanitizeM4Diagnostic(err))
+		t.Fatalf("bounded original M4 envelope query failed: %s", safeM4PostgresDiagnostic(err))
 	case eventID == "" || len(payload) == 0 || len(payload) > 256<<10:
 		t.Fatal("bounded original M4 envelope was invalid for replay")
 	}
@@ -1035,7 +1060,7 @@ func publishM4UploadedEnvelope(t *testing.T, eventID string, payload []byte) {
 	uri := readM4SecretFile(t, uriFile, 4096)
 	connection, err := amqp091.DialConfig(uri, amqp091.Config{Dial: amqp091.DefaultDial(5 * time.Second)})
 	if err != nil {
-		t.Fatalf("M4 replay broker connection failed: %s", sanitizeM4Diagnostic(err))
+		t.Fatal("M4 replay broker connection failed")
 	}
 	defer connection.Close()
 	channel, err := connection.Channel()
@@ -1091,7 +1116,7 @@ func waitForM4DeadLetter(t *testing.T, eventID string, timeout time.Duration) am
 	uri := readM4SecretFile(t, uriFile, 4096)
 	connection, err := amqp091.DialConfig(uri, amqp091.Config{Dial: amqp091.DefaultDial(5 * time.Second)})
 	if err != nil {
-		t.Fatalf("M4 dead-letter broker connection failed: %s", sanitizeM4Diagnostic(err))
+		t.Fatal("M4 dead-letter broker connection failed")
 	}
 	defer connection.Close()
 	channel, err := connection.Channel()
