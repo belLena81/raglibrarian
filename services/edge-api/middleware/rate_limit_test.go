@@ -32,6 +32,7 @@ func TestFixedWindowPrincipalRateLimitUsesTrustedPrincipal(t *testing.T) {
 	assert.Equal(t, http.StatusTooManyRequests, second.Code)
 	assert.Equal(t, http.StatusNoContent, third.Code)
 	assert.Equal(t, 2, calls)
+	assert.Equal(t, "3600", second.Header().Get("Retry-After"))
 }
 
 func TestBoundedConcurrencyRejectsWhenFull(t *testing.T) {
@@ -65,6 +66,7 @@ func TestBoundedConcurrencyRejectsWhenFull(t *testing.T) {
 		}
 	}, time.Second, 10*time.Millisecond)
 	assert.Equal(t, http.StatusNoContent, first.Code)
+	assert.Equal(t, "60", second.Header().Get("Retry-After"))
 }
 
 func principalRequest(userID, role string) *http.Request {

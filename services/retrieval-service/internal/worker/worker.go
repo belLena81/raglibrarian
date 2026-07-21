@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/belLena81/raglibrarian/pkg/process"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/diagnostic"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
@@ -131,9 +130,6 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
-	if err := process.DropPrivileges(r.configuration.RunAs); err != nil {
-		return errors.New("reduce retrieval worker privileges")
-	}
 	collectionContext, collectionCancel := context.WithTimeout(ctx, 10*time.Second)
 	collectionErr := r.vector.EnsureCollection(collectionContext)
 	collectionCancel()

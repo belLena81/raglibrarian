@@ -158,6 +158,6 @@ func bookFromProto(book *retrievalv1.BookMetadata) handler.EvidenceBook {
 		Title:  book.Title,
 		Author: book.Author,
 		Year:   int(book.Year),
-		Tags:   append([]string(nil), book.Tags...),
+		Tags:   append([]string{}, book.Tags...),
 	}
 }

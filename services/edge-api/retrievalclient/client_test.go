@@ -122,3 +122,39 @@ func TestSearchRejectsInvalidRequestIDBeforeRPC(t *testing.T) {
 	assert.ErrorIs(t, err, ErrUnavailable)
 	assert.False(t, called)
 }
+
+func TestSearchNormalizesNilBookTagsToEmptySlice(t *testing.T) {
+	client := New(&retrievalClientStub{search: func(context.Context, *retrievalv1.SearchRequest, ...grpc.CallOption) (*retrievalv1.SearchResponse, error) {
+		return &retrievalv1.SearchResponse{
+			Query: "q",
+			Results: []*retrievalv1.Evidence{{
+				EvidenceId: "evidence-1",
+				ChunkId:    "chunk-1",
+				Book:       &retrievalv1.BookMetadata{BookId: "book-1", Title: "Book", Author: "Author", Year: 2024},
+				Passage:    "stored passage",
+				Score:      0.9,
+			}},
+			Documents: []*retrievalv1.DocumentResult{{
+				DocumentId: "book-1:job-1",
+				Book:       &retrievalv1.BookMetadata{BookId: "book-1", Title: "Book", Author: "Author", Year: 2024},
+				Evidence: []*retrievalv1.Evidence{{
+					EvidenceId: "evidence-1",
+					ChunkId:    "chunk-1",
+					Book:       &retrievalv1.BookMetadata{BookId: "book-1", Title: "Book", Author: "Author", Year: 2024},
+					Passage:    "stored passage",
+					Score:      0.9,
+				}},
+			}},
+		}, nil
+	}})
+	ctx := context.WithValue(context.Background(), chimiddleware.RequestIDKey, testRequestID)
+
+	result, err := client.Search(ctx, handler.SearchRequest{Question: "q"})
+	require.NoError(t, err)
+	require.NotNil(t, result.Results[0].Book.Tags)
+	assert.Empty(t, result.Results[0].Book.Tags)
+	require.NotNil(t, result.Documents[0].Book.Tags)
+	assert.Empty(t, result.Documents[0].Book.Tags)
+	require.NotNil(t, result.Documents[0].Evidence[0].Book.Tags)
+	assert.Empty(t, result.Documents[0].Evidence[0].Book.Tags)
+}

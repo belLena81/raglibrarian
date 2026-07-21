@@ -100,7 +100,6 @@ jobs:
         run: |
           cp .env.example .env
           make dev-secrets dev-certs
-          make dev-secrets-m5
           bash ./scripts/ensure-m5-dev-cert.sh
           umask 077
           openssl rand -base64 24 | tr -d '\n' > .dev/secrets/e2e_bootstrap_code
@@ -162,7 +161,6 @@ jobs:
         run: |
           cp .env.example .env
           make dev-secrets dev-certs
-          make dev-secrets-m5
           umask 077
           openssl rand -base64 24 | tr -d '\n' > .dev/secrets/e2e_bootstrap_code
           { printf 'raglibrarian/admin-bootstrap/v1\0'; cat .dev/secrets/e2e_bootstrap_code; } \

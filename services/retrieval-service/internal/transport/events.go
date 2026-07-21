@@ -48,7 +48,7 @@ func DecodeMetadata(payload []byte) (application.MetadataEvent, error) {
 	if err := (proto.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(payload, &message); err != nil || len(message.Sha256) != sha256.Size || message.OccurredAt == nil || !message.OccurredAt.IsValid() {
 		return application.MetadataEvent{}, application.ErrInvalidEvent
 	}
-	event := application.MetadataEvent{EventID: message.EventId, BookID: message.BookId, Title: message.Title, Author: message.Author, Year: int(message.Year), Tags: append([]string(nil), message.Tags...),
+	event := application.MetadataEvent{EventID: message.EventId, BookID: message.BookId, Title: message.Title, Author: message.Author, Year: int(message.Year), Tags: append([]string{}, message.Tags...),
 		CorrelationID: message.CorrelationId, CausationID: message.CausationId, Producer: message.Producer, SchemaVersion: message.SchemaVersion, IdempotencyKey: message.IdempotencyKey,
 		OccurredAt: message.OccurredAt.AsTime(), PayloadDigest: sha256.Sum256(payload)}
 	copy(event.SourceSHA256[:], message.Sha256)

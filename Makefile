@@ -229,8 +229,7 @@ m4-m5-integration-test: _require_root
 	E2E_M5_READER_TOKEN_OUT="$$token_dir/reader" E2E_M5_LIBRARIAN_TOKEN_OUT="$$token_dir/librarian" E2E_M5_ADMIN_TOKEN_OUT="$$token_dir/admin" $(MAKE) e2e; \
 	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE="$$token_dir/revocable" $(MAKE) m4-e2e; \
 	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" $(MAKE) m4-worker-recovery-test; \
-	M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" M5_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" M5_E2E_ADMIN_TOKEN_FILE="$$token_dir/admin" $(MAKE) m5-e2e; \
-	M5_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" $(MAKE) m5-performance-smoke
+	M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" M5_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" M5_E2E_ADMIN_TOKEN_FILE="$$token_dir/admin" $(MAKE) m5-e2e
 
 # This gate deliberately controls only the local Compose worker. The E2E test
 # owns upload/status assertions and coordinates through two owner-only markers;

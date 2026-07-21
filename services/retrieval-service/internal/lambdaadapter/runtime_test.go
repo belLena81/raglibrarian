@@ -185,6 +185,52 @@ func TestIndexRecordsTimeoutWithFreshFailureContext(t *testing.T) {
 	}
 }
 
+func TestIndexOverridesSanitizedDependencyTimeoutToIndexingTimeout(t *testing.T) {
+	recorder := &lambdaBatchFailureRecorder{}
+	cleanup := &lambdaVectorCleanupRepository{}
+	vectors := &lambdaVectorDeactivator{}
+	runtime := &Runtime{
+		indexer: lambdaBatchProcessor{process: func(ctx context.Context, _ application.BatchWork) error {
+			<-ctx.Done()
+			return application.Failure(domain.FailureEmbeddingUnavailable, errors.New("embed shard"))
+		}},
+		batchFails:         recorder,
+		vectorJobs:         cleanup,
+		vector:             vectors,
+		processingTimeout:  time.Nanosecond,
+		failureRecordLimit: time.Second,
+	}
+
+	err := runtime.Index(context.Background(), batchRabbitEvent(t, validLambdaBatchPayload(t), 1))
+	if err != nil {
+		t.Fatalf("Index() error = %v", err)
+	}
+	if recorder.calls != 1 || recorder.category != domain.FailureIndexingTimeout {
+		t.Fatalf("recorded timeout calls=%d category=%q", recorder.calls, recorder.category)
+	}
+	if vectors.calls != 1 || cleanup.completed != 1 {
+		t.Fatalf("vector cleanup calls=%d completed=%d", vectors.calls, cleanup.completed)
+	}
+}
+
+func TestIndexPreservesDependencyFailureCategoryWithoutTimeout(t *testing.T) {
+	recorder := &lambdaBatchFailureRecorder{}
+	runtime := &Runtime{
+		indexer:            lambdaBatchProcessor{err: application.Failure(domain.FailureEmbeddingUnavailable, errors.New("embed shard"))},
+		batchFails:         recorder,
+		processingTimeout:  time.Second,
+		failureRecordLimit: time.Second,
+	}
+
+	err := runtime.Index(context.Background(), batchRabbitEvent(t, validLambdaBatchPayload(t), 4))
+	if err != nil {
+		t.Fatalf("Index() error = %v", err)
+	}
+	if recorder.calls != 1 || recorder.category != domain.FailureEmbeddingUnavailable {
+		t.Fatalf("recorded calls=%d category=%q", recorder.calls, recorder.category)
+	}
+}
+
 func TestRetrievalProcessingTimeoutRejectsInvalidValue(t *testing.T) {
 	t.Setenv("RETRIEVAL_PROCESSING_TIMEOUT", "30s")
 

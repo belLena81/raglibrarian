@@ -7,11 +7,48 @@ import (
 	"testing"
 	"time"
 
+	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func TestDecodeMetadataNormalizesMissingTagsToEmptySlice(t *testing.T) {
+	source := sha256.Sum256([]byte("synthetic source"))
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(&catalogv1.BookUploadedV1{
+		EventId:         "event-1",
+		BookId:          "book-1",
+		Title:           "Tagless Book",
+		Author:          "Author",
+		Year:            2026,
+		ObjectReference: "books/book-1/source.pdf",
+		Sha256:          source[:],
+		ByteSize:        128,
+		MediaType:       "application/pdf",
+		ActorId:         "actor-1",
+		CorrelationId:   "correlation-1",
+		CausationId:     "cause-1",
+		Producer:        "catalog-service",
+		SchemaVersion:   "v1",
+		IdempotencyKey:  "book-1",
+		OccurredAt:      timestamppb.New(time.Date(2026, 7, 21, 9, 0, 0, 0, time.UTC)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	event, err := DecodeMetadata(payload)
+	if err != nil {
+		t.Fatalf("DecodeMetadata() error = %v", err)
+	}
+	if event.Tags == nil {
+		t.Fatal("DecodeMetadata() tags = nil, want empty slice")
+	}
+	if len(event.Tags) != 0 {
+		t.Fatalf("DecodeMetadata() tags = %#v, want empty slice", event.Tags)
+	}
+}
 
 func TestDecodeManifestBindsOuterDescriptorAndProcessingIdentity(t *testing.T) {
 	event, manifest := validManifestPayloads(t)

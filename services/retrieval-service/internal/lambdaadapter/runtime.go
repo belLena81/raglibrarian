@@ -323,9 +323,13 @@ func (r *Runtime) Index(ctx context.Context, event RabbitEvent) error {
 	if err = r.indexer.Process(processCtx, work); err != nil {
 		processingTimedOut := errors.Is(processCtx.Err(), context.DeadlineExceeded) && !errors.Is(ctx.Err(), context.DeadlineExceeded)
 		if application.TerminalIndexingFailure(err) || eventAttempt(event) >= 4 || processingTimedOut {
+			category := application.FailureCategory(err)
+			if processingTimedOut {
+				category = domain.FailureIndexingTimeout
+			}
 			failureCtx, failureCancel := r.failureRecordingContext()
 			defer failureCancel()
-			if failureErr := r.batchFailureRecorder().FailBatch(failureCtx, work, application.FailureCategory(err), time.Now().UTC()); failureErr != nil {
+			if failureErr := r.batchFailureRecorder().FailBatch(failureCtx, work, category, time.Now().UTC()); failureErr != nil {
 				return errors.New("record terminal indexing failure")
 			}
 			if r.vector != nil {

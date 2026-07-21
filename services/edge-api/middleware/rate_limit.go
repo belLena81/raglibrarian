@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -43,7 +44,7 @@ func FixedWindowRateLimit(limit int, window time.Duration, maxKeys int) func(htt
 			}
 			if !exists && len(entries) >= maxKeys {
 				mu.Unlock()
-				writeRateLimited(w, r)
+				writeRateLimited(w, r, window)
 				return
 			}
 			if !exists || now.Sub(entry.started) >= window {
@@ -54,7 +55,7 @@ func FixedWindowRateLimit(limit int, window time.Duration, maxKeys int) func(htt
 			allowed := entry.count <= limit
 			mu.Unlock()
 			if !allowed {
-				writeRateLimited(w, r)
+				writeRateLimited(w, r, remainingWindow(now, entry.started, window))
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -74,7 +75,7 @@ func FixedWindowPrincipalRateLimit(limit int, window time.Duration, maxKeys int)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			principal, ok := PrincipalFromContext(r.Context())
 			if !ok || principal.UserID == "" || principal.Role == "" {
-				writeRateLimited(w, r)
+				writeRateLimited(w, r, window)
 				return
 			}
 			key := principal.UserID + ":" + principal.Role
@@ -90,7 +91,7 @@ func FixedWindowPrincipalRateLimit(limit int, window time.Duration, maxKeys int)
 			}
 			if !exists && len(entries) >= maxKeys {
 				mu.Unlock()
-				writeRateLimited(w, r)
+				writeRateLimited(w, r, window)
 				return
 			}
 			if !exists || now.Sub(entry.started) >= window {
@@ -101,7 +102,7 @@ func FixedWindowPrincipalRateLimit(limit int, window time.Duration, maxKeys int)
 			allowed := entry.count <= limit
 			mu.Unlock()
 			if !allowed {
-				writeRateLimited(w, r)
+				writeRateLimited(w, r, remainingWindow(now, entry.started, window))
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -121,13 +122,32 @@ func BoundedConcurrency(limit int) func(http.Handler) http.Handler {
 				defer func() { <-tokens }()
 				next.ServeHTTP(w, r)
 			default:
-				writeRateLimited(w, r)
+				writeRateLimited(w, r, time.Minute)
 			}
 		})
 	}
 }
 
-func writeRateLimited(w http.ResponseWriter, r *http.Request) {
+func remainingWindow(now, started time.Time, window time.Duration) time.Duration {
+	remaining := window - now.Sub(started)
+	if remaining <= 0 {
+		return time.Second
+	}
+	return remaining
+}
+
+func retryAfterSeconds(delay time.Duration) string {
+	seconds := int(delay / time.Second)
+	if delay%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		seconds = 1
+	}
+	return strconv.Itoa(seconds)
+}
+
+func writeRateLimited(w http.ResponseWriter, r *http.Request, retryAfter time.Duration) {
 	type errorResponse struct {
 		Code      string `json:"code"`
 		Error     string `json:"error"`
@@ -135,7 +155,7 @@ func writeRateLimited(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store, private")
-	w.Header().Set("Retry-After", "60")
+	w.Header().Set("Retry-After", retryAfterSeconds(retryAfter))
 	w.WriteHeader(http.StatusTooManyRequests)
 	_ = json.NewEncoder(w).Encode(errorResponse{
 		Code:      "rate_limited",
