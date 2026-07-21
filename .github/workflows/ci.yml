@@ -111,7 +111,7 @@ jobs:
       - name: Bootstrap pinned M5 embedding model
         run: make m5-model-bootstrap
       - name: Run M5 configured-embedder quality benchmark
-        run: make m5-search-quality-test
+        run: M5_TEI_MEMORY_LIMIT=6g make m5-search-quality-test
       - name: Validate and start the local stack
         run: |
           make compose-config
