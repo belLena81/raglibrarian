@@ -14,6 +14,7 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/process"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/config"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/diagnostic"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/artifact"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
@@ -44,23 +45,46 @@ type manifestFailureRecorder interface {
 	FailManifest(context.Context, application.ManifestEvent, domain.FailureCategory, time.Time) error
 }
 
+type batchFailureRecorder interface {
+	FailBatch(context.Context, application.BatchWork, domain.FailureCategory, time.Time) error
+}
+
+type batchProcessor interface {
+	Process(context.Context, application.BatchWork) error
+}
+
+type vectorCleanupRepository interface {
+	PendingVectorCleanup(context.Context, int, time.Time) ([]repository.VectorCleanupJob, error)
+	CompleteVectorCleanup(context.Context, string) error
+	RetryVectorCleanup(context.Context, string, time.Time) error
+}
+
+type vectorRuntime interface {
+	EnsureCollection(context.Context) error
+	CheckReady(context.Context) error
+	DeactivateJob(context.Context, string) error
+}
+
 type Runtime struct {
 	configuration config.WorkerConfig
 	pool          *pgxpool.Pool
 	repository    *repository.Postgres
 	manifestFails manifestFailureRecorder
+	batchFails    batchFailureRecorder
+	vectorJobs    vectorCleanupRepository
 	objects       storage.ObjectStore
 	planner       *application.Planner
-	indexer       *application.Indexer
+	indexer       batchProcessor
 	embedder      *embedding.TEI
-	vector        *vector.Qdrant
+	vector        vectorRuntime
+	diagnostic    *diagnostic.Recorder
 }
 
 type retryPublisher interface {
 	Publish(context.Context, string, string, amqp091.Publishing) error
 }
 
-func New(ctx context.Context, configuration config.WorkerConfig) (*Runtime, error) {
+func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagnostic.Recorder) (*Runtime, error) {
 	pool, err := pgxpool.New(ctx, configuration.DSN)
 	if err != nil {
 		return nil, errors.New("configure retrieval database")
@@ -103,7 +127,7 @@ func New(ctx context.Context, configuration config.WorkerConfig) (*Runtime, erro
 		pool.Close()
 		return nil, err
 	}
-	return &Runtime{configuration: configuration, pool: pool, repository: records, manifestFails: records, objects: objects, planner: planner, indexer: indexer, embedder: embedder, vector: index}, nil
+	return &Runtime{configuration: configuration, pool: pool, repository: records, manifestFails: records, batchFails: records, vectorJobs: records, objects: objects, planner: planner, indexer: indexer, embedder: embedder, vector: index, diagnostic: recorder}, nil
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
@@ -128,7 +152,7 @@ func (r *Runtime) runBrokerLoop(ctx context.Context, run func(context.Context) e
 			return nil
 		}
 		if err != nil {
-			log.Print("retrieval worker broker session stopped; reconnecting")
+			r.logBrokerSessionReconnecting()
 		}
 		timer := time.NewTimer(backoff)
 		select {
@@ -238,7 +262,9 @@ func (r *Runtime) runBrokerSession(ctx context.Context) error {
 			r.dispatchOutbox(sessionContext, publisher)
 		case now := <-cleanupTicker.C:
 			cleanupContext, cleanupCancel := context.WithTimeout(sessionContext, 30*time.Second)
-			_, _ = r.repository.RecoverStaleBatches(cleanupContext, now.UTC().Add(-15*time.Minute), now.UTC())
+			recovered, _ := r.repository.RecoverStaleBatches(cleanupContext, now.UTC().Add(-15*time.Minute), now.UTC())
+			r.logStaleBatchesRecovered(recovered)
+			_ = r.retryPendingVectorCleanup(cleanupContext, now.UTC(), 64)
 			cleanupCancel()
 		}
 	}
@@ -274,6 +300,7 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 		defer handlers.Done()
 		defer func() { <-semaphore }()
 		if delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > 256<<10 {
+			r.logRejected(sourceQueue, "invalid_delivery")
 			_ = delivery.Nack(false, false)
 			return
 		}
@@ -292,6 +319,7 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 				_ = delivery.Ack(false)
 				return
 			}
+			r.logRetry(sourceQueue, "terminal_failure_record_failed")
 			nextAttempt, retry := failureRecordingRetryAttempt(delivery.Headers)
 			if !retry {
 				_ = delivery.Nack(false, false)
@@ -301,15 +329,18 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 				_ = delivery.Ack(false)
 				return
 			}
+			r.logRetryPublishFailed(sourceQueue, "retry_publish_failed")
 			_ = delivery.Nack(false, true)
 			return
 		}
 		if errors.Is(err, application.ErrInvalidEvent) || errors.Is(err, application.ErrConflictingEvent) {
+			r.logRejected(sourceQueue, rejectionReason(err))
 			_ = delivery.Nack(false, false)
 			return
 		}
 		if retryAttempt(delivery.Headers) >= maximumRetryAttempts {
 			if terminalFailure == nil {
+				r.logRejected(sourceQueue, "invalid_event")
 				_ = delivery.Nack(false, false)
 				return
 			}
@@ -320,13 +351,16 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 				_ = delivery.Ack(false)
 				return
 			}
+			r.logRejected(sourceQueue, "terminal_failure_record_failed")
 			_ = delivery.Nack(false, false)
 			return
 		}
+		r.logRetry(sourceQueue, rejectionReason(err))
 		if r.publishRetry(ctx, publisher, sourceQueue, delivery, retryAttempt(delivery.Headers)+1) == nil {
 			_ = delivery.Ack(false)
 			return
 		}
+		r.logRetryPublishFailed(sourceQueue, "retry_publish_failed")
 		_ = delivery.Nack(false, true)
 	}()
 }
@@ -391,7 +425,12 @@ func (r *Runtime) handleMetadata(ctx context.Context, payload []byte) error {
 	if err != nil {
 		return err
 	}
-	return r.planner.HandleMetadata(ctx, event)
+	r.logMetadataReceived(event.BookID)
+	if err = r.planner.HandleMetadata(ctx, event); err != nil {
+		return err
+	}
+	r.logMetadataCompleted(event.BookID)
+	return nil
 }
 
 func (r *Runtime) handleManifest(ctx context.Context, payload []byte) error {
@@ -399,6 +438,7 @@ func (r *Runtime) handleManifest(ctx context.Context, payload []byte) error {
 	if err != nil {
 		return err
 	}
+	r.logManifestReceived(event.BookID)
 	manifestPayload, err := r.objects.ReadBounded(ctx, event.ManifestReference, 4<<20)
 	if err != nil {
 		return errors.Join(errManifestArtifactRead, err)
@@ -406,11 +446,19 @@ func (r *Runtime) handleManifest(ctx context.Context, payload []byte) error {
 	event, err = transport.DecodeManifest(payload, manifestPayload)
 	if err != nil {
 		if category, terminal := application.ManifestFailureCategory(event, err); terminal {
-			return r.manifestFailureRecorder().FailManifest(ctx, event, category, time.Now().UTC())
+			recordErr := r.manifestFailureRecorder().FailManifest(ctx, event, category, time.Now().UTC())
+			if recordErr == nil {
+				r.logManifestTerminalFailureRecorded(event.BookID, reasonFromCategory(category))
+			}
+			return recordErr
 		}
 		return err
 	}
-	return r.planner.HandleManifest(ctx, event)
+	if err = r.planner.HandleManifest(ctx, event); err != nil {
+		return err
+	}
+	r.logManifestCompleted(event.BookID)
+	return nil
 }
 
 func (r *Runtime) handleBatch(ctx context.Context, payload []byte) error {
@@ -418,7 +466,12 @@ func (r *Runtime) handleBatch(ctx context.Context, payload []byte) error {
 	if err != nil {
 		return err
 	}
-	return r.indexer.Process(ctx, work)
+	r.logBatchReceived(work.BookID)
+	if err = r.indexer.Process(ctx, work); err != nil {
+		return err
+	}
+	r.logBatchCompleted(work.BookID)
+	return nil
 }
 
 func (r *Runtime) failManifestArtifactRead(ctx context.Context, payload []byte, err error) error {
@@ -429,7 +482,11 @@ func (r *Runtime) failManifestArtifactRead(ctx context.Context, payload []byte, 
 	if decodeErr != nil {
 		return decodeErr
 	}
-	return r.manifestFailureRecorder().FailManifest(ctx, event, domain.FailureManifestIntegrity, time.Now().UTC())
+	recordErr := r.manifestFailureRecorder().FailManifest(ctx, event, domain.FailureManifestIntegrity, time.Now().UTC())
+	if recordErr == nil {
+		r.logManifestTerminalFailureRecorded(event.BookID, "manifest_artifact_read_failed")
+	}
+	return recordErr
 }
 
 func (r *Runtime) failBatch(ctx context.Context, payload []byte, failure error) error {
@@ -437,10 +494,22 @@ func (r *Runtime) failBatch(ctx context.Context, payload []byte, failure error) 
 	if err != nil {
 		return err
 	}
-	if err = r.vector.DeactivateJob(ctx, work.JobID); err != nil {
-		return errors.New("deactivate failed index vectors")
+	category := application.FailureCategory(failure)
+	err = r.batchFailureRecorder().FailBatch(ctx, work, category, time.Now().UTC())
+	if err == nil {
+		r.logBatchTerminalFailureRecorded(work.BookID, reasonFromCategory(category))
 	}
-	return r.repository.FailBatch(ctx, work, application.FailureCategory(failure), time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if r.vector == nil {
+		return nil
+	}
+	if err = r.vector.DeactivateJob(ctx, work.JobID); err != nil {
+		r.logVectorDeactivateFailed(work.BookID)
+		return nil
+	}
+	return r.vectorCleanupRepository().CompleteVectorCleanup(ctx, work.JobID)
 }
 
 func (r *Runtime) manifestFailureRecorder() manifestFailureRecorder {
@@ -448,6 +517,43 @@ func (r *Runtime) manifestFailureRecorder() manifestFailureRecorder {
 		return r.manifestFails
 	}
 	return r.repository
+}
+
+func (r *Runtime) batchFailureRecorder() batchFailureRecorder {
+	if r.batchFails != nil {
+		return r.batchFails
+	}
+	return r.repository
+}
+
+func (r *Runtime) vectorCleanupRepository() vectorCleanupRepository {
+	if r.vectorJobs != nil {
+		return r.vectorJobs
+	}
+	return r.repository
+}
+
+func (r *Runtime) retryPendingVectorCleanup(ctx context.Context, now time.Time, limit int) error {
+	if r.vector == nil {
+		return nil
+	}
+	jobs, err := r.vectorCleanupRepository().PendingVectorCleanup(ctx, limit, now)
+	if err != nil {
+		return err
+	}
+	for _, job := range jobs {
+		if err = r.vector.DeactivateJob(ctx, job.JobID); err != nil {
+			r.logVectorDeactivateFailed(job.BookID)
+			if retryErr := r.vectorCleanupRepository().RetryVectorCleanup(ctx, job.JobID, now); retryErr != nil {
+				return retryErr
+			}
+			continue
+		}
+		if err = r.vectorCleanupRepository().CompleteVectorCleanup(ctx, job.JobID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func deliveryAttempt(headers amqp091.Table) int64 {
@@ -496,9 +602,174 @@ func (r *Runtime) dispatchOutbox(ctx context.Context, publisher *rabbitmq.Publis
 		cancel()
 		if publishErr != nil {
 			_ = r.repository.DeferOutbox(ctx, record.EventID, time.Now().UTC())
+			r.logOutboxDeferred("outbox_publish_failed")
 			continue
 		}
-		_ = r.repository.MarkPublished(ctx, record.EventID, time.Now().UTC())
+		r.logOutboxPublished()
+		if err = r.repository.MarkPublished(ctx, record.EventID, time.Now().UTC()); err != nil {
+			r.logOutboxDeferred("outbox_mark_failed")
+			continue
+		}
+		r.logOutboxMarkedPublished()
+	}
+}
+
+func rejectionReason(err error) string {
+	switch {
+	case errors.Is(err, application.ErrConflictingEvent):
+		return "conflicting_event"
+	case errors.Is(err, application.ErrInvalidEvent):
+		return "invalid_event"
+	default:
+		return "unknown_failure"
+	}
+}
+
+func reasonFromCategory(category domain.FailureCategory) string {
+	switch category {
+	case domain.FailureManifestIntegrity:
+		return "manifest_integrity"
+	case domain.FailureIncompatibleProfile:
+		return "incompatible_profile"
+	case domain.FailureEmbeddingUnavailable:
+		return "embedding_unavailable"
+	case domain.FailureVectorStoreUnavailable:
+		return "vector_store_unavailable"
+	case domain.FailureResourceLimit:
+		return "resource_limit_exceeded"
+	case domain.FailureIndexingTimeout:
+		return "indexing_timeout"
+	case domain.FailureInternalIndexing:
+		return "internal_indexing_error"
+	default:
+		return "unknown_failure"
+	}
+}
+
+func queueOperation(queue string) string {
+	switch queue {
+	case metadataQueue:
+		return "metadata_queue"
+	case manifestQueue:
+		return "manifest_queue"
+	case batchQueue:
+		return "batch_queue"
+	default:
+		return "batch_queue"
+	}
+}
+
+func (r *Runtime) logBrokerSessionReconnecting() {
+	if r.diagnostic != nil {
+		r.diagnostic.BrokerSessionReconnecting()
+		return
+	}
+	log.Print("retrieval worker broker session stopped; reconnecting")
+}
+
+func (r *Runtime) logStaleBatchesRecovered(count int64) {
+	if r.diagnostic != nil {
+		r.diagnostic.StaleBatchesRecovered(count)
+	}
+}
+
+func (r *Runtime) logRejected(queue, reason string) {
+	if r.diagnostic == nil {
+		return
+	}
+	switch queue {
+	case metadataQueue:
+		r.diagnostic.MetadataRejected(reason)
+	case manifestQueue:
+		r.diagnostic.ManifestRejected(reason)
+	case batchQueue:
+		r.diagnostic.BatchRejected(reason)
+	}
+}
+
+func (r *Runtime) logRetry(queue, reason string) {
+	if r.diagnostic != nil {
+		r.diagnostic.RetryScheduled(queueOperation(queue), reason)
+	}
+}
+
+func (r *Runtime) logRetryPublishFailed(queue, reason string) {
+	if r.diagnostic != nil {
+		r.diagnostic.RetryPublishFailed(queueOperation(queue), reason)
+	}
+}
+
+func (r *Runtime) logMetadataReceived(bookID string) {
+	if r.diagnostic != nil {
+		r.diagnostic.MetadataReceived(bookID)
+	}
+}
+
+func (r *Runtime) logMetadataCompleted(bookID string) {
+	if r.diagnostic != nil {
+		r.diagnostic.MetadataCompleted(bookID)
+	}
+}
+
+func (r *Runtime) logManifestReceived(bookID string) {
+	if r.diagnostic != nil {
+		r.diagnostic.ManifestReceived(bookID)
+	}
+}
+
+func (r *Runtime) logManifestCompleted(bookID string) {
+	if r.diagnostic != nil {
+		r.diagnostic.ManifestCompleted(bookID)
+	}
+}
+
+func (r *Runtime) logManifestTerminalFailureRecorded(bookID, reason string) {
+	if r.diagnostic != nil {
+		r.diagnostic.ManifestTerminalFailureRecorded(bookID, reason)
+	}
+}
+
+func (r *Runtime) logBatchReceived(bookID string) {
+	if r.diagnostic != nil {
+		r.diagnostic.BatchReceived(bookID)
+	}
+}
+
+func (r *Runtime) logBatchCompleted(bookID string) {
+	if r.diagnostic != nil {
+		r.diagnostic.BatchCompleted(bookID)
+	}
+}
+
+func (r *Runtime) logBatchTerminalFailureRecorded(bookID, reason string) {
+	if r.diagnostic != nil {
+		r.diagnostic.BatchTerminalFailureRecorded(bookID, reason)
+	}
+}
+
+func (r *Runtime) logVectorDeactivateFailed(bookID string) {
+	if r.diagnostic != nil {
+		r.diagnostic.VectorDeactivateFailed(bookID)
+		return
+	}
+	log.Print("retrieval worker failed to deactivate terminal batch vectors")
+}
+
+func (r *Runtime) logOutboxPublished() {
+	if r.diagnostic != nil {
+		r.diagnostic.OutboxPublished()
+	}
+}
+
+func (r *Runtime) logOutboxDeferred(reason string) {
+	if r.diagnostic != nil {
+		r.diagnostic.OutboxDeferred(reason)
+	}
+}
+
+func (r *Runtime) logOutboxMarkedPublished() {
+	if r.diagnostic != nil {
+		r.diagnostic.OutboxMarkedPublished()
 	}
 }
 

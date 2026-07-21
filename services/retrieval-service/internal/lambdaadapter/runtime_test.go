@@ -11,8 +11,10 @@ import (
 	"time"
 
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
+	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -88,6 +90,93 @@ func TestPlanDoesNotRecordInvalidManifestEnvelope(t *testing.T) {
 	}
 }
 
+func TestIndexRecordsTerminalFailureBeforeBestEffortVectorDeactivate(t *testing.T) {
+	recorder := &lambdaBatchFailureRecorder{}
+	cleanup := &lambdaVectorCleanupRepository{}
+	vectors := &lambdaVectorDeactivator{err: errors.New("qdrant unavailable")}
+	runtime := &Runtime{
+		indexer:    lambdaBatchProcessor{err: application.Failure(domain.FailureManifestIntegrity, errors.New("malformed shard"))},
+		batchFails: recorder,
+		vectorJobs: cleanup,
+		vector:     vectors,
+	}
+
+	err := runtime.Index(context.Background(), batchRabbitEvent(t, validLambdaBatchPayload(t), 4))
+	if err != nil {
+		t.Fatalf("Index() error = %v", err)
+	}
+	if recorder.calls != 1 || recorder.category != domain.FailureManifestIntegrity || recorder.work.JobID != "job-1" {
+		t.Fatalf("recorded failure calls=%d category=%q work=%#v", recorder.calls, recorder.category, recorder.work)
+	}
+	if vectors.calls != 1 || vectors.jobID != "job-1" {
+		t.Fatalf("vector deactivate calls=%d job_id=%q", vectors.calls, vectors.jobID)
+	}
+	if cleanup.completed != 0 {
+		t.Fatalf("completed cleanup calls=%d", cleanup.completed)
+	}
+}
+
+func TestIndexReturnsRecordFailureBeforeVectorDeactivate(t *testing.T) {
+	recorder := &lambdaBatchFailureRecorder{err: errors.New("database unavailable")}
+	vectors := &lambdaVectorDeactivator{}
+	runtime := &Runtime{
+		indexer:    lambdaBatchProcessor{err: application.Failure(domain.FailureResourceLimit, errors.New("too large"))},
+		batchFails: recorder,
+		vector:     vectors,
+	}
+
+	err := runtime.Index(context.Background(), batchRabbitEvent(t, validLambdaBatchPayload(t), 4))
+	if err == nil {
+		t.Fatal("Index() error = nil")
+	}
+	if recorder.calls != 1 || vectors.calls != 0 {
+		t.Fatalf("recorded calls=%d vector deactivate calls=%d", recorder.calls, vectors.calls)
+	}
+}
+
+func TestIndexCompletesVectorCleanupAfterSuccessfulDeactivate(t *testing.T) {
+	recorder := &lambdaBatchFailureRecorder{}
+	cleanup := &lambdaVectorCleanupRepository{}
+	vectors := &lambdaVectorDeactivator{}
+	runtime := &Runtime{
+		indexer:    lambdaBatchProcessor{err: application.Failure(domain.FailureResourceLimit, errors.New("too large"))},
+		batchFails: recorder,
+		vectorJobs: cleanup,
+		vector:     vectors,
+	}
+
+	err := runtime.Index(context.Background(), batchRabbitEvent(t, validLambdaBatchPayload(t), 4))
+	if err != nil {
+		t.Fatalf("Index() error = %v", err)
+	}
+	if cleanup.completed != 1 || cleanup.completedJobID != "job-1" {
+		t.Fatalf("completed cleanup calls=%d job_id=%q", cleanup.completed, cleanup.completedJobID)
+	}
+}
+
+func TestCleanupRetriesFailedJobsAndCompletesSuccessfulOnes(t *testing.T) {
+	cleanup := &lambdaVectorCleanupRepository{
+		jobs: []repository.VectorCleanupJob{
+			{JobID: "job-1", BookID: "book-1"},
+			{JobID: "job-2", BookID: "book-2"},
+		},
+	}
+	vectors := &lambdaVectorDeactivator{failures: map[string]error{"job-1": errors.New("qdrant unavailable")}}
+	runtime := &Runtime{vectorJobs: cleanup, vector: vectors}
+	now := time.Date(2026, 7, 21, 8, 0, 0, 0, time.UTC)
+
+	err := runtime.retryPendingVectorCleanup(context.Background(), now, 64)
+	if err != nil {
+		t.Fatalf("retryPendingVectorCleanup() error = %v", err)
+	}
+	if cleanup.retried != 1 || cleanup.retriedJobID != "job-1" {
+		t.Fatalf("retried cleanup calls=%d job_id=%q", cleanup.retried, cleanup.retriedJobID)
+	}
+	if cleanup.completed != 1 || cleanup.completedJobID != "job-2" {
+		t.Fatalf("completed cleanup calls=%d job_id=%q", cleanup.completed, cleanup.completedJobID)
+	}
+}
+
 type lambdaObjectStore struct {
 	payload []byte
 	readErr error
@@ -117,11 +206,91 @@ func (s *lambdaManifestFailureRecorder) FailManifest(_ context.Context, event ap
 	return nil
 }
 
+type lambdaBatchProcessor struct {
+	err error
+}
+
+func (s lambdaBatchProcessor) Process(context.Context, application.BatchWork) error {
+	return s.err
+}
+
+type lambdaBatchFailureRecorder struct {
+	calls    int
+	work     application.BatchWork
+	category domain.FailureCategory
+	err      error
+}
+
+func (s *lambdaBatchFailureRecorder) FailBatch(_ context.Context, work application.BatchWork, category domain.FailureCategory, _ time.Time) error {
+	s.calls++
+	s.work = work
+	s.category = category
+	return s.err
+}
+
+type lambdaVectorDeactivator struct {
+	calls    int
+	jobID    string
+	err      error
+	failures map[string]error
+}
+
+func (s *lambdaVectorDeactivator) DeactivateJob(_ context.Context, jobID string) error {
+	s.calls++
+	s.jobID = jobID
+	if s.failures != nil {
+		if err := s.failures[jobID]; err != nil {
+			return err
+		}
+	}
+	return s.err
+}
+
+type lambdaVectorCleanupRepository struct {
+	jobs           []repository.VectorCleanupJob
+	completed      int
+	completedJobID string
+	retried        int
+	retriedJobID   string
+}
+
+func (s *lambdaVectorCleanupRepository) PendingVectorCleanup(context.Context, int, time.Time) ([]repository.VectorCleanupJob, error) {
+	return append([]repository.VectorCleanupJob(nil), s.jobs...), nil
+}
+
+func (s *lambdaVectorCleanupRepository) CompleteVectorCleanup(_ context.Context, jobID string) error {
+	s.completed++
+	s.completedJobID = jobID
+	return nil
+}
+
+func (s *lambdaVectorCleanupRepository) RetryVectorCleanup(_ context.Context, jobID string, _ time.Time) error {
+	s.retried++
+	s.retriedJobID = jobID
+	return nil
+}
+
 func manifestRabbitEvent(t *testing.T, payload []byte, attempt int64) RabbitEvent {
 	t.Helper()
 	return RabbitEvent{
 		Messages: map[string][]RabbitMessage{
 			"retrieval.chunks-ready.v1": {
+				{
+					Data: base64.StdEncoding.EncodeToString(payload),
+					BasicProperties: RabbitBasicProperties{
+						Headers: map[string]any{"x-delivery-count": attempt},
+					},
+				},
+			},
+		},
+	}
+}
+
+func batchRabbitEvent(t *testing.T, payload []byte, attempt int64) RabbitEvent {
+	t.Helper()
+	return RabbitEvent{
+		Messages: map[string][]RabbitMessage{
+			"retrieval.index-batch.v1": {
 				{
 					Data: base64.StdEncoding.EncodeToString(payload),
 					BasicProperties: RabbitBasicProperties{
@@ -183,6 +352,39 @@ func validLambdaManifestPayload(t *testing.T) []byte {
 		IdempotencyKey:       "book-1:" + hex.EncodeToString(processing[:]) + ":ready",
 	}
 	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(outer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+func validLambdaBatchPayload(t *testing.T) []byte {
+	t.Helper()
+	source := sha256.Sum256([]byte("synthetic source"))
+	manifest := sha256.Sum256([]byte("synthetic manifest"))
+	shard := sha256.Sum256([]byte("synthetic shard"))
+	profile := domain.SupportedIndexProfile()
+	message := &retrievalv1.IndexBatchRequestedV1{
+		EventId:              "batch-event-1",
+		JobId:                "job-1",
+		BatchId:              "job-1:0",
+		BookId:               "book-1",
+		ShardReference:       "books/book-1/profile/shards/000000.pb.zst",
+		ShardSha256:          shard[:],
+		CompressedByteSize:   128,
+		UncompressedByteSize: 512,
+		ChunkCount:           1,
+		SourceSha256:         source[:],
+		ManifestSha256:       manifest[:],
+		IndexProfileDigest:   profile.Digest[:],
+		CorrelationId:        "correlation-1",
+		OccurredAt:           timestamppb.New(time.Date(2026, 7, 20, 9, 2, 0, 0, time.UTC)),
+		CausationId:          "manifest-event-1",
+		Producer:             "retrieval-service",
+		SchemaVersion:        "v1",
+		IdempotencyKey:       "job-1:0",
+	}
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(message)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,8 +11,10 @@ import (
 	"time"
 
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
+	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
 	"github.com/rabbitmq/amqp091-go"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -103,6 +105,80 @@ func TestHandleRetriesTerminalFailureRecordingBelowBudget(t *testing.T) {
 	}
 	if len(publisher.messages) != 1 || publisher.messages[0].RoutingKey != "retrieval.index-batch.v1.retry.30s" || publisher.messages[0].Headers["x-retry-attempt"] != int64(2) {
 		t.Fatalf("published retry = %#v", publisher.messages)
+	}
+}
+
+func TestFailBatchRecordsTerminalFailureBeforeBestEffortVectorDeactivate(t *testing.T) {
+	recorder := &stubBatchFailureRecorder{}
+	cleanup := &stubVectorCleanupRepository{}
+	vectors := &stubWorkerVector{deactivateErr: errors.New("qdrant unavailable")}
+	runtime := &Runtime{batchFails: recorder, vectorJobs: cleanup, vector: vectors}
+	failure := application.Failure(domain.FailureManifestIntegrity, errors.New("malformed shard"))
+
+	err := runtime.failBatch(context.Background(), validWorkerBatchPayload(t), failure)
+	if err != nil {
+		t.Fatalf("failBatch() error = %v", err)
+	}
+	if recorder.calls != 1 || recorder.category != domain.FailureManifestIntegrity || recorder.work.JobID != "job-1" {
+		t.Fatalf("recorded failure calls=%d category=%q work=%#v", recorder.calls, recorder.category, recorder.work)
+	}
+	if vectors.deactivateCalls != 1 || vectors.jobID != "job-1" {
+		t.Fatalf("vector deactivate calls=%d job_id=%q", vectors.deactivateCalls, vectors.jobID)
+	}
+	if cleanup.completed != 0 {
+		t.Fatalf("completed cleanup calls=%d", cleanup.completed)
+	}
+}
+
+func TestFailBatchReturnsDatabaseFailureBeforeVectorDeactivate(t *testing.T) {
+	recorder := &stubBatchFailureRecorder{err: errors.New("database unavailable")}
+	vectors := &stubWorkerVector{}
+	runtime := &Runtime{batchFails: recorder, vector: vectors}
+
+	err := runtime.failBatch(context.Background(), validWorkerBatchPayload(t), application.Failure(domain.FailureResourceLimit, errors.New("too large")))
+	if err == nil {
+		t.Fatal("failBatch() error = nil")
+	}
+	if recorder.calls != 1 || vectors.deactivateCalls != 0 {
+		t.Fatalf("recorded calls=%d vector deactivate calls=%d", recorder.calls, vectors.deactivateCalls)
+	}
+}
+
+func TestFailBatchCompletesVectorCleanupAfterSuccessfulDeactivate(t *testing.T) {
+	recorder := &stubBatchFailureRecorder{}
+	cleanup := &stubVectorCleanupRepository{}
+	vectors := &stubWorkerVector{}
+	runtime := &Runtime{batchFails: recorder, vectorJobs: cleanup, vector: vectors}
+
+	err := runtime.failBatch(context.Background(), validWorkerBatchPayload(t), application.Failure(domain.FailureResourceLimit, errors.New("too large")))
+	if err != nil {
+		t.Fatalf("failBatch() error = %v", err)
+	}
+	if cleanup.completed != 1 || cleanup.completedJobID != "job-1" {
+		t.Fatalf("completed cleanup calls=%d job_id=%q", cleanup.completed, cleanup.completedJobID)
+	}
+}
+
+func TestRetryPendingVectorCleanupRetriesFailedJobsAndCompletesSuccessfulOnes(t *testing.T) {
+	cleanup := &stubVectorCleanupRepository{
+		jobs: []repository.VectorCleanupJob{
+			{JobID: "job-1", BookID: "book-1"},
+			{JobID: "job-2", BookID: "book-2"},
+		},
+	}
+	vectors := &stubWorkerVector{failures: map[string]error{"job-1": errors.New("qdrant unavailable")}}
+	runtime := &Runtime{vectorJobs: cleanup, vector: vectors}
+	now := time.Date(2026, 7, 21, 8, 0, 0, 0, time.UTC)
+
+	err := runtime.retryPendingVectorCleanup(context.Background(), now, 64)
+	if err != nil {
+		t.Fatalf("retryPendingVectorCleanup() error = %v", err)
+	}
+	if cleanup.retried != 1 || cleanup.retriedJobID != "job-1" {
+		t.Fatalf("retried cleanup calls=%d job_id=%q", cleanup.retried, cleanup.retriedJobID)
+	}
+	if cleanup.completed != 1 || cleanup.completedJobID != "job-2" {
+		t.Fatalf("completed cleanup calls=%d job_id=%q", cleanup.completed, cleanup.completedJobID)
 	}
 }
 
@@ -260,6 +336,70 @@ func (s *stubManifestFailureRecorder) FailManifest(_ context.Context, event appl
 	return nil
 }
 
+type stubBatchFailureRecorder struct {
+	calls    int
+	work     application.BatchWork
+	category domain.FailureCategory
+	err      error
+}
+
+func (s *stubBatchFailureRecorder) FailBatch(_ context.Context, work application.BatchWork, category domain.FailureCategory, _ time.Time) error {
+	s.calls++
+	s.work = work
+	s.category = category
+	return s.err
+}
+
+type stubWorkerVector struct {
+	deactivateCalls int
+	jobID           string
+	deactivateErr   error
+	failures        map[string]error
+}
+
+func (s *stubWorkerVector) EnsureCollection(context.Context) error {
+	return nil
+}
+
+func (s *stubWorkerVector) CheckReady(context.Context) error {
+	return nil
+}
+
+func (s *stubWorkerVector) DeactivateJob(_ context.Context, jobID string) error {
+	s.deactivateCalls++
+	s.jobID = jobID
+	if s.failures != nil {
+		if err := s.failures[jobID]; err != nil {
+			return err
+		}
+	}
+	return s.deactivateErr
+}
+
+type stubVectorCleanupRepository struct {
+	jobs           []repository.VectorCleanupJob
+	completed      int
+	completedJobID string
+	retried        int
+	retriedJobID   string
+}
+
+func (s *stubVectorCleanupRepository) PendingVectorCleanup(context.Context, int, time.Time) ([]repository.VectorCleanupJob, error) {
+	return append([]repository.VectorCleanupJob(nil), s.jobs...), nil
+}
+
+func (s *stubVectorCleanupRepository) CompleteVectorCleanup(_ context.Context, jobID string) error {
+	s.completed++
+	s.completedJobID = jobID
+	return nil
+}
+
+func (s *stubVectorCleanupRepository) RetryVectorCleanup(_ context.Context, jobID string, _ time.Time) error {
+	s.retried++
+	s.retriedJobID = jobID
+	return nil
+}
+
 func validWorkerManifestPayload(t *testing.T) []byte {
 	t.Helper()
 	source := sha256.Sum256([]byte("synthetic source"))
@@ -310,6 +450,39 @@ func validWorkerManifestPayload(t *testing.T) []byte {
 		IdempotencyKey:       "book-1:" + hex.EncodeToString(processing[:]) + ":ready",
 	}
 	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(outer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+func validWorkerBatchPayload(t *testing.T) []byte {
+	t.Helper()
+	source := sha256.Sum256([]byte("synthetic source"))
+	manifest := sha256.Sum256([]byte("synthetic manifest"))
+	shard := sha256.Sum256([]byte("synthetic shard"))
+	profile := domain.SupportedIndexProfile()
+	message := &retrievalv1.IndexBatchRequestedV1{
+		EventId:              "batch-event-1",
+		JobId:                "job-1",
+		BatchId:              "job-1:0",
+		BookId:               "book-1",
+		ShardReference:       "books/book-1/profile/shards/000000.pb.zst",
+		ShardSha256:          shard[:],
+		CompressedByteSize:   128,
+		UncompressedByteSize: 512,
+		ChunkCount:           1,
+		SourceSha256:         source[:],
+		ManifestSha256:       manifest[:],
+		IndexProfileDigest:   profile.Digest[:],
+		CorrelationId:        "correlation-1",
+		OccurredAt:           timestamppb.New(time.Date(2026, 7, 20, 9, 2, 0, 0, time.UTC)),
+		CausationId:          "manifest-event-1",
+		Producer:             "retrieval-service",
+		SchemaVersion:        "v1",
+		IdempotencyKey:       "job-1:0",
+	}
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(message)
 	if err != nil {
 		t.Fatal(err)
 	}

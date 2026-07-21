@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -72,6 +73,10 @@ func TestReplayRecoveryTerminalFailureAndVisibilityUseDurableState(t *testing.T)
 	if _, accepted, beginErr := repository.BeginBatch(ctx, work); beginErr != nil || !accepted {
 		t.Fatalf("BeginBatch() accepted=%v error=%v", accepted, beginErr)
 	}
+	_, err = pool.Exec(ctx, `UPDATE retrieval.index_batches SET updated_at=$2 WHERE id=$1`, batchID, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if recovered, recoverErr := repository.RecoverStaleBatches(ctx, now.Add(-30*time.Minute), now); recoverErr != nil || recovered != 1 {
 		t.Fatalf("RecoverStaleBatches() recovered=%d error=%v", recovered, recoverErr)
 	}
@@ -83,6 +88,20 @@ func TestReplayRecoveryTerminalFailureAndVisibilityUseDurableState(t *testing.T)
 	}
 	if err = repository.FailBatch(ctx, work, domain.FailureInternalIndexing, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
+	}
+	pendingJobs, pendingErr := repository.PendingVectorCleanup(ctx, 8, now)
+	if pendingErr != nil || len(pendingJobs) != 1 || pendingJobs[0].JobID != jobID {
+		t.Fatalf("PendingVectorCleanup() jobs=%#v error=%v", pendingJobs, pendingErr)
+	}
+	if err = repository.RetryVectorCleanup(ctx, jobID, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err = repository.CompleteVectorCleanup(ctx, jobID); err != nil {
+		t.Fatal(err)
+	}
+	pendingJobs, pendingErr = repository.PendingVectorCleanup(ctx, 8, now.Add(5*time.Minute))
+	if pendingErr != nil || len(pendingJobs) != 0 {
+		t.Fatalf("post-complete PendingVectorCleanup() jobs=%#v error=%v", pendingJobs, pendingErr)
 	}
 	var terminalEvents int
 	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.outbox WHERE event_id=$1`, jobID+":failed").Scan(&terminalEvents); err != nil || terminalEvents != 1 {
@@ -298,7 +317,7 @@ func TestProjectMetadataMaterializesDeferredFailedManifestOnce(t *testing.T) {
 		ManifestReference: prefix + "manifest.pb", CorrelationID: "correlation-" + suffix, CausationID: "cause-" + suffix,
 		Producer: "ingestion-service", SchemaVersion: "v1", IdempotencyKey: bookID + ":" + processingDigestHex + ":ready", OccurredAt: now, PayloadDigest: integrationDigest(4)}
 	metadata := application.MetadataEvent{EventID: "metadata-" + suffix, BookID: bookID, Title: "Synthetic systems", Author: "RAGLibrarian QA", Year: 2026,
-		SourceSHA256: sourceSHA256, PayloadDigest: integrationDigest(3), CorrelationID: "correlation-" + suffix, CausationID: "cause-" + suffix,
+		Tags: []string{}, SourceSHA256: sourceSHA256, PayloadDigest: integrationDigest(3), CorrelationID: "correlation-" + suffix, CausationID: "cause-" + suffix,
 		Producer: "catalog-service", SchemaVersion: "v1", IdempotencyKey: bookID, OccurredAt: now.Add(time.Second)}
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -343,6 +362,138 @@ func TestProjectMetadataMaterializesDeferredFailedManifestOnce(t *testing.T) {
 	if jobs != 1 || terminalEvents != 1 || state != "failed" || category != string(domain.FailureManifestIntegrity) || !createdAt.Equal(now) ||
 		message.BookId != bookID || message.FailureCategory != retrievalv1.BookIndexingFailureCategory_BOOK_INDEXING_FAILURE_CATEGORY_MANIFEST_INTEGRITY {
 		t.Fatalf("jobs=%d events=%d state=%q category=%q created_at=%s message=%s", jobs, terminalEvents, state, category, createdAt, message.FailureCategory)
+	}
+}
+
+func TestProjectMetadataAndFailManifestConcurrentlyMaterializeTerminalFailure(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository := NewPostgres(pool)
+	suffix := randomIntegrationID(t)
+	bookID := "book-" + suffix
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sourceSHA256 := integrationDigest(1)
+	manifestSHA256 := integrationDigest(2)
+	processingDigest := integrationDigest(7)
+	processingDigestHex := hex.EncodeToString(processingDigest[:])
+	prefix := "books/" + bookID + "/" + hex.EncodeToString(sourceSHA256[:]) + "/" + processingDigestHex + "/"
+	event := application.ManifestEvent{
+		EventID:           "manifest-" + suffix,
+		BookID:            bookID,
+		SourceSHA256:      sourceSHA256,
+		ManifestSHA256:    manifestSHA256,
+		ManifestReference: prefix + "manifest.pb",
+		CorrelationID:     "correlation-" + suffix,
+		CausationID:       "cause-" + suffix,
+		Producer:          "ingestion-service",
+		SchemaVersion:     "v1",
+		IdempotencyKey:    bookID + ":" + processingDigestHex + ":ready",
+		OccurredAt:        now,
+		PayloadDigest:     integrationDigest(4),
+	}
+	metadata := application.MetadataEvent{
+		EventID:        "metadata-" + suffix,
+		BookID:         bookID,
+		Title:          "Synthetic systems",
+		Author:         "RAGLibrarian QA",
+		Year:           2026,
+		Tags:           []string{},
+		SourceSHA256:   sourceSHA256,
+		PayloadDigest:  integrationDigest(3),
+		CorrelationID:  "correlation-" + suffix,
+		CausationID:    "cause-" + suffix,
+		Producer:       "catalog-service",
+		SchemaVersion:  "v1",
+		IdempotencyKey: bookID,
+		OccurredAt:     now.Add(time.Second),
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.outbox WHERE aggregate_id LIKE 'incompatible:%'`)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.manifest_facts WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
+	})
+
+	start := make(chan struct{})
+	errCh := make(chan error, 2)
+	var group sync.WaitGroup
+	group.Add(2)
+
+	go func() {
+		defer group.Done()
+		<-start
+		_, projectErr := repository.ProjectMetadata(ctx, metadata)
+		if projectErr != nil {
+			errCh <- fmt.Errorf("ProjectMetadata: %w", projectErr)
+			return
+		}
+		errCh <- nil
+	}()
+	go func() {
+		defer group.Done()
+		<-start
+		failErr := repository.FailManifest(ctx, event, domain.FailureManifestIntegrity, now)
+		if failErr != nil {
+			errCh <- fmt.Errorf("FailManifest: %w", failErr)
+			return
+		}
+		errCh <- nil
+	}()
+
+	close(start)
+	group.Wait()
+	close(errCh)
+
+	for callErr := range errCh {
+		if callErr != nil {
+			t.Fatalf("concurrent projection failed: %v", callErr)
+		}
+	}
+
+	jobID := failedManifestJobID(event)
+	var jobs, terminalEvents int
+	var state, category string
+	var createdAt, recordedAt time.Time
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.index_jobs WHERE id=$1`, jobID).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.outbox WHERE event_id=$1`, jobID+":failed").Scan(&terminalEvents); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT state,failure_category,created_at FROM retrieval.index_jobs WHERE id=$1`, jobID).Scan(&state, &category, &createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT failure_recorded_at FROM retrieval.manifest_facts WHERE book_id=$1`, bookID).Scan(&recordedAt); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 1 || terminalEvents != 1 || state != "failed" || category != string(domain.FailureManifestIntegrity) || !createdAt.Equal(now) || !recordedAt.Equal(now) {
+		t.Fatalf("jobs=%d events=%d state=%q category=%q created_at=%s recorded_at=%s", jobs, terminalEvents, state, category, createdAt, recordedAt)
+	}
+
+	if _, err = repository.ProjectMetadata(ctx, metadata); err != nil {
+		t.Fatal(err)
+	}
+	if err = repository.FailManifest(ctx, event, domain.FailureManifestIntegrity, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.index_jobs WHERE id=$1`, jobID).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.outbox WHERE event_id=$1`, jobID+":failed").Scan(&terminalEvents); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 1 || terminalEvents != 1 {
+		t.Fatalf("replay jobs=%d terminal events=%d", jobs, terminalEvents)
 	}
 }
 

@@ -193,6 +193,7 @@ var allowedDiagnosticValues = map[string]map[string]struct{}{
 		"login": {}, "refresh": {}, "logout": {}, "validate_session": {}, "get_setup_status": {}, "create_admin": {}, "list_pending_librarians": {},
 		"approve_librarian": {}, "reject_librarian": {}, "watch_pending_librarians": {},
 		"upload_book": {}, "list_books": {}, "get_book": {},
+		"metadata_queue": {}, "manifest_queue": {}, "batch_queue": {},
 	},
 	"stage": {
 		"session_cleanup": {}, "verification_cleanup": {}, "rejected_cleanup": {}, "password_reset_cleanup": {}, "email_claim": {}, "email_mark": {}, "email_retry": {}, "email_exhausted": {},
@@ -203,6 +204,9 @@ var allowedDiagnosticValues = map[string]map[string]struct{}{
 		"config_run_as_identity_invalid": {}, "token_verifier_initialization_failed": {}, "internal_tls_files_unreadable": {}, "internal_tls_material_invalid": {},
 		"privilege_drop_failed": {}, "identity_client_initialization_failed": {}, "http_listen_failed": {}, "http_serve_failed": {}, "http_shutdown_failed": {},
 		"invalid_metadata": {}, "unauthorized_actor": {}, "invalid_pdf": {}, "invalid_stream": {}, "upload_too_large": {}, "upload_capacity_exhausted": {}, "object_storage_unavailable": {}, "object_receipt_mismatch": {}, "persistence_unavailable": {}, "request_cancelled": {}, "not_found": {}, "invalid_pagination": {},
+		"invalid_delivery": {}, "invalid_event": {}, "conflicting_event": {}, "manifest_integrity": {}, "incompatible_profile": {}, "embedding_unavailable": {}, "vector_store_unavailable": {}, "resource_limit_exceeded": {},
+		"indexing_timeout": {}, "internal_indexing_error": {}, "manifest_artifact_read_failed": {}, "retry_publish_failed": {}, "terminal_failure_record_failed": {}, "vector_deactivate_failed": {},
+		"outbox_publish_failed": {}, "outbox_mark_failed": {}, "outbox_defer_failed": {},
 	},
 	"error_code": {
 		"request_id_generation_failed": {}, "internal_panic": {},

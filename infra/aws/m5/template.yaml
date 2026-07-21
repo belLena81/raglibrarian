@@ -147,6 +147,7 @@ Resources:
     Type: AWS::Serverless::Function
     Condition: LambdaMode
     Properties:
+      FunctionName: !Sub '${Environment}-raglibrarian-m5-planner'
       PackageType: Image
       ImageUri: !Ref PlannerImageUri
       Role: !GetAtt PlannerRole.Arn
@@ -157,9 +158,10 @@ Resources:
 
   PlannerLogGroup:
     Type: AWS::Logs::LogGroup
-    Condition: LambdaMode
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${PlannerFunction}'
+      LogGroupName: !Sub '/aws/lambda/${Environment}-raglibrarian-m5-planner'
       RetentionInDays: !Ref LogRetentionDays
 
   BookUploadedMapping:
@@ -196,6 +198,7 @@ Resources:
     Type: AWS::Serverless::Function
     Condition: LambdaMode
     Properties:
+      FunctionName: !Sub '${Environment}-raglibrarian-m5-index'
       PackageType: Image
       ImageUri: !Ref IndexImageUri
       Role: !GetAtt IndexRole.Arn
@@ -206,9 +209,10 @@ Resources:
 
   IndexLogGroup:
     Type: AWS::Logs::LogGroup
-    Condition: LambdaMode
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${IndexFunction}'
+      LogGroupName: !Sub '/aws/lambda/${Environment}-raglibrarian-m5-index'
       RetentionInDays: !Ref LogRetentionDays
 
   IndexBatchMapping:
@@ -230,6 +234,7 @@ Resources:
     Type: AWS::Serverless::Function
     Condition: LambdaMode
     Properties:
+      FunctionName: !Sub '${Environment}-raglibrarian-m5-dispatcher'
       PackageType: Image
       ImageUri: !Ref DispatcherImageUri
       Role: !GetAtt DispatcherRole.Arn
@@ -246,15 +251,17 @@ Resources:
 
   DispatcherLogGroup:
     Type: AWS::Logs::LogGroup
-    Condition: LambdaMode
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${DispatcherFunction}'
+      LogGroupName: !Sub '/aws/lambda/${Environment}-raglibrarian-m5-dispatcher'
       RetentionInDays: !Ref LogRetentionDays
 
   CleanupFunction:
     Type: AWS::Serverless::Function
     Condition: LambdaMode
     Properties:
+      FunctionName: !Sub '${Environment}-raglibrarian-m5-cleanup'
       PackageType: Image
       ImageUri: !Ref CleanupImageUri
       Role: !GetAtt CleanupRole.Arn
@@ -271,9 +278,10 @@ Resources:
 
   CleanupLogGroup:
     Type: AWS::Logs::LogGroup
-    Condition: LambdaMode
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${CleanupFunction}'
+      LogGroupName: !Sub '/aws/lambda/${Environment}-raglibrarian-m5-cleanup'
       RetentionInDays: !Ref LogRetentionDays
 
   PlannerErrorsAlarm:
@@ -305,6 +313,36 @@ Resources:
       Threshold: 1
       TreatMissingData: notBreaching
       Dimensions: [{Name: FunctionName, Value: !Ref IndexFunction}]
+
+  DispatcherErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: LambdaMode
+    Properties:
+      AlarmActions: [!Ref AlarmTopicArn]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Period: 60
+      Statistic: Sum
+      Threshold: 1
+      TreatMissingData: notBreaching
+      Dimensions: [{Name: FunctionName, Value: !Ref DispatcherFunction}]
+
+  CleanupErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: LambdaMode
+    Properties:
+      AlarmActions: [!Ref AlarmTopicArn]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Period: 60
+      Statistic: Sum
+      Threshold: 1
+      TreatMissingData: notBreaching
+      Dimensions: [{Name: FunctionName, Value: !Ref CleanupFunction}]
 
   IndexThrottlesAlarm:
     Type: AWS::CloudWatch::Alarm

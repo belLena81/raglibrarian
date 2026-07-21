@@ -28,6 +28,11 @@ type OutboxRecord struct {
 	Payload            []byte
 }
 
+type VectorCleanupJob struct {
+	JobID  string
+	BookID string
+}
+
 func NewPostgres(pool *pgxpool.Pool) *Postgres {
 	if pool == nil {
 		panic("retrieval repository: pool is required")
@@ -45,6 +50,9 @@ func (r *Postgres) ProjectMetadata(ctx context.Context, event application.Metada
 		return application.PlanningSnapshot{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err = lockBookProjection(ctx, tx, event.BookID); err != nil {
+		return application.PlanningSnapshot{}, err
+	}
 	command, err := tx.Exec(ctx, `INSERT INTO retrieval.metadata_facts
 		(book_id,event_id,payload_digest,source_sha256,title,author,publication_year,tags,correlation_id,causation_id,occurred_at)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT DO NOTHING`, event.BookID, event.EventID, event.PayloadDigest[:], event.SourceSHA256[:], event.Title, event.Author, event.Year, event.Tags, event.CorrelationID, event.CausationID, event.OccurredAt)
@@ -447,7 +455,9 @@ func (r *Postgres) FailBatch(ctx context.Context, work application.BatchWork, ca
 	if _, err = tx.Exec(ctx, `UPDATE retrieval.index_batches SET state='failed',updated_at=$2 WHERE id=$1 AND state <> 'completed'`, work.BatchID, now); err != nil {
 		return err
 	}
-	command, err := tx.Exec(ctx, `UPDATE retrieval.index_jobs SET state='failed',failure_category=$2,updated_at=$3 WHERE id=$1 AND state='pending'`, work.JobID, string(category), now)
+	command, err := tx.Exec(ctx, `UPDATE retrieval.index_jobs
+		SET state='failed',failure_category=$2,vector_cleanup_pending=true,vector_cleanup_attempts=0,vector_cleanup_next_attempt_at=$3,updated_at=$3
+		WHERE id=$1 AND state='pending'`, work.JobID, string(category), now)
 	if err != nil {
 		return err
 	}
@@ -495,6 +505,9 @@ func (r *Postgres) FailManifest(ctx context.Context, event application.ManifestE
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err = lockBookProjection(ctx, tx, event.BookID); err != nil {
+		return err
+	}
 	command, err := tx.Exec(ctx, `INSERT INTO retrieval.manifest_facts
 		(book_id,event_id,payload_digest,source_sha256,manifest_sha256,manifest_reference,manifest_payload,correlation_id,causation_id,occurred_at,failure_category,failure_recorded_at)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING`, event.BookID, event.EventID, event.PayloadDigest[:], event.SourceSHA256[:], event.ManifestSHA256[:], event.ManifestReference, manifestPayload, event.CorrelationID, event.CausationID, event.OccurredAt, string(category), now)
@@ -526,6 +539,13 @@ func metadataExists(ctx context.Context, tx queryExecer, bookID string) (bool, e
 		return false, err
 	}
 	return exists, nil
+}
+
+func lockBookProjection(ctx context.Context, tx queryExecer, bookID string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, bookID); err != nil {
+		return fmt.Errorf("retrieval: lock book projection: %w", err)
+	}
+	return nil
 }
 
 func loadStoredManifestFailure(ctx context.Context, tx queryExecer, bookID string) (*storedManifestFailure, error) {
@@ -711,13 +731,62 @@ func (r *Postgres) DeferOutbox(ctx context.Context, eventID string, now time.Tim
 }
 
 func (r *Postgres) RecoverStaleBatches(ctx context.Context, cutoff, now time.Time) (int64, error) {
-	command, err := r.pool.Exec(ctx, `WITH stale AS (
+	var recovered int64
+	err := r.pool.QueryRow(ctx, `WITH stale AS (
 		UPDATE retrieval.index_batches SET state='pending',lease_owner=NULL,lease_expires_at=NULL,next_attempt_at=$2,updated_at=$2
 		WHERE state='processing' AND updated_at < $1 RETURNING id
-	) UPDATE retrieval.outbox o SET published_at=NULL,next_attempt_at=$2
-	FROM stale WHERE o.event_id=stale.id || ':requested'`, cutoff, now)
+	), replay AS (
+		UPDATE retrieval.outbox o SET published_at=NULL,next_attempt_at=$2
+		FROM stale WHERE o.event_id=stale.id || ':requested'
+	) SELECT count(*) FROM stale`, cutoff, now).Scan(&recovered)
 	if err != nil {
 		return 0, err
 	}
-	return command.RowsAffected(), nil
+	return recovered, nil
+}
+
+func (r *Postgres) PendingVectorCleanup(ctx context.Context, limit int, now time.Time) ([]VectorCleanupJob, error) {
+	if limit < 1 || limit > 256 {
+		return nil, application.ErrInvalidEvent
+	}
+	rows, err := r.pool.Query(ctx, `SELECT id,book_id
+		FROM retrieval.index_jobs
+		WHERE state='failed' AND vector_cleanup_pending AND vector_cleanup_next_attempt_at <= $1
+		ORDER BY vector_cleanup_next_attempt_at, updated_at
+		LIMIT $2`, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	jobs := make([]VectorCleanupJob, 0, limit)
+	for rows.Next() {
+		var job VectorCleanupJob
+		if err = rows.Scan(&job.JobID, &job.BookID); err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
+func (r *Postgres) CompleteVectorCleanup(ctx context.Context, jobID string) error {
+	if jobID == "" {
+		return application.ErrInvalidEvent
+	}
+	_, err := r.pool.Exec(ctx, `UPDATE retrieval.index_jobs
+		SET vector_cleanup_pending=false,vector_cleanup_attempts=0,vector_cleanup_next_attempt_at=NULL
+		WHERE id=$1`, jobID)
+	return err
+}
+
+func (r *Postgres) RetryVectorCleanup(ctx context.Context, jobID string, now time.Time) error {
+	if jobID == "" {
+		return application.ErrInvalidEvent
+	}
+	_, err := r.pool.Exec(ctx, `UPDATE retrieval.index_jobs
+		SET vector_cleanup_attempts=vector_cleanup_attempts+1,
+		    vector_cleanup_next_attempt_at=$2 + make_interval(secs => LEAST(300, vector_cleanup_attempts*vector_cleanup_attempts+1)),
+		    updated_at=$2
+		WHERE id=$1 AND vector_cleanup_pending`, jobID, now)
+	return err
 }

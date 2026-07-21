@@ -169,12 +169,39 @@ func TestQdrantEnsureCollectionCreatesExactSchema(t *testing.T) {
 				t.Fatalf("unexpected collection creation request: %s %#v", request.Method, body)
 			}
 			return response(http.StatusOK, `{}`)
-		default:
+		case 3:
 			return response(http.StatusOK, `{"result":{"config":{"metadata":{"raglibrarian_index_profile_digest":"`+supportedProfileDigestHex()+`"},"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
+		case 4, 5, 6, 7, 8, 9:
+			assertFieldIndexRequest(t, request, requests-4)
+			return response(http.StatusOK, `{}`)
+		default:
+			t.Fatalf("unexpected request %d", requests)
+			return response(http.StatusInternalServerError, `{}`)
 		}
 	})}
 	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
-	if err := store.EnsureCollection(context.Background()); err != nil || requests != 3 {
+	if err := store.EnsureCollection(context.Background()); err != nil || requests != 9 {
+		t.Fatalf("EnsureCollection() requests=%d error=%v", requests, err)
+	}
+}
+
+func TestQdrantEnsureCollectionRepairsIndexesForExistingCollection(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
+		requests++
+		switch requests {
+		case 1:
+			return response(http.StatusOK, `{"result":{"config":{"metadata":{"raglibrarian_index_profile_digest":"`+supportedProfileDigestHex()+`"},"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
+		case 2, 3, 4, 5, 6, 7:
+			assertFieldIndexRequest(t, request, requests-2)
+			return response(http.StatusOK, `{}`)
+		default:
+			t.Fatalf("unexpected request %d", requests)
+			return response(http.StatusInternalServerError, `{}`)
+		}
+	})}
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	if err := store.EnsureCollection(context.Background()); err != nil || requests != 7 {
 		t.Fatalf("EnsureCollection() requests=%d error=%v", requests, err)
 	}
 }
@@ -253,4 +280,26 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 
 func response(status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Body: io.NopCloser(bytes.NewBufferString(body)), Header: make(http.Header)}
+}
+
+func assertFieldIndexRequest(t *testing.T, request *http.Request, index int) {
+	t.Helper()
+	expected := []struct {
+		name   string
+		schema string
+	}{
+		{name: "indexed", schema: "keyword"},
+		{name: "vector_kind", schema: "keyword"},
+		{name: "job_id", schema: "keyword"},
+		{name: "author_normalized", schema: "keyword"},
+		{name: "tags_normalized", schema: "keyword"},
+		{name: "year", schema: "integer"},
+	}
+	var body fieldIndexRequest
+	if request.Method != http.MethodPut || request.URL.Path != "/collections/evidence/index" || json.NewDecoder(request.Body).Decode(&body) != nil {
+		t.Fatalf("unexpected field index request: %s %s %#v", request.Method, request.URL.Path, body)
+	}
+	if body != (fieldIndexRequest{FieldName: expected[index].name, FieldSchema: expected[index].schema}) {
+		t.Fatalf("unexpected field index body: %#v", body)
+	}
 }

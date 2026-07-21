@@ -6,7 +6,9 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/belLena81/raglibrarian/pkg/logger"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/config"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/diagnostic"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/worker"
 )
 
@@ -18,7 +20,8 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	runtime, err := worker.New(ctx, configuration)
+	log := logger.Must("retrieval-worker")
+	runtime, err := worker.New(ctx, configuration, diagnostic.New(log))
 	if err != nil {
 		worker.LogFailure()
 		os.Exit(1)

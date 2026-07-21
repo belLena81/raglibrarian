@@ -75,6 +75,11 @@ type rangeValue struct {
 	LessThanOrEqual    *int `json:"lte,omitempty"`
 }
 
+type fieldIndexRequest struct {
+	FieldName   string `json:"field_name"`
+	FieldSchema string `json:"field_schema"`
+}
+
 type queryResponse struct {
 	Result queryResult `json:"result"`
 }
@@ -309,7 +314,7 @@ func (q *Qdrant) CheckReady(ctx context.Context) error {
 
 func (q *Qdrant) EnsureCollection(ctx context.Context) error {
 	if err := q.CheckReady(ctx); err == nil {
-		return nil
+		return q.ensurePayloadIndexes(ctx)
 	}
 	body, _ := json.Marshal(map[string]any{
 		"vectors": map[string]any{"size": domain.EmbeddingDimensions, "distance": "Cosine"},
@@ -334,7 +339,45 @@ func (q *Qdrant) EnsureCollection(ctx context.Context) error {
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return errors.New("create vector collection")
 	}
-	return q.CheckReady(ctx)
+	if err = q.CheckReady(ctx); err != nil {
+		return err
+	}
+	return q.ensurePayloadIndexes(ctx)
+}
+
+func (q *Qdrant) ensurePayloadIndexes(ctx context.Context) error {
+	indexes := []fieldIndexRequest{
+		{FieldName: "indexed", FieldSchema: "keyword"},
+		{FieldName: "vector_kind", FieldSchema: "keyword"},
+		{FieldName: "job_id", FieldSchema: "keyword"},
+		{FieldName: "author_normalized", FieldSchema: "keyword"},
+		{FieldName: "tags_normalized", FieldSchema: "keyword"},
+		{FieldName: "year", FieldSchema: "integer"},
+	}
+	for _, field := range indexes {
+		body, err := json.Marshal(field)
+		if err != nil {
+			return errors.New("encode vector field index")
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodPut, q.endpoint+"/collections/"+q.collection+"/index?wait=true", bytes.NewReader(body))
+		if err != nil {
+			return errors.New("create vector field index")
+		}
+		request.Header.Set("Content-Type", "application/json")
+		if q.apiKey != "" {
+			request.Header.Set("api-key", q.apiKey)
+		}
+		response, err := q.client.Do(request) // #nosec G704 -- NewQdrant accepts only a validated operator-controlled endpoint.
+		if err != nil {
+			return errors.New("vector dependency unavailable")
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumQdrantResponseBytes))
+		_ = response.Body.Close()
+		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			return errors.New("create vector field index")
+		}
+	}
+	return nil
 }
 
 func buildFilter(filters domain.SearchFilters, extra []condition) *filter {
