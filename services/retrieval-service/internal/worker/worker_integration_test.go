@@ -109,7 +109,7 @@ func TestHandleRetriesTerminalFailureRecordingBelowBudget(t *testing.T) {
 }
 
 func TestFailBatchRecordsTerminalFailureBeforeBestEffortVectorDeactivate(t *testing.T) {
-	recorder := &stubBatchFailureRecorder{}
+	recorder := &stubBatchFailureRecorder{ok: true}
 	cleanup := &stubVectorCleanupRepository{}
 	vectors := &stubWorkerVector{deactivateErr: errors.New("qdrant unavailable")}
 	runtime := &Runtime{batchFails: recorder, vectorJobs: cleanup, vector: vectors}
@@ -130,6 +130,24 @@ func TestFailBatchRecordsTerminalFailureBeforeBestEffortVectorDeactivate(t *test
 	}
 }
 
+func TestFailBatchSkipsVectorDeactivateWhenFailureDidNotTransitionJob(t *testing.T) {
+	recorder := &stubBatchFailureRecorder{}
+	cleanup := &stubVectorCleanupRepository{}
+	vectors := &stubWorkerVector{}
+	runtime := &Runtime{batchFails: recorder, vectorJobs: cleanup, vector: vectors}
+
+	err := runtime.failBatch(context.Background(), validWorkerBatchPayload(t), application.Failure(domain.FailureManifestIntegrity, errors.New("duplicate replay")))
+	if err != nil {
+		t.Fatalf("failBatch() error = %v", err)
+	}
+	if recorder.calls != 1 {
+		t.Fatalf("recorded failure calls=%d", recorder.calls)
+	}
+	if vectors.deactivateCalls != 0 || cleanup.completed != 0 {
+		t.Fatalf("vector deactivate calls=%d completed cleanup=%d", vectors.deactivateCalls, cleanup.completed)
+	}
+}
+
 func TestFailBatchReturnsDatabaseFailureBeforeVectorDeactivate(t *testing.T) {
 	recorder := &stubBatchFailureRecorder{err: errors.New("database unavailable")}
 	vectors := &stubWorkerVector{}
@@ -145,7 +163,7 @@ func TestFailBatchReturnsDatabaseFailureBeforeVectorDeactivate(t *testing.T) {
 }
 
 func TestFailBatchCompletesVectorCleanupAfterSuccessfulDeactivate(t *testing.T) {
-	recorder := &stubBatchFailureRecorder{}
+	recorder := &stubBatchFailureRecorder{ok: true}
 	cleanup := &stubVectorCleanupRepository{}
 	vectors := &stubWorkerVector{}
 	runtime := &Runtime{batchFails: recorder, vectorJobs: cleanup, vector: vectors}
@@ -340,14 +358,15 @@ type stubBatchFailureRecorder struct {
 	calls    int
 	work     application.BatchWork
 	category domain.FailureCategory
+	ok       bool
 	err      error
 }
 
-func (s *stubBatchFailureRecorder) FailBatch(_ context.Context, work application.BatchWork, category domain.FailureCategory, _ time.Time) error {
+func (s *stubBatchFailureRecorder) FailBatch(_ context.Context, work application.BatchWork, category domain.FailureCategory, _ time.Time) (bool, error) {
 	s.calls++
 	s.work = work
 	s.category = category
-	return s.err
+	return s.ok, s.err
 }
 
 type stubWorkerVector struct {
@@ -475,6 +494,16 @@ func validWorkerBatchPayload(t *testing.T) []byte {
 		SourceSha256:         source[:],
 		ManifestSha256:       manifest[:],
 		IndexProfileDigest:   profile.Digest[:],
+		FirstChunkOrder:      0,
+		LastChunkOrder:       0,
+		ManifestPageCount:    1,
+		ExtractionVersion:    profile.ExtractionVersion,
+		NormalizationVersion: profile.NormalizationVersion,
+		TokenizerVersion:     profile.TokenizerVersion,
+		ChunkingVersion:      profile.ChunkingVersion,
+		StructureVersion:     profile.StructureVersion,
+		MaximumTokens:        uint32(profile.MaximumTokens),
+		OverlapTokens:        uint32(profile.OverlapTokens),
 		CorrelationId:        "correlation-1",
 		OccurredAt:           timestamppb.New(time.Date(2026, 7, 20, 9, 2, 0, 0, time.UTC)),
 		CausationId:          "manifest-event-1",

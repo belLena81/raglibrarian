@@ -56,6 +56,16 @@ func TestPlannerRejectsIncompatibleManifestProfile(t *testing.T) {
 	}
 }
 
+func TestPlannerRejectsManifestPageCountAboveSharedLimit(t *testing.T) {
+	repository := newMemoryPlanningRepository()
+	planner := newTestPlanner(t, repository)
+	event := validManifestEvent()
+	event.Manifest.PageCount = 501
+	if err := planner.HandleManifest(context.Background(), event); !errors.Is(err, ErrInvalidEvent) {
+		t.Fatalf("HandleManifest() error = %v", err)
+	}
+}
+
 func TestManifestFailureCategoryRequiresValidatedEnvelope(t *testing.T) {
 	event := validManifestEvent()
 	event.Manifest = Manifest{}

@@ -21,3 +21,94 @@ for file in "${files[@]}"; do
     exit 1
   }
 done
+
+definitions="$dir/rabbitmq_definitions.json"
+command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+
+jq -e '
+  any(.exchanges[]?; .name == "raglibrarian.retrieval.source-return.v1")
+' "$definitions" >/dev/null || {
+  echo "Missing Retrieval source return exchange" >&2
+  exit 1
+}
+
+jq -e '
+  [
+    .queues[]?
+    | select(
+        .name == "retrieval.book-uploaded.v1.retry.5s" or
+        .name == "retrieval.book-uploaded.v1.retry.30s" or
+        .name == "retrieval.chunks-ready.v1.retry.5s" or
+        .name == "retrieval.chunks-ready.v1.retry.30s"
+      )
+    | {
+        name,
+        exchange: .arguments["x-dead-letter-exchange"],
+        routing_key: .arguments["x-dead-letter-routing-key"]
+      }
+  ]
+  == [
+    {name:"retrieval.book-uploaded.v1.retry.5s", exchange:"raglibrarian.retrieval.source-return.v1", routing_key:"catalog.book.uploaded.v1"},
+    {name:"retrieval.book-uploaded.v1.retry.30s", exchange:"raglibrarian.retrieval.source-return.v1", routing_key:"catalog.book.uploaded.v1"},
+    {name:"retrieval.chunks-ready.v1.retry.5s", exchange:"raglibrarian.retrieval.source-return.v1", routing_key:"ingestion.book.chunks-ready.v1"},
+    {name:"retrieval.chunks-ready.v1.retry.30s", exchange:"raglibrarian.retrieval.source-return.v1", routing_key:"ingestion.book.chunks-ready.v1"}
+  ]
+' "$definitions" >/dev/null || {
+  echo "Retrieval source retry queues are not isolated to Retrieval-only return paths" >&2
+  exit 1
+}
+
+jq -e '
+  [
+    .bindings[]?
+    | select(.source == "raglibrarian.retrieval.source-return.v1")
+    | {
+        destination,
+        destination_type,
+        routing_key
+      }
+  ]
+  == [
+    {destination:"retrieval.book-uploaded.v1", destination_type:"queue", routing_key:"catalog.book.uploaded.v1"},
+    {destination:"retrieval.chunks-ready.v1", destination_type:"queue", routing_key:"ingestion.book.chunks-ready.v1"}
+  ]
+' "$definitions" >/dev/null || {
+  echo "Retrieval source return exchange bindings are incorrect" >&2
+  exit 1
+}
+
+jq -e '
+  [
+    .bindings[]?
+    | select(
+        .source == "raglibrarian.retrieval.events.dlx.v1" and
+        .destination == "retrieval.source.dlq.v1"
+      )
+    | .routing_key
+  ]
+  == [
+    "catalog.book.uploaded.v1",
+    "ingestion.book.chunks-ready.v1"
+  ]
+' "$definitions" >/dev/null || {
+  echo "Retrieval source DLQ bindings do not preserve upstream routing keys" >&2
+  exit 1
+}
+
+jq -e '
+  all(
+    .queues[]?;
+    (
+      .name != "retrieval.book-uploaded.v1.retry.5s" and
+      .name != "retrieval.book-uploaded.v1.retry.30s" and
+      .name != "retrieval.chunks-ready.v1.retry.5s" and
+      .name != "retrieval.chunks-ready.v1.retry.30s"
+    ) or (
+      .arguments["x-dead-letter-exchange"] != "raglibrarian.events.v1" and
+      .arguments["x-dead-letter-exchange"] != "raglibrarian.ingestion.events.v1"
+    )
+  )
+' "$definitions" >/dev/null || {
+  echo "Retrieval source retry queues still dead-letter through shared exchanges" >&2
+  exit 1
+}

@@ -14,9 +14,11 @@ import (
 
 type BatchWork struct {
 	EventID, JobID, BatchID, BookID, ShardReference, CorrelationID, CausationID, Producer, SchemaVersion, IdempotencyKey string
+	ExtractionVersion, NormalizationVersion, TokenizerVersion, ChunkingVersion, StructureVersion                         string
 	ShardSHA256, SourceSHA256, ManifestSHA256, ProfileDigest                                                             [32]byte
 	CompressedBytes, UncompressedBytes                                                                                   int64
-	ChunkCount                                                                                                           uint32
+	ChunkCount, ManifestPageCount, MaximumTokens, OverlapTokens                                                          uint32
+	FirstChunkOrder, LastChunkOrder                                                                                      uint64
 	OccurredAt                                                                                                           time.Time
 }
 
@@ -27,7 +29,15 @@ func (w BatchWork) Validate() error {
 		w.IdempotencyKey != w.BatchID || w.ShardSHA256 == ([32]byte{}) || w.SourceSHA256 == ([32]byte{}) ||
 		w.ManifestSHA256 == ([32]byte{}) || w.ProfileDigest != profile.Digest || w.CompressedBytes < 1 ||
 		w.CompressedBytes > 32<<20 || w.UncompressedBytes < 1 || w.UncompressedBytes > 64<<20 ||
-		w.ChunkCount < 1 || w.ChunkCount > 256 || w.OccurredAt.IsZero() {
+		w.ChunkCount < 1 || w.ChunkCount > 256 || w.ManifestPageCount < 1 || w.ManifestPageCount > maxManifestPages ||
+		w.MaximumTokens == 0 || w.MaximumTokens != uint32(profile.MaximumTokens) || w.OverlapTokens != uint32(profile.OverlapTokens) ||
+		w.ExtractionVersion != profile.ExtractionVersion || w.NormalizationVersion != profile.NormalizationVersion ||
+		w.TokenizerVersion != profile.TokenizerVersion || w.ChunkingVersion != profile.ChunkingVersion || w.StructureVersion != profile.StructureVersion ||
+		w.OccurredAt.IsZero() {
+		return ErrInvalidEvent
+	}
+	expectedLastOrder, ok := shardLastOrder(w.FirstChunkOrder, w.ChunkCount)
+	if !ok || w.LastChunkOrder != expectedLastOrder {
 		return ErrInvalidEvent
 	}
 	return nil
@@ -40,9 +50,11 @@ type BookProjection struct {
 }
 
 type Chunk struct {
-	ChunkID, BookID, Text, Chapter, Section string
-	ContentSHA256                           [32]byte
-	PageStart, PageEnd                      uint32
+	ChunkID, BookID, Text, Chapter, Section                                                      string
+	ExtractionVersion, NormalizationVersion, TokenizerVersion, ChunkingVersion, StructureVersion string
+	ContentSHA256                                                                                [32]byte
+	PageStart, PageEnd                                                                           uint32
+	Order, TokenStart, TokenEnd                                                                  uint64
 }
 
 type EvidenceRecord struct {
@@ -113,16 +125,34 @@ func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
 		return Failure(domain.FailureManifestIntegrity, errors.New("invalid shard chunk count"))
 	}
 	texts := make([]string, len(chunks))
+	nextOrder := work.FirstChunkOrder
+	var previous Chunk
 	for index, chunk := range chunks {
 		if chunk.BookID != work.BookID || !safeID(chunk.ChunkID) || chunk.Text == "" || !utf8.ValidString(chunk.Text) ||
 			!utf8.ValidString(chunk.Chapter) || !utf8.ValidString(chunk.Section) || chunk.ContentSHA256 != sha256.Sum256([]byte(chunk.Text)) ||
-			chunk.PageEnd < chunk.PageStart {
+			chunk.PageStart < 1 || chunk.PageEnd < chunk.PageStart || chunk.PageEnd > work.ManifestPageCount ||
+			chunk.Order != nextOrder || chunk.TokenEnd <= chunk.TokenStart ||
+			chunk.TokenEnd-chunk.TokenStart > uint64(work.MaximumTokens) ||
+			chunk.ExtractionVersion != work.ExtractionVersion || chunk.NormalizationVersion != work.NormalizationVersion ||
+			chunk.TokenizerVersion != work.TokenizerVersion || chunk.ChunkingVersion != work.ChunkingVersion ||
+			chunk.StructureVersion != work.StructureVersion {
 			return Failure(domain.FailureManifestIntegrity, errors.New("invalid chunk"))
+		}
+		if index > 0 {
+			if chunk.TokenStart < previous.TokenStart || chunk.TokenEnd <= previous.TokenEnd || chunk.TokenStart > previous.TokenEnd ||
+				previous.TokenEnd-chunk.TokenStart > uint64(work.OverlapTokens) {
+				return Failure(domain.FailureManifestIntegrity, errors.New("invalid chunk"))
+			}
 		}
 		if len(chunk.Text) > 32<<10 || len(chunk.Chapter) > 1024 || len(chunk.Section) > 1024 {
 			return Failure(domain.FailureResourceLimit, errors.New("invalid chunk"))
 		}
 		texts[index] = chunk.Text
+		previous = chunk
+		nextOrder++
+	}
+	if nextOrder != work.LastChunkOrder+1 {
+		return Failure(domain.FailureManifestIntegrity, errors.New("invalid chunk"))
 	}
 	vectors, err := i.embedder.EmbedDocuments(ctx, texts)
 	if err != nil || len(vectors) != len(chunks) {

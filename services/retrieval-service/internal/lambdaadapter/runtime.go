@@ -76,7 +76,7 @@ type manifestFailureRecorder interface {
 }
 
 type batchFailureRecorder interface {
-	FailBatch(context.Context, application.BatchWork, domain.FailureCategory, time.Time) error
+	FailBatch(context.Context, application.BatchWork, domain.FailureCategory, time.Time) (bool, error)
 }
 
 type batchProcessor interface {
@@ -329,8 +329,12 @@ func (r *Runtime) Index(ctx context.Context, event RabbitEvent) error {
 			}
 			failureCtx, failureCancel := r.failureRecordingContext()
 			defer failureCancel()
-			if failureErr := r.batchFailureRecorder().FailBatch(failureCtx, work, category, time.Now().UTC()); failureErr != nil {
+			transitioned, failureErr := r.batchFailureRecorder().FailBatch(failureCtx, work, category, time.Now().UTC())
+			if failureErr != nil {
 				return errors.New("record terminal indexing failure")
+			}
+			if !transitioned {
+				return nil
 			}
 			if r.vector != nil {
 				if cleanupErr := r.vector.DeactivateJob(failureCtx, work.JobID); cleanupErr == nil {

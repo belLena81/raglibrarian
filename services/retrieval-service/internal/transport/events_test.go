@@ -9,7 +9,9 @@ import (
 
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
+	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -124,6 +126,54 @@ func TestDecodeManifestRejectsInvalidOuterEventWithoutEnvelope(t *testing.T) {
 	}
 	if event.EventID != "" || event.BookID != "" || event.ManifestReference != "" {
 		t.Fatalf("invalid outer envelope retained identity: %#v", event)
+	}
+}
+
+func TestDecodeBatchRetainsManifestValidationContract(t *testing.T) {
+	profile := domain.SupportedIndexProfile()
+	source := sha256.Sum256([]byte("synthetic source"))
+	manifest := sha256.Sum256([]byte("synthetic manifest"))
+	shard := sha256.Sum256([]byte("synthetic shard"))
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(&retrievalv1.IndexBatchRequestedV1{
+		EventId:              "batch-event-1",
+		JobId:                "job-1",
+		BatchId:              "job-1:0",
+		BookId:               "book-1",
+		ShardReference:       "books/book-1/profile/shards/000000.pb.zst",
+		ShardSha256:          shard[:],
+		CompressedByteSize:   128,
+		UncompressedByteSize: 512,
+		ChunkCount:           1,
+		SourceSha256:         source[:],
+		ManifestSha256:       manifest[:],
+		IndexProfileDigest:   profile.Digest[:],
+		FirstChunkOrder:      7,
+		LastChunkOrder:       7,
+		ManifestPageCount:    2,
+		ExtractionVersion:    profile.ExtractionVersion,
+		NormalizationVersion: profile.NormalizationVersion,
+		TokenizerVersion:     profile.TokenizerVersion,
+		ChunkingVersion:      profile.ChunkingVersion,
+		StructureVersion:     profile.StructureVersion,
+		MaximumTokens:        uint32(profile.MaximumTokens),
+		OverlapTokens:        uint32(profile.OverlapTokens),
+		CorrelationId:        "correlation-1",
+		OccurredAt:           timestamppb.New(time.Date(2026, 7, 20, 9, 2, 0, 0, time.UTC)),
+		CausationId:          "manifest-event-1",
+		Producer:             "retrieval-service",
+		SchemaVersion:        "v1",
+		IdempotencyKey:       "job-1:0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	work, err := DecodeBatch(payload)
+	if err != nil {
+		t.Fatalf("DecodeBatch() error = %v", err)
+	}
+	if work.FirstChunkOrder != 7 || work.LastChunkOrder != 7 || work.ManifestPageCount != 2 || work.MaximumTokens != 800 || work.StructureVersion != profile.StructureVersion {
+		t.Fatalf("DecodeBatch() work = %#v", work)
 	}
 }
 

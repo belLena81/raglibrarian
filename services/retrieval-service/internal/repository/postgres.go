@@ -166,7 +166,10 @@ func (r *Postgres) CommitPlan(ctx context.Context, snapshot application.Planning
 		message := &retrievalv1.IndexBatchRequestedV1{EventId: batch.BatchID + ":requested", JobId: batch.JobID, BatchId: batch.BatchID, BookId: batch.BookID,
 			ShardReference: batch.Reference, ShardSha256: batch.SHA256[:], CompressedByteSize: batch.CompressedBytes, UncompressedByteSize: batch.UncompressedBytes,
 			ChunkCount: batch.ChunkCount, SourceSha256: snapshot.Manifest.SourceSHA256[:], ManifestSha256: snapshot.Manifest.ManifestSHA256[:], IndexProfileDigest: batch.ProfileDigest[:],
-			CorrelationId: snapshot.Manifest.CorrelationID, OccurredAt: timestamppb.New(batch.OccurredAt), CausationId: snapshot.Manifest.EventID, Producer: "retrieval-service", SchemaVersion: "v1", IdempotencyKey: batch.BatchID}
+			FirstChunkOrder: batch.FirstChunkOrder, LastChunkOrder: batch.LastChunkOrder, ManifestPageCount: batch.ManifestPageCount, ExtractionVersion: batch.ExtractionVersion,
+			NormalizationVersion: batch.NormalizationVersion, TokenizerVersion: batch.TokenizerVersion, ChunkingVersion: batch.ChunkingVersion, StructureVersion: batch.StructureVersion,
+			MaximumTokens: batch.MaximumTokens, OverlapTokens: batch.OverlapTokens, CorrelationId: snapshot.Manifest.CorrelationID, OccurredAt: timestamppb.New(batch.OccurredAt),
+			CausationId: snapshot.Manifest.EventID, Producer: "retrieval-service", SchemaVersion: "v1", IdempotencyKey: batch.BatchID}
 		payload, marshalErr := proto.MarshalOptions{Deterministic: true}.Marshal(message)
 		if marshalErr != nil {
 			return false, marshalErr
@@ -442,24 +445,24 @@ func (r *Postgres) FinalizeJob(ctx context.Context, work application.BatchWork, 
 	return tx.Commit(ctx)
 }
 
-func (r *Postgres) FailBatch(ctx context.Context, work application.BatchWork, category domain.FailureCategory, now time.Time) error {
+func (r *Postgres) FailBatch(ctx context.Context, work application.BatchWork, category domain.FailureCategory, now time.Time) (bool, error) {
 	protoCategory, ok := failureProto(category)
 	if !ok {
-		return application.ErrInvalidEvent
+		return false, application.ErrInvalidEvent
 	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err = tx.Exec(ctx, `UPDATE retrieval.index_batches SET state='failed',updated_at=$2 WHERE id=$1 AND state <> 'completed'`, work.BatchID, now); err != nil {
-		return err
+		return false, err
 	}
 	command, err := tx.Exec(ctx, `UPDATE retrieval.index_jobs
 		SET state='failed',failure_category=$2,vector_cleanup_pending=true,vector_cleanup_attempts=0,vector_cleanup_next_attempt_at=$3,updated_at=$3
 		WHERE id=$1 AND state='pending'`, work.JobID, string(category), now)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if command.RowsAffected() == 1 {
 		message := &retrievalv1.BookIndexingFailedV1{EventId: work.JobID + ":failed", BookId: work.BookID, JobId: work.JobID,
@@ -467,14 +470,17 @@ func (r *Postgres) FailBatch(ctx context.Context, work application.BatchWork, ca
 			CorrelationId: work.CorrelationID, OccurredAt: timestamppb.New(now), CausationId: work.EventID, Producer: "retrieval-service", SchemaVersion: "v1", IdempotencyKey: work.JobID + ":failed"}
 		payload, marshalErr := proto.MarshalOptions{Deterministic: true}.Marshal(message)
 		if marshalErr != nil {
-			return marshalErr
+			return false, marshalErr
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO retrieval.outbox(event_id,event_type,aggregate_id,payload,occurred_at,next_attempt_at) VALUES($1,'retrieval.book.indexing-failed.v1',$2,$3,$4,$4) ON CONFLICT DO NOTHING`, message.EventId, work.JobID, payload, now)
 		if err != nil {
-			return err
+			return false, err
 		}
 	}
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return command.RowsAffected() == 1, nil
 }
 
 func (r *Postgres) FailManifest(ctx context.Context, event application.ManifestEvent, category domain.FailureCategory, now time.Time) error {
@@ -515,9 +521,18 @@ func (r *Postgres) FailManifest(ctx context.Context, event application.ManifestE
 		return err
 	}
 	if command.RowsAffected() == 0 {
-		var digest []byte
-		if err = tx.QueryRow(ctx, `SELECT payload_digest FROM retrieval.manifest_facts WHERE book_id=$1 OR event_id=$2`, event.BookID, event.EventID).Scan(&digest); err != nil || !equalDigest(digest, event.PayloadDigest) {
+		var (
+			digest          []byte
+			failureCategory string
+		)
+		if err = tx.QueryRow(ctx, `SELECT payload_digest,coalesce(failure_category,'') FROM retrieval.manifest_facts WHERE book_id=$1 OR event_id=$2`, event.BookID, event.EventID).Scan(&digest, &failureCategory); err != nil {
 			return application.ErrConflictingEvent
+		}
+		if !equalDigest(digest, event.PayloadDigest) {
+			return application.ErrConflictingEvent
+		}
+		if failureCategory == "" {
+			return tx.Commit(ctx)
 		}
 	}
 	metadataExists, err := metadataExists(ctx, tx, event.BookID)

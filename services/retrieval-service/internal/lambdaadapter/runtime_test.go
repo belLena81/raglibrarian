@@ -91,7 +91,7 @@ func TestPlanDoesNotRecordInvalidManifestEnvelope(t *testing.T) {
 }
 
 func TestIndexRecordsTerminalFailureBeforeBestEffortVectorDeactivate(t *testing.T) {
-	recorder := &lambdaBatchFailureRecorder{}
+	recorder := &lambdaBatchFailureRecorder{ok: true}
 	cleanup := &lambdaVectorCleanupRepository{}
 	vectors := &lambdaVectorDeactivator{err: errors.New("qdrant unavailable")}
 	runtime := &Runtime{
@@ -116,6 +116,29 @@ func TestIndexRecordsTerminalFailureBeforeBestEffortVectorDeactivate(t *testing.
 	}
 }
 
+func TestIndexSkipsVectorCleanupWhenFailureDidNotTransitionJob(t *testing.T) {
+	recorder := &lambdaBatchFailureRecorder{}
+	cleanup := &lambdaVectorCleanupRepository{}
+	vectors := &lambdaVectorDeactivator{}
+	runtime := &Runtime{
+		indexer:    lambdaBatchProcessor{err: application.Failure(domain.FailureManifestIntegrity, errors.New("duplicate replay"))},
+		batchFails: recorder,
+		vectorJobs: cleanup,
+		vector:     vectors,
+	}
+
+	err := runtime.Index(context.Background(), batchRabbitEvent(t, validLambdaBatchPayload(t), 4))
+	if err != nil {
+		t.Fatalf("Index() error = %v", err)
+	}
+	if recorder.calls != 1 {
+		t.Fatalf("recorded failure calls=%d", recorder.calls)
+	}
+	if vectors.calls != 0 || cleanup.completed != 0 {
+		t.Fatalf("vector cleanup calls=%d completed=%d", vectors.calls, cleanup.completed)
+	}
+}
+
 func TestIndexReturnsRecordFailureBeforeVectorDeactivate(t *testing.T) {
 	recorder := &lambdaBatchFailureRecorder{err: errors.New("database unavailable")}
 	vectors := &lambdaVectorDeactivator{}
@@ -135,7 +158,7 @@ func TestIndexReturnsRecordFailureBeforeVectorDeactivate(t *testing.T) {
 }
 
 func TestIndexCompletesVectorCleanupAfterSuccessfulDeactivate(t *testing.T) {
-	recorder := &lambdaBatchFailureRecorder{}
+	recorder := &lambdaBatchFailureRecorder{ok: true}
 	cleanup := &lambdaVectorCleanupRepository{}
 	vectors := &lambdaVectorDeactivator{}
 	runtime := &Runtime{
@@ -155,7 +178,7 @@ func TestIndexCompletesVectorCleanupAfterSuccessfulDeactivate(t *testing.T) {
 }
 
 func TestIndexRecordsTimeoutWithFreshFailureContext(t *testing.T) {
-	recorder := &lambdaBatchFailureRecorder{}
+	recorder := &lambdaBatchFailureRecorder{ok: true}
 	cleanup := &lambdaVectorCleanupRepository{}
 	vectors := &lambdaVectorDeactivator{}
 	runtime := &Runtime{
@@ -186,7 +209,7 @@ func TestIndexRecordsTimeoutWithFreshFailureContext(t *testing.T) {
 }
 
 func TestIndexOverridesSanitizedDependencyTimeoutToIndexingTimeout(t *testing.T) {
-	recorder := &lambdaBatchFailureRecorder{}
+	recorder := &lambdaBatchFailureRecorder{ok: true}
 	cleanup := &lambdaVectorCleanupRepository{}
 	vectors := &lambdaVectorDeactivator{}
 	runtime := &Runtime{
@@ -214,7 +237,7 @@ func TestIndexOverridesSanitizedDependencyTimeoutToIndexingTimeout(t *testing.T)
 }
 
 func TestIndexPreservesDependencyFailureCategoryWithoutTimeout(t *testing.T) {
-	recorder := &lambdaBatchFailureRecorder{}
+	recorder := &lambdaBatchFailureRecorder{ok: true}
 	runtime := &Runtime{
 		indexer:            lambdaBatchProcessor{err: application.Failure(domain.FailureEmbeddingUnavailable, errors.New("embed shard"))},
 		batchFails:         recorder,
@@ -319,16 +342,17 @@ type lambdaBatchFailureRecorder struct {
 	calls    int
 	work     application.BatchWork
 	category domain.FailureCategory
+	ok       bool
 	err      error
 	ctxErr   error
 }
 
-func (s *lambdaBatchFailureRecorder) FailBatch(ctx context.Context, work application.BatchWork, category domain.FailureCategory, _ time.Time) error {
+func (s *lambdaBatchFailureRecorder) FailBatch(ctx context.Context, work application.BatchWork, category domain.FailureCategory, _ time.Time) (bool, error) {
 	s.calls++
 	s.work = work
 	s.category = category
 	s.ctxErr = ctx.Err()
-	return s.err
+	return s.ok, s.err
 }
 
 type lambdaVectorDeactivator struct {
@@ -480,6 +504,16 @@ func validLambdaBatchPayload(t *testing.T) []byte {
 		SourceSha256:         source[:],
 		ManifestSha256:       manifest[:],
 		IndexProfileDigest:   profile.Digest[:],
+		FirstChunkOrder:      0,
+		LastChunkOrder:       0,
+		ManifestPageCount:    1,
+		ExtractionVersion:    profile.ExtractionVersion,
+		NormalizationVersion: profile.NormalizationVersion,
+		TokenizerVersion:     profile.TokenizerVersion,
+		ChunkingVersion:      profile.ChunkingVersion,
+		StructureVersion:     profile.StructureVersion,
+		MaximumTokens:        uint32(profile.MaximumTokens),
+		OverlapTokens:        uint32(profile.OverlapTokens),
 		CorrelationId:        "correlation-1",
 		OccurredAt:           timestamppb.New(time.Date(2026, 7, 20, 9, 2, 0, 0, time.UTC)),
 		CausationId:          "manifest-event-1",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -13,7 +14,7 @@ import (
 
 func TestIndexerReplayUsesStableEvidenceIDsAndCompletesOnce(t *testing.T) {
 	repository := &stubBatchRepository{metadata: BookProjection{BookID: "book-1", Title: "Systems", Author: "Author", Year: 2026}}
-	reader := &stubShardReader{chunks: []Chunk{{ChunkID: "chunk-1", BookID: "book-1", Text: "Evidence", ContentSHA256: sha256.Sum256([]byte("Evidence")), PageStart: 1, PageEnd: 1}}}
+	reader := &stubShardReader{chunks: []Chunk{validChunk("Evidence")}}
 	embedder := &stubDocumentEmbedder{vectors: [][]float32{make([]float32, 768)}}
 	index := &stubVectorIndex{}
 	indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) })
@@ -41,8 +42,8 @@ func TestIndexerUpsertsDocumentCentroidBeforeActivation(t *testing.T) {
 	second[1] = 1
 	repository := &stubBatchRepository{metadata: BookProjection{BookID: "book-1", Title: "Systems", Author: "Author", Year: 2026}}
 	reader := &stubShardReader{chunks: []Chunk{
-		{ChunkID: "chunk-1", BookID: "book-1", Text: "First", ContentSHA256: sha256.Sum256([]byte("First")), PageStart: 1, PageEnd: 1},
-		{ChunkID: "chunk-2", BookID: "book-1", Text: "Second", ContentSHA256: sha256.Sum256([]byte("Second")), PageStart: 2, PageEnd: 2},
+		validChunk("First"),
+		validChunkWithPosition("Second", 1, 2, 2, 1, 3),
 	}}
 	embedder := &stubDocumentEmbedder{vectors: [][]float32{first, second}}
 	index := &stubVectorIndex{}
@@ -52,6 +53,7 @@ func TestIndexerUpsertsDocumentCentroidBeforeActivation(t *testing.T) {
 	}
 	work := validBatchWork()
 	work.ChunkCount = 2
+	work.LastChunkOrder = 1
 
 	if err = indexer.Process(context.Background(), work); err != nil {
 		t.Fatalf("Process() error = %v", err)
@@ -120,11 +122,32 @@ func TestIndexerPreservesTerminalFailureCategories(t *testing.T) {
 			},
 			want: domain.FailureManifestIntegrity,
 		},
+		{
+			name: "page exceeds manifest count",
+			configure: func(_ *stubBatchRepository, reader *stubShardReader, _ *stubDocumentEmbedder, _ *stubVectorIndex) {
+				reader.chunks[0].PageEnd = 3
+			},
+			want: domain.FailureManifestIntegrity,
+		},
+		{
+			name: "token width exceeds profile",
+			configure: func(_ *stubBatchRepository, reader *stubShardReader, _ *stubDocumentEmbedder, _ *stubVectorIndex) {
+				reader.chunks[0].TokenEnd = uint64(domain.SupportedIndexProfile().MaximumTokens) + 1
+			},
+			want: domain.FailureManifestIntegrity,
+		},
+		{
+			name: "processing version mismatch",
+			configure: func(_ *stubBatchRepository, reader *stubShardReader, _ *stubDocumentEmbedder, _ *stubVectorIndex) {
+				reader.chunks[0].ChunkingVersion = "token-window-v1"
+			},
+			want: domain.FailureManifestIntegrity,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			repository := &stubBatchRepository{metadata: BookProjection{BookID: "book-1", Title: "Systems", Author: "Author", Year: 2026}}
-			reader := &stubShardReader{chunks: []Chunk{{ChunkID: "chunk-1", BookID: "book-1", Text: "Evidence", ContentSHA256: sha256.Sum256([]byte("Evidence")), PageStart: 1, PageEnd: 1}}}
+			reader := &stubShardReader{chunks: []Chunk{validChunk("Evidence")}}
 			embedder := &stubDocumentEmbedder{vectors: [][]float32{make([]float32, domain.EmbeddingDimensions)}}
 			index := &stubVectorIndex{}
 			test.configure(repository, reader, embedder, index)
@@ -137,6 +160,57 @@ func TestIndexerPreservesTerminalFailureCategories(t *testing.T) {
 
 			if got := FailureCategory(err); got != test.want {
 				t.Fatalf("FailureCategory() = %s, want %s, err=%v", got, test.want, err)
+			}
+		})
+	}
+}
+
+func TestIndexerRejectsShardOrderAndTokenSequenceViolations(t *testing.T) {
+	tests := []struct {
+		name   string
+		chunks []Chunk
+	}{
+		{
+			name: "noncontiguous order",
+			chunks: []Chunk{
+				validChunk("First"),
+				validChunkWithPosition("Second", 2, 2, 2, 1, 2),
+			},
+		},
+		{
+			name: "token gap",
+			chunks: []Chunk{
+				validChunk("First"),
+				validChunkWithPosition("Second", 1, 2, 2, 5, 6),
+			},
+		},
+		{
+			name: "excessive overlap",
+			chunks: []Chunk{
+				validChunkWithPosition("First", 0, 1, 1, 200, 400),
+				validChunkWithPosition("Second", 1, 2, 2, 100, 401),
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &stubBatchRepository{metadata: BookProjection{BookID: "book-1", Title: "Systems", Author: "Author", Year: 2026}}
+			reader := &stubShardReader{chunks: test.chunks}
+			embedder := &stubDocumentEmbedder{vectors: [][]float32{make([]float32, domain.EmbeddingDimensions), make([]float32, domain.EmbeddingDimensions)}}
+			index := &stubVectorIndex{}
+			indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) })
+			if err != nil {
+				t.Fatalf("NewIndexer() error = %v", err)
+			}
+			work := validBatchWork()
+			work.ChunkCount = 2
+			work.LastChunkOrder = 1
+
+			err = indexer.Process(context.Background(), work)
+
+			if got := FailureCategory(err); got != domain.FailureManifestIntegrity {
+				t.Fatalf("FailureCategory() = %s, want %s, err=%v", got, domain.FailureManifestIntegrity, err)
 			}
 		})
 	}
@@ -177,7 +251,7 @@ func TestIndexerKeepsArtifactOutagesRetryable(t *testing.T) {
 func TestIndexerPreservesCompleteBatchTypedFailures(t *testing.T) {
 	repository := &stubBatchRepository{metadata: BookProjection{BookID: "book-1", Title: "Systems", Author: "Author", Year: 2026}}
 	repository.completeErr = Failure(domain.FailureManifestIntegrity, ErrConflictingEvent)
-	reader := &stubShardReader{chunks: []Chunk{{ChunkID: "chunk-1", BookID: "book-1", Text: "Evidence", ContentSHA256: sha256.Sum256([]byte("Evidence")), PageStart: 1, PageEnd: 1}}}
+	reader := &stubShardReader{chunks: []Chunk{validChunk("Evidence")}}
 	embedder := &stubDocumentEmbedder{vectors: [][]float32{make([]float32, domain.EmbeddingDimensions)}}
 	index := &stubVectorIndex{}
 	indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) })
@@ -196,11 +270,36 @@ func TestIndexerPreservesCompleteBatchTypedFailures(t *testing.T) {
 }
 
 func validBatchWork() BatchWork {
-	profile := domain.SupportedIndexProfile().Digest
+	profile := domain.SupportedIndexProfile()
 	return BatchWork{EventID: "batch-event-1", JobID: "job-1", BatchID: "job-1:0", BookID: "book-1", ShardReference: "books/book-1/profile/shards/000000.pb.zst",
-		ShardSHA256: sum(5), CompressedBytes: 10, UncompressedBytes: 20, ChunkCount: 1, SourceSHA256: sum(1), ManifestSHA256: sum(2),
-		ProfileDigest: profile, CorrelationID: "correlation-1", CausationID: "manifest-1", Producer: "retrieval-service", SchemaVersion: "v1",
-		IdempotencyKey: "job-1:0", OccurredAt: time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)}
+		ShardSHA256: sum(5), CompressedBytes: 10, UncompressedBytes: 20, ChunkCount: 1, ManifestPageCount: 2, SourceSHA256: sum(1), ManifestSHA256: sum(2),
+		FirstChunkOrder: 0, LastChunkOrder: 0, ExtractionVersion: profile.ExtractionVersion, NormalizationVersion: profile.NormalizationVersion, TokenizerVersion: profile.TokenizerVersion,
+		ChunkingVersion: profile.ChunkingVersion, StructureVersion: profile.StructureVersion, MaximumTokens: uint32(profile.MaximumTokens), OverlapTokens: uint32(profile.OverlapTokens), ProfileDigest: profile.Digest,
+		CorrelationID: "correlation-1", CausationID: "manifest-1", Producer: "retrieval-service", SchemaVersion: "v1", IdempotencyKey: "job-1:0",
+		OccurredAt: time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)}
+}
+
+func validChunk(text string) Chunk {
+	return validChunkWithPosition(text, 0, 1, 1, 0, 1)
+}
+
+func validChunkWithPosition(text string, order uint64, pageStart, pageEnd uint32, tokenStart, tokenEnd uint64) Chunk {
+	return Chunk{
+		ChunkID:              fmt.Sprintf("chunk-%d", order+1),
+		BookID:               "book-1",
+		Order:                order,
+		Text:                 text,
+		ContentSHA256:        sha256.Sum256([]byte(text)),
+		PageStart:            pageStart,
+		PageEnd:              pageEnd,
+		TokenStart:           tokenStart,
+		TokenEnd:             tokenEnd,
+		ExtractionVersion:    "poppler-layout-v1",
+		NormalizationVersion: "nfc-v1",
+		TokenizerVersion:     "cl100k_base-v1",
+		ChunkingVersion:      "token-window-v2",
+		StructureVersion:     "heading-carry-v1",
+	}
 }
 
 type stubBatchRepository struct {

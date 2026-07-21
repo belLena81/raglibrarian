@@ -45,7 +45,7 @@ type manifestFailureRecorder interface {
 }
 
 type batchFailureRecorder interface {
-	FailBatch(context.Context, application.BatchWork, domain.FailureCategory, time.Time) error
+	FailBatch(context.Context, application.BatchWork, domain.FailureCategory, time.Time) (bool, error)
 }
 
 type batchProcessor interface {
@@ -491,12 +491,15 @@ func (r *Runtime) failBatch(ctx context.Context, payload []byte, failure error) 
 		return err
 	}
 	category := application.FailureCategory(failure)
-	err = r.batchFailureRecorder().FailBatch(ctx, work, category, time.Now().UTC())
-	if err == nil {
+	transitioned, err := r.batchFailureRecorder().FailBatch(ctx, work, category, time.Now().UTC())
+	if err == nil && transitioned {
 		r.logBatchTerminalFailureRecorded(work.BookID, reasonFromCategory(category))
 	}
 	if err != nil {
 		return err
+	}
+	if !transitioned {
+		return nil
 	}
 	if r.vector == nil {
 		return nil

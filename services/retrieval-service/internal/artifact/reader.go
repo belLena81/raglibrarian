@@ -68,8 +68,11 @@ func (r *Reader) ReadShard(ctx context.Context, work application.BatchWork) ([]a
 		}
 		var contentDigest [sha256.Size]byte
 		copy(contentDigest[:], message.ContentSha256)
-		chunks = append(chunks, application.Chunk{ChunkID: message.ChunkId, BookID: message.BookId, Text: message.Text,
-			Chapter: message.Chapter, Section: message.Section, ContentSHA256: contentDigest, PageStart: message.PageStart, PageEnd: message.PageEnd})
+		chunks = append(chunks, application.Chunk{ChunkID: message.ChunkId, BookID: message.BookId, Order: message.Order, Text: message.Text,
+			Chapter: message.Chapter, Section: message.Section, ContentSHA256: contentDigest, PageStart: message.PageStart, PageEnd: message.PageEnd,
+			TokenStart: message.TokenStart, TokenEnd: message.TokenEnd, ExtractionVersion: message.ExtractionVersion,
+			NormalizationVersion: message.NormalizationVersion, TokenizerVersion: message.TokenizerVersion,
+			ChunkingVersion: message.ChunkingVersion, StructureVersion: message.StructureVersion})
 		uncompressed = uncompressed[recordLength:]
 		if len(chunks) > int(work.ChunkCount) {
 			return nil, errors.New("too many shard records")

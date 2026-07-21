@@ -19,6 +19,8 @@ var (
 	ErrArtifactUnavailable     = errors.New("artifact unavailable")
 )
 
+const maxManifestPages = 500
+
 type MetadataEvent struct {
 	EventID, BookID, Title, Author, CorrelationID, CausationID, Producer, SchemaVersion, IdempotencyKey string
 	Year                                                                                                int
@@ -102,7 +104,7 @@ func (e ManifestEvent) Validate(profile domain.IndexProfile) error {
 	if !matchesProfileNumbers(e.Manifest, profile) {
 		return ErrUnsupportedIndexProfile
 	}
-	if e.Manifest.PageCount < 1 || e.Manifest.ChunkCount < 1 || e.Manifest.GeneratedAt.IsZero() || e.Manifest.GeneratedAt.After(e.OccurredAt) {
+	if e.Manifest.PageCount < 1 || e.Manifest.PageCount > maxManifestPages || e.Manifest.ChunkCount < 1 || e.Manifest.GeneratedAt.IsZero() || e.Manifest.GeneratedAt.After(e.OccurredAt) {
 		return ErrInvalidEvent
 	}
 	var totalChunks uint32
@@ -167,12 +169,14 @@ type PlanningSnapshot struct {
 	Planned  bool
 }
 type BatchPlan struct {
-	JobID, BatchID, BookID, Reference  string
-	SHA256                             [32]byte
-	CompressedBytes, UncompressedBytes int64
-	ChunkCount                         uint32
-	ProfileDigest                      [32]byte
-	OccurredAt                         time.Time
+	JobID, BatchID, BookID, Reference                                                            string
+	SHA256                                                                                       [32]byte
+	CompressedBytes, UncompressedBytes                                                           int64
+	ChunkCount, ManifestPageCount, MaximumTokens, OverlapTokens                                  uint32
+	FirstChunkOrder, LastChunkOrder                                                              uint64
+	ExtractionVersion, NormalizationVersion, TokenizerVersion, ChunkingVersion, StructureVersion string
+	ProfileDigest                                                                                [32]byte
+	OccurredAt                                                                                   time.Time
 }
 
 type PlanningRepository interface {
@@ -233,7 +237,12 @@ func (p *Planner) plan(ctx context.Context, snapshot PlanningSnapshot) error {
 	for index, shard := range snapshot.Manifest.Manifest.Shards {
 		batches[index] = BatchPlan{JobID: jobID, BatchID: jobID + ":" + stringID(index), BookID: snapshot.Metadata.BookID,
 			Reference: shard.Reference, SHA256: shard.SHA256, CompressedBytes: shard.CompressedBytes,
-			UncompressedBytes: shard.UncompressedBytes, ChunkCount: shard.ChunkCount, ProfileDigest: p.profile.Digest, OccurredAt: now}
+			UncompressedBytes: shard.UncompressedBytes, ChunkCount: shard.ChunkCount, ManifestPageCount: snapshot.Manifest.Manifest.PageCount,
+			FirstChunkOrder: shard.FirstChunkOrder, LastChunkOrder: shard.LastChunkOrder, ExtractionVersion: snapshot.Manifest.Manifest.ExtractionVersion,
+			NormalizationVersion: snapshot.Manifest.Manifest.NormalizationVersion, TokenizerVersion: snapshot.Manifest.Manifest.TokenizerVersion,
+			ChunkingVersion: snapshot.Manifest.Manifest.ChunkingVersion, StructureVersion: snapshot.Manifest.Manifest.StructureVersion,
+			MaximumTokens: snapshot.Manifest.Manifest.MaximumTokens, OverlapTokens: snapshot.Manifest.Manifest.OverlapTokens,
+			ProfileDigest: p.profile.Digest, OccurredAt: now}
 	}
 	_, err = p.repository.CommitPlan(ctx, snapshot, batches)
 	return err

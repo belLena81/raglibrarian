@@ -105,7 +105,10 @@ func DecodeBatch(payload []byte) (application.BatchWork, error) {
 	}
 	work := application.BatchWork{EventID: message.EventId, JobID: message.JobId, BatchID: message.BatchId, BookID: message.BookId, ShardReference: message.ShardReference,
 		ShardSHA256: bytesToDigest(message.ShardSha256), SourceSHA256: bytesToDigest(message.SourceSha256), ManifestSHA256: bytesToDigest(message.ManifestSha256), ProfileDigest: bytesToDigest(message.IndexProfileDigest),
-		CompressedBytes: message.CompressedByteSize, UncompressedBytes: message.UncompressedByteSize, ChunkCount: message.ChunkCount, CorrelationID: message.CorrelationId,
+		CompressedBytes: message.CompressedByteSize, UncompressedBytes: message.UncompressedByteSize, ChunkCount: message.ChunkCount, ManifestPageCount: message.ManifestPageCount,
+		FirstChunkOrder: message.FirstChunkOrder, LastChunkOrder: message.LastChunkOrder, ExtractionVersion: message.ExtractionVersion,
+		NormalizationVersion: message.NormalizationVersion, TokenizerVersion: message.TokenizerVersion, ChunkingVersion: message.ChunkingVersion,
+		StructureVersion: message.StructureVersion, MaximumTokens: message.MaximumTokens, OverlapTokens: message.OverlapTokens, CorrelationID: message.CorrelationId,
 		CausationID: message.CausationId, Producer: message.Producer, SchemaVersion: message.SchemaVersion, IdempotencyKey: message.IdempotencyKey, OccurredAt: message.OccurredAt.AsTime()}
 	return work, work.Validate()
 }

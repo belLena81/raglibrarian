@@ -109,6 +109,16 @@ message IndexBatchRequestedV1 {
   string producer = 16;
   string schema_version = 17;
   string idempotency_key = 18;
+  uint64 first_chunk_order = 19;
+  uint64 last_chunk_order = 20;
+  uint32 manifest_page_count = 21;
+  string extraction_version = 22;
+  string normalization_version = 23;
+  string tokenizer_version = 24;
+  string chunking_version = 25;
+  string structure_version = 26;
+  uint32 maximum_tokens = 27;
+  uint32 overlap_tokens = 28;
 }
 
 // BookIndexedV1 is emitted only after all evidence and vectors for the job are
