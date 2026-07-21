@@ -27,6 +27,7 @@ test -n "$files" || { echo 'no ingestion migrations found' >&2; exit 1; }
   if [ "$direction" = up ]; then
     echo "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ingestion_e2e') AS ingestion_e2e_exists \\gset"
     echo '\if :ingestion_e2e_exists'
+    echo 'GRANT USAGE ON SCHEMA ingestion TO ingestion_e2e;'
     echo 'ALTER DEFAULT PRIVILEGES IN SCHEMA ingestion GRANT SELECT ON TABLES TO ingestion_e2e;'
     echo '\endif'
   fi

@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -30,6 +31,7 @@ import (
 
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/klauspost/compress/zstd"
 	"github.com/minio/minio-go/v7"
@@ -165,26 +167,35 @@ func TestM4PerformanceSLOProfile(t *testing.T) {
 	}
 	fixtures := []string{"minimal.pdf", "minimal.pdf", "multipage.pdf", "minimal.pdf", "multipage.pdf"}
 	durationResults := make(chan time.Duration, len(fixtures))
-	processingSlots := make(chan struct{}, 2)
+	workerCount := len(environment.edgeURLs)
+	if workerCount > 2 {
+		workerCount = 2
+	}
+	fixtureQueue := make(chan string, len(fixtures))
+	for _, fixture := range fixtures {
+		fixtureQueue <- fixture
+	}
+	close(fixtureQueue)
 	var wait sync.WaitGroup
-	for index, fixture := range fixtures {
+	for workerIndex := 0; workerIndex < workerCount; workerIndex++ {
 		wait.Add(1)
-		go func() {
+		go func(edgeURL string) {
 			defer wait.Done()
-			processingSlots <- struct{}{}
-			defer func() { <-processingSlots }()
-			ctx, cancel := context.WithTimeout(context.Background(), environment.timeout)
+			workerTimeout := environment.timeout * time.Duration((len(fixtures)+workerCount-1)/workerCount)
+			ctx, cancel := context.WithTimeout(context.Background(), workerTimeout)
 			defer cancel()
-			edgeURL := environment.edgeURLs[index%len(environment.edgeURLs)]
 			stream := openM4EventStream(t, ctx, edgeURL, environment.publicOrigin, environment.accessToken, "")
-			startedAt := time.Now()
-			book := uploadM4Fixture(t, edgeURL, environment.accessToken, environment.fixtureDir, fixture)
-			waitForM4SLOEvents(t, stream, book.ID, startedAt)
-			book = getM4Book(t, edgeURL, environment.accessToken, book.ID)
-			assert.Equal(t, "processing", book.ProcessingStatus)
-			assert.Equal(t, "chunks_ready", book.ProcessingStage)
-			durationResults <- time.Since(startedAt)
-		}()
+			defer func() { require.NoError(t, stream.body.Close()) }()
+			for fixture := range fixtureQueue {
+				startedAt := time.Now()
+				book := uploadM4Fixture(t, edgeURL, environment.accessToken, environment.fixtureDir, fixture)
+				waitForM4SLOEvents(t, stream, book.ID, startedAt)
+				book = getM4Book(t, edgeURL, environment.accessToken, book.ID)
+				assert.Equal(t, "processing", book.ProcessingStatus)
+				assert.Equal(t, "chunks_ready", book.ProcessingStage)
+				durationResults <- time.Since(startedAt)
+			}
+		}(environment.edgeURLs[workerIndex])
 	}
 	wait.Wait()
 	close(durationResults)
@@ -709,8 +720,11 @@ func fetchM4Manifest(t *testing.T, bookID string) []byte {
 	var receipt m4ArtifactReceipt
 	err = pool.QueryRow(ctx, `SELECT manifest_reference, manifest_sha256, manifest_byte_size
 		FROM ingestion.jobs WHERE book_id=$1 AND state='completed'`, bookID).Scan(&receipt.reference, &receipt.sha256, &receipt.byteSize)
-	if err != nil {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		t.Fatal("completed M4 artifact receipt was not available in Ingestion Postgres")
+	case err != nil:
+		t.Fatal("completed M4 artifact receipt query failed")
 	}
 	contents := fetchM4Artifact(t, environment, receipt.reference)
 	actualSHA := sha256.Sum256(contents)
@@ -994,8 +1008,13 @@ func fetchM4AcceptedEnvelope(t *testing.T, bookID string) ([]byte, string) {
 	var eventID string
 	var payload []byte
 	err = pool.QueryRow(ctx, `SELECT event_id, payload FROM ingestion.inbox WHERE business_key=$1`, bookID).Scan(&eventID, &payload)
-	if err != nil || eventID == "" || len(payload) == 0 || len(payload) > 256<<10 {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		t.Fatal("bounded original M4 envelope was not available for replay")
+	case err != nil:
+		t.Fatal("bounded original M4 envelope query failed")
+	case eventID == "" || len(payload) == 0 || len(payload) > 256<<10:
+		t.Fatal("bounded original M4 envelope was invalid for replay")
 	}
 	return payload, eventID
 }
