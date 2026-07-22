@@ -114,24 +114,59 @@ jobs:
           docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 config --quiet
           POSTGRES_PORT=5432 MINIO_API_PORT=9000 RABBITMQ_AMQP_PORT=5672 EDGE_RETRIEVAL_READINESS_REQUIRED=true \
             docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 up -d --build --wait --wait-timeout 300
-      - name: Verify host-side integration ports
+      - name: Configure host-side integration clients
         run: |
-          for endpoint in 127.0.0.1:5432 127.0.0.1:5672 127.0.0.1:9000; do
-            host="${endpoint%:*}"
-            port="${endpoint#*:}"
-            ready=false
+          compose=(docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5)
+          container_ip() {
+            local service="$1"
+            local container_id
+            container_id="$("${compose[@]}" ps -q "$service")"
+            test -n "$container_id"
+            docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_id"
+          }
+          require_ipv4() {
+            [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+          }
+          wait_for_port() {
+            local host="$1"
+            local port="$2"
             for attempt in $(seq 1 30); do
               if timeout 2 bash -c ":</dev/tcp/$host/$port" 2>/dev/null; then
-                ready=true
-                break
+                return 0
               fi
               sleep 1
             done
-            if [ "$ready" != "true" ]; then
-              echo "host-side integration port is not reachable: $endpoint" >&2
-              exit 1
-            fi
-          done
+            echo "Compose service is not reachable: $host:$port" >&2
+            return 1
+          }
+          rewrite_endpoint() {
+            local file="$1"
+            local port="$2"
+            local host="$3"
+            local temporary
+            temporary="$(mktemp "${file}.XXXXXX")"
+            chmod 600 "$temporary"
+            sed "s/127\\.0\\.0\\.1:${port}/${host}:${port}/g" "$file" > "$temporary"
+            mv "$temporary" "$file"
+            grep -q "${host}:${port}" "$file"
+          }
+
+          postgres_ip="$(container_ip postgres)"
+          rabbitmq_ip="$(container_ip rabbitmq)"
+          minio_ip="$(container_ip minio)"
+          require_ipv4 "$postgres_ip"
+          require_ipv4 "$rabbitmq_ip"
+          require_ipv4 "$minio_ip"
+          wait_for_port "$postgres_ip" 5432
+          wait_for_port "$rabbitmq_ip" 5672
+          wait_for_port "$minio_ip" 9000
+
+          rewrite_endpoint .dev/secrets/ingestion_e2e_dsn 5432 "$postgres_ip"
+          rewrite_endpoint .dev/secrets/retrieval_runtime_host_dsn 5432 "$postgres_ip"
+          rewrite_endpoint .dev/secrets/ingestion_e2e_rabbitmq_uri 5672 "$rabbitmq_ip"
+          {
+            echo "M4_E2E_MINIO_ENDPOINT=${minio_ip}:9000"
+          } >> "$GITHUB_ENV"
       - name: Show TEI startup diagnostics
         if: failure()
         run: |
