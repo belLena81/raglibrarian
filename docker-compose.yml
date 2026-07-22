@@ -334,6 +334,7 @@ services:
       QUERY_ADDR: ":8080"
       IDENTITY_GRPC_ADDR: identity-service:50051
       RETRIEVAL_GRPC_ADDR: retrieval-service:50054
+      ANSWER_GRPC_ADDR: answer-service:50055
       CATALOG_GRPC_ADDR: catalog-service:50052
       INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
       EDGE_TLS_CERT_FILE: /run/secrets/edge_tls_cert
@@ -663,6 +664,51 @@ services:
       retries: 20
       start_period: 10s
 
+  answer-service:
+    <<: *service-hardening
+    profiles: ["m6"]
+    build:
+      context: .
+      target: service-runtime
+      args:
+        SERVICE: answer-service
+        SERVICE_COMMAND: cmd/server
+    environment:
+      ANSWER_GRPC_ADDR: "0.0.0.0:50055"
+      ANSWER_METRICS_ADDR: "0.0.0.0:9096"
+      ANSWER_RETRIEVAL_GRPC_ADDR: retrieval-service:50054
+      ANSWER_LLM_BASE_URL: "${ANSWER_LLM_BASE_URL:-https://llm-provider-stub:8443}"
+      ANSWER_LLM_MODEL: "${ANSWER_LLM_MODEL:-raglibrarian-deterministic}"
+      ANSWER_LLM_API_KEY_FILE: /run/secrets/answer_llm_api_key
+      ANSWER_LLM_CA_FILE: /run/secrets/internal_ca
+      ANSWER_TLS_CA_FILE: /run/secrets/internal_ca
+      ANSWER_TLS_CERT_FILE: /run/secrets/answer_tls_cert
+      ANSWER_TLS_KEY_FILE: /run/secrets/answer_tls_key
+      HEALTHCHECK_HTTP_URL: http://127.0.0.1:9096/readyz
+      RUN_AS_UID: "${RUN_AS_UID:-65532}"
+      RUN_AS_GID: "${RUN_AS_GID:-65532}"
+    secrets:
+      - internal_ca
+      - answer_tls_cert
+      - answer_tls_key
+      - answer_llm_api_key
+    networks:
+      - backend
+      - answer-provider-egress
+    depends_on:
+      retrieval-service:
+        condition: service_healthy
+    expose:
+      - "50055"
+      - "9096"
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 10s
+
   # Local Compose deliberately runs only this portable preparation adapter.
   # Planner/index/dispatcher/cleanup Lambdas exist only in the AWS M5 stack.
   retrieval-worker:
@@ -839,6 +885,50 @@ services:
         condition: service_healthy
     command: ["grep -q '[^[:space:]]' \"$$RETRIEVAL_POSTGRES_DSN_FILE\" && go -C /src/services/retrieval-service test -count=1 -v ./internal/application ./internal/domain ./internal/grpc ./internal/transport ./internal/vector && go -C /src/services/retrieval-service test -count=1 -v -tags=integration -run 'Replay|Recovery|TerminalFailure|Visibility|Manifest|FailBatch|CompleteBatch' ./internal/repository"]
 
+  answer-contract-tests:
+    <<: *job-hardening
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=1g
+    profiles: ["m6-test"]
+    build:
+      context: .
+      target: contract-tests
+      args:
+        SERVICE: answer-service
+        SERVICE_COMMAND: cmd/server
+    environment:
+      M6_GRPC_CONTRACT_TESTS: "true"
+      ANSWER_GRPC_ADDR: answer-service:50055
+      RETRIEVAL_GRPC_ADDR: retrieval-service:50054
+      INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
+      EDGE_TLS_CERT_FILE: /run/secrets/edge_tls_cert
+      EDGE_TLS_KEY_FILE: /run/secrets/edge_tls_key
+      ANSWER_TLS_CERT_FILE: /run/secrets/answer_tls_cert
+      ANSWER_TLS_KEY_FILE: /run/secrets/answer_tls_key
+      RETRIEVAL_TLS_CERT_FILE: /run/secrets/retrieval_tls_cert
+      RETRIEVAL_TLS_KEY_FILE: /run/secrets/retrieval_tls_key
+      UNKNOWN_TLS_CERT_FILE: /run/secrets/unknown_tls_cert
+      UNKNOWN_TLS_KEY_FILE: /run/secrets/unknown_tls_key
+      GOCACHE: /tmp/go-build
+    secrets:
+      - internal_ca
+      - edge_tls_cert
+      - edge_tls_key
+      - answer_tls_cert
+      - answer_tls_key
+      - retrieval_tls_cert
+      - retrieval_tls_key
+      - unknown_tls_cert
+      - unknown_tls_key
+    networks:
+      - backend
+    depends_on:
+      answer-service:
+        condition: service_healthy
+      retrieval-service:
+        condition: service_healthy
+    command: ["go -C /src/tests/e2e test -count=1 -v -tags='e2e m6' -run '^TestGRPCM6' ./..."]
+
   catalog-minio-runtime-tests:
     <<: *job-hardening
     tmpfs:
@@ -881,6 +971,7 @@ networks:
     internal: true
   retrieval-index:
     internal: true
+  answer-provider-egress:
 
 secrets:
   postgres_password:
@@ -1031,6 +1122,12 @@ secrets:
     file: ${CERT_DIR:-./.dev/certs}/retrieval-service.crt
   retrieval_tls_key:
     file: ${CERT_DIR:-./.dev/certs}/retrieval-service.key
+  answer_tls_cert:
+    file: ${CERT_DIR:-./.dev/certs}/answer-service.crt
+  answer_tls_key:
+    file: ${CERT_DIR:-./.dev/certs}/answer-service.key
+  answer_llm_api_key:
+    file: ${ANSWER_LLM_API_KEY_PATH:-./.dev/secrets/answer_llm_api_key}
   unknown_tls_cert:
     file: ${CERT_DIR:-./.dev/certs}/unknown-client.crt
   unknown_tls_key:

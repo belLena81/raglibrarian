@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	querymiddleware "github.com/belLena81/raglibrarian/services/edge-api/middleware"
@@ -24,11 +25,17 @@ var (
 	ErrInvalidSearch = errors.New("invalid search")
 	// ErrSearchForbidden identifies a request denied by Retrieval authorization.
 	ErrSearchForbidden = errors.New("search forbidden")
+	// ErrAnswerUnavailable identifies a retryable Answer transport failure that
+	// permits one direct Retrieval fallback.
+	ErrAnswerUnavailable = errors.New("answer unavailable")
+	// ErrAnswerFailed identifies a non-retryable Answer failure.
+	ErrAnswerFailed = errors.New("answer failed")
 )
 
 // QueryRequest is the bounded public request for POST /query.
 type QueryRequest struct {
 	Question string        `json:"question"`
+	Mode     string        `json:"mode,omitempty"`
 	Filters  SearchFilters `json:"filters,omitempty"`
 	Limit    int           `json:"limit,omitempty"`
 }
@@ -96,20 +103,72 @@ type SearchResult struct {
 	Documents []DocumentResult
 }
 
+// AnswerSegment is one validated piece of generated text and its evidence IDs.
+type AnswerSegment struct {
+	Text        string
+	EvidenceIDs []string
+}
+
+// GroundedAnswer contains only segments validated by Answer.
+type GroundedAnswer struct {
+	Segments []AnswerSegment
+}
+
+// AnswerResult preserves Retrieval's evidence and may include synthesis.
+type AnswerResult struct {
+	Search SearchResult
+	Answer *GroundedAnswer
+}
+
 // Searcher is the outbound Retrieval use-case port required by the handler.
 type Searcher interface {
 	Search(context.Context, SearchRequest) (SearchResult, error)
 }
 
+// Answerer is the outbound grounded-answer use-case port required in answer mode.
+type Answerer interface {
+	Answer(context.Context, SearchRequest) (AnswerResult, error)
+}
+
+// AnswerAdmission applies the stricter per-principal answer-mode limit.
+type AnswerAdmission interface {
+	Allow(userID, role string) (bool, time.Duration)
+}
+
 // QueryHandler exposes authenticated semantic evidence search.
-type QueryHandler struct{ retrieval Searcher }
+type QueryHandler struct {
+	retrieval       Searcher
+	answer          Answerer
+	answerAdmission AnswerAdmission
+}
+
+// QueryHandlerOption configures optional query capabilities.
+type QueryHandlerOption func(*QueryHandler)
+
+// WithAnswer enables grounded-answer mode and its independent admission limit.
+func WithAnswer(answer Answerer, admission AnswerAdmission) QueryHandlerOption {
+	if dependencyMissing(answer) || dependencyMissing(admission) {
+		panic("handler: Answer and admission control must not be nil")
+	}
+	return func(handler *QueryHandler) {
+		handler.answer = answer
+		handler.answerAdmission = admission
+	}
+}
 
 // NewQueryHandler constructs the semantic query boundary.
-func NewQueryHandler(retrieval Searcher) *QueryHandler {
+func NewQueryHandler(retrieval Searcher, options ...QueryHandlerOption) *QueryHandler {
 	if dependencyMissing(retrieval) {
 		panic("handler: Retrieval must not be nil")
 	}
-	return &QueryHandler{retrieval: retrieval}
+	handler := &QueryHandler{retrieval: retrieval}
+	for _, option := range options {
+		if option == nil {
+			panic("handler: query option must not be nil")
+		}
+		option(handler)
+	}
+	return handler
 }
 
 // Query validates the request and returns only Retrieval-provided evidence.
@@ -129,7 +188,7 @@ func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.retrieval.Search(r.Context(), SearchRequest{
+	searchRequest := SearchRequest{
 		Question: request.Question,
 		Filters:  request.Filters,
 		Limit:    request.Limit,
@@ -138,23 +197,53 @@ func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
 			Role:   principal.Role,
 			Status: principal.Status,
 		},
-	})
-	if err != nil {
-		switch {
-		case errors.Is(err, ErrInvalidSearch):
-			writeError(w, http.StatusUnprocessableEntity, "invalid query")
-		case errors.Is(err, ErrSearchForbidden):
-			writeError(w, http.StatusForbidden, "forbidden")
-		default:
-			writeError(w, http.StatusServiceUnavailable, "retrieval is unavailable")
+	}
+	if request.Mode == "answer" && h.answer != nil {
+		if allowed, retryAfter := h.answerAdmission.Allow(principal.UserID, principal.Role); !allowed {
+			querymiddleware.WriteRateLimited(w, r, retryAfter)
+			return
 		}
+		result, err := h.answer.Answer(r.Context(), searchRequest)
+		if err == nil {
+			writeJSON(w, http.StatusOK, queryResponseFromAnswer(result))
+			return
+		}
+		if !errors.Is(err, ErrAnswerUnavailable) {
+			writeQueryError(w, err)
+			return
+		}
+	}
+
+	result, err := h.retrieval.Search(r.Context(), searchRequest)
+	if err != nil {
+		writeQueryError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, queryResponseFrom(result))
 }
 
+func writeQueryError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrInvalidSearch):
+		writeError(w, http.StatusUnprocessableEntity, "invalid query")
+	case errors.Is(err, ErrSearchForbidden):
+		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, ErrAnswerFailed):
+		writeError(w, http.StatusServiceUnavailable, "answer is unavailable")
+	default:
+		writeError(w, http.StatusServiceUnavailable, "retrieval is unavailable")
+	}
+}
+
 func normalizeQueryRequest(request *QueryRequest) error {
 	request.Question = strings.TrimSpace(request.Question)
+	request.Mode = strings.TrimSpace(request.Mode)
+	if request.Mode == "" {
+		request.Mode = "search"
+	}
+	if request.Mode != "search" && request.Mode != "answer" {
+		return ErrInvalidSearch
+	}
 	request.Filters.Author = strings.TrimSpace(request.Filters.Author)
 	if request.Question == "" || utf8.RuneCountInString(request.Question) > maxQueryQuestionLength || utf8.RuneCountInString(request.Filters.Author) > maxQueryAuthorLength {
 		return ErrInvalidSearch
@@ -191,6 +280,16 @@ type queryResponse struct {
 	Query     string             `json:"query"`
 	Results   []evidenceResponse `json:"results"`
 	Documents []documentResponse `json:"documents"`
+	Answer    *answerResponse    `json:"answer,omitempty"`
+}
+
+type answerResponse struct {
+	Segments []answerSegmentResponse `json:"segments"`
+}
+
+type answerSegmentResponse struct {
+	Text        string   `json:"text"`
+	EvidenceIDs []string `json:"evidence_ids"`
 }
 
 type evidenceResponse struct {
@@ -228,6 +327,22 @@ func queryResponseFrom(result SearchResult) queryResponse {
 			Pages: [2]uint32{document.PageStart, document.PageEnd}, Score: document.Score, Evidence: evidence})
 	}
 	return queryResponse{Query: result.Query, Results: results, Documents: documents}
+}
+
+func queryResponseFromAnswer(result AnswerResult) queryResponse {
+	response := queryResponseFrom(result.Search)
+	if result.Answer == nil {
+		return response
+	}
+	segments := make([]answerSegmentResponse, 0, len(result.Answer.Segments))
+	for _, segment := range result.Answer.Segments {
+		segments = append(segments, answerSegmentResponse{
+			Text:        segment.Text,
+			EvidenceIDs: append([]string{}, segment.EvidenceIDs...),
+		})
+	}
+	response.Answer = &answerResponse{Segments: segments}
+	return response
 }
 
 func evidenceResponseFrom(evidence Evidence) evidenceResponse {

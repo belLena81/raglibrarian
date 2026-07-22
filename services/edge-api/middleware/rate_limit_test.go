@@ -35,6 +35,25 @@ func TestFixedWindowPrincipalRateLimitUsesTrustedPrincipal(t *testing.T) {
 	assert.Equal(t, "3600", second.Header().Get("Retry-After"))
 }
 
+func TestPrincipalRateLimiterAppliesIndependentTenPerMinuteLimit(t *testing.T) {
+	limiter := qmiddleware.NewPrincipalRateLimiter(10, time.Minute, 100)
+
+	for range 10 {
+		allowed, retryAfter := limiter.Allow("user-1", "reader")
+		assert.True(t, allowed)
+		assert.Zero(t, retryAfter)
+	}
+	allowed, retryAfter := limiter.Allow("user-1", "reader")
+	assert.False(t, allowed)
+	assert.Greater(t, retryAfter, 0*time.Second)
+	assert.LessOrEqual(t, retryAfter, time.Minute)
+
+	otherRoleAllowed, _ := limiter.Allow("user-1", "admin")
+	otherUserAllowed, _ := limiter.Allow("user-2", "reader")
+	assert.True(t, otherRoleAllowed)
+	assert.True(t, otherUserAllowed)
+}
+
 func TestBoundedConcurrencyRejectsWhenFull(t *testing.T) {
 	release := make(chan struct{})
 	entered := make(chan struct{})

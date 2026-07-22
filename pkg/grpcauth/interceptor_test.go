@@ -30,6 +30,38 @@ func TestInterceptorRejectsWrongDNSSAN(t *testing.T) {
 	assert.Equal(t, codes.PermissionDenied, status.Code(err))
 }
 
+func TestInterceptorAuthorizesOneOfSeveralExactDNSSANs(t *testing.T) {
+	interceptor := grpcauth.UnaryServerInterceptor(grpcauth.Policy{
+		Service:  "retrieval.v1.RetrievalService",
+		DNSNames: []string{"edge-api", "answer-service"},
+	})
+	ctx := peer.NewContext(context.Background(), &peer.Peer{AuthInfo: credentials.TLSInfo{State: tlsState("answer-service")}})
+	_, err := interceptor(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/retrieval.v1.RetrievalService/Search"}, func(context.Context, any) (any, error) { return "ok", nil })
+	assert.NoError(t, err)
+}
+
+func TestInterceptorRejectsWildcardDNSSANForExactPolicy(t *testing.T) {
+	interceptor := grpcauth.UnaryServerInterceptor(grpcauth.Policy{
+		Service:  "retrieval.v1.RetrievalService",
+		DNSNames: []string{"answer-service"},
+	})
+	ctx := peer.NewContext(context.Background(), &peer.Peer{AuthInfo: credentials.TLSInfo{State: tlsState("*.service")}})
+	_, err := interceptor(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/retrieval.v1.RetrievalService/Search"}, func(context.Context, any) (any, error) { return nil, nil })
+	assert.Equal(t, codes.PermissionDenied, status.Code(err))
+}
+
+func TestInterceptorRejectsEmptyPeerAllowlist(t *testing.T) {
+	assert.Panics(t, func() {
+		grpcauth.UnaryServerInterceptor(grpcauth.Policy{Service: "retrieval.v1.RetrievalService"})
+	})
+}
+
+func TestInterceptorRejectsWildcardInLegacyPeerPolicy(t *testing.T) {
+	assert.Panics(t, func() {
+		grpcauth.UnaryServerInterceptor(grpcauth.Policy{Service: "retrieval.v1.RetrievalService", DNSName: "*.service"})
+	})
+}
+
 func TestInterceptorLeavesHealthServiceToMTLSChainValidation(t *testing.T) {
 	interceptor := grpcauth.UnaryServerInterceptor(grpcauth.Policy{Service: "identity.v1.IdentityService", DNSName: "edge-api"})
 	_, err := interceptor(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/grpc.health.v1.Health/Check"}, func(context.Context, any) (any, error) { return "ok", nil })

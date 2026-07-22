@@ -4,10 +4,10 @@
 The eventual product will ingest books, retrieve evidence, and return answers
 with traceable book, chapter, page, and passage citations.
 
-The repository implements Milestones 2 through 5, including Catalog upload,
+The repository implements Milestones 2 through 6, including Catalog upload,
 event-driven text-PDF extraction, structured chunking, live processing status,
-Retrieval-owned indexing, Qdrant search, and evidence-only query results. It
-does not perform OCR, extract EPUB files, call an LLM, or synthesize answers.
+Retrieval-owned indexing, Qdrant search, and optional grounded answers. It does
+not perform OCR or extract EPUB files.
 
 ## Architecture decision
 
@@ -19,6 +19,7 @@ than first being placed in the public API and extracted later.
 client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
                          |
                          +-- mTLS gRPC --> catalog-service (upload/list/get)
+                         +-- mTLS gRPC --> answer-service --> retrieval-service
                                       |
                                       +-- RabbitMQ --> ingestion Lambda/worker
                                       |
@@ -35,10 +36,12 @@ client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
   artifacts. Its worker and Lambda adapters invoke the same application.
 - **retrieval-service** owns embedding, Qdrant collections, evidence/book
   projections, and synchronous search over indexed chunks.
+- **answer-service** owns bounded prompt construction, provider integration,
+  and validation of grounded answer segments against Retrieval evidence IDs.
 - Internal gRPC ports and Postgres are private in Compose. Service-to-service
   calls use TLS 1.3 with client certificates.
-- Future answer generation and lifecycle work are added in their owning bounded
-  contexts. Bounded event work may run as Lambda or a portable worker without
+- Future lifecycle work is added in its owning bounded context. Bounded event
+  work may run as Lambda or a portable worker without
   becoming another microservice. Contracts remain versioned and additive. See
   the local architecture decision record in `docs/`.
 
@@ -71,19 +74,19 @@ race, contract, integration, and security checks pass.
 | Password storage | Implemented | bcrypt at cost 12; plaintext is never persisted. |
 | Identity persistence | Implemented | One greenfield Identity schema baseline, least-privilege database roles, and Postgres adapters. |
 | HTTP hardening | Implemented | Strict, bounded JSON, request/header timeouts, security headers, sanitized errors, and request IDs. |
-| Real query/retrieval | Implemented | `/query` is authenticated and returns bounded evidence-only semantic results from Retrieval; it never fabricates citations. |
+| Real query/retrieval | Implemented | `/query` is authenticated and defaults to bounded evidence-only semantic results from Retrieval. |
 | Sessions, refresh tokens, revocation | Implemented | Refresh tokens rotate in an `HttpOnly`, `SameSite=Strict` cookie; logout/replay invalidates the server-side session family. |
 | Abuse controls | Implemented | Bounded in-process trusted-client-aware limits protect registration, verification, setup, login, and refresh. |
 | Catalog PDF upload/list/get | Implemented | Role-gated streaming upload, deterministic pagination, private MinIO persistence, durable publication, reconciliation, and fixed-label metrics. |
 | PDF ingestion and live status | Release candidate | Event-driven, idempotent worker/Lambda adapters, sandboxed streamed extraction, deterministic chunk artifacts, Catalog status projection, and authenticated SSE with polling reconciliation; protected AWS staging validation remains required. |
 | Vectors and retrieval | Implemented | Retrieval owns vector indexing, Qdrant collections, evidence projection, search policy, and replay-safe indexing. |
-| LLM answer synthesis | Not implemented | Future additive Answer service; `/query` remains evidence-only. |
+| LLM answer synthesis | Release candidate | Optional `answer` mode uses the additive stateless Answer service, validates citations against returned evidence, and degrades to evidence-only results; protected real-provider staging remains required. |
 
 ## Delivery roadmap
 
-Milestones 2, 3, and 5 are complete in the current checkout. Milestone 4 is a
-release candidate; protected AWS staging plus controlled restart/DLQ acceptance
-remain release gates before it is marked complete. Milestone 4 adds
+Milestones 2, 3, and 5 are complete in the current checkout. Milestones 4 and 6
+are release candidates. Milestone 4 still requires protected AWS staging plus
+controlled restart/DLQ acceptance before it is marked complete. Milestone 4 adds
 asynchronous PDF extraction and deterministic chunk manifests through one
 application shared by worker and Lambda adapters. Catalog projects monotonic
 processing state, while Edge gives authenticated clients low-latency SSE hints
@@ -96,11 +99,9 @@ The canonical service-by-service roadmap, data ownership, Lambda/worker
 deployment policy, contracts, and acceptance gates are in
 [docs/README.md](docs/README.md). The product requirements are in
 [docs/spec_rag_tech_books.md](docs/spec_rag_tech_books.md). UI routes for admin,
-books, and evidence search are implemented; answer generation and later
-lifecycle operations remain staged until their owning milestones are delivered.
-The next planned product slice is the additive Answer service for optional
-grounded synthesis; lifecycle commands, EPUB support, and Internet-ready
-hardening follow after that.
+books, evidence search, and optional grounded answers are implemented. Milestone
+6 remains a release candidate until protected real-provider staging passes;
+lifecycle commands, EPUB support, and Internet-ready hardening follow it.
 
 ## Security model
 
@@ -131,7 +132,7 @@ values. See [OPERATIONS.md](OPERATIONS.md) for rotation and migration guidance.
 | `POST` | `/auth/refresh` | Refresh cookie | Rotates the refresh token and returns a replacement access token. |
 | `GET` | `/auth/me` | Bearer token | Returns the authoritative current principal after validating the live Identity session. |
 | `POST` | `/auth/logout` | Bearer token | Revokes the Identity session and clears the refresh cookie. |
-| `POST` | `/query` | Bearer token | Validates the session, then returns bounded evidence-only semantic retrieval results. `/query/` remains compatible. |
+| `POST` | `/query` | Bearer token | Validates the session, then returns bounded semantic evidence. Optional `mode: "answer"` adds validated grounded answer segments or safely degrades to evidence only; omitted mode defaults to `search`. `/query/` remains compatible. |
 
 Request JSON is strict. Client-supplied `role` and `user_id` fields are
 rejected; identity comes only from verified token claims.
@@ -167,6 +168,8 @@ services/ingestion-service/
                      PDF extraction, chunking, worker/Lambda adapters, and artifacts
 services/retrieval-service/
                      Retrieval indexing/search, evidence projection, and Qdrant ownership
+services/answer-service/
+                     Grounded synthesis, provider adapter, and citation validation
 tools/healthcheck/   Operational HTTP/gRPC probe binary
 api/proto/           Versioned gRPC source contracts
 tests/e2e/           Black-box HTTP tests
@@ -215,6 +218,11 @@ implicitly.
 is reliable without a local model cache. To validate the pinned real model,
 run `make m5-search-quality-test-real` after configuring Docker with at least
 8 GiB of memory.
+For optional grounded answers, configure the file-backed provider endpoint,
+model, CA, and key documented in `.env.example`, then run `make m6-stack-up`.
+The deterministic `make m6-answer-quality-test` and `make m6-contract-test`
+targets do not require a real provider; `make m6-answer-quality-test-real` is a
+protected staging gate and requires an existing authenticated fixture stack.
 Identity and Catalog expose standard gRPC health services inside the private
 Compose network. `make contract-test` verifies both services over mTLS.
 
@@ -241,6 +249,9 @@ make dev-secrets-test # fresh and additive local-secret upgrade regressions
 make m4-worker-recovery-test # controlled local worker-down recovery contract
 make contract-test # live mTLS, database, and broker-recovery contracts
 make minio-runtime-test # live object-storage cleanup and pagination contracts
+make m6-contract-test # live Answer/Edge/Retrieval mTLS authorization contracts
+make m6-answer-quality-test # deterministic grounded-answer safety fixtures
+make m6-e2e     # authenticated answer, degradation, and citation black-box tests
 make ui-check    # UI install, lint, type-check, and production build
 make security-check # secret, Dockerfile, and service-image scans
 make full-gates  # complete local static, test, UI, and security gate

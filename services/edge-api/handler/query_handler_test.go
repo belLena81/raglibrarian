@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,11 +22,41 @@ type retrievalStub struct {
 	request handler.SearchRequest
 	result  handler.SearchResult
 	err     error
+	calls   int
 }
 
 func (s *retrievalStub) Search(_ context.Context, request handler.SearchRequest) (handler.SearchResult, error) {
+	s.calls++
 	s.request = request
 	return s.result, s.err
+}
+
+type answerStub struct {
+	request handler.SearchRequest
+	result  handler.AnswerResult
+	err     error
+	calls   int
+}
+
+func (s *answerStub) Answer(_ context.Context, request handler.SearchRequest) (handler.AnswerResult, error) {
+	s.calls++
+	s.request = request
+	return s.result, s.err
+}
+
+type answerAdmissionStub struct {
+	allowed    bool
+	retryAfter time.Duration
+	userID     string
+	role       string
+	calls      int
+}
+
+func (s *answerAdmissionStub) Allow(userID, role string) (bool, time.Duration) {
+	s.calls++
+	s.userID = userID
+	s.role = role
+	return s.allowed, s.retryAfter
 }
 
 func TestQueryReturnsRetrievedEvidenceAndUsesTrustedPrincipal(t *testing.T) {
@@ -133,6 +164,120 @@ func TestQueryReturnsSuccessfulEmptyEvidence(t *testing.T) {
 	assert.JSONEq(t, `{"query":"unrelated","results":[],"documents":[]}`, recorder.Body.String())
 }
 
+func TestQueryAnswerModeReturnsAnswerSegmentsAndTrustedEvidence(t *testing.T) {
+	retrieval := &retrievalStub{}
+	answer := &answerStub{result: handler.AnswerResult{
+		Search: handler.SearchResult{
+			Query:     "How?",
+			Results:   []handler.Evidence{{EvidenceID: "evidence-1", Passage: "stored evidence"}},
+			Documents: []handler.DocumentResult{},
+		},
+		Answer: &handler.GroundedAnswer{Segments: []handler.AnswerSegment{{
+			Text:        "Grounded answer.",
+			EvidenceIDs: []string{"evidence-1"},
+		}}},
+	}}
+	admission := &answerAdmissionStub{allowed: true}
+	h := handler.NewQueryHandler(retrieval, handler.WithAnswer(answer, admission))
+	recorder := httptest.NewRecorder()
+
+	h.Query(recorder, authenticatedQueryRequest(`{"question":"How?","mode":"answer"}`))
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.JSONEq(t, `{
+		"query":"How?",
+		"results":[{
+			"evidence_id":"evidence-1","chunk_id":"",
+			"book":{"id":"","title":"","author":"","year":0,"tags":null},
+			"chapter":"","section":"","pages":[0,0],"passage":"stored evidence","score":0
+		}],
+		"documents":[],
+		"answer":{"segments":[{"text":"Grounded answer.","evidence_ids":["evidence-1"]}]}
+	}`, recorder.Body.String())
+	assert.Equal(t, 1, answer.calls)
+	assert.Equal(t, 0, retrieval.calls)
+	assert.Equal(t, "user-1", answer.request.Actor.UserID)
+	assert.Equal(t, "reader", answer.request.Actor.Role)
+	assert.Equal(t, "active", answer.request.Actor.Status)
+	assert.Equal(t, "user-1", admission.userID)
+	assert.Equal(t, "reader", admission.role)
+}
+
+func TestQuerySearchModeBypassesAnswerAndPreservesResponseShape(t *testing.T) {
+	for _, body := range []string{`{"question":"q"}`, `{"question":"q","mode":""}`, `{"question":"q","mode":"search"}`} {
+		t.Run(body, func(t *testing.T) {
+			retrieval := &retrievalStub{result: handler.SearchResult{Query: "q", Results: []handler.Evidence{}, Documents: []handler.DocumentResult{}}}
+			answer := &answerStub{}
+			h := handler.NewQueryHandler(retrieval, handler.WithAnswer(answer, &answerAdmissionStub{allowed: true}))
+			recorder := httptest.NewRecorder()
+
+			h.Query(recorder, authenticatedQueryRequest(body))
+
+			assert.Equal(t, http.StatusOK, recorder.Code)
+			assert.JSONEq(t, `{"query":"q","results":[],"documents":[]}`, recorder.Body.String())
+			assert.Equal(t, 1, retrieval.calls)
+			assert.Zero(t, answer.calls)
+		})
+	}
+}
+
+func TestQueryAnswerModePreservesEvidenceOnlyDegradation(t *testing.T) {
+	answer := &answerStub{result: handler.AnswerResult{Search: handler.SearchResult{
+		Query: "q", Results: []handler.Evidence{}, Documents: []handler.DocumentResult{},
+	}}}
+	h := handler.NewQueryHandler(&retrievalStub{}, handler.WithAnswer(answer, &answerAdmissionStub{allowed: true}))
+	recorder := httptest.NewRecorder()
+
+	h.Query(recorder, authenticatedQueryRequest(`{"question":"q","mode":"answer"}`))
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.JSONEq(t, `{"query":"q","results":[],"documents":[]}`, recorder.Body.String())
+}
+
+func TestQueryAnswerTransportFailureFallsBackOnceToRetrieval(t *testing.T) {
+	answer := &answerStub{err: handler.ErrAnswerUnavailable}
+	retrieval := &retrievalStub{result: handler.SearchResult{Query: "q", Results: []handler.Evidence{}, Documents: []handler.DocumentResult{}}}
+	h := handler.NewQueryHandler(retrieval, handler.WithAnswer(answer, &answerAdmissionStub{allowed: true}))
+	recorder := httptest.NewRecorder()
+
+	h.Query(recorder, authenticatedQueryRequest(`{"question":"q","mode":"answer"}`))
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, 1, answer.calls)
+	assert.Equal(t, 1, retrieval.calls)
+}
+
+func TestQueryAnswerNonFallbackFailureDoesNotCallRetrieval(t *testing.T) {
+	answer := &answerStub{err: handler.ErrAnswerFailed}
+	retrieval := &retrievalStub{}
+	h := handler.NewQueryHandler(retrieval, handler.WithAnswer(answer, &answerAdmissionStub{allowed: true}))
+	recorder := httptest.NewRecorder()
+
+	h.Query(recorder, authenticatedQueryRequest(`{"question":"private question","mode":"answer"}`))
+
+	assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	assert.JSONEq(t, `{"error":"answer is unavailable"}`, recorder.Body.String())
+	assert.NotContains(t, recorder.Body.String(), "private question")
+	assert.Equal(t, 1, answer.calls)
+	assert.Zero(t, retrieval.calls)
+}
+
+func TestQueryAnswerRateLimitRejectsBeforeDownstreamCall(t *testing.T) {
+	answer := &answerStub{}
+	retrieval := &retrievalStub{}
+	admission := &answerAdmissionStub{allowed: false, retryAfter: 37 * time.Second}
+	h := handler.NewQueryHandler(retrieval, handler.WithAnswer(answer, admission))
+	recorder := httptest.NewRecorder()
+
+	h.Query(recorder, authenticatedQueryRequest(`{"question":"private question","mode":"answer"}`))
+
+	assert.Equal(t, http.StatusTooManyRequests, recorder.Code)
+	assert.Equal(t, "37", recorder.Header().Get("Retry-After"))
+	assert.NotContains(t, recorder.Body.String(), "private question")
+	assert.Zero(t, answer.calls)
+	assert.Zero(t, retrieval.calls)
+}
+
 func TestQueryCountsUnicodeCharactersForPublicLimits(t *testing.T) {
 	retrieval := &retrievalStub{result: handler.SearchResult{Query: strings.Repeat("🙂", 1000)}}
 	h := handler.NewQueryHandler(retrieval)
@@ -158,6 +303,11 @@ func TestQueryRejectsInvalidPublicRequestsWithoutCallingRetrieval(t *testing.T) 
 		{name: "year outside public bound", body: `{"question":"q","filters":{"year_from":10000}}`},
 		{name: "limit too large", body: `{"question":"q","limit":21}`},
 		{name: "unknown field", body: `{"question":"q","role":"admin"}`},
+		{name: "unknown mode", body: `{"question":"q","mode":"provider-choice"}`},
+		{name: "client actor", body: `{"question":"q","actor":{"role":"admin"}}`},
+		{name: "client provider", body: `{"question":"q","provider":"private"}`},
+		{name: "client model", body: `{"question":"q","model":"private"}`},
+		{name: "client evidence", body: `{"question":"q","evidence":[]}`},
 		{name: "multiple values", body: `{"question":"q"}{"question":"other"}`},
 	}
 	for _, test := range tests {

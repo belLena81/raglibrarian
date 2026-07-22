@@ -309,14 +309,17 @@ Acceptance:
 
 ## Current planned work
 
-The remaining product roadmap starts with Milestone 6 optional grounded answers,
-then Milestone 7 lifecycle/format completion, then Milestone 8 Internet-ready
-hardening. Milestone 4 remains in release-candidate status until its protected
-AWS staging and controlled restart/DLQ gates pass.
+The remaining product roadmap starts with Milestone 7 lifecycle/format
+completion, then Milestone 8 Internet-ready hardening. Milestones 4 and 6 remain
+release candidates until their protected AWS and real-provider staging gates
+pass.
 
 ## Milestone 6 — optional grounded answers
 
 **Owning service:** Answer.
+
+**Status:** release candidate in the current checkout; protected real-provider
+staging remains required.
 
 **Outcome:** users choose evidence-only search or an LLM answer grounded in the
 same returned passages.
@@ -331,6 +334,12 @@ Implementation:
   or invalid synthesis degrades to evidence-only output.
 - Isolate untrusted passage text from system instructions and bound context,
   output, concurrency, and request deadlines.
+- Keep the service stateless and expose it only through mTLS gRPC. Edge owns the
+  public mode selector, a separate answer-request rate limit, and one truthful
+  direct-Retrieval fallback when Answer is unavailable.
+- Run the provider over HTTPS with an operator-configured CA and file-backed
+  key on an isolated egress network. The deterministic provider stub exists
+  only in the explicit test profile.
 
 Acceptance:
 
@@ -339,6 +348,8 @@ Acceptance:
 - LLM timeout, malformed output, empty evidence, and provider outage degrade
   safely and preserve truthful evidence.
 - Raw prompts, passages, and model output are absent from logs and metrics.
+- Deterministic quality, race, protobuf compatibility, and live mTLS contract
+  gates pass locally; the protected real-provider quality gate is still open.
 
 ## Milestone 7 — library lifecycle and format completion
 

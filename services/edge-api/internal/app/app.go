@@ -15,16 +15,19 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/auth"
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/process"
+	answerv1 "github.com/belLena81/raglibrarian/pkg/proto/answer/v1"
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	identityv1 "github.com/belLena81/raglibrarian/pkg/proto/identity/v1"
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	edgeapi "github.com/belLena81/raglibrarian/services/edge-api"
+	"github.com/belLena81/raglibrarian/services/edge-api/answerclient"
 	"github.com/belLena81/raglibrarian/services/edge-api/bookstatus"
 	"github.com/belLena81/raglibrarian/services/edge-api/catalogclient"
 	"github.com/belLena81/raglibrarian/services/edge-api/config"
 	"github.com/belLena81/raglibrarian/services/edge-api/diagnostic"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
 	"github.com/belLena81/raglibrarian/services/edge-api/identityclient"
+	"github.com/belLena81/raglibrarian/services/edge-api/middleware"
 	"github.com/belLena81/raglibrarian/services/edge-api/retrievalclient"
 )
 
@@ -41,6 +44,8 @@ var (
 	ErrIdentityClientInitialization = errors.New("identity client initialization failed")
 	// ErrRetrievalClientInitialization identifies Retrieval gRPC client setup failure.
 	ErrRetrievalClientInitialization = errors.New("retrieval client initialization failed")
+	// ErrAnswerClientInitialization identifies Answer gRPC client setup failure.
+	ErrAnswerClientInitialization = errors.New("answer client initialization failed")
 	// ErrHTTPListen identifies HTTP listener creation failure.
 	ErrHTTPListen = errors.New("HTTP listen failed")
 	// ErrHTTPServe identifies HTTP serving failure after listener creation.
@@ -70,6 +75,10 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	if err != nil {
 		return tlsFailure(err)
 	}
+	answerCredentials, err := internaltls.ClientCredentials(cfg.TLS, "answer-service")
+	if err != nil {
+		return tlsFailure(err)
+	}
 	if err = process.DropPrivileges(cfg.RunAs); err != nil {
 		return appFailure(ErrPrivilegeDrop, err)
 	}
@@ -88,11 +97,18 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		return appFailure(ErrRetrievalClientInitialization, err)
 	}
 	defer func() { _ = retrievalConnection.Close() }()
+	answerConnection, err := grpc.NewClient(cfg.AnswerAddress, grpc.WithTransportCredentials(answerCredentials))
+	if err != nil {
+		return appFailure(ErrAnswerClientInitialization, err)
+	}
+	defer func() { _ = answerConnection.Close() }()
 	identity := identityclient.New(identityv1.NewIdentityServiceClient(connection), grpc_health_v1.NewHealthClient(connection))
 	catalog := catalogclient.New(catalogv1.NewCatalogServiceClient(catalogConnection))
 	retrieval := retrievalclient.New(retrievalv1.NewRetrievalServiceClient(retrievalConnection))
+	answer := answerclient.New(answerv1.NewAnswerServiceClient(answerConnection), cfg.AnswerDeadline)
 	authHandler := handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: cfg.SecureCookie})
-	queryHandler := handler.NewQueryHandler(retrieval)
+	answerAdmission := middleware.NewPrincipalRateLimiter(cfg.AnswerRateLimit, cfg.AnswerRateWindow, cfg.QueryRateMaxKeys)
+	queryHandler := handler.NewQueryHandler(retrieval, handler.WithAnswer(answer, answerAdmission))
 	healthHandler := handler.NewHealthHandler(readiness{
 		identity:                   identity,
 		catalog:                    catalog,

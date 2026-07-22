@@ -39,6 +39,10 @@ func TestLoadParsesExplicitSecurityConfiguration(t *testing.T) {
 	require.Len(t, cfg.TrustedProxyCIDRs, 1)
 	assert.Equal(t, 65532, cfg.RunAs.UID)
 	assert.Equal(t, "retrieval-service:50054", cfg.RetrievalAddress)
+	assert.Equal(t, "answer-service:50055", cfg.AnswerAddress)
+	assert.Equal(t, 8*time.Second, cfg.AnswerDeadline)
+	assert.Equal(t, 10, cfg.AnswerRateLimit)
+	assert.Equal(t, time.Minute, cfg.AnswerRateWindow)
 	assert.True(t, cfg.RetrievalReadinessRequired)
 	assert.Equal(t, 30, cfg.QueryRateLimit)
 	assert.Equal(t, time.Minute, cfg.QueryRateWindow)
@@ -62,6 +66,9 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	t.Setenv("EDGE_QUERY_RATE_WINDOW", "30s")
 	t.Setenv("EDGE_QUERY_RATE_MAX_KEYS", "500")
 	t.Setenv("EDGE_QUERY_CONCURRENCY", "3")
+	t.Setenv("EDGE_ANSWER_DEADLINE", "7s")
+	t.Setenv("EDGE_ANSWER_RATE_LIMIT", "9")
+	t.Setenv("EDGE_ANSWER_RATE_WINDOW", "45s")
 
 	cfg, err := config.Load()
 
@@ -70,6 +77,9 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	assert.Equal(t, 30*time.Second, cfg.QueryRateWindow)
 	assert.Equal(t, 500, cfg.QueryRateMaxKeys)
 	assert.Equal(t, 3, cfg.QueryConcurrency)
+	assert.Equal(t, 7*time.Second, cfg.AnswerDeadline)
+	assert.Equal(t, 9, cfg.AnswerRateLimit)
+	assert.Equal(t, 45*time.Second, cfg.AnswerRateWindow)
 }
 
 func TestLoadRejectsInvalidSecurityConfiguration(t *testing.T) {
@@ -117,6 +127,20 @@ func TestLoadClassifiesConfigurationFailures(t *testing.T) {
 			name: "query rate invalid",
 			configure: func(t *testing.T) {
 				t.Setenv("EDGE_QUERY_RATE_LIMIT", "0")
+			},
+			expected: config.ErrQueryLimitConfiguration,
+		},
+		{
+			name: "answer rate invalid",
+			configure: func(t *testing.T) {
+				t.Setenv("EDGE_ANSWER_RATE_LIMIT", "0")
+			},
+			expected: config.ErrQueryLimitConfiguration,
+		},
+		{
+			name: "answer deadline exceeds bound",
+			configure: func(t *testing.T) {
+				t.Setenv("EDGE_ANSWER_DEADLINE", "31s")
 			},
 			expected: config.ErrQueryLimitConfiguration,
 		},

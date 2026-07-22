@@ -16,7 +16,7 @@ openssl genrsa -out "$dir/ca.key" 4096
 openssl req -x509 -new -nodes -key "$dir/ca.key" -sha256 -days 30 \
   -subj "/CN=raglibrarian-dev-ca" -out "$dir/ca.crt"
 
-for service in edge-api identity-service catalog-service retrieval-service unknown-client; do
+for service in edge-api identity-service catalog-service retrieval-service answer-service llm-provider-stub unknown-client; do
   openssl genrsa -out "$dir/$service.key" 2048
   openssl req -new -key "$dir/$service.key" -subj "/CN=$service" -out "$dir/$service.csr"
   printf 'subjectAltName=DNS:%s,DNS:localhost\nextendedKeyUsage=serverAuth,clientAuth\n' "$service" > "$dir/$service.ext"

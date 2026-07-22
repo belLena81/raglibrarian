@@ -31,7 +31,7 @@ jobs:
           version: v2.11.4
           install-only: true
       - name: Run Go quality gates
-        run: make fmt-check vet lint test test-race arch-check vuln proto-check proto-breaking dev-secrets-test
+        run: make fmt-check vet lint test test-race arch-check vuln proto-check proto-breaking dev-secrets-test m6-dev-config-test
 
   ui:
     runs-on: ubuntu-latest
@@ -92,22 +92,27 @@ jobs:
           cp .env.example .env
           make dev-secrets dev-certs
           bash ./scripts/ensure-m5-dev-cert.sh
+          bash ./scripts/ensure-m6-dev-cert.sh
+          make dev-secrets-m6
           umask 077
           openssl rand -base64 24 | tr -d '\n' > .dev/secrets/e2e_bootstrap_code
           { printf 'raglibrarian/admin-bootstrap/v1\0'; cat .dev/secrets/e2e_bootstrap_code; } \
             | openssl dgst -sha256 -binary > .dev/secrets/identity_bootstrap_verifier
           chmod 400 .dev/secrets/e2e_bootstrap_code .dev/secrets/identity_bootstrap_verifier
+          echo "ANSWER_LLM_API_KEY_PATH=.dev/secrets/answer_llm_test_api_key" >> "$GITHUB_ENV"
       - name: Run M5 Retrieval contract suite
         run: make m5-contract-ci-test
+      - name: Run M6 Answer contract and deterministic quality suites
+        run: make m6-contract-test m6-answer-quality-test
       - name: Validate and start the local stack
         run: |
           make compose-config
-          docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 --profile m6 --profile m6-test config --quiet
           POSTGRES_PORT=5432 MINIO_API_PORT=9000 RABBITMQ_AMQP_PORT=5672 EDGE_RETRIEVAL_READINESS_REQUIRED=true \
-            docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 up -d --build --wait --wait-timeout 300
+            docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 --profile m6 --profile m6-test up -d --build --wait --wait-timeout 300
       - name: Configure host-side integration clients
         run: |
-          compose=(docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5)
+          compose=(docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 --profile m6 --profile m6-test)
           container_ip() {
             local service="$1"
             local container_id
@@ -172,11 +177,11 @@ jobs:
           E2E_BOOTSTRAP_CODE="$(cat .dev/secrets/e2e_bootstrap_code)" \
           E2E_MAIL_FIXTURE_URL=http://127.0.0.1:8025/view/latest.txt \
           INTEGRATION_COMPOSE_FILES='-f docker-compose.yml -f docker-compose.ci.yml' \
-            make m4-m5-integration-test
+            make m4-m5-m6-integration-test
       - name: Show integration diagnostics
         if: failure()
         run: |
-          docker compose -f docker-compose.yml -f docker-compose.ci.yml logs --no-color --tail=300 ingestion-service retrieval-worker retrieval-service rabbitmq qdrant || true
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml logs --no-color --tail=300 ingestion-service retrieval-worker retrieval-service answer-service llm-provider-stub rabbitmq qdrant || true
       - name: Run focused M5 worker-recovery tests
         run: make m5-worker-recovery-test
       - name: Verify database-loss readiness behavior
@@ -193,10 +198,10 @@ jobs:
           exit 1
       - name: Show container state
         if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 ps --all
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 --profile m6 --profile m6-test ps --all
       - name: Tear down stack
         if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 --profile m6 --profile m6-test down -v
 
   m4-performance:
     if: github.event_name == 'schedule'

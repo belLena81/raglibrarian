@@ -19,7 +19,7 @@ COPY tests ./tests
 RUN apk add --no-cache protobuf protobuf-dev \
     && go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10 \
     && go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1 \
-    && PATH="$(go env GOPATH)/bin:$PATH" protoc --experimental_allow_proto3_optional -I api/proto --go_out=paths=source_relative:pkg/proto --go-grpc_out=paths=source_relative:pkg/proto api/proto/identity/v1/identity.proto api/proto/catalog/v1/catalog.proto api/proto/ingestion/v1/ingestion.proto api/proto/retrieval/v1/retrieval.proto \
+    && PATH="$(go env GOPATH)/bin:$PATH" protoc --experimental_allow_proto3_optional -I api/proto --go_out=paths=source_relative:pkg/proto --go-grpc_out=paths=source_relative:pkg/proto api/proto/identity/v1/identity.proto api/proto/catalog/v1/catalog.proto api/proto/ingestion/v1/ingestion.proto api/proto/retrieval/v1/retrieval.proto api/proto/answer/v1/answer.proto \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /bin/service ./services/${SERVICE}/${SERVICE_COMMAND} \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /bin/healthcheck ./tools/healthcheck
 
@@ -28,7 +28,8 @@ RUN go -C /src/tests/e2e mod download \
     && go -C /src/services/identity-service mod download \
     && go -C /src/services/catalog-service mod download \
     && go -C /src/services/ingestion-service mod download \
-    && go -C /src/services/retrieval-service mod download
+    && go -C /src/services/retrieval-service mod download \
+    && go -C /src/services/answer-service mod download
 ENTRYPOINT ["/bin/sh", "-ec"]
 CMD ["grep -q '[^[:space:]]' \"$IDENTITY_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$IDENTITY_MIGRATION_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$CATALOG_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$CATALOG_RABBITMQ_URI_FILE\" && grep -q '[^[:space:]]' \"$PGPASSFILE\" && grep -q '[^[:space:]]' \"$INGESTION_POSTGRES_DSN_FILE\" && test \"$CATALOG_MIGRATION_INTEGRATION\" = true && go -C /src/tests/e2e test -count=1 -v -tags=e2e -run '^TestGRPC' ./... && go -C /src/services/identity-service test -count=1 -v -tags=integration ./repository && go -C /src/services/identity-service test -count=1 -v -tags=integration ./migrations && go -C /src/services/catalog-service test -count=1 -v -tags=integration ./repository && go -C /src/services/catalog-service test -count=1 -v -tags=integration ./outbox && catalog_migration_tests=\"$(go -C /src/services/catalog-service test -tags=integration -list '^TestCatalogMigrationsRebuildCleanly$' ./migrations)\" && printf '%s\\n' \"$catalog_migration_tests\" | grep -qx 'TestCatalogMigrationsRebuildCleanly' && { catalog_migration_output=\"$(go -C /src/services/catalog-service test -count=1 -v -tags=integration -run '^TestCatalogMigrationsRebuildCleanly$' ./migrations 2>&1)\" || { status=$?; printf '%s\\n' \"${catalog_migration_output:-catalog migration integration test failed before producing output}\"; exit \"$status\"; }; printf '%s\\n' \"$catalog_migration_output\"; if printf '%s\\n' \"$catalog_migration_output\" | grep -q -- '^--- SKIP: TestCatalogMigrationsRebuildCleanly'; then echo 'Catalog migration integration test was skipped' >&2; exit 1; fi; } && go -C /src/services/ingestion-service test -count=1 -v -tags=integration ./..."]
 

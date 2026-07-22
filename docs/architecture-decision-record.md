@@ -102,19 +102,21 @@ and [Lambda quotas](https://docs.aws.amazon.com/lambda/latest/dg/gettingstarted-
 
 ## Current state and delivery order
 
-The one-time extraction is complete: Edge, Identity, Catalog, Ingestion, and
-Retrieval are separate owning contexts/process adapters. Identity RBAC, Catalog
-upload, Retrieval-owned indexing/search, Qdrant evidence projection, and the
-evidence-only `/query` path are implemented in the current checkout.
+The one-time extraction is complete: Edge, Identity, Catalog, Ingestion,
+Retrieval, and Answer are separate owning contexts/process adapters. Identity
+RBAC, Catalog upload, Retrieval-owned indexing/search, Qdrant evidence
+projection, and optional grounded `/query` answers are implemented in the
+current checkout. Answer is stateless, calls Retrieval over mTLS, and owns its
+provider-neutral synthesis and citation-validation boundary.
 
 Milestone 4 Ingestion remains a release candidate until protected AWS staging
-and controlled restart/DLQ acceptance pass. That gate is operational evidence,
-not a boundary change.
+and controlled restart/DLQ acceptance pass. Milestone 6 Answer remains a
+release candidate until protected real-provider staging passes. Those gates are
+operational evidence, not boundary changes.
 
 The remaining vertical slices are delivered in this order:
 
-1. Optional grounded Answer synthesis.
-2. EPUB and library lifecycle completion.
-3. Internet-ready hardening.
+1. EPUB and library lifecycle completion.
+2. Internet-ready hardening.
 
 The canonical acceptance criteria are in [README.md](README.md).

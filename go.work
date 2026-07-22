@@ -9,6 +9,7 @@ use (
 	./pkg/logger
 	./pkg/process
 	./pkg/proto
+	./services/answer-service
 	./services/catalog-service
 	./services/edge-api
 	./services/identity-service

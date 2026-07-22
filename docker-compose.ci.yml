@@ -32,5 +32,52 @@ services:
       retries: 20
       start_period: 5s
 
+  answer-service:
+    environment:
+      ANSWER_LLM_BASE_URL: https://llm-provider-stub:8443
+      ANSWER_LLM_MODEL: raglibrarian-deterministic
+    depends_on:
+      llm-provider-stub:
+        condition: service_started
+
+  llm-provider-stub:
+    profiles: ["m6-test"]
+    build:
+      context: .
+      target: service-runtime
+      args:
+        SERVICE: answer-service
+        SERVICE_COMMAND: cmd/provider_stub
+    environment:
+      ANSWER_STUB_ADDR: "0.0.0.0:8443"
+      ANSWER_STUB_API_KEY_FILE: /run/secrets/answer_llm_api_key
+      ANSWER_STUB_TLS_CERT_FILE: /run/secrets/llm_provider_stub_tls_cert
+      ANSWER_STUB_TLS_KEY_FILE: /run/secrets/llm_provider_stub_tls_key
+      ANSWER_STUB_SCENARIO: success
+    secrets:
+      - answer_llm_api_key
+      - internal_ca
+      - llm_provider_stub_tls_cert
+      - llm_provider_stub_tls_key
+    networks:
+      - answer-provider-egress
+    expose:
+      - "8443"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    pids_limit: 64
+    user: "${RUN_AS_UID:-65532}:${RUN_AS_GID:-65532}"
+
 volumes:
   m5_ci_empty_model:
+
+secrets:
+  llm_provider_stub_tls_cert:
+    file: ${CERT_DIR:-./.dev/certs}/llm-provider-stub.crt
+  llm_provider_stub_tls_key:
+    file: ${CERT_DIR:-./.dev/certs}/llm-provider-stub.key

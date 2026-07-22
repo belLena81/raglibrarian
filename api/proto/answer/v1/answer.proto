@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package answer.v1;
+
+option go_package = "github.com/belLena81/raglibrarian/pkg/proto/answer/v1;answerv1";
+
+import "retrieval/v1/retrieval.proto";
+
+service AnswerService {
+  rpc Check(CheckRequest) returns (CheckResponse);
+  rpc Answer(AnswerRequest) returns (AnswerResponse);
+}
+
+message CheckRequest {}
+
+message CheckResponse {
+  string status = 1;
+}
+
+// AnswerRequest reuses Retrieval's authenticated search contract so Answer
+// cannot accept caller-supplied passages or citation metadata.
+message AnswerRequest {
+  retrieval.v1.SearchRequest search = 1;
+}
+
+message AnswerResponse {
+  retrieval.v1.SearchResponse search = 1;
+  GroundedAnswer answer = 2;
+}
+
+message GroundedAnswer {
+  repeated AnswerSegment segments = 1;
+}
+
+message AnswerSegment {
+  string text = 1;
+  repeated string evidence_ids = 2;
+}

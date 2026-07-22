@@ -27,6 +27,6 @@ if [[ -d "$log_pid_dir" ]]; then
 	rmdir "$log_pid_dir" 2>/dev/null || true
 fi
 
-docker compose --profile m5 down
+docker compose --profile m5 --profile m6 down
 echo "Local stack stopped. PostgreSQL, MinIO, RabbitMQ, Qdrant, and the host model cache were retained."
 echo "To intentionally reset all local data: docker compose down -v"

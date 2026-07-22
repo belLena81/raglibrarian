@@ -64,13 +64,7 @@ func FixedWindowRateLimit(limit int, window time.Duration, maxKeys int) func(htt
 }
 
 func FixedWindowPrincipalRateLimit(limit int, window time.Duration, maxKeys int) func(http.Handler) http.Handler {
-	if limit < 1 || window <= 0 || maxKeys < 1 {
-		panic("middleware: invalid principal rate limit")
-	}
-	var (
-		mu      sync.Mutex
-		entries = make(map[string]fixedWindowEntry)
-	)
+	limiter := NewPrincipalRateLimiter(limit, window, maxKeys)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			principal, ok := PrincipalFromContext(r.Context())
@@ -78,36 +72,70 @@ func FixedWindowPrincipalRateLimit(limit int, window time.Duration, maxKeys int)
 				writeRateLimited(w, r, window)
 				return
 			}
-			key := principal.UserID + ":" + principal.Role
-			now := time.Now()
-			mu.Lock()
-			entry, exists := entries[key]
-			if !exists && len(entries) >= maxKeys {
-				for existingKey, existing := range entries {
-					if now.Sub(existing.started) >= window {
-						delete(entries, existingKey)
-					}
-				}
-			}
-			if !exists && len(entries) >= maxKeys {
-				mu.Unlock()
-				writeRateLimited(w, r, window)
-				return
-			}
-			if !exists || now.Sub(entry.started) >= window {
-				entry = fixedWindowEntry{started: now}
-			}
-			entry.count++
-			entries[key] = entry
-			allowed := entry.count <= limit
-			mu.Unlock()
+			allowed, retryAfter := limiter.Allow(principal.UserID, principal.Role)
 			if !allowed {
-				writeRateLimited(w, r, remainingWindow(now, entry.started, window))
+				writeRateLimited(w, r, retryAfter)
 				return
 			}
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// PrincipalRateLimiter applies an in-memory fixed-window limit to an
+// Identity-authoritative user and role pair.
+type PrincipalRateLimiter struct {
+	limit   int
+	window  time.Duration
+	maxKeys int
+	mu      sync.Mutex
+	entries map[string]fixedWindowEntry
+}
+
+// NewPrincipalRateLimiter creates a bounded per-principal admission control.
+func NewPrincipalRateLimiter(limit int, window time.Duration, maxKeys int) *PrincipalRateLimiter {
+	if limit < 1 || window <= 0 || maxKeys < 1 {
+		panic("middleware: invalid principal rate limit")
+	}
+	return &PrincipalRateLimiter{
+		limit:   limit,
+		window:  window,
+		maxKeys: maxKeys,
+		entries: make(map[string]fixedWindowEntry),
+	}
+}
+
+// Allow records an attempt and reports whether it is admitted and, when
+// denied, how long the caller should wait before retrying.
+func (l *PrincipalRateLimiter) Allow(userID, role string) (bool, time.Duration) {
+	if userID == "" || role == "" {
+		return false, l.window
+	}
+	key := userID + ":" + role
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	entry, exists := l.entries[key]
+	if !exists && len(l.entries) >= l.maxKeys {
+		for existingKey, existing := range l.entries {
+			if now.Sub(existing.started) >= l.window {
+				delete(l.entries, existingKey)
+			}
+		}
+	}
+	if !exists && len(l.entries) >= l.maxKeys {
+		return false, l.window
+	}
+	if !exists || now.Sub(entry.started) >= l.window {
+		entry = fixedWindowEntry{started: now}
+	}
+	entry.count++
+	l.entries[key] = entry
+	if entry.count > l.limit {
+		return false, remainingWindow(now, entry.started, l.window)
+	}
+	return true, 0
 }
 
 func BoundedConcurrency(limit int) func(http.Handler) http.Handler {
@@ -162,4 +190,9 @@ func writeRateLimited(w http.ResponseWriter, r *http.Request, retryAfter time.Du
 		Error:     "request limit exceeded",
 		RequestID: chimiddleware.GetReqID(r.Context()),
 	})
+}
+
+// WriteRateLimited writes the stable public admission-control response.
+func WriteRateLimited(w http.ResponseWriter, r *http.Request, retryAfter time.Duration) {
+	writeRateLimited(w, r, retryAfter)
 }

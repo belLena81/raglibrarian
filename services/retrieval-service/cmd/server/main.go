@@ -80,7 +80,10 @@ func main() {
 	}
 	server := grpc.NewServer(
 		grpc.Creds(transportCredentials),
-		grpc.UnaryInterceptor(grpcauth.UnaryServerInterceptor(grpcauth.Policy{Service: "retrieval.v1.RetrievalService", DNSName: "edge-api"})),
+		grpc.UnaryInterceptor(grpcauth.UnaryServerInterceptor(grpcauth.Policy{
+			Service:  "retrieval.v1.RetrievalService",
+			DNSNames: []string{"edge-api", "answer-service"},
+		})),
 	)
 	retrievalv1.RegisterRetrievalServiceServer(server, retrievalgrpc.NewServer(searcher, embedder, store, records))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

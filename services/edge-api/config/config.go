@@ -34,19 +34,21 @@ var (
 
 // Config is validated Edge runtime configuration.
 type Config struct {
-	Addr, IdentityAddress, CatalogAddress, RetrievalAddress string
-	StatusRabbitURI, StatusQueue                            string
-	VerifyKey                                               []byte
-	PreviousVerifyKey                                       []byte
-	TrustedProxyCIDRs                                       []netip.Prefix
-	TLS                                                     internaltls.Files
-	SecureCookie                                            bool
-	PublicOrigin                                            string
-	EnforceBrowserOrigin                                    bool
-	RetrievalReadinessRequired                              bool
-	QueryRateLimit, QueryRateMaxKeys, QueryConcurrency      int
-	QueryRateWindow                                         time.Duration
-	RunAs                                                   process.Identity
+	Addr, IdentityAddress, CatalogAddress, RetrievalAddress, AnswerAddress string
+	StatusRabbitURI, StatusQueue                                           string
+	VerifyKey                                                              []byte
+	PreviousVerifyKey                                                      []byte
+	TrustedProxyCIDRs                                                      []netip.Prefix
+	TLS                                                                    internaltls.Files
+	SecureCookie                                                           bool
+	PublicOrigin                                                           string
+	EnforceBrowserOrigin                                                   bool
+	RetrievalReadinessRequired                                             bool
+	QueryRateLimit, QueryRateMaxKeys, QueryConcurrency                     int
+	QueryRateWindow                                                        time.Duration
+	AnswerRateLimit                                                        int
+	AnswerRateWindow, AnswerDeadline                                       time.Duration
+	RunAs                                                                  process.Identity
 }
 
 // Load reads Edge configuration from the environment.
@@ -102,6 +104,18 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	answerRateLimit, err := positiveInt("EDGE_ANSWER_RATE_LIMIT", 10)
+	if err != nil {
+		return Config{}, err
+	}
+	answerRateWindow, err := positiveDuration("EDGE_ANSWER_RATE_WINDOW", time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	answerDeadline, err := boundedDuration("EDGE_ANSWER_DEADLINE", 8*time.Second, 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
 	publicOrigin := strings.TrimRight(strings.TrimSpace(os.Getenv("EDGE_PUBLIC_ORIGIN")), "/")
 	if enforceOrigin && publicOrigin == "" {
 		return Config{}, fmt.Errorf("EDGE_PUBLIC_ORIGIN is required when browser origin enforcement is enabled")
@@ -136,6 +150,7 @@ func Load() (Config, error) {
 		IdentityAddress:            optional("IDENTITY_GRPC_ADDR", "identity-service:50051"),
 		CatalogAddress:             optional("CATALOG_GRPC_ADDR", "catalog-service:50052"),
 		RetrievalAddress:           optional("RETRIEVAL_GRPC_ADDR", "retrieval-service:50054"),
+		AnswerAddress:              optional("ANSWER_GRPC_ADDR", "answer-service:50055"),
 		StatusRabbitURI:            statusRabbitURI,
 		StatusQueue:                optional("EDGE_STATUS_QUEUE", "edge.book-status.local.1"),
 		VerifyKey:                  key,
@@ -150,6 +165,9 @@ func Load() (Config, error) {
 		QueryRateWindow:            queryRateWindow,
 		QueryRateMaxKeys:           queryRateMaxKeys,
 		QueryConcurrency:           queryConcurrency,
+		AnswerRateLimit:            answerRateLimit,
+		AnswerRateWindow:           answerRateWindow,
+		AnswerDeadline:             answerDeadline,
 		RunAs:                      runAs,
 	}, nil
 }
@@ -170,6 +188,17 @@ func positiveDuration(key string, fallback time.Duration) (time.Duration, error)
 		return 0, fmt.Errorf("%w: %s must be a positive duration", ErrQueryLimitConfiguration, key)
 	}
 	return parsed, nil
+}
+
+func boundedDuration(key string, fallback, maximum time.Duration) (time.Duration, error) {
+	value, err := positiveDuration(key, fallback)
+	if err != nil {
+		return 0, err
+	}
+	if value > maximum {
+		return 0, fmt.Errorf("%w: %s must not exceed %s", ErrQueryLimitConfiguration, key, maximum)
+	}
+	return value, nil
 }
 
 func parseCIDRs(value string) ([]netip.Prefix, error) {

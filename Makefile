@@ -4,14 +4,14 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion run-retrieval dev local-run local-stop tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-m5-integration-test m4-worker-recovery-test m4-e2e m4-performance-smoke m4-sse-load m4-soak m5-contract-test m5-contract-only-test m5-contract-ci-test m5-integration-test m5-search-quality-test m5-search-quality-test-real m5-worker-recovery-test m5-e2e m5-performance-smoke contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down migrate-retrieval-up migrate-retrieval-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-m5 dev-secrets-test m5-model-bootstrap m5-model-bootstrap-test bootstrap-verifier compose-config m5-mode-policy sam-validate sam-package-check sam-m5-validate sam-m5-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-build-ci image-scan image-scan-ci image-scan-images security-check security-check-ci full-gates integration-gates smtp-url
+.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer dev local-run local-stop tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-m5-integration-test m4-m5-m6-integration-test m4-worker-recovery-test m4-e2e m4-performance-smoke m4-sse-load m4-soak m5-contract-test m5-contract-only-test m5-contract-ci-test m5-integration-test m5-search-quality-test m5-search-quality-test-real m5-worker-recovery-test m5-e2e m5-performance-smoke m6-contract-test m6-answer-quality-test m6-answer-quality-test-real m6-e2e m6-performance-smoke m6-integration-test contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down migrate-retrieval-up migrate-retrieval-down infra-up infra-down stack-up m6-stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-m5 dev-secrets-m6 dev-secrets-test m6-dev-config-test m5-model-bootstrap m5-model-bootstrap-test bootstrap-verifier compose-config m5-mode-policy sam-validate sam-package-check sam-m5-validate sam-m5-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-build-ci image-scan image-scan-ci image-scan-images security-check security-check-ci full-gates integration-gates smtp-url
 
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
 HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
 # 0.69.2 is the vendor-designated unaffected Trivy release after the 2026
 # publishing incident. Do not move this pin without reviewing the advisory.
 TRIVY_IMAGE := aquasec/trivy:0.69.2
-SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-ingestion-lambda:local raglibrarian-ingestion-dispatcher-lambda:local raglibrarian-ingestion-cleanup-lambda:local raglibrarian-retrieval-service:local raglibrarian-retrieval-worker:local raglibrarian-retrieval-qdrant-init:local raglibrarian-retrieval-planner-lambda:local raglibrarian-retrieval-index-lambda:local raglibrarian-retrieval-dispatcher-lambda:local raglibrarian-retrieval-cleanup-lambda:local
+SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-ingestion-lambda:local raglibrarian-ingestion-dispatcher-lambda:local raglibrarian-ingestion-cleanup-lambda:local raglibrarian-retrieval-service:local raglibrarian-retrieval-worker:local raglibrarian-retrieval-qdrant-init:local raglibrarian-retrieval-planner-lambda:local raglibrarian-retrieval-index-lambda:local raglibrarian-retrieval-dispatcher-lambda:local raglibrarian-retrieval-cleanup-lambda:local raglibrarian-answer-service:local raglibrarian-answer-provider-stub:local
 QDRANT_IMAGE := qdrant/qdrant:v1.18.3
 QDRANT_TRIVY_IGNORE_FILE := security/trivy/qdrant-v1.18.3.ignore.yaml
 M5_TEI_IMAGE := ghcr.io/huggingface/text-embeddings-inference@sha256:cb570aabbfa016b86684f576b5bd72d1ee96cc0b7a00b0ad221b298762b32157
@@ -45,13 +45,14 @@ MODULES := \
 	services/catalog-service \
 	services/ingestion-service \
 	services/retrieval-service \
+	services/answer-service \
 	services/edge-api \
 	tests/e2e \
 	tools/healthcheck
 
 # Go packages import generated protobuf bindings. Generate them before any
 # target that compiles or analyzes those packages.
-GO_PROTO_TARGETS := test test-race lint fmt fmt-check vet vuln build run-edge-api run-identity run-catalog run-ingestion run-retrieval tidy e2e
+GO_PROTO_TARGETS := test test-race lint fmt fmt-check vet vuln build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer tidy e2e m6-answer-quality-test m6-e2e m6-performance-smoke
 $(GO_PROTO_TARGETS): proto-generate
 
 # Guard: abort if not run from the workspace root.
@@ -126,6 +127,7 @@ build: _require_root
 	cd services/catalog-service && go build -o ../../bin/catalog-service ./cmd/main.go
 	cd services/ingestion-service && go build -o ../../bin/ingestion-service ./cmd/worker
 	cd services/retrieval-service && go build -o ../../bin/retrieval-service ./cmd/server
+	cd services/answer-service && go build -o ../../bin/answer-service ./cmd/server
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 # run-edge-api: requires AUTH_SECRET_KEY, POSTGRES_DSN, and IDENTITY_GRPC_ADDR.
@@ -145,6 +147,9 @@ run-ingestion: _require_root
 run-retrieval: _require_root
 	cd services/retrieval-service && go run ./cmd/server
 
+run-answer: _require_root
+	cd services/answer-service && go run ./cmd/server
+
 # stack-up starts the complete local stack, including the migration job.
 stack-up: _require_root
 	@test -f .env || { \
@@ -162,6 +167,17 @@ stack-up: _require_root
 	@test -r "$${CERT_DIR:-.dev/certs}/retrieval-service.crt" && test -r "$${CERT_DIR:-.dev/certs}/retrieval-service.key" || { echo "M5 Retrieval certificate is missing; run bash scripts/ensure-m5-dev-cert.sh"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/identity_bootstrap_verifier" || { echo "bootstrap verifier is missing; run make bootstrap-verifier"; exit 1; }
 	@EDGE_RETRIEVAL_READINESS_REQUIRED=true docker compose --profile m5 up -d --build
+
+m6-stack-up: _require_root
+	@test -f .env || { echo "M6 requires .env; copy .env.example and configure the provider"; exit 1; }
+	@provider_url="$${ANSWER_LLM_BASE_URL:-$$(sed -n 's/^ANSWER_LLM_BASE_URL=//p' .env | tail -n 1)}"; \
+		provider_model="$${ANSWER_LLM_MODEL:-$$(sed -n 's/^ANSWER_LLM_MODEL=//p' .env | tail -n 1)}"; \
+		provider_key="$${ANSWER_LLM_API_KEY_PATH:-$$(sed -n 's/^ANSWER_LLM_API_KEY_PATH=//p' .env | tail -n 1)}"; \
+		test -n "$$provider_url" && test -n "$$provider_model" || { echo "ANSWER_LLM_BASE_URL and ANSWER_LLM_MODEL are required"; exit 1; }; \
+		case "$$provider_url" in https://*) ;; *) echo "ANSWER_LLM_BASE_URL must use HTTPS"; exit 1;; esac; \
+		test -r "$${provider_key:-.dev/secrets/answer_llm_api_key}" || { echo "A file-backed Answer provider key is required"; exit 1; }; \
+		bash ./scripts/ensure-m6-dev-cert.sh "$${CERT_DIR:-.dev/certs}"; \
+		EDGE_RETRIEVAL_READINESS_REQUIRED=true docker compose --profile m5 --profile m6 up -d --build
 
 # dev is retained as a convenient alias for the full Compose workflow.
 dev: stack-up
@@ -252,6 +268,37 @@ m5-e2e: m4-fixtures
 m5-performance-smoke: _require_root
 	cd tests/e2e && go test -count=1 -v -timeout 20m -tags 'e2e m5' -run '^TestM5PerformanceSearchesIndexedEvidenceWithinBudget$$' ./...
 
+m6-contract-test: _require_root
+	@bash ./scripts/ensure-m6-dev-cert.sh "$${CERT_DIR:-.dev/certs}"
+	@bash ./scripts/ensure-m6-dev-secret.sh "$${SECRET_DIR:-.dev/secrets}"
+	@project=raglibrarian-m6-contract-test; \
+	compose() { ANSWER_LLM_API_KEY_PATH="$${SECRET_DIR:-.dev/secrets}/answer_llm_test_api_key" MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m5-contract-test --profile m6 --profile m6-test "$$@"; }; \
+	trap 'compose down -v --remove-orphans' EXIT; \
+	compose build retrieval-qdrant-init retrieval-service answer-service llm-provider-stub answer-contract-tests && \
+	compose run --rm answer-contract-tests
+
+m6-answer-quality-test: _require_root
+	@tests="$$(cd services/answer-service && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" go test -list '^TestAnswer' ./internal/application)"; \
+	printf '%s\n' "$$tests" | grep -q '^TestAnswer' || { echo "M6 Answer quality tests were not discovered"; exit 1; }; \
+	cd services/answer-service && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" go test -count=1 -v -run '^TestAnswer' ./internal/application
+
+m6-answer-quality-test-real: _require_root
+	@test -n "$${ANSWER_LLM_BASE_URL:-}" && test -n "$${ANSWER_LLM_MODEL:-}" || { echo "Real provider URL and model are required"; exit 1; }
+	@test -r "$${ANSWER_LLM_API_KEY_PATH:-.dev/secrets/answer_llm_api_key}" || { echo "Real provider key file is required"; exit 1; }
+	@$(MAKE) m6-e2e
+
+m6-e2e: m4-fixtures
+	@tests="$$(cd tests/e2e && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" go test -tags 'e2e m5 m6' -list '^TestM6' ./...)"; \
+	printf '%s\n' "$$tests" | grep -q '^TestM6' || { echo "M6 E2E tests were not discovered"; exit 1; }
+	cd tests/e2e && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" M5_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" go test -count=1 -v -tags 'e2e m5 m6' -run '^TestM6(SearchRemainsCompatibleAndAnswerCitesReturnedEvidence|EmptyEvidenceDegradesWithoutFabrication)$$' ./...
+
+m6-performance-smoke: _require_root
+	@tests="$$(cd tests/e2e && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" go test -tags 'e2e m5 m6' -list '^TestM6PerformanceAnswersWithinBudget$$' ./...)"; \
+	printf '%s\n' "$$tests" | grep -qx 'TestM6PerformanceAnswersWithinBudget' || { echo "M6 performance test was not discovered"; exit 1; }
+	cd tests/e2e && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" go test -count=1 -v -timeout 20m -tags 'e2e m5 m6' -run '^TestM6PerformanceAnswersWithinBudget$$' ./...
+
+m6-integration-test: m6-answer-quality-test m6-contract-test m6-e2e m5-worker-recovery-test
+
 # Preserve the complete M2 lifecycle gate, then pass its short-lived sessions
 # to the separate M4 process through owner-only files. Token values are never
 # placed in command arguments or output.
@@ -277,6 +324,19 @@ m4-m5-integration-test: _require_root
 	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE="$$token_dir/revocable" $(MAKE) m4-e2e; \
 	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" $(MAKE) m4-worker-recovery-test; \
 	M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" M5_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" M5_E2E_ADMIN_TOKEN_FILE="$$token_dir/admin" $(MAKE) m5-e2e
+
+m4-m5-m6-integration-test: _require_root
+	@set -eu; \
+	token_dir="$$(mktemp -d /tmp/raglibrarian-m4-m5-m6-tokens.XXXXXX)"; \
+	chmod 700 "$$token_dir"; \
+	trap 'rm -f "$$token_dir/access" "$$token_dir/revocable" "$$token_dir/reader" "$$token_dir/librarian" "$$token_dir/admin"; rmdir "$$token_dir"' EXIT; \
+	E2E_M4_ACCESS_TOKEN_OUT="$$token_dir/access" E2E_M4_REVOCABLE_TOKEN_OUT="$$token_dir/revocable" \
+	E2E_M5_READER_TOKEN_OUT="$$token_dir/reader" E2E_M5_LIBRARIAN_TOKEN_OUT="$$token_dir/librarian" E2E_M5_ADMIN_TOKEN_OUT="$$token_dir/admin" $(MAKE) e2e; \
+	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE="$$token_dir/revocable" $(MAKE) m4-e2e; \
+	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" $(MAKE) m4-worker-recovery-test; \
+	M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" M5_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" M5_E2E_ADMIN_TOKEN_FILE="$$token_dir/admin" $(MAKE) m5-e2e; \
+	M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" M5_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" M5_E2E_ADMIN_TOKEN_FILE="$$token_dir/admin" $(MAKE) m6-e2e; \
+	M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" $(MAKE) m6-performance-smoke
 
 # This gate deliberately controls only the local Compose worker. The E2E test
 # owns upload/status assertions and coordinates through two owner-only markers;
@@ -425,6 +485,10 @@ dev-secrets-m5: _require_root
 	@echo "Generating additive Retrieval, broker, storage, and database credentials..."
 	bash ./scripts/generate-m5-dev-secrets.sh
 
+dev-secrets-m6: _require_root
+	@echo "Generating an ephemeral M6 test-provider credential..."
+	bash ./scripts/ensure-m6-dev-secret.sh
+
 m5-model-bootstrap: _require_root
 	bash ./scripts/bootstrap-m5-model.sh
 
@@ -433,6 +497,9 @@ m5-model-bootstrap-test: _require_root
 
 dev-secrets-test: _require_root
 	bash ./scripts/test-dev-secret-upgrades.sh
+
+m6-dev-config-test: _require_root
+	bash ./scripts/test-m6-dev-config.sh
 
 bootstrap-verifier: _require_root
 	@secret_dir="$${SECRET_DIR:-$(CURDIR)/.dev/secrets}"; \
@@ -448,7 +515,7 @@ proto: _require_root
 	$(MAKE) proto-generate
 
 proto-generate: _require_root
-	PATH="$$HOME/go/bin:$$PATH" protoc --experimental_allow_proto3_optional -I api/proto --go_out=paths=source_relative:pkg/proto --go-grpc_out=paths=source_relative:pkg/proto api/proto/identity/v1/identity.proto api/proto/catalog/v1/catalog.proto api/proto/ingestion/v1/ingestion.proto api/proto/retrieval/v1/retrieval.proto
+	PATH="$$HOME/go/bin:$$PATH" protoc --experimental_allow_proto3_optional -I api/proto --go_out=paths=source_relative:pkg/proto --go-grpc_out=paths=source_relative:pkg/proto api/proto/identity/v1/identity.proto api/proto/catalog/v1/catalog.proto api/proto/ingestion/v1/ingestion.proto api/proto/retrieval/v1/retrieval.proto api/proto/answer/v1/answer.proto
 
 proto-check: _require_root
 	XDG_CACHE_HOME=/tmp/raglibrarian-cache buf lint api/proto
@@ -519,6 +586,8 @@ image-build: _require_root
 	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/index_lambda -t raglibrarian-retrieval-index-lambda:local .
 	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/dispatcher_lambda -t raglibrarian-retrieval-dispatcher-lambda:local .
 	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda -t raglibrarian-retrieval-cleanup-lambda:local .
+	docker build --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/server -t raglibrarian-answer-service:local .
+	docker build --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/provider_stub -t raglibrarian-answer-provider-stub:local .
 
 image-build-ci: _require_root
 	@set -eu; \
@@ -541,7 +610,9 @@ image-build-ci: _require_root
 	build_ci raglibrarian-retrieval-planner-lambda:local retrieval-planner-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/planner_lambda; \
 	build_ci raglibrarian-retrieval-index-lambda:local retrieval-index-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/index_lambda; \
 	build_ci raglibrarian-retrieval-dispatcher-lambda:local retrieval-dispatcher-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/dispatcher_lambda; \
-	build_ci raglibrarian-retrieval-cleanup-lambda:local retrieval-cleanup-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda
+	build_ci raglibrarian-retrieval-cleanup-lambda:local retrieval-cleanup-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda; \
+	build_ci raglibrarian-answer-service:local answer-service --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/server; \
+	build_ci raglibrarian-answer-provider-stub:local answer-provider-stub --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/provider_stub
 
 image-scan: image-build image-scan-images
 
@@ -567,7 +638,7 @@ security-check: secret-scan dockerfile-lint image-scan ui-audit
 
 security-check-ci: secret-scan dockerfile-lint image-scan-ci ui-audit
 
-full-gates: fmt-check vet lint test test-race arch-check vuln proto-check proto-breaking dev-secrets-test compose-config m5-mode-policy sam-m5-validate ui-check security-check
+full-gates: fmt-check vet lint test test-race arch-check vuln proto-check proto-breaking dev-secrets-test m6-dev-config-test compose-config m5-mode-policy sam-m5-validate ui-check security-check
 
 integration-gates: compose-config
 	docker compose --profile m4-ha up -d --build --wait --wait-timeout 180
