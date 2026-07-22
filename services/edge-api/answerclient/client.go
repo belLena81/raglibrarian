@@ -16,7 +16,7 @@ import (
 	"github.com/belLena81/raglibrarian/services/edge-api/internal/searchcontract"
 )
 
-const maxAnswerDeadline = 30 * time.Second
+const maxAnswerDeadline = 25 * time.Second
 
 // Client translates Edge query requests to the versioned Answer contract.
 type Client struct {
@@ -30,7 +30,7 @@ func New(service answerv1.AnswerServiceClient, deadline time.Duration) *Client {
 		panic("answerclient: service must not be nil")
 	}
 	if deadline <= 0 || deadline > maxAnswerDeadline {
-		panic("answerclient: deadline must be between zero and 30 seconds")
+		panic("answerclient: deadline must be between zero and 25 seconds")
 	}
 	return &Client{service: service, deadline: deadline}
 }

@@ -29,6 +29,15 @@ func (s *answerClientStub) Answer(ctx context.Context, request *answerv1.AnswerR
 	return s.answer(ctx, request, options...)
 }
 
+func TestNewEnforcesAnswerDeadlineBudget(t *testing.T) {
+	service := &answerClientStub{answer: func(context.Context, *answerv1.AnswerRequest, ...grpc.CallOption) (*answerv1.AnswerResponse, error) {
+		return &answerv1.AnswerResponse{}, nil
+	}}
+
+	assert.NotPanics(t, func() { New(service, 25*time.Second) })
+	assert.Panics(t, func() { New(service, 26*time.Second) })
+}
+
 func TestAnswerPropagatesRequestIDDeadlineActorAndMapsResponse(t *testing.T) {
 	stub := &answerClientStub{}
 	stub.answer = func(ctx context.Context, request *answerv1.AnswerRequest, _ ...grpc.CallOption) (*answerv1.AnswerResponse, error) {

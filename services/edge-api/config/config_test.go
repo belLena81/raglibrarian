@@ -82,6 +82,16 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	assert.Equal(t, 45*time.Second, cfg.AnswerRateWindow)
 }
 
+func TestLoadAcceptsMaximumAnswerDeadline(t *testing.T) {
+	setRequired(t)
+	t.Setenv("EDGE_ANSWER_DEADLINE", "25s")
+
+	cfg, err := config.Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, 25*time.Second, cfg.AnswerDeadline)
+}
+
 func TestLoadRejectsInvalidSecurityConfiguration(t *testing.T) {
 	setRequired(t)
 	t.Setenv("EDGE_INSECURE_REFRESH_COOKIE", "sometimes")
@@ -140,7 +150,7 @@ func TestLoadClassifiesConfigurationFailures(t *testing.T) {
 		{
 			name: "answer deadline exceeds bound",
 			configure: func(t *testing.T) {
-				t.Setenv("EDGE_ANSWER_DEADLINE", "31s")
+				t.Setenv("EDGE_ANSWER_DEADLINE", "26s")
 			},
 			expected: config.ErrQueryLimitConfiguration,
 		},
