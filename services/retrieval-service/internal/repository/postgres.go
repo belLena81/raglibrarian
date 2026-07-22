@@ -106,6 +106,8 @@ func (r *Postgres) loadSnapshot(ctx context.Context, bookID string) (application
 		snapshot.Metadata = &metadata
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return application.PlanningSnapshot{}, err
+	} else {
+		err = nil
 	}
 	manifest := application.ManifestEvent{BookID: bookID, Producer: "ingestion-service", SchemaVersion: "v1"}
 	var manifestDigest, manifestSource, manifestSHA256, manifestPayload []byte
@@ -127,6 +129,8 @@ func (r *Postgres) loadSnapshot(ctx context.Context, bookID string) (application
 		}
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return application.PlanningSnapshot{}, err
+	} else {
+		err = nil
 	}
 	if snapshot.Metadata != nil && snapshot.Manifest != nil {
 		err = r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM retrieval.index_jobs WHERE book_id=$1 AND source_sha256=$2 AND manifest_sha256=$3)`, bookID, snapshot.Manifest.SourceSHA256[:], snapshot.Manifest.ManifestSHA256[:]).Scan(&snapshot.Planned)
@@ -341,7 +345,7 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 			(evidence_id,chunk_id,job_id,book_id,title,author,publication_year,tags,chapter,section,page_start,page_end,passage,content_sha256,created_at)
 			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 			ON CONFLICT(job_id,chunk_id) DO NOTHING`, record.EvidenceID, record.ChunkID, work.JobID, record.BookID, record.Title, record.Author,
-			record.Year, record.Tags, record.Chapter, record.Section, record.PageStart, record.PageEnd, record.Passage, record.ContentSHA256[:], now)
+			record.Year, postgresTextArray(record.Tags), record.Chapter, record.Section, record.PageStart, record.PageEnd, record.Passage, record.ContentSHA256[:], now)
 		if insertErr != nil {
 			return false, insertErr
 		}
@@ -360,7 +364,7 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 			chunk_count=retrieval.documents.chunk_count + EXCLUDED.chunk_count,
 			page_start=LEAST(retrieval.documents.page_start, EXCLUDED.page_start),
 			page_end=GREATEST(retrieval.documents.page_end, EXCLUDED.page_end),
-			updated_at=EXCLUDED.updated_at`, work.BookID+":"+work.JobID, work.JobID, work.BookID, firstRecord.Title, firstRecord.Author, firstRecord.Year, firstRecord.Tags, len(records), pageStart, pageEnd, now)
+			updated_at=EXCLUDED.updated_at`, work.BookID+":"+work.JobID, work.JobID, work.BookID, firstRecord.Title, firstRecord.Author, firstRecord.Year, postgresTextArray(firstRecord.Tags), len(records), pageStart, pageEnd, now)
 	if err != nil {
 		return false, err
 	}
@@ -763,7 +767,7 @@ func (r *Postgres) MarkPublished(ctx context.Context, eventID string, now time.T
 }
 
 func (r *Postgres) DeferOutbox(ctx context.Context, eventID string, now time.Time) error {
-	_, err := r.pool.Exec(ctx, `UPDATE retrieval.outbox SET attempts=attempts+1,next_attempt_at=$2 + make_interval(secs => LEAST(300, attempts*attempts+1)) WHERE event_id=$1 AND published_at IS NULL`, eventID, now)
+	_, err := r.pool.Exec(ctx, `UPDATE retrieval.outbox SET attempts=attempts+1,next_attempt_at=$2::timestamptz + make_interval(secs => LEAST(300, attempts*attempts+1)) WHERE event_id=$1 AND published_at IS NULL`, eventID, now)
 	return err
 }
 
@@ -822,8 +826,15 @@ func (r *Postgres) RetryVectorCleanup(ctx context.Context, jobID string, now tim
 	}
 	_, err := r.pool.Exec(ctx, `UPDATE retrieval.index_jobs
 		SET vector_cleanup_attempts=vector_cleanup_attempts+1,
-		    vector_cleanup_next_attempt_at=$2 + make_interval(secs => LEAST(300, vector_cleanup_attempts*vector_cleanup_attempts+1)),
+		    vector_cleanup_next_attempt_at=$2::timestamptz + make_interval(secs => LEAST(300, vector_cleanup_attempts*vector_cleanup_attempts+1)),
 		    updated_at=$2
 		WHERE id=$1 AND vector_cleanup_pending`, jobID, now)
 	return err
+}
+
+func postgresTextArray(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
