@@ -24,7 +24,7 @@ jobs:
     environment: m5-staging
     steps:
       - uses: actions/checkout@v4.2.2
-      - uses: aws-actions/configure-aws-credentials@v4.3.1
+      - uses: aws-actions/configure-aws-credentials@6.2.2
         with:
           role-to-assume: ${{ secrets.M5_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.M5_AWS_REGION }}
