@@ -106,8 +106,6 @@ func (r *Postgres) loadSnapshot(ctx context.Context, bookID string) (application
 		snapshot.Metadata = &metadata
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return application.PlanningSnapshot{}, err
-	} else {
-		err = nil
 	}
 	manifest := application.ManifestEvent{BookID: bookID, Producer: "ingestion-service", SchemaVersion: "v1"}
 	var manifestDigest, manifestSource, manifestSHA256, manifestPayload []byte
