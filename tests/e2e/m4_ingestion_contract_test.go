@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -290,16 +291,17 @@ func TestM4DeadLetterMismatchUsesContentFreeDiagnosticAfterScanning(t *testing.T
 }
 
 func TestM4RecoveryMarkerAcceptsOnlyCanonicalBookIDs(t *testing.T) {
-	assert.True(t, isCanonicalM4BookID("00000000-0000-4000-8000-000000000001"))
-	assert.False(t, isCanonicalM4BookID("00000000-0000-4000-8000-000000000001\nworker-restarted"))
-	assert.False(t, isCanonicalM4BookID("00000000-0000-4000-8000-00000000000G"))
+	assert.True(t, isCanonicalM4BookID("AAAAAAAAAAAAAAAAAAAAAA"))
+	assert.False(t, isCanonicalM4BookID("AAAAAAAAAAAAAAAAAAAAAA\nworker-restarted"))
+	assert.False(t, isCanonicalM4BookID("AAAAAAAAAAAAAAAAAAAAA="))
+	assert.False(t, isCanonicalM4BookID("AAAAAAAAAAAAAAAAAAAAAB"))
 }
 
 func TestM4RecoveryMarkerHandshakeUsesPrivateAtomicFiles(t *testing.T) {
 	controlDir := t.TempDir()
 	require.NoError(t, os.Chmod(controlDir, 0o700))
 	uploadAccepted := filepath.Join(controlDir, "upload-accepted")
-	bookID := "00000000-0000-4000-8000-000000000001"
+	bookID := "AAAAAAAAAAAAAAAAAAAAAA"
 	writeM4RecoveryMarker(t, controlDir, uploadAccepted, []byte(bookID+"\n"))
 	info, err := os.Lstat(uploadAccepted)
 	require.NoError(t, err)
@@ -930,22 +932,14 @@ func waitForM4WorkerRestarted(t *testing.T, controlDir, marker string, timeout t
 }
 
 func isCanonicalM4BookID(value string) bool {
-	if len(value) != 36 {
+	if len(value) != base64.RawURLEncoding.EncodedLen(16) {
 		return false
 	}
-	for index, character := range value {
-		switch index {
-		case 8, 13, 18, 23:
-			if character != '-' {
-				return false
-			}
-		default:
-			if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
-				return false
-			}
-		}
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil || len(decoded) != 16 {
+		return false
 	}
-	return true
+	return base64.RawURLEncoding.EncodeToString(decoded) == value
 }
 
 func assertM4SingularDurableState(t *testing.T, bookID string) {

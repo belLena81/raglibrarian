@@ -303,7 +303,7 @@ m4-worker-recovery-test: m4-fixtures
 	test "$$(stat -c '%a' "$$control_dir/upload-accepted")" = 600; \
 	test "$$(stat -c '%u' "$$control_dir/upload-accepted")" = "$$(id -u)"; \
 	test "$$(wc -l < "$$control_dir/upload-accepted")" -eq 1; \
-	grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$$' "$$control_dir/upload-accepted"; \
+	grep -Eq '^[A-Za-z0-9_-]{21}[AQgw]$$' "$$control_dir/upload-accepted"; \
 	docker compose up -d --no-deps --wait --wait-timeout 120 ingestion-service; \
 	restarted_tmp="$$(mktemp "$$control_dir/.worker-restarted.XXXXXX")"; \
 	chmod 600 "$$restarted_tmp"; \
