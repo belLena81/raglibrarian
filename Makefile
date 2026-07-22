@@ -270,12 +270,13 @@ m4-worker-recovery-test: m4-fixtures
 	test_pid=''; \
 	cleanup() { \
 		if test -n "$$test_pid" && kill -0 "$$test_pid" 2>/dev/null; then kill "$$test_pid" 2>/dev/null || true; wait "$$test_pid" 2>/dev/null || true; fi; \
-		docker compose up -d --no-deps --wait --wait-timeout 120 ingestion-service >/dev/null 2>&1 || true; \
+		docker compose up -d --no-deps --wait --wait-timeout 120 ingestion-service; \
+		docker compose up -d --no-deps --wait --wait-timeout 120 retrieval-worker; \
 		rm -f "$$control_dir/upload-accepted" "$$control_dir/worker-restarted" "$$control_dir"/.worker-restarted.*; \
 		rmdir "$$control_dir" 2>/dev/null || true; \
 	}; \
 	trap cleanup EXIT INT TERM; \
-	docker compose stop --timeout 30 ingestion-service; \
+	docker compose stop --timeout 30 ingestion-service retrieval-worker; \
 	(cd tests/e2e && \
 		M4_E2E_RECOVERY_CONTROL_DIR="$$control_dir" \
 		M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" \
@@ -309,7 +310,8 @@ m4-worker-recovery-test: m4-fixtures
 	chmod 600 "$$restarted_tmp"; \
 	mv "$$restarted_tmp" "$$control_dir/worker-restarted"; \
 	wait "$$test_pid"; \
-	test_pid=''
+	test_pid=''; \
+	docker compose up -d --no-deps --wait --wait-timeout 120 retrieval-worker
 
 m4-fixtures: _require_root
 	go run ./tests/fixtures/ingestion/generate.go -out "$(M4_E2E_FIXTURE_DIR)"
