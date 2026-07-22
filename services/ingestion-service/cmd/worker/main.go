@@ -49,7 +49,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return errors.New("broker channel unavailable")
 	}
 	defer func() { _ = channel.Close() }()
-	consumer, err := transport.NewConsumer(channel, cfg.Queue, cfg.WorkConcurrency, runtime)
+	consumer, err := transport.NewConsumer(channel, cfg.Queue, cfg.WorkConcurrency, runtime, runtime.Publisher)
 	if err != nil {
 		return err
 	}

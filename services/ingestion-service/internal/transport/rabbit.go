@@ -15,6 +15,11 @@ import (
 const UploadRoute = "catalog.book.uploaded.v1"
 const RetryExchange = "raglibrarian.ingestion.retry.v1"
 
+const (
+	applicationDeliveryCountHeader = "x-raglibrarian-delivery-count"
+	maximumDeliveryAttempts        = 5
+)
+
 type EventProcessor interface {
 	Process(context.Context, application.UploadedEvent) error
 }
@@ -23,17 +28,18 @@ type Consumer struct {
 	channel   *amqp091.Channel
 	queue     string
 	processor EventProcessor
+	publisher Publisher
 	now       func() time.Time
 }
 
-func NewConsumer(channel *amqp091.Channel, queue string, concurrency int, processor EventProcessor) (*Consumer, error) {
-	if channel == nil || queue == "" || concurrency < 1 || processor == nil {
+func NewConsumer(channel *amqp091.Channel, queue string, concurrency int, processor EventProcessor, publisher Publisher) (*Consumer, error) {
+	if channel == nil || queue == "" || concurrency < 1 || processor == nil || publisher == nil {
 		return nil, errors.New("invalid RabbitMQ consumer")
 	}
 	if err := channel.Qos(concurrency, 0, false); err != nil {
 		return nil, err
 	}
-	return &Consumer{channel: channel, queue: queue, processor: processor, now: time.Now}, nil
+	return &Consumer{channel: channel, queue: queue, processor: processor, publisher: publisher, now: time.Now}, nil
 }
 
 func (c *Consumer) Run(ctx context.Context, concurrency int) error {
@@ -80,7 +86,83 @@ func (c *Consumer) handle(ctx context.Context, delivery amqp091.Delivery) {
 	case application.DeliveryReject:
 		_ = delivery.Reject(false)
 	case application.DeliveryRequeue:
-		_ = delivery.Nack(false, true)
+		c.retry(ctx, delivery)
+	}
+}
+
+func (c *Consumer) retry(ctx context.Context, delivery amqp091.Delivery) {
+	if ctx.Err() != nil {
+		return
+	}
+	attempt, valid := deliveryAttempt(delivery.Headers)
+	if !valid || attempt >= maximumDeliveryAttempts {
+		_ = delivery.Nack(false, false)
+		return
+	}
+	nextAttempt := attempt + 1
+	publishCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	err := c.publisher.PublishWithContext(
+		publishCtx,
+		RetryExchange,
+		retryRoute(retryDelay(nextAttempt)),
+		true,
+		false,
+		amqp091.Publishing{
+			Headers: amqp091.Table{
+				applicationDeliveryCountHeader: int64(nextAttempt),
+			},
+			ContentType:  "application/x-protobuf",
+			DeliveryMode: amqp091.Persistent,
+			MessageId:    delivery.MessageId,
+			Type:         UploadRoute,
+			Timestamp:    c.now().UTC(),
+			Body:         delivery.Body,
+		},
+	)
+	cancel()
+	if err != nil {
+		if ctx.Err() == nil {
+			_ = delivery.Nack(false, false)
+		}
+		return
+	}
+	_ = delivery.Ack(false)
+}
+
+func deliveryAttempt(headers amqp091.Table) (int, bool) {
+	if headers == nil {
+		return 0, true
+	}
+	value, found := headers[applicationDeliveryCountHeader]
+	if !found {
+		value, found = headers["x-delivery-count"]
+	}
+	if !found {
+		return 0, true
+	}
+	var attempt int64
+	switch typed := value.(type) {
+	case int32:
+		attempt = int64(typed)
+	case int64:
+		attempt = typed
+	default:
+		return 0, false
+	}
+	if attempt < 0 || attempt > maximumDeliveryAttempts {
+		return 0, false
+	}
+	return int(attempt), true
+}
+
+func retryDelay(attempt int) time.Duration {
+	switch {
+	case attempt <= 1:
+		return 5 * time.Second
+	case attempt <= 3:
+		return 30 * time.Second
+	default:
+		return 2 * time.Minute
 	}
 }
 

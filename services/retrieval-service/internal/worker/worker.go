@@ -326,7 +326,9 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 				return
 			}
 			r.logRetryPublishFailed(sourceQueue, "retry_publish_failed")
-			_ = delivery.Nack(false, true)
+			if ctx.Err() == nil {
+				_ = delivery.Nack(false, false)
+			}
 			return
 		}
 		if errors.Is(err, application.ErrInvalidEvent) || errors.Is(err, application.ErrConflictingEvent) {
@@ -357,25 +359,30 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 			return
 		}
 		r.logRetryPublishFailed(sourceQueue, "retry_publish_failed")
-		_ = delivery.Nack(false, true)
+		if ctx.Err() == nil {
+			_ = delivery.Nack(false, false)
+		}
 	}()
 }
 
 func (r *Runtime) publishRetry(ctx context.Context, publisher retryPublisher, sourceQueue string, delivery amqp091.Delivery, attempt int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	routingKey, err := retryRoutingKey(sourceQueue, attempt)
 	if err != nil {
 		return err
 	}
-	headers := cloneHeaders(delivery.Headers)
-	headers["x-retry-attempt"] = attempt
 	publishContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	return publisher.Publish(publishContext, retryExchange, routingKey, amqp091.Publishing{
-		Headers: headers, ContentType: delivery.ContentType, ContentEncoding: delivery.ContentEncoding,
+		// Only the application-owned attempt counter crosses the retry boundary.
+		// Broker death/routing headers and publisher-controlled identity/reply
+		// properties are intentionally excluded.
+		Headers: amqp091.Table{"x-retry-attempt": attempt}, ContentType: delivery.ContentType, ContentEncoding: delivery.ContentEncoding,
 		DeliveryMode: amqp091.Persistent, Priority: delivery.Priority, CorrelationId: delivery.CorrelationId,
-		ReplyTo: delivery.ReplyTo, Expiration: delivery.Expiration, MessageId: delivery.MessageId,
-		Timestamp: delivery.Timestamp, Type: delivery.Type, UserId: delivery.UserId, AppId: delivery.AppId,
-		Body: delivery.Body,
+		MessageId: delivery.MessageId, Timestamp: delivery.Timestamp, Type: delivery.Type, AppId: delivery.AppId,
+		Body: append([]byte(nil), delivery.Body...),
 	})
 }
 
@@ -401,19 +408,6 @@ func retryRoutingKey(sourceQueue string, attempt int64) (string, error) {
 	default:
 		return "", errors.New("unknown retry source queue")
 	}
-}
-
-func cloneHeaders(headers amqp091.Table) amqp091.Table {
-	result := make(amqp091.Table, len(headers)+1)
-	for key, value := range headers {
-		switch key {
-		case "x-death", "x-first-death-exchange", "x-first-death-queue", "x-first-death-reason", "x-delivery-count", "x-retry-attempt":
-			continue
-		default:
-			result[key] = value
-		}
-	}
-	return result
 }
 
 func (r *Runtime) handleMetadata(ctx context.Context, payload []byte) error {

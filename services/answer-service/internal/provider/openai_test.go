@@ -38,6 +38,30 @@ func TestOpenAIGeneratesStrictStructuredSegments(t *testing.T) {
 	}
 }
 
+func TestNewOpenAIBuildsChatCompletionsEndpointFromAPIBase(t *testing.T) {
+	client := &http.Client{}
+	for _, test := range []struct {
+		name         string
+		baseURL      string
+		expectedPath string
+	}{
+		{name: "host", baseURL: "https://provider", expectedPath: "/v1/chat/completions"},
+		{name: "v1", baseURL: "https://provider/v1", expectedPath: "/v1/chat/completions"},
+		{name: "v1 trailing slash", baseURL: "https://provider/v1/", expectedPath: "/v1/chat/completions"},
+		{name: "prefixed v1", baseURL: "https://provider/openai/v1", expectedPath: "/openai/v1/chat/completions"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			adapter, err := NewOpenAI(test.baseURL, "model", "key", client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if adapter.endpoint.Path != test.expectedPath {
+				t.Fatalf("endpoint path = %q, want %q", adapter.endpoint.Path, test.expectedPath)
+			}
+		})
+	}
+}
+
 func TestOpenAIRejectsRedirectUnknownAndDuplicateCandidateFields(t *testing.T) {
 	responses := []struct {
 		status int

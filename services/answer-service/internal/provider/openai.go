@@ -39,8 +39,19 @@ func NewOpenAI(baseURL, model, apiKey string, client *http.Client) (*OpenAI, err
 		return nil, errors.New("invalid provider configuration")
 	}
 	endpoint := *parsed
-	endpoint.Path = path.Join(strings.TrimSuffix(parsed.Path, "/"), "/v1/chat/completions")
+	endpoint.Path = openAIChatCompletionsPath(parsed.Path)
 	return &OpenAI{endpoint: &endpoint, model: model, apiKey: apiKey, client: client}, nil
+}
+
+func openAIChatCompletionsPath(basePath string) string {
+	trimmed := strings.TrimRight(basePath, "/")
+	if trimmed == "" {
+		return "/v1/chat/completions"
+	}
+	if path.Base(trimmed) == "v1" {
+		return path.Join(trimmed, "chat/completions")
+	}
+	return path.Join(trimmed, "v1/chat/completions")
 }
 
 type chatRequest struct {

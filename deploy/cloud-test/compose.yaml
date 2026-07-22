@@ -1,0 +1,174 @@
+services:
+  # The managed cloud profile replaces these local development dependencies.
+  mailpit:
+    profiles: ["local-only"]
+
+  minio:
+    profiles: ["local-only"]
+
+  minio-bootstrap:
+    profiles: ["local-only"]
+
+  rabbitmq:
+    profiles: ["local-only"]
+
+  identity-service:
+    environment:
+      IDENTITY_BOOTSTRAP_VERIFIER_FILE: "${IDENTITY_BOOTSTRAP_VERIFIER_FILE-/run/secrets/identity_bootstrap_verifier}"
+      IDENTITY_SMTP_ADDR: "${SMTP_ADDR:-smtp-relay.brevo.com:587}"
+      IDENTITY_SMTP_SERVER_NAME: "${SMTP_SERVER_NAME:-smtp-relay.brevo.com}"
+      IDENTITY_SMTP_USERNAME: "${SMTP_USERNAME:?set SMTP_USERNAME}"
+      IDENTITY_SMTP_FROM: "${SMTP_FROM:?set SMTP_FROM}"
+      IDENTITY_VERIFY_URL: "${PUBLIC_ORIGIN:?set PUBLIC_ORIGIN}/verify-email"
+      IDENTITY_SMTP_STARTTLS: "true"
+      IDENTITY_BCRYPT_CONCURRENCY: "${IDENTITY_BCRYPT_CONCURRENCY:-2}"
+    networks:
+      - backend
+      - cloud-egress
+    depends_on: !override
+      identity-migrate:
+        condition: service_completed_successfully
+
+  catalog-service:
+    environment:
+      CATALOG_MINIO_ENDPOINT: "${S3_ENDPOINT:?set S3_ENDPOINT}"
+      CATALOG_MINIO_INSECURE: "false"
+      CATALOG_MINIO_CA_FILE: ""
+      CATALOG_MINIO_BUCKET: "${S3_ORIGINAL_BUCKET:?set S3_ORIGINAL_BUCKET}"
+    networks:
+      - backend
+      - catalog-storage
+      - catalog-broker
+      - cloud-egress
+    depends_on: !override
+      catalog-migrate:
+        condition: service_completed_successfully
+
+  ingestion-service:
+    environment:
+      INGESTION_MINIO_ENDPOINT: "${S3_ENDPOINT:?set S3_ENDPOINT}"
+      INGESTION_MINIO_INSECURE: "false"
+      INGESTION_MINIO_CA_FILE: ""
+      INGESTION_SOURCE_BUCKET: "${S3_ORIGINAL_BUCKET:?set S3_ORIGINAL_BUCKET}"
+      INGESTION_ARTIFACT_BUCKET: "${S3_ARTIFACT_BUCKET:?set S3_ARTIFACT_BUCKET}"
+    networks:
+      - backend
+      - catalog-storage
+      - catalog-broker
+      - cloud-egress
+    depends_on: !override
+      ingestion-migrate:
+        condition: service_completed_successfully
+
+  retrieval-worker:
+    environment:
+      RETRIEVAL_MINIO_ENDPOINT: "${S3_ENDPOINT:?set S3_ENDPOINT}"
+      RETRIEVAL_MINIO_INSECURE: "false"
+      RETRIEVAL_ARTIFACT_BUCKET: "${S3_ARTIFACT_BUCKET:?set S3_ARTIFACT_BUCKET}"
+    networks:
+      - backend
+      - catalog-storage
+      - catalog-broker
+      - retrieval-index
+      - cloud-egress
+    depends_on: !override
+      retrieval-migrate:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_healthy
+      retrieval-qdrant-init:
+        condition: service_completed_successfully
+      text-embeddings-inference:
+        condition: service_healthy
+
+  edge-api:
+    environment:
+      EDGE_PUBLIC_ORIGIN: "${PUBLIC_ORIGIN:?set PUBLIC_ORIGIN}"
+      EDGE_ENFORCE_BROWSER_ORIGIN: "true"
+      EDGE_INSECURE_REFRESH_COOKIE: "false"
+      EDGE_RETRIEVAL_READINESS_REQUIRED: "true"
+      EDGE_TRUSTED_PROXY_CIDRS: "${EDGE_TRUSTED_PROXY_CIDRS:-172.30.10.0/24}"
+    networks:
+      - frontend
+      - backend
+      - catalog-broker
+      - cloud-egress
+
+  answer-service:
+    environment:
+      ANSWER_LLM_BASE_URL: "${ANSWER_LLM_BASE_URL:-https://api.groq.com/openai}"
+      ANSWER_LLM_MODEL: "${ANSWER_LLM_MODEL:-openai/gpt-oss-20b}"
+      # Empty means system trust roots only; the internal CA is not a public-provider root.
+      ANSWER_LLM_CA_FILE: ""
+
+  qdrant:
+    image: "${M5_QDRANT_IMAGE:-qdrant/qdrant@sha256:e8c968e9a32219a4cde0d34ee594ad697ed92df41c542b5ec2d178eaa807804b}"
+    mem_limit: 1536m
+    cpus: 0.75
+
+  text-embeddings-inference:
+    image: "${M5_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference@sha256:7e0ad922d10ef6f728b521d1a47e83004480687bd4073c97f079c806e3e92a41}"
+    mem_limit: "${M5_TEI_MEMORY_LIMIT:-4g}"
+    cpus: "${M5_TEI_CPU_LIMIT:-1.5}"
+
+  catalog-minio-runtime-tests:
+    profiles: ["cloud-storage-test"]
+    environment:
+      CATALOG_MINIO_ENDPOINT: "${S3_ENDPOINT:?set S3_ENDPOINT}"
+      CATALOG_MINIO_INSECURE: "false"
+      CATALOG_MINIO_CA_FILE: ""
+      CATALOG_MINIO_BUCKET: "${S3_ORIGINAL_BUCKET:?set S3_ORIGINAL_BUCKET}"
+      CATALOG_MINIO_EXPECT_PREFIX_DENY: "false"
+      CATALOG_OBJECT_STORE_BOUNDARY_TEST: "true"
+      CATALOG_ARTIFACT_BUCKET: "${S3_ARTIFACT_BUCKET:?set S3_ARTIFACT_BUCKET}"
+      INGESTION_MINIO_ACCESS_KEY_FILE: /run/secrets/ingestion_minio_access_key
+      INGESTION_MINIO_SECRET_KEY_FILE: /run/secrets/ingestion_minio_secret_key
+      RETRIEVAL_MINIO_ACCESS_KEY_FILE: /run/secrets/retrieval_minio_access_key
+      RETRIEVAL_MINIO_SECRET_KEY_FILE: /run/secrets/retrieval_minio_secret_key
+    secrets:
+      - catalog_minio_access_key
+      - catalog_minio_secret_key
+      - ingestion_minio_access_key
+      - ingestion_minio_secret_key
+      - retrieval_minio_access_key
+      - retrieval_minio_secret_key
+    networks:
+      - catalog-storage
+      - cloud-egress
+    depends_on: !override {}
+
+  web:
+    image: raglibrarian-web:local
+    build:
+      context: .
+      dockerfile: deploy/cloud-test/Dockerfile.ui
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    tmpfs:
+      - /data:rw,noexec,nosuid,nodev,size=16m
+      - /config:rw,noexec,nosuid,nodev,size=16m
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    ports:
+      - "127.0.0.1:8088:8080"
+    networks:
+      - frontend
+    depends_on:
+      edge-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 4s
+      retries: 10
+    restart: unless-stopped
+
+networks:
+  frontend:
+    ipam:
+      config:
+        - subnet: 172.30.10.0/24
+  cloud-egress:

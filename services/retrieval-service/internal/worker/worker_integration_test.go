@@ -60,10 +60,6 @@ func TestRetryAttemptDoesNotTrustMalformedHeaders(t *testing.T) {
 	if got := retryAttempt(amqp091.Table{"x-retry-attempt": "invalid"}); got != maximumRetryAttempts {
 		t.Fatalf("invalid retryAttempt() = %d", got)
 	}
-	headers := cloneHeaders(amqp091.Table{"x-death": "broker", "x-retry-attempt": int64(1), "trace": "keep"})
-	if _, found := headers["x-death"]; found || headers["trace"] != "keep" {
-		t.Fatalf("headers were not sanitized: %#v", headers)
-	}
 }
 
 func TestHandleDeadLettersExhaustedTerminalFailureRecording(t *testing.T) {
@@ -107,6 +103,105 @@ func TestHandleRetriesTerminalFailureRecordingBelowBudget(t *testing.T) {
 	}
 	if len(publisher.messages) != 1 || publisher.messages[0].RoutingKey != "retrieval.index-batch.v1.retry.30s" || publisher.messages[0].Headers["x-retry-attempt"] != int64(2) {
 		t.Fatalf("published retry = %#v", publisher.messages)
+	}
+}
+
+func TestHandleDeadLettersWhenTerminalFailureRetryPublishFails(t *testing.T) {
+	acknowledger := &stubAcknowledger{}
+	publisher := &stubRetryPublisher{err: errors.New("publisher unavailable")}
+	delivery := amqp091.Delivery{Acknowledger: acknowledger, DeliveryTag: 1, ContentType: "application/x-protobuf", Body: []byte{1}}
+	semaphore := make(chan struct{}, 1)
+	var handlers sync.WaitGroup
+
+	(&Runtime{}).handle(context.Background(), semaphore, &handlers, publisher, batchQueue, delivery, func(context.Context, []byte) error {
+		return application.Failure(domain.FailureManifestIntegrity, errors.New("malformed shard"))
+	}, func(context.Context, []byte, error) error {
+		return errors.New("database unavailable")
+	})
+	handlers.Wait()
+
+	if acknowledger.acks != 0 || acknowledger.nacks != 1 || acknowledger.requeue {
+		t.Fatalf("settlement acks=%d nacks=%d requeue=%v", acknowledger.acks, acknowledger.nacks, acknowledger.requeue)
+	}
+}
+
+func TestHandleDeadLettersWhenTransientRetryPublishFails(t *testing.T) {
+	acknowledger := &stubAcknowledger{}
+	publisher := &stubRetryPublisher{err: errors.New("publisher unavailable")}
+	delivery := amqp091.Delivery{Acknowledger: acknowledger, DeliveryTag: 1, ContentType: "application/x-protobuf", Body: []byte{1}}
+	semaphore := make(chan struct{}, 1)
+	var handlers sync.WaitGroup
+
+	(&Runtime{}).handle(context.Background(), semaphore, &handlers, publisher, metadataQueue, delivery, func(context.Context, []byte) error {
+		return errors.New("database unavailable")
+	}, nil)
+	handlers.Wait()
+
+	if acknowledger.acks != 0 || acknowledger.nacks != 1 || acknowledger.requeue {
+		t.Fatalf("settlement acks=%d nacks=%d requeue=%v", acknowledger.acks, acknowledger.nacks, acknowledger.requeue)
+	}
+}
+
+func TestHandleLeavesCanceledSessionDeliveryUnsettled(t *testing.T) {
+	acknowledger := &stubAcknowledger{}
+	publisher := &stubRetryPublisher{}
+	delivery := amqp091.Delivery{Acknowledger: acknowledger, DeliveryTag: 1, ContentType: "application/x-protobuf", Body: []byte{1}}
+	semaphore := make(chan struct{}, 1)
+	var handlers sync.WaitGroup
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	(&Runtime{}).handle(ctx, semaphore, &handlers, publisher, metadataQueue, delivery, func(context.Context, []byte) error {
+		return errors.New("database unavailable")
+	}, nil)
+	handlers.Wait()
+
+	if acknowledger.acks != 0 || acknowledger.nacks != 0 {
+		t.Fatalf("canceled delivery was settled: acks=%d nacks=%d", acknowledger.acks, acknowledger.nacks)
+	}
+	if len(publisher.messages) != 0 {
+		t.Fatalf("published retries = %d, want 0", len(publisher.messages))
+	}
+}
+
+func TestPublishRetrySanitizesUntrustedEnvelope(t *testing.T) {
+	publisher := &stubRetryPublisher{}
+	delivery := amqp091.Delivery{
+		Headers: amqp091.Table{
+			"x-death":                "broker",
+			"CC":                     []string{"other.queue"},
+			"BCC":                    []string{"hidden.queue"},
+			"x-raglibrarian-private": "untrusted",
+		},
+		ContentType:     "application/x-protobuf",
+		ContentEncoding: "identity",
+		Priority:        3,
+		CorrelationId:   "correlation-1",
+		ReplyTo:         "untrusted.reply",
+		Expiration:      "1",
+		MessageId:       "event-1",
+		Timestamp:       time.Date(2026, 7, 22, 1, 2, 3, 0, time.UTC),
+		Type:            "retrieval.event.v1",
+		UserId:          "untrusted-user",
+		AppId:           "retrieval-service",
+		Body:            []byte("payload"),
+	}
+
+	if err := (&Runtime{}).publishRetry(context.Background(), publisher, metadataQueue, delivery, 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(publisher.messages) != 1 {
+		t.Fatalf("published retries = %d, want 1", len(publisher.messages))
+	}
+	message := publisher.messages[0].Message
+	if len(message.Headers) != 1 || message.Headers["x-retry-attempt"] != int64(1) {
+		t.Fatalf("retry headers = %#v", message.Headers)
+	}
+	if message.UserId != "" || message.ReplyTo != "" || message.Expiration != "" {
+		t.Fatalf("retry copied sensitive properties: user=%q reply=%q expiration=%q", message.UserId, message.ReplyTo, message.Expiration)
+	}
+	if message.DeliveryMode != amqp091.Persistent || message.MessageId != delivery.MessageId || string(message.Body) != "payload" {
+		t.Fatalf("retry envelope = %#v", message)
 	}
 }
 
@@ -345,6 +440,7 @@ type publishedRetry struct {
 	Exchange   string
 	RoutingKey string
 	Headers    amqp091.Table
+	Message    amqp091.Publishing
 }
 
 type stubRetryPublisher struct {
@@ -549,7 +645,7 @@ func (s *stubRetryPublisher) Publish(_ context.Context, exchange, routingKey str
 	if s.err != nil {
 		return s.err
 	}
-	s.messages = append(s.messages, publishedRetry{Exchange: exchange, RoutingKey: routingKey, Headers: message.Headers})
+	s.messages = append(s.messages, publishedRetry{Exchange: exchange, RoutingKey: routingKey, Headers: message.Headers, Message: message})
 	return nil
 }
 

@@ -11,7 +11,7 @@ HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
 # 0.69.2 is the vendor-designated unaffected Trivy release after the 2026
 # publishing incident. Do not move this pin without reviewing the advisory.
 TRIVY_IMAGE := aquasec/trivy:0.69.2
-SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-ingestion-lambda:local raglibrarian-ingestion-dispatcher-lambda:local raglibrarian-ingestion-cleanup-lambda:local raglibrarian-retrieval-service:local raglibrarian-retrieval-worker:local raglibrarian-retrieval-qdrant-init:local raglibrarian-retrieval-planner-lambda:local raglibrarian-retrieval-index-lambda:local raglibrarian-retrieval-dispatcher-lambda:local raglibrarian-retrieval-cleanup-lambda:local raglibrarian-answer-service:local raglibrarian-answer-provider-stub:local
+SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-ingestion-lambda:local raglibrarian-ingestion-dispatcher-lambda:local raglibrarian-ingestion-cleanup-lambda:local raglibrarian-retrieval-service:local raglibrarian-retrieval-worker:local raglibrarian-retrieval-qdrant-init:local raglibrarian-retrieval-planner-lambda:local raglibrarian-retrieval-index-lambda:local raglibrarian-retrieval-dispatcher-lambda:local raglibrarian-retrieval-cleanup-lambda:local raglibrarian-answer-service:local raglibrarian-answer-provider-stub:local raglibrarian-web:local
 QDRANT_IMAGE := qdrant/qdrant:v1.18.3
 QDRANT_TRIVY_IGNORE_FILE := security/trivy/qdrant-v1.18.3.ignore.yaml
 M5_TEI_IMAGE := ghcr.io/huggingface/text-embeddings-inference@sha256:cb570aabbfa016b86684f576b5bd72d1ee96cc0b7a00b0ad221b298762b32157
@@ -48,7 +48,8 @@ MODULES := \
 	services/answer-service \
 	services/edge-api \
 	tests/e2e \
-	tools/healthcheck
+	tools/healthcheck \
+	tools/rabbitmq-topology
 
 # Go packages import generated protobuf bindings. Generate them before any
 # target that compiles or analyzes those packages.
@@ -595,6 +596,7 @@ secret-scan: _require_root
 
 dockerfile-lint: _require_root
 	docker run --rm -i $(HADOLINT_IMAGE) hadolint - < Dockerfile
+	docker run --rm -i $(HADOLINT_IMAGE) hadolint - < deploy/cloud-test/Dockerfile.ui
 
 image-build: _require_root
 	docker build --build-arg SERVICE=identity-service -t raglibrarian-identity-service:local .
@@ -613,6 +615,7 @@ image-build: _require_root
 	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda -t raglibrarian-retrieval-cleanup-lambda:local .
 	docker build --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/server -t raglibrarian-answer-service:local .
 	docker build --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/provider_stub -t raglibrarian-answer-provider-stub:local .
+	docker build -f deploy/cloud-test/Dockerfile.ui -t raglibrarian-web:local .
 
 image-build-ci: _require_root
 	@set -eu; \
@@ -637,7 +640,8 @@ image-build-ci: _require_root
 	build_ci raglibrarian-retrieval-dispatcher-lambda:local retrieval-dispatcher-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/dispatcher_lambda; \
 	build_ci raglibrarian-retrieval-cleanup-lambda:local retrieval-cleanup-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda; \
 	build_ci raglibrarian-answer-service:local answer-service --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/server; \
-	build_ci raglibrarian-answer-provider-stub:local answer-provider-stub --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/provider_stub
+	build_ci raglibrarian-answer-provider-stub:local answer-provider-stub --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/provider_stub; \
+	build_ci raglibrarian-web:local web -f deploy/cloud-test/Dockerfile.ui
 
 image-scan: image-build image-scan-images
 

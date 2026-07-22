@@ -17,4 +17,5 @@ use (
 	./services/retrieval-service
 	./tests/e2e
 	./tools/healthcheck
+	./tools/rabbitmq-topology
 )

@@ -15,6 +15,8 @@ import (
 const Queue = "catalog.book-processing.v1"
 const RetrievalQueue = "catalog.retrieval-terminal.v1"
 
+const applicationDeliveryCountHeader = "x-raglibrarian-delivery-count"
+
 type handler interface {
 	HandleEnvelope(context.Context, string, string, []byte) (bool, error)
 }
@@ -24,6 +26,51 @@ type Recorder interface {
 	ProcessingEventRejected()
 	ProcessingEventConflict()
 	ProcessingEventApplyFailed()
+}
+
+type retryPublisher interface {
+	PublishRetry(context.Context, string, amqp091.Publishing) error
+}
+
+// confirmedRetryPublisher makes the retry budget independent of quorum-only
+// x-delivery-count headers. That keeps retries bounded on classic test queues
+// without weakening the production quorum topology.
+type confirmedRetryPublisher struct {
+	channel *amqp091.Channel
+	returns <-chan amqp091.Return
+}
+
+func newConfirmedRetryPublisher(connection *amqp091.Connection) (*confirmedRetryPublisher, error) {
+	channel, err := connection.Channel()
+	if err != nil {
+		return nil, err
+	}
+	if err = channel.Confirm(false); err != nil {
+		_ = channel.Close()
+		return nil, err
+	}
+	return &confirmedRetryPublisher{channel: channel, returns: channel.NotifyReturn(make(chan amqp091.Return, 1))}, nil
+}
+
+func (p *confirmedRetryPublisher) Close() error {
+	return p.channel.Close()
+}
+
+func (p *confirmedRetryPublisher) PublishRetry(ctx context.Context, queue string, message amqp091.Publishing) error {
+	confirmation, err := p.channel.PublishWithDeferredConfirmWithContext(ctx, "", queue, true, false, message)
+	if err != nil || confirmation == nil {
+		return errors.New("catalog retry publish failed")
+	}
+	acknowledged, err := confirmation.WaitContext(ctx)
+	if err != nil || !acknowledged {
+		return errors.New("catalog retry publish was not confirmed")
+	}
+	select {
+	case <-p.returns:
+		return errors.New("catalog retry publish was returned")
+	default:
+	}
+	return nil
 }
 
 // Run reconnects until shutdown. RabbitMQ is asynchronous and therefore does
@@ -73,6 +120,11 @@ func consumeConnection(ctx context.Context, uri, queue string, service handler, 
 		return err
 	}
 	defer func() { _ = channel.Close() }()
+	retry, err := newConfirmedRetryPublisher(connection)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = retry.Close() }()
 	if err = channel.Qos(1, 0, false); err != nil {
 		return err
 	}
@@ -94,12 +146,12 @@ func consumeConnection(ctx context.Context, uri, queue string, service handler, 
 			if !open {
 				return errors.New("catalog processing delivery channel closed")
 			}
-			handleDelivery(ctx, service, recorder, delivery)
+			handleDelivery(ctx, queue, service, recorder, retry, delivery)
 		}
 	}
 }
 
-func handleDelivery(ctx context.Context, service handler, recorder Recorder, delivery amqp091.Delivery) {
+func handleDelivery(ctx context.Context, queue string, service handler, recorder Recorder, retry retryPublisher, delivery amqp091.Delivery) {
 	if delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > 64<<10 {
 		recorder.ProcessingEventRejected()
 		_ = delivery.Nack(false, false)
@@ -128,18 +180,36 @@ func handleDelivery(ctx context.Context, service handler, recorder Recorder, del
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			_ = delivery.Nack(false, true)
+			// Closing the consumer connection recovers unsettled deliveries. Do not
+			// explicitly requeue with an unchanged application retry count.
 		case <-timer.C:
-			_ = delivery.Nack(false, true)
+			publishCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			publishErr := retry.PublishRetry(publishCtx, queue, retryMessage(delivery, attempt+1))
+			cancel()
+			if publishErr != nil {
+				if ctx.Err() == nil {
+					_ = delivery.Nack(false, false)
+				}
+				return
+			}
+			_ = delivery.Ack(false)
 		}
 	}
 }
 
 func deliveryAttempt(headers amqp091.Table) int64 {
-	value, ok := headers["x-delivery-count"]
+	value, ok := headers[applicationDeliveryCountHeader]
+	if ok {
+		return boundedDeliveryAttempt(value)
+	}
+	value, ok = headers["x-delivery-count"]
 	if !ok {
 		return 0
 	}
+	return boundedDeliveryAttempt(value)
+}
+
+func boundedDeliveryAttempt(value any) int64 {
 	switch count := value.(type) {
 	case int64:
 		if count >= 0 {
@@ -151,4 +221,22 @@ func deliveryAttempt(headers amqp091.Table) int64 {
 		}
 	}
 	return 5
+}
+
+func retryMessage(delivery amqp091.Delivery, attempt int64) amqp091.Publishing {
+	return amqp091.Publishing{
+		// Never republish broker-controlled routing or death headers. In
+		// particular, CC and BCC can select additional default-exchange queues.
+		Headers:         amqp091.Table{applicationDeliveryCountHeader: attempt},
+		ContentType:     delivery.ContentType,
+		ContentEncoding: delivery.ContentEncoding,
+		DeliveryMode:    amqp091.Persistent,
+		Priority:        delivery.Priority,
+		CorrelationId:   delivery.CorrelationId,
+		MessageId:       delivery.MessageId,
+		Timestamp:       delivery.Timestamp,
+		Type:            delivery.Type,
+		AppId:           delivery.AppId,
+		Body:            append([]byte(nil), delivery.Body...),
+	}
 }
