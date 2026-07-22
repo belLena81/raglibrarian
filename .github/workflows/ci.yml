@@ -48,7 +48,7 @@ jobs:
         with:
           submodules: recursive
           token: ${{ secrets.UI_SUBMODULE_READ_TOKEN }}
-      - uses: actions/setup-node@v4.4.0
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: '22.17.0'
           cache: npm
@@ -64,7 +64,7 @@ jobs:
           fetch-depth: 0
           submodules: recursive
           token: ${{ secrets.UI_SUBMODULE_READ_TOKEN }}
-      - uses: actions/setup-node@v4.4.0
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: '22.17.0'
           cache: npm
