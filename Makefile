@@ -283,14 +283,39 @@ m6-answer-quality-test: _require_root
 	cd services/answer-service && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" go test -count=1 -v -run '^TestAnswer' ./internal/application
 
 m6-answer-quality-test-real: _require_root
-	@test -n "$${ANSWER_LLM_BASE_URL:-}" && test -n "$${ANSWER_LLM_MODEL:-}" || { echo "Real provider URL and model are required"; exit 1; }
-	@test -r "$${ANSWER_LLM_API_KEY_PATH:-.dev/secrets/answer_llm_api_key}" || { echo "Real provider key file is required"; exit 1; }
-	@$(MAKE) m6-e2e
+	@set -eu; \
+	provider_url="$${ANSWER_LLM_BASE_URL:-}"; \
+	provider_model="$${ANSWER_LLM_MODEL:-}"; \
+	provider_key="$${ANSWER_LLM_API_KEY_PATH:-.dev/secrets/answer_llm_api_key}"; \
+	test -n "$$provider_url" && test -n "$$provider_model" || { echo "Real provider URL and model are required"; exit 1; }; \
+	case "$$provider_url" in \
+		https://llm-provider-stub|https://llm-provider-stub:*|https://llm-provider-stub/*) echo "The deterministic provider stub is not a real-provider gate"; exit 1 ;; \
+		https://*) ;; \
+		*) echo "Real provider URL must use HTTPS"; exit 1 ;; \
+	esac; \
+	test -r "$$provider_key" && test -f "$$provider_key" && test ! -L "$$provider_key" || { echo "Real provider key must be a readable private regular file"; exit 1; }; \
+	case "$$(stat -c '%a' "$$provider_key")" in 400|600) ;; *) echo "Real provider key must have mode 0400 or 0600"; exit 1 ;; esac; \
+	for token in "$${M5_E2E_READER_TOKEN_FILE:-}" "$${M5_E2E_LIBRARIAN_TOKEN_FILE:-}"; do \
+		test -n "$$token" && test -r "$$token" && test -f "$$token" && test ! -L "$$token" || { echo "Reader and librarian token files are required"; exit 1; }; \
+	done; \
+	compose() { docker compose $(INTEGRATION_COMPOSE_FILES) --profile m5 --profile m6 "$$@"; }; \
+	before="$$(compose ps -q answer-service)"; \
+	test -n "$$before" || { echo "A running M5/M6 fixture stack is required"; exit 1; }; \
+	export ANSWER_LLM_BASE_URL="$$provider_url" ANSWER_LLM_MODEL="$$provider_model" ANSWER_LLM_API_KEY_PATH="$$provider_key"; \
+	compose up -d --no-deps --force-recreate --wait --wait-timeout 120 answer-service; \
+	after="$$(compose ps -q answer-service)"; \
+	test -n "$$after" && test "$$after" != "$$before" || { echo "Answer service was not recreated"; exit 1; }; \
+	effective_environment="$$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$$after")"; \
+	printf '%s\n' "$$effective_environment" | grep -Fxq "ANSWER_LLM_BASE_URL=$$provider_url" || { echo "Answer provider URL was not applied"; exit 1; }; \
+	printf '%s\n' "$$effective_environment" | grep -Fxq "ANSWER_LLM_MODEL=$$provider_model" || { echo "Answer provider model was not applied"; exit 1; }; \
+	mounted_key="$$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/run/secrets/answer_llm_api_key"}}{{println .Source}}{{end}}{{end}}' "$$after")"; \
+	test -n "$$mounted_key" && test "$$(readlink -f "$$mounted_key")" = "$$(readlink -f "$$provider_key")" || { echo "Answer provider key mount was not applied"; exit 1; }; \
+	$(MAKE) M6_E2E_PATTERN='^TestM6SearchRemainsCompatibleAndAnswerCitesReturnedEvidence$$' m6-e2e
 
 m6-e2e: m4-fixtures
 	@tests="$$(cd tests/e2e && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" go test -tags 'e2e m5 m6' -list '^TestM6' ./...)"; \
 	printf '%s\n' "$$tests" | grep -q '^TestM6' || { echo "M6 E2E tests were not discovered"; exit 1; }
-	cd tests/e2e && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" M5_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" go test -count=1 -v -tags 'e2e m5 m6' -run '^TestM6(SearchRemainsCompatibleAndAnswerCitesReturnedEvidence|EmptyEvidenceDegradesWithoutFabrication)$$' ./...
+	cd tests/e2e && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" M5_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" go test -count=1 -v -tags 'e2e m5 m6' -run "$${M6_E2E_PATTERN:-^TestM6(SearchRemainsCompatibleAndAnswerCitesReturnedEvidence|EmptyEvidenceDegradesWithoutFabrication)$$}" ./...
 
 m6-performance-smoke: _require_root
 	@tests="$$(cd tests/e2e && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" go test -tags 'e2e m5 m6' -list '^TestM6PerformanceAnswersWithinBudget$$' ./...)"; \

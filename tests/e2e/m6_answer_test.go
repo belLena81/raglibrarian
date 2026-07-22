@@ -67,9 +67,14 @@ func TestM6EmptyEvidenceDegradesWithoutFabrication(t *testing.T) {
 }
 
 func TestM6PerformanceAnswersWithinBudget(t *testing.T) {
+	const answerRequests = 8
+
 	token := readM5SecretFile(t, "M5_E2E_READER_TOKEN_FILE")
-	durations := make([]time.Duration, 0, 20)
-	for index := 0; index < 20; index++ {
+	// Keep this smoke inside the default EDGE_ANSWER_RATE_LIMIT=10/minute.
+	// The combined M6 integration gate consumes two answer-mode requests with
+	// the same reader principal before invoking this performance smoke.
+	durations := make([]time.Duration, 0, answerRequests)
+	for index := 0; index < answerRequests; index++ {
 		started := time.Now()
 		result := queryM6(t, token, map[string]any{"question": "deterministic retries", "mode": "answer", "limit": 5})
 		durations = append(durations, time.Since(started))
@@ -84,7 +89,8 @@ func TestM6PerformanceAnswersWithinBudget(t *testing.T) {
 			}
 		}
 	}
-	if p95 := durations[18]; p95 >= 3*time.Second {
+	p95Index := (95*len(durations)+99)/100 - 1
+	if p95 := durations[p95Index]; p95 >= 3*time.Second {
 		t.Fatalf("M6 deterministic answer p95 exceeded budget: %s", p95)
 	}
 }

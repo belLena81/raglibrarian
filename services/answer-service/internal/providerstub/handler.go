@@ -50,6 +50,10 @@ func New(apiKey string, scenario Scenario, delay time.Duration) (*Handler, error
 }
 
 func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	if request.Method == http.MethodGet && request.URL.Path == "/healthz" {
+		response.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if request.Method != http.MethodPost || request.URL.Path != "/v1/chat/completions" {
 		http.NotFound(response, request)
 		return

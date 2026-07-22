@@ -4,7 +4,7 @@ set -euo pipefail
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root_dir"
 
-for command in openssl stat; do
+for command in docker jq openssl stat; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "$command is required for M6 development configuration tests" >&2
     exit 1
@@ -41,5 +41,30 @@ bash ./scripts/ensure-m6-dev-secret.sh "$secret_dir" >/dev/null
   echo "M6 provider key was unexpectedly replaced" >&2
   exit 1
 }
+
+compose_config="$({
+	CERT_DIR="$cert_dir" \
+	SECRET_DIR="$secret_dir" \
+	ANSWER_LLM_API_KEY_PATH="$secret_dir/answer_llm_test_api_key" \
+	ANSWER_LLM_BASE_URL= \
+	ANSWER_LLM_MODEL= \
+	docker compose -f docker-compose.yml -f docker-compose.ci.yml \
+		--profile m4-ha --profile m5 --profile m6 --profile m6-test config --no-env-resolution --format json
+})"
+printf '%s' "$compose_config" | jq -e '
+	.services["llm-provider-stub"].user == null and
+	(.services["llm-provider-stub"].cap_add | sort) == ["DAC_READ_SEARCH", "SETGID", "SETUID"] and
+	.services["llm-provider-stub"].environment.RUN_AS_UID == "65532" and
+	.services["llm-provider-stub"].environment.RUN_AS_GID == "65532" and
+	.services["llm-provider-stub"].healthcheck.test == ["CMD", "/healthcheck"] and
+	.services["answer-service"].depends_on["llm-provider-stub"].condition == "service_healthy" and
+	.services["edge-api"].environment.EDGE_ANSWER_RATE_LIMIT == "30" and
+	.services["edge-api-2"].environment.EDGE_ANSWER_RATE_LIMIT == "30"
+' >/dev/null || {
+	echo "M6 Compose security or test-limit configuration regressed" >&2
+	exit 1
+}
+
+bash ./scripts/test-m6-real-provider-gate.sh
 
 echo "M6 development configuration regressions passed"

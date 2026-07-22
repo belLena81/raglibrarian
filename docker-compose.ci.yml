@@ -2,10 +2,12 @@ services:
   edge-api:
     environment:
       EDGE_INSECURE_REFRESH_COOKIE: "true"
+      EDGE_ANSWER_RATE_LIMIT: "${M6_TEST_ANSWER_RATE_LIMIT:-30}"
 
   edge-api-2:
     environment:
       EDGE_INSECURE_REFRESH_COOKIE: "true"
+      EDGE_ANSWER_RATE_LIMIT: "${M6_TEST_ANSWER_RATE_LIMIT:-30}"
 
   text-embeddings-inference:
     image: raglibrarian-tei-stub:local
@@ -34,11 +36,11 @@ services:
 
   answer-service:
     environment:
-      ANSWER_LLM_BASE_URL: https://llm-provider-stub:8443
-      ANSWER_LLM_MODEL: raglibrarian-deterministic
+      ANSWER_LLM_BASE_URL: "${ANSWER_LLM_BASE_URL:-https://llm-provider-stub:8443}"
+      ANSWER_LLM_MODEL: "${ANSWER_LLM_MODEL:-raglibrarian-deterministic}"
     depends_on:
       llm-provider-stub:
-        condition: service_started
+        condition: service_healthy
 
   llm-provider-stub:
     profiles: ["m6-test"]
@@ -54,6 +56,10 @@ services:
       ANSWER_STUB_TLS_CERT_FILE: /run/secrets/llm_provider_stub_tls_cert
       ANSWER_STUB_TLS_KEY_FILE: /run/secrets/llm_provider_stub_tls_key
       ANSWER_STUB_SCENARIO: success
+      HEALTHCHECK_HTTP_URL: https://localhost:8443/healthz
+      SSL_CERT_FILE: /run/secrets/internal_ca
+      RUN_AS_UID: "${RUN_AS_UID:-65532}"
+      RUN_AS_GID: "${RUN_AS_GID:-65532}"
     secrets:
       - answer_llm_api_key
       - internal_ca
@@ -68,10 +74,19 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      - DAC_READ_SEARCH
+      - SETGID
+      - SETUID
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m
     pids_limit: 64
-    user: "${RUN_AS_UID:-65532}:${RUN_AS_GID:-65532}"
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 5s
 
 volumes:
   m5_ci_empty_model:

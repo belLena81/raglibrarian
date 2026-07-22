@@ -222,7 +222,11 @@ For optional grounded answers, configure the file-backed provider endpoint,
 model, CA, and key documented in `.env.example`, then run `make m6-stack-up`.
 The deterministic `make m6-answer-quality-test` and `make m6-contract-test`
 targets do not require a real provider; `make m6-answer-quality-test-real` is a
-protected staging gate and requires an existing authenticated fixture stack.
+protected staging gate and requires an existing authenticated fixture stack
+plus reader and librarian token files. It recreates only `answer-service` with
+the supplied HTTPS provider URL, model, and file-backed key, verifies that
+configuration, and requires a grounded response from that provider. The
+recreated service remains configured for the real provider after the gate.
 Identity and Catalog expose standard gRPC health services inside the private
 Compose network. `make contract-test` verifies both services over mTLS.
 

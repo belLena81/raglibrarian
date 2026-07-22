@@ -31,6 +31,18 @@ func TestHandlerRequiresCredentialAndReturnsDeterministicResponse(t *testing.T) 
 	}
 }
 
+func TestHandlerHealthDoesNotCountAsProviderCall(t *testing.T) {
+	handler, err := New("synthetic-key", ScenarioSuccess, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if response.Code != http.StatusNoContent || handler.Calls() != 0 {
+		t.Fatalf("status=%d calls=%d", response.Code, handler.Calls())
+	}
+}
+
 func TestHandlerRejectsSuccessRequestWithoutUsableEvidence(t *testing.T) {
 	handler, err := New("synthetic-key", ScenarioSuccess, 0)
 	if err != nil {
