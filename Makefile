@@ -4,7 +4,7 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion run-retrieval dev local-run local-stop tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-m5-integration-test m4-worker-recovery-test m4-e2e m4-performance-smoke m4-sse-load m4-soak m5-contract-test m5-integration-test m5-search-quality-test m5-search-quality-test-real m5-worker-recovery-test m5-e2e m5-performance-smoke contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down migrate-retrieval-up migrate-retrieval-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-m5 dev-secrets-test m5-model-bootstrap m5-model-bootstrap-test bootstrap-verifier compose-config m5-mode-policy sam-validate sam-package-check sam-m5-validate sam-m5-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-scan security-check full-gates integration-gates smtp-url
+.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion run-retrieval dev local-run local-stop tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-m5-integration-test m4-worker-recovery-test m4-e2e m4-performance-smoke m4-sse-load m4-soak m5-contract-test m5-contract-only-test m5-contract-ci-test m5-integration-test m5-search-quality-test m5-search-quality-test-real m5-worker-recovery-test m5-e2e m5-performance-smoke contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down migrate-retrieval-up migrate-retrieval-down infra-up infra-down stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-m5 dev-secrets-test m5-model-bootstrap m5-model-bootstrap-test bootstrap-verifier compose-config m5-mode-policy sam-validate sam-package-check sam-m5-validate sam-m5-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-build-ci image-scan image-scan-ci image-scan-images security-check security-check-ci full-gates integration-gates smtp-url
 
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
 HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
@@ -195,11 +195,31 @@ e2e: _require_root
 # e2e and m4 build constraints. All targets expect a running local stack.
 m4-contract-test: contract-test
 
-m5-contract-test: contract-test
+m5-contract-test: contract-test m5-contract-only-test
+
+m5-contract-only-test: _require_root
 	@project=raglibrarian-m5-contract-test; \
 	trap 'MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile m5-contract-test down -v --remove-orphans' EXIT; \
 	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile m5-contract-test build retrieval-qdrant-init retrieval-service retrieval-contract-tests && \
 	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile m5-contract-test run --rm retrieval-contract-tests
+
+m5-contract-ci-test: _require_root
+	@if [ "$(M5_SEARCH_QUALITY_REQUIRE_MODEL)" = "true" ]; then \
+		test -r "$${M5_MODEL_DIR:-.dev/models/m5-jina-code-v1}/.revision" || { echo "M5 model cache is missing; run make m5-model-bootstrap"; exit 1; }; \
+	fi
+	@project=raglibrarian-m5-contract-test; \
+	status=0; \
+	compose() { MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile m5-contract-test "$$@"; }; \
+	trap 'compose down -v --remove-orphans' EXIT; \
+	compose build retrieval-qdrant-init retrieval-service retrieval-contract-tests && \
+	compose up -d --wait text-embeddings-inference && \
+	compose run --rm --no-deps -e RETRIEVAL_TEI_URL=http://text-embeddings-inference:8080 retrieval-contract-tests "go -C /src/services/retrieval-service test -count=1 -v -run '^TestSearchQualityBenchmark$$' ./internal/application" && \
+	compose run --rm retrieval-contract-tests || status=$$?; \
+	if [ "$$status" -ne 0 ]; then \
+		docker inspect --format 'exit={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{.State.Error}} memory_bytes={{.HostConfig.Memory}} nano_cpus={{.HostConfig.NanoCPUs}}' "$${project}-text-embeddings-inference-1" || true; \
+		compose logs --no-color --tail=200 text-embeddings-inference || true; \
+	fi; \
+	exit $$status
 
 m5-integration-test: m5-search-quality-test m5-contract-test m5-e2e m5-worker-recovery-test
 
@@ -500,18 +520,52 @@ image-build: _require_root
 	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/dispatcher_lambda -t raglibrarian-retrieval-dispatcher-lambda:local .
 	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda -t raglibrarian-retrieval-cleanup-lambda:local .
 
-image-scan: image-build
+image-build-ci: _require_root
+	@set -eu; \
+	build_ci() { \
+		image="$$1"; \
+		scope="$$2"; \
+		shift 2; \
+		docker buildx build --load --cache-from "type=gha,scope=$$scope" --cache-to "type=gha,mode=max,scope=$$scope" "$$@" -t "$$image" .; \
+	}; \
+	build_ci raglibrarian-identity-service:local identity-service --build-arg SERVICE=identity-service; \
+	build_ci raglibrarian-catalog-service:local catalog-service --build-arg SERVICE=catalog-service; \
+	build_ci raglibrarian-edge-api:local edge-api --build-arg SERVICE=edge-api; \
+	build_ci raglibrarian-ingestion-service:local ingestion-service --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/worker; \
+	build_ci raglibrarian-ingestion-lambda:local ingestion-lambda --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/lambda; \
+	build_ci raglibrarian-ingestion-dispatcher-lambda:local ingestion-dispatcher-lambda --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/dispatcher_lambda; \
+	build_ci raglibrarian-ingestion-cleanup-lambda:local ingestion-cleanup-lambda --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda; \
+	build_ci raglibrarian-retrieval-service:local retrieval-service --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/server; \
+	build_ci raglibrarian-retrieval-worker:local retrieval-worker --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/worker; \
+	build_ci raglibrarian-retrieval-qdrant-init:local retrieval-qdrant-init --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/qdrant_init; \
+	build_ci raglibrarian-retrieval-planner-lambda:local retrieval-planner-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/planner_lambda; \
+	build_ci raglibrarian-retrieval-index-lambda:local retrieval-index-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/index_lambda; \
+	build_ci raglibrarian-retrieval-dispatcher-lambda:local retrieval-dispatcher-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/dispatcher_lambda; \
+	build_ci raglibrarian-retrieval-cleanup-lambda:local retrieval-cleanup-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda
+
+image-scan: image-build image-scan-images
+
+image-scan-ci: image-build-ci image-scan-images
+
+image-scan-images: _require_root
+	@mkdir -p "$${TRIVY_CACHE_DIR:-$$HOME/.cache/trivy}"
 	@for image in $(SERVICE_IMAGES) $(M5_PROVIDER_IMAGES); do \
 		ignorefile=""; \
 		if [ "$$image" = "$(QDRANT_IMAGE)" ]; then ignorefile="--ignorefile /trivyignore/qdrant-v1.18.3.ignore.yaml"; fi; \
 		if [ "$$image" = "$(M5_TEI_IMAGE)" ]; then ignorefile="--ignorefile /trivyignore/text-embeddings-inference-cpu-latest.ignore.yaml"; fi; \
 		docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+			--user "$$(id -u):$$(id -g)" \
+			--group-add "$$(stat -c %g /var/run/docker.sock)" \
+			-e TRIVY_CACHE_DIR=/tmp/trivy-cache \
+			-v "$${TRIVY_CACHE_DIR:-$$HOME/.cache/trivy}:/tmp/trivy-cache" \
 			-v "$(CURDIR)/$(QDRANT_TRIVY_IGNORE_FILE):/trivyignore/qdrant-v1.18.3.ignore.yaml:ro" \
 			-v "$(CURDIR)/$(M5_TEI_TRIVY_IGNORE_FILE):/trivyignore/text-embeddings-inference-cpu-latest.ignore.yaml:ro" \
 			$(TRIVY_IMAGE) image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL $$ignorefile "$$image" || exit 1; \
 	done
 
 security-check: secret-scan dockerfile-lint image-scan ui-audit
+
+security-check-ci: secret-scan dockerfile-lint image-scan-ci ui-audit
 
 full-gates: fmt-check vet lint test test-race arch-check vuln proto-check proto-breaking dev-secrets-test compose-config m5-mode-policy sam-m5-validate ui-check security-check
 
