@@ -21,13 +21,16 @@ type TokenVerifier interface {
 
 // RouterConfig controls optional perimeter proxy trust.
 type RouterConfig struct {
-	TrustedProxyCIDRs    []netip.Prefix
-	PublicOrigin         string
-	EnforceBrowserOrigin bool
-	QueryRateLimit       int
-	QueryRateWindow      time.Duration
-	QueryRateMaxKeys     int
-	QueryConcurrency     int
+	TrustedProxyCIDRs     []netip.Prefix
+	PublicOrigin          string
+	EnforceBrowserOrigin  bool
+	QueryRateLimit        int
+	QueryRateWindow       time.Duration
+	QueryRateMaxKeys      int
+	QueryConcurrency      int
+	BookUploadRateLimit   int
+	BookUploadRateWindow  time.Duration
+	BookUploadRateMaxKeys int
 }
 
 // NewRouter wires all public routes and mandatory authentication dependencies.
@@ -132,7 +135,11 @@ func NewRouter(
 			router.Get("/{book_id}", booksHandler.Get)
 			router.Group(func(router chi.Router) {
 				router.Use(middleware.RequireAnyRole(auth.RoleLibrarian, auth.RoleAdmin))
-				router.Use(middleware.FixedWindowRateLimit(20, time.Hour, 10000))
+				router.Use(middleware.FixedWindowRateLimit(
+					bookUploadRateLimit(config.BookUploadRateLimit),
+					bookUploadRateWindow(config.BookUploadRateWindow),
+					bookUploadRateMaxKeys(config.BookUploadRateMaxKeys),
+				))
 				router.Use(middleware.UploadDeadline)
 				router.Post("/", booksHandler.Upload)
 			})
@@ -167,4 +174,25 @@ func queryConcurrency(value int) int {
 		return value
 	}
 	return 8
+}
+
+func bookUploadRateLimit(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 20
+}
+
+func bookUploadRateWindow(value time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return time.Hour
+}
+
+func bookUploadRateMaxKeys(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 10000
 }

@@ -3,11 +3,13 @@ services:
     environment:
       EDGE_INSECURE_REFRESH_COOKIE: "true"
       EDGE_ANSWER_RATE_LIMIT: "${M6_TEST_ANSWER_RATE_LIMIT:-30}"
+      EDGE_BOOK_UPLOAD_RATE_LIMIT: "${INTEGRATION_TEST_BOOK_UPLOAD_RATE_LIMIT:-120}"
 
   edge-api-2:
     environment:
       EDGE_INSECURE_REFRESH_COOKIE: "true"
       EDGE_ANSWER_RATE_LIMIT: "${M6_TEST_ANSWER_RATE_LIMIT:-30}"
+      EDGE_BOOK_UPLOAD_RATE_LIMIT: "${INTEGRATION_TEST_BOOK_UPLOAD_RATE_LIMIT:-120}"
 
   text-embeddings-inference:
     image: raglibrarian-tei-stub:local

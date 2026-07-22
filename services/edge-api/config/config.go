@@ -46,6 +46,8 @@ type Config struct {
 	RetrievalReadinessRequired                                             bool
 	QueryRateLimit, QueryRateMaxKeys, QueryConcurrency                     int
 	QueryRateWindow                                                        time.Duration
+	BookUploadRateLimit, BookUploadRateMaxKeys                             int
+	BookUploadRateWindow                                                   time.Duration
 	AnswerRateLimit                                                        int
 	AnswerRateWindow, AnswerDeadline                                       time.Duration
 	RunAs                                                                  process.Identity
@@ -101,6 +103,18 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	queryConcurrency, err := positiveInt("EDGE_QUERY_CONCURRENCY", 8)
+	if err != nil {
+		return Config{}, err
+	}
+	bookUploadRateLimit, err := positiveInt("EDGE_BOOK_UPLOAD_RATE_LIMIT", 20)
+	if err != nil {
+		return Config{}, err
+	}
+	bookUploadRateWindow, err := positiveDuration("EDGE_BOOK_UPLOAD_RATE_WINDOW", time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	bookUploadRateMaxKeys, err := positiveInt("EDGE_BOOK_UPLOAD_RATE_MAX_KEYS", 10000)
 	if err != nil {
 		return Config{}, err
 	}
@@ -165,6 +179,9 @@ func Load() (Config, error) {
 		QueryRateWindow:            queryRateWindow,
 		QueryRateMaxKeys:           queryRateMaxKeys,
 		QueryConcurrency:           queryConcurrency,
+		BookUploadRateLimit:        bookUploadRateLimit,
+		BookUploadRateWindow:       bookUploadRateWindow,
+		BookUploadRateMaxKeys:      bookUploadRateMaxKeys,
 		AnswerRateLimit:            answerRateLimit,
 		AnswerRateWindow:           answerRateWindow,
 		AnswerDeadline:             answerDeadline,

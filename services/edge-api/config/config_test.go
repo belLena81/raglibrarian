@@ -48,6 +48,9 @@ func TestLoadParsesExplicitSecurityConfiguration(t *testing.T) {
 	assert.Equal(t, time.Minute, cfg.QueryRateWindow)
 	assert.Equal(t, 10000, cfg.QueryRateMaxKeys)
 	assert.Equal(t, 8, cfg.QueryConcurrency)
+	assert.Equal(t, 20, cfg.BookUploadRateLimit)
+	assert.Equal(t, time.Hour, cfg.BookUploadRateWindow)
+	assert.Equal(t, 10000, cfg.BookUploadRateMaxKeys)
 }
 
 func TestLoadParsesRetrievalReadinessPolicy(t *testing.T) {
@@ -66,6 +69,9 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	t.Setenv("EDGE_QUERY_RATE_WINDOW", "30s")
 	t.Setenv("EDGE_QUERY_RATE_MAX_KEYS", "500")
 	t.Setenv("EDGE_QUERY_CONCURRENCY", "3")
+	t.Setenv("EDGE_BOOK_UPLOAD_RATE_LIMIT", "40")
+	t.Setenv("EDGE_BOOK_UPLOAD_RATE_WINDOW", "15m")
+	t.Setenv("EDGE_BOOK_UPLOAD_RATE_MAX_KEYS", "600")
 	t.Setenv("EDGE_ANSWER_DEADLINE", "7s")
 	t.Setenv("EDGE_ANSWER_RATE_LIMIT", "9")
 	t.Setenv("EDGE_ANSWER_RATE_WINDOW", "45s")
@@ -77,6 +83,9 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	assert.Equal(t, 30*time.Second, cfg.QueryRateWindow)
 	assert.Equal(t, 500, cfg.QueryRateMaxKeys)
 	assert.Equal(t, 3, cfg.QueryConcurrency)
+	assert.Equal(t, 40, cfg.BookUploadRateLimit)
+	assert.Equal(t, 15*time.Minute, cfg.BookUploadRateWindow)
+	assert.Equal(t, 600, cfg.BookUploadRateMaxKeys)
 	assert.Equal(t, 7*time.Second, cfg.AnswerDeadline)
 	assert.Equal(t, 9, cfg.AnswerRateLimit)
 	assert.Equal(t, 45*time.Second, cfg.AnswerRateWindow)
@@ -137,6 +146,27 @@ func TestLoadClassifiesConfigurationFailures(t *testing.T) {
 			name: "query rate invalid",
 			configure: func(t *testing.T) {
 				t.Setenv("EDGE_QUERY_RATE_LIMIT", "0")
+			},
+			expected: config.ErrQueryLimitConfiguration,
+		},
+		{
+			name: "book upload rate invalid",
+			configure: func(t *testing.T) {
+				t.Setenv("EDGE_BOOK_UPLOAD_RATE_LIMIT", "0")
+			},
+			expected: config.ErrQueryLimitConfiguration,
+		},
+		{
+			name: "book upload window invalid",
+			configure: func(t *testing.T) {
+				t.Setenv("EDGE_BOOK_UPLOAD_RATE_WINDOW", "0s")
+			},
+			expected: config.ErrQueryLimitConfiguration,
+		},
+		{
+			name: "book upload max keys invalid",
+			configure: func(t *testing.T) {
+				t.Setenv("EDGE_BOOK_UPLOAD_RATE_MAX_KEYS", "0")
 			},
 			expected: config.ErrQueryLimitConfiguration,
 		},

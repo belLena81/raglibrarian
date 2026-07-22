@@ -130,6 +130,8 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		Handler: edgeapi.NewRouter(queryHandler, authHandler, healthHandler, setupHandler, adminHandler, verifier, identity, diagnostics, edgeapi.RouterConfig{
 			TrustedProxyCIDRs: cfg.TrustedProxyCIDRs, PublicOrigin: cfg.PublicOrigin, EnforceBrowserOrigin: cfg.EnforceBrowserOrigin,
 			QueryRateLimit: cfg.QueryRateLimit, QueryRateWindow: cfg.QueryRateWindow, QueryRateMaxKeys: cfg.QueryRateMaxKeys, QueryConcurrency: cfg.QueryConcurrency,
+			BookUploadRateLimit: cfg.BookUploadRateLimit, BookUploadRateWindow: cfg.BookUploadRateWindow,
+			BookUploadRateMaxKeys: cfg.BookUploadRateMaxKeys,
 		}, booksHandler),
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,

@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,6 +41,27 @@ func (r *countingRetrieval) Search(context.Context, handler.SearchRequest) (hand
 	return handler.SearchResult{Results: []handler.Evidence{}}, nil
 }
 
+type countingCatalog struct {
+	uploads atomic.Int32
+}
+
+func (c *countingCatalog) UploadBook(context.Context, handler.BookMetadata, handler.CatalogActor, string, io.Reader) (handler.Book, error) {
+	c.uploads.Add(1)
+	return handler.Book{ID: "book-id"}, nil
+}
+
+func (*countingCatalog) ListBooks(context.Context, int, string, handler.CatalogActor) (handler.BookPage, error) {
+	return handler.BookPage{}, nil
+}
+
+func (*countingCatalog) GetBook(context.Context, string, handler.CatalogActor) (handler.Book, error) {
+	return handler.Book{}, nil
+}
+
+func (*countingCatalog) CheckReady(context.Context) error {
+	return nil
+}
+
 func (fakeIdentity) Register(context.Context, string, string, string, string) error { return nil }
 func (fakeIdentity) VerifyEmail(context.Context, string) error                      { return nil }
 func (fakeIdentity) ResendVerification(context.Context, string) error               { return nil }
@@ -64,6 +88,14 @@ func (fakeIdentity) ListPending(context.Context, authflow.Principal, int, string
 }
 func (fakeIdentity) Approve(context.Context, authflow.Principal, string) error { return nil }
 func (fakeIdentity) Reject(context.Context, authflow.Principal, string) error  { return nil }
+
+type librarianIdentity struct {
+	fakeIdentity
+}
+
+func (librarianIdentity) ValidateSession(_ context.Context, userID, sessionID string) (authflow.Principal, error) {
+	return authflow.Principal{UserID: userID, SessionID: sessionID, Role: "librarian", Status: "active"}, nil
+}
 
 func TestRouterRequiresSessionValidatorAndAppliesSecurityHeaders(t *testing.T) {
 	verifier, err := testVerifier()
@@ -167,6 +199,37 @@ func TestQueryRouteRateLimitsTrustedPrincipalBeforeRetrieval(t *testing.T) {
 	assert.Equal(t, int32(1), retrieval.calls.Load())
 }
 
+func TestBookUploadRateLimitUsesRouterConfiguration(t *testing.T) {
+	signer, verifier, err := testSignerVerifier()
+	require.NoError(t, err)
+	diagnostics := diagnostic.New(zaptest.NewLogger(t))
+	identity := librarianIdentity{}
+	catalog := &countingCatalog{}
+	router := edgeapi.NewRouter(
+		handler.NewQueryHandler(fakeRetrieval{}),
+		handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: true}),
+		handler.NewHealthHandler(identity),
+		handler.NewSetupHandler(identity),
+		handler.NewAdminHandler(identity, handler.NewPendingHub(10)),
+		verifier,
+		identity,
+		diagnostics,
+		edgeapi.RouterConfig{
+			BookUploadRateLimit:   1,
+			BookUploadRateWindow:  time.Hour,
+			BookUploadRateMaxKeys: 100,
+		},
+		handler.NewBooksHandler(catalog),
+	)
+	token, err := signer.Issue(auth.Subject{UserID: "upload-user", Email: "librarian@example.test", Role: auth.RoleLibrarian, SessionID: "session-1"})
+	require.NoError(t, err)
+
+	assertAuthenticatedMultipartStatus(t, router, token, http.StatusCreated)
+	assertAuthenticatedMultipartStatus(t, router, token, http.StatusTooManyRequests)
+
+	assert.Equal(t, int32(1), catalog.uploads.Load())
+}
+
 type passwordResetIdentity struct {
 	fakeIdentity
 	verifyErrors []error
@@ -235,4 +298,44 @@ func assertAuthenticatedPostStatus(t *testing.T, router http.Handler, path, body
 	request.Header.Set("Authorization", "Bearer "+token)
 	router.ServeHTTP(recorder, request)
 	assert.Equal(t, want, recorder.Code, "%s response: %s", path, recorder.Body.String())
+}
+
+func assertAuthenticatedMultipartStatus(t *testing.T, router http.Handler, token string, want int) {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	metadataHeader := textproto.MIMEHeader{}
+	metadataHeader.Set("Content-Disposition", `form-data; name="metadata"`)
+	metadataHeader.Set("Content-Type", "application/json")
+	metadata, err := writer.CreatePart(metadataHeader)
+	require.NoError(t, err)
+	_, err = metadata.Write([]byte(`{"title":"Book","author":"Author","year":2026,"tags":["test"]}`))
+	require.NoError(t, err)
+	fileHeader := textproto.MIMEHeader{}
+	fileHeader.Set("Content-Disposition", `form-data; name="file"; filename="book.pdf"`)
+	fileHeader.Set("Content-Type", "application/pdf")
+	file, err := writer.CreatePart(fileHeader)
+	require.NoError(t, err)
+	_, err = file.Write([]byte("%PDF-1.4\n%%EOF\n"))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	recorder := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	request := httptest.NewRequest(http.MethodPost, "/books/", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("Authorization", "Bearer "+token)
+	router.ServeHTTP(recorder, request)
+	assert.Equal(t, want, recorder.Code, "upload response: %s", recorder.Body.String())
+}
+
+type deadlineRecorder struct {
+	*httptest.ResponseRecorder
+}
+
+func (*deadlineRecorder) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (*deadlineRecorder) SetWriteDeadline(time.Time) error {
+	return nil
 }
