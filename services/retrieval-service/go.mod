@@ -16,9 +16,9 @@ require (
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/klauspost/compress v1.18.2
 	github.com/minio/minio-go/v7 v7.0.99
-	github.com/rabbitmq/amqp091-go v1.10.0
+	github.com/rabbitmq/amqp091-go v1.12.0
 	github.com/stretchr/testify v1.11.1
-	go.uber.org/zap v1.27.1
+	go.uber.org/zap v1.28.0
 	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.11
 )

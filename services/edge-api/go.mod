@@ -9,7 +9,7 @@ go 1.26.5
 require (
 	github.com/go-chi/chi/v5 v5.2.5 // idiomatic stdlib-compatible router
 	github.com/stretchr/testify v1.11.1
-	go.uber.org/zap v1.27.1
+	go.uber.org/zap v1.28.0
 )
 
 require (

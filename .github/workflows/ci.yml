@@ -180,7 +180,12 @@ jobs:
         run: |
           E2E_BOOTSTRAP_CODE="$(cat .dev/secrets/e2e_bootstrap_code)" \
           E2E_MAIL_FIXTURE_URL=http://127.0.0.1:8025/view/latest.txt \
+          INTEGRATION_COMPOSE_FILES='-f docker-compose.yml -f docker-compose.ci.yml' \
             make m4-m5-integration-test
+      - name: Show integration diagnostics
+        if: failure()
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml logs --no-color --tail=300 ingestion-service retrieval-worker retrieval-service rabbitmq qdrant || true
       - name: Run M5 Retrieval contracts and focused recovery tests
         run: make m5-contract-test m5-worker-recovery-test
       - name: Verify database-loss readiness behavior

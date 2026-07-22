@@ -19,6 +19,7 @@ M5_TEI_TRIVY_IGNORE_FILE := security/trivy/text-embeddings-inference-cpu-latest.
 M5_PROVIDER_IMAGES := $(QDRANT_IMAGE) $(M5_TEI_IMAGE)
 M5_TEST_COMPOSE_FILES ?= -f docker-compose.yml -f docker-compose.ci.yml
 M5_SEARCH_QUALITY_REQUIRE_MODEL ?= false
+INTEGRATION_COMPOSE_FILES ?=
 M4_E2E_INGESTION_POSTGRES_DSN_FILE ?= $(CURDIR)/.dev/secrets/ingestion_e2e_dsn
 M4_E2E_MINIO_ENDPOINT ?= 127.0.0.1:9000
 M4_E2E_MINIO_INSECURE ?= true
@@ -226,7 +227,7 @@ m5-worker-recovery-test: _require_root
 	cd services/retrieval-service && RETRIEVAL_POSTGRES_INTEGRATION=true RETRIEVAL_POSTGRES_DSN_FILE=../../.dev/secrets/retrieval_runtime_host_dsn go test -count=1 -v -tags=integration -run 'Replay|Recovery|TerminalFailure|Visibility|Manifest|FailBatch|CompleteBatch' ./internal/repository
 
 m5-e2e: m4-fixtures
-	cd tests/e2e && M5_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" go test -count=1 -v -tags 'e2e m5' ./...
+	cd tests/e2e && M5_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" go test -count=1 -v -tags 'e2e m5' -run '^TestM5' ./...
 
 m5-performance-smoke: _require_root
 	cd tests/e2e && go test -count=1 -v -timeout 20m -tags 'e2e m5' -run '^TestM5PerformanceSearchesIndexedEvidenceWithinBudget$$' ./...
@@ -270,13 +271,13 @@ m4-worker-recovery-test: m4-fixtures
 	test_pid=''; \
 	cleanup() { \
 		if test -n "$$test_pid" && kill -0 "$$test_pid" 2>/dev/null; then kill "$$test_pid" 2>/dev/null || true; wait "$$test_pid" 2>/dev/null || true; fi; \
-		docker compose up -d --no-deps --wait --wait-timeout 120 ingestion-service; \
-		docker compose up -d --no-deps --wait --wait-timeout 120 retrieval-worker; \
+		docker compose $(INTEGRATION_COMPOSE_FILES) up -d --no-deps --wait --wait-timeout 120 ingestion-service; \
+		docker compose $(INTEGRATION_COMPOSE_FILES) up -d --no-deps --wait --wait-timeout 120 retrieval-worker; \
 		rm -f "$$control_dir/upload-accepted" "$$control_dir/worker-restarted" "$$control_dir"/.worker-restarted.*; \
 		rmdir "$$control_dir" 2>/dev/null || true; \
 	}; \
 	trap cleanup EXIT INT TERM; \
-	docker compose stop --timeout 30 ingestion-service retrieval-worker; \
+	docker compose $(INTEGRATION_COMPOSE_FILES) stop --timeout 30 ingestion-service retrieval-worker; \
 	(cd tests/e2e && \
 		M4_E2E_RECOVERY_CONTROL_DIR="$$control_dir" \
 		M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" \
@@ -305,19 +306,19 @@ m4-worker-recovery-test: m4-fixtures
 	test "$$(stat -c '%u' "$$control_dir/upload-accepted")" = "$$(id -u)"; \
 	test "$$(wc -l < "$$control_dir/upload-accepted")" -eq 1; \
 	grep -Eq '^[A-Za-z0-9_-]{21}[AQgw]$$' "$$control_dir/upload-accepted"; \
-	docker compose up -d --no-deps --wait --wait-timeout 120 ingestion-service; \
+	docker compose $(INTEGRATION_COMPOSE_FILES) up -d --no-deps --wait --wait-timeout 120 ingestion-service; \
 	restarted_tmp="$$(mktemp "$$control_dir/.worker-restarted.XXXXXX")"; \
 	chmod 600 "$$restarted_tmp"; \
 	mv "$$restarted_tmp" "$$control_dir/worker-restarted"; \
 	wait "$$test_pid"; \
 	test_pid=''; \
-	docker compose up -d --no-deps --wait --wait-timeout 120 retrieval-worker
+	docker compose $(INTEGRATION_COMPOSE_FILES) up -d --no-deps --wait --wait-timeout 120 retrieval-worker
 
 m4-fixtures: _require_root
 	go run ./tests/fixtures/ingestion/generate.go -out "$(M4_E2E_FIXTURE_DIR)"
 
 m4-e2e: m4-fixtures
-	cd tests/e2e && M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" M4_E2E_EDGE_BASE_URLS="$(M4_E2E_EDGE_BASE_URLS)" M4_E2E_PUBLIC_ORIGIN="$(M4_E2E_PUBLIC_ORIGIN)" M4_E2E_INGESTION_POSTGRES_DSN_FILE="$(M4_E2E_INGESTION_POSTGRES_DSN_FILE)" M4_E2E_MINIO_ENDPOINT="$(M4_E2E_MINIO_ENDPOINT)" M4_E2E_MINIO_INSECURE="$(M4_E2E_MINIO_INSECURE)" M4_E2E_MINIO_CA_FILE="$(M4_E2E_MINIO_CA_FILE)" M4_E2E_MINIO_ACCESS_KEY_FILE="$(M4_E2E_MINIO_ACCESS_KEY_FILE)" M4_E2E_MINIO_SECRET_KEY_FILE="$(M4_E2E_MINIO_SECRET_KEY_FILE)" M4_E2E_MINIO_ARTIFACT_BUCKET="$(M4_E2E_MINIO_ARTIFACT_BUCKET)" M4_E2E_RABBITMQ_URI_FILE="$(M4_E2E_RABBITMQ_URI_FILE)" go test -count=1 -v -tags 'e2e m4' ./...
+	cd tests/e2e && M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" M4_E2E_EDGE_BASE_URLS="$(M4_E2E_EDGE_BASE_URLS)" M4_E2E_PUBLIC_ORIGIN="$(M4_E2E_PUBLIC_ORIGIN)" M4_E2E_INGESTION_POSTGRES_DSN_FILE="$(M4_E2E_INGESTION_POSTGRES_DSN_FILE)" M4_E2E_MINIO_ENDPOINT="$(M4_E2E_MINIO_ENDPOINT)" M4_E2E_MINIO_INSECURE="$(M4_E2E_MINIO_INSECURE)" M4_E2E_MINIO_CA_FILE="$(M4_E2E_MINIO_CA_FILE)" M4_E2E_MINIO_ACCESS_KEY_FILE="$(M4_E2E_MINIO_ACCESS_KEY_FILE)" M4_E2E_MINIO_SECRET_KEY_FILE="$(M4_E2E_MINIO_SECRET_KEY_FILE)" M4_E2E_MINIO_ARTIFACT_BUCKET="$(M4_E2E_MINIO_ARTIFACT_BUCKET)" M4_E2E_RABBITMQ_URI_FILE="$(M4_E2E_RABBITMQ_URI_FILE)" go test -count=1 -v -tags 'e2e m4' -run '^TestM4' ./...
 
 m4-performance-smoke: m4-fixtures
 	cd tests/e2e && M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" M4_E2E_EDGE_BASE_URLS="$(M4_E2E_EDGE_BASE_URLS)" M4_E2E_PUBLIC_ORIGIN="$(M4_E2E_PUBLIC_ORIGIN)" M4_E2E_INGESTION_POSTGRES_DSN_FILE="$(M4_E2E_INGESTION_POSTGRES_DSN_FILE)" M4_E2E_MINIO_ENDPOINT="$(M4_E2E_MINIO_ENDPOINT)" M4_E2E_MINIO_INSECURE="$(M4_E2E_MINIO_INSECURE)" M4_E2E_MINIO_CA_FILE="$(M4_E2E_MINIO_CA_FILE)" M4_E2E_MINIO_ACCESS_KEY_FILE="$(M4_E2E_MINIO_ACCESS_KEY_FILE)" M4_E2E_MINIO_SECRET_KEY_FILE="$(M4_E2E_MINIO_SECRET_KEY_FILE)" M4_E2E_MINIO_ARTIFACT_BUCKET="$(M4_E2E_MINIO_ARTIFACT_BUCKET)" M4_PERFORMANCE_PROFILE="$${M4_PERFORMANCE_PROFILE:-m4-slo-v1}" go test -count=1 -v -timeout "$${M4_PERFORMANCE_TIMEOUT:-20m}" -tags 'e2e m4' -run '^TestM4Performance' ./...

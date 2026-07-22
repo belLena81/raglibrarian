@@ -100,6 +100,30 @@ func TestDecodeManifestRetainsValidatedEnvelopeForCorruptArtifact(t *testing.T) 
 	}
 }
 
+func TestDecodeManifestRejectsArtifactReceiptMismatch(t *testing.T) {
+	payload, manifest := validManifestPayloads(t)
+	var outer ingestionv1.BookChunksReadyV1
+	if err := proto.Unmarshal(payload, &outer); err != nil {
+		t.Fatal(err)
+	}
+	outer.ManifestByteSize++
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(&outer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	event, err := DecodeManifest(payload, manifest)
+	if !errors.Is(err, application.ErrInvalidEvent) {
+		t.Fatalf("DecodeManifest() error = %v, want invalid event", err)
+	}
+	if err := event.ValidateEnvelope(); err != nil {
+		t.Fatalf("receipt mismatch lost validated envelope: %v", err)
+	}
+	if len(event.Manifest.Shards) != 0 {
+		t.Fatal("receipt mismatch retained manifest artifact data")
+	}
+}
+
 func TestDecodeManifestRejectsInvalidOuterEventWithoutEnvelope(t *testing.T) {
 	payload, manifest := validManifestPayloads(t)
 	var outer ingestionv1.BookChunksReadyV1
