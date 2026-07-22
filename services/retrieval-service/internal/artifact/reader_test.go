@@ -55,6 +55,33 @@ func TestReaderLeavesCompressedIntegrityErrorsTerminal(t *testing.T) {
 	}
 }
 
+func TestReaderAcceptsValidShardSmallerThanZstdMinimumWindow(t *testing.T) {
+	uncompressed := validTinyShardUncompressed(t)
+	compressed := compressedShard(t, uncompressed)
+	reader, err := NewReader(&stubObjectReader{object: io.NopCloser(bytes.NewReader(compressed)), size: int64(len(compressed))})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	chunks, err := reader.ReadShard(context.Background(), application.BatchWork{
+		ShardReference:    "books/book-1/shards/000000.pb.zst",
+		ShardSHA256:       sha256.Sum256(compressed),
+		CompressedBytes:   int64(len(compressed)),
+		UncompressedBytes: int64(len(uncompressed)),
+		ChunkCount:        1,
+	})
+
+	if err != nil {
+		t.Fatalf("ReadShard() error = %v", err)
+	}
+	if len(chunks) != 1 || chunks[0].Text != "Tiny evidence" {
+		t.Fatalf("chunks = %#v", chunks)
+	}
+	if len(uncompressed) >= zstd.MinWindowSize {
+		t.Fatalf("test shard is not below zstd minimum window: %d", len(uncompressed))
+	}
+}
+
 func TestReaderRetainsChunkContractFields(t *testing.T) {
 	reader, err := NewReader(validShardObjectReader(t))
 	if err != nil {
@@ -98,12 +125,17 @@ func validShardObjectReader(t *testing.T) *stubObjectReader {
 
 func validShardCompressed(t *testing.T) []byte {
 	t.Helper()
+	return compressedShard(t, validShardUncompressed(t))
+}
+
+func compressedShard(t *testing.T, uncompressed []byte) []byte {
+	t.Helper()
 	encoder, err := zstd.NewWriter(nil, zstd.WithEncoderConcurrency(1))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = encoder.Close() })
-	return encoder.EncodeAll(validShardUncompressed(t), nil)
+	return encoder.EncodeAll(uncompressed, nil)
 }
 
 func validShardDigest(t *testing.T) [32]byte {
@@ -114,13 +146,12 @@ func validShardDigest(t *testing.T) [32]byte {
 func validShardUncompressed(t *testing.T) []byte {
 	t.Helper()
 	text := strings.Repeat("Evidence ", 128)
-	contentDigest := sha256.Sum256([]byte(text))
-	message := &ingestionv1.ChunkV1{
+	return chunkRecord(t, &ingestionv1.ChunkV1{
 		ChunkId:              "chunk-1",
 		BookId:               "book-1",
 		Order:                7,
 		Text:                 text,
-		ContentSha256:        contentDigest[:],
+		ContentSha256:        digestBytes(text),
 		PageStart:            1,
 		PageEnd:              2,
 		TokenStart:           13,
@@ -130,13 +161,38 @@ func validShardUncompressed(t *testing.T) []byte {
 		TokenizerVersion:     "cl100k_base-v1",
 		ChunkingVersion:      "token-window-v2",
 		StructureVersion:     "heading-carry-v1",
-	}
+	})
+}
+
+func validTinyShardUncompressed(t *testing.T) []byte {
+	t.Helper()
+	text := "Tiny evidence"
+	return chunkRecord(t, &ingestionv1.ChunkV1{
+		ChunkId:       "chunk-1",
+		BookId:        "book-1",
+		Order:         0,
+		Text:          text,
+		ContentSha256: digestBytes(text),
+		PageStart:     1,
+		PageEnd:       1,
+		TokenStart:    0,
+		TokenEnd:      2,
+	})
+}
+
+func chunkRecord(t *testing.T, message *ingestionv1.ChunkV1) []byte {
+	t.Helper()
 	record, err := proto.MarshalOptions{Deterministic: true}.Marshal(message)
 	if err != nil {
 		t.Fatal(err)
 	}
 	prefix := protowire.AppendVarint(nil, uint64(len(record)))
 	return append(prefix, record...)
+}
+
+func digestBytes(text string) []byte {
+	digest := sha256.Sum256([]byte(text))
+	return digest[:]
 }
 
 type stubObjectReader struct {

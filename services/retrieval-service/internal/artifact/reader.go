@@ -45,7 +45,14 @@ func (r *Reader) ReadShard(ctx context.Context, work application.BatchWork) ([]a
 	if int64(len(compressed)) != work.CompressedBytes || sha256.Sum256(compressed) != work.ShardSHA256 {
 		return nil, errors.New("invalid compressed shard integrity")
 	}
-	decoder, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(uint64(work.UncompressedBytes+1))) // #nosec G115 -- BatchWork.Validate caps the positive size at 64 MiB.
+	if work.UncompressedBytes < 1 {
+		return nil, errors.New("invalid uncompressed shard")
+	}
+	decoderMemory := uint64(work.UncompressedBytes + 1) // #nosec G115 -- BatchWork.Validate caps the positive size at 64 MiB.
+	if decoderMemory < zstd.MinWindowSize {
+		decoderMemory = zstd.MinWindowSize
+	}
+	decoder, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(decoderMemory))
 	if err != nil {
 		return nil, errors.New("initialize shard decoder")
 	}
