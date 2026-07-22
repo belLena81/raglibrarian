@@ -4,7 +4,7 @@ set -euo pipefail
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root_dir"
 
-for command in docker jq openssl stat; do
+for command in docker go jq openssl stat; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "$command is required for M6 development configuration tests" >&2
     exit 1
@@ -18,6 +18,7 @@ secret_dir="$test_root/secrets"
 
 bash ./scripts/generate-dev-certs.sh "$cert_dir" >/dev/null
 bash ./scripts/ensure-m6-dev-cert.sh "$cert_dir" >/dev/null
+bash ./scripts/generate-dev-secrets.sh "$secret_dir" >/dev/null
 bash ./scripts/ensure-m6-dev-secret.sh "$secret_dir" >/dev/null
 
 for file in answer-service.crt answer-service.key llm-provider-stub.crt llm-provider-stub.key; do

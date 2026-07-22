@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"strconv"
@@ -240,8 +241,9 @@ func integrationClient(t *testing.T, accessVariable, secretVariable string) *min
 		t.Fatal("MinIO integration configuration is incomplete")
 	}
 	client, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
-		Secure: !integrationBool(t, "CATALOG_MINIO_INSECURE", true),
+		Creds:           credentials.NewStaticV4(accessKey, secretKey, ""),
+		Secure:          !integrationBool(t, "CATALOG_MINIO_INSECURE", true),
+		TrailingHeaders: true,
 	})
 	if err != nil {
 		t.Fatal("MinIO integration client could not be created")
@@ -320,7 +322,7 @@ type failingReader struct {
 
 func (r *failingReader) Read(target []byte) (int, error) {
 	if r.remaining == 0 {
-		return 0, io.ErrUnexpectedEOF
+		return 0, errSyntheticReaderFailure
 	}
 	n := min(len(target), r.remaining)
 	for i := range target[:n] {
@@ -354,3 +356,5 @@ func (r *cancellingReader) Read(target []byte) (int, error) {
 
 var _ io.Reader = (*failingReader)(nil)
 var _ io.Reader = (*cancellingReader)(nil)
+
+var errSyntheticReaderFailure = errors.New("synthetic reader failure")

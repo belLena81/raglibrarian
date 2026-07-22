@@ -19,7 +19,7 @@ mc mb --ignore-existing local/ingestion-artifacts
 mc anonymous set none local/ingestion-artifacts
 policy=$(mktemp)
 trap 'rm -f "$policy"' EXIT
-printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:PutObject","s3:GetObject","s3:DeleteObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Resource":["arn:aws:s3:::original-books/originals/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::original-books"],"Condition":{"StringLike":{"s3:prefix":["originals/*"]}}},{"Effect":"Allow","Action":["s3:ListBucketMultipartUploads"],"Resource":["arn:aws:s3:::original-books"]}]}' > "$policy"
+printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:PutObject","s3:GetObject","s3:DeleteObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Resource":["arn:aws:s3:::original-books/originals/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::original-books"],"Condition":{"StringLike":{"s3:prefix":["originals/*"]}}},{"Effect":"Allow","Action":["s3:GetBucketLocation","s3:ListBucketMultipartUploads"],"Resource":["arn:aws:s3:::original-books"]}]}' > "$policy"
 if mc admin user info local "$access_key" >/dev/null 2>&1; then
   mc admin policy detach local catalog-originals --user "$access_key" >/dev/null 2>&1 || true
 fi
@@ -33,7 +33,7 @@ fi
 mc admin user add local "$access_key" "$secret_key"
 mc admin policy attach local catalog-originals --user "$access_key"
 
-printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::original-books/originals/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::original-books"],"Condition":{"StringLike":{"s3:prefix":["originals/*"]}}},{"Effect":"Allow","Action":["s3:PutObject","s3:GetObject","s3:DeleteObject"],"Resource":["arn:aws:s3:::ingestion-artifacts/books/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::ingestion-artifacts"],"Condition":{"StringLike":{"s3:prefix":["books/*"]}}}]}' > "$policy"
+printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::original-books/originals/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::original-books"],"Condition":{"StringLike":{"s3:prefix":["originals/*"]}}},{"Effect":"Allow","Action":["s3:GetBucketLocation"],"Resource":["arn:aws:s3:::original-books"]},{"Effect":"Allow","Action":["s3:PutObject","s3:GetObject","s3:DeleteObject"],"Resource":["arn:aws:s3:::ingestion-artifacts/books/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::ingestion-artifacts"],"Condition":{"StringLike":{"s3:prefix":["books/*"]}}},{"Effect":"Allow","Action":["s3:GetBucketLocation"],"Resource":["arn:aws:s3:::ingestion-artifacts"]}]}' > "$policy"
 if mc admin user info local "$ingestion_access_key" >/dev/null 2>&1; then
   mc admin policy detach local ingestion-processing --user "$ingestion_access_key" >/dev/null 2>&1 || true
 fi
@@ -47,7 +47,7 @@ fi
 mc admin user add local "$ingestion_access_key" "$ingestion_secret_key"
 mc admin policy attach local ingestion-processing --user "$ingestion_access_key"
 
-printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:DeleteObject"],"Resource":["arn:aws:s3:::ingestion-artifacts/books/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::ingestion-artifacts"],"Condition":{"StringLike":{"s3:prefix":["books/*"]}}}]}' > "$policy"
+printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:DeleteObject"],"Resource":["arn:aws:s3:::ingestion-artifacts/books/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::ingestion-artifacts"],"Condition":{"StringLike":{"s3:prefix":["books/*"]}}},{"Effect":"Allow","Action":["s3:GetBucketLocation"],"Resource":["arn:aws:s3:::ingestion-artifacts"]}]}' > "$policy"
 if mc admin user info local "$cleanup_access_key" >/dev/null 2>&1; then
   mc admin policy detach local ingestion-cleanup --user "$cleanup_access_key" >/dev/null 2>&1 || true
 fi
@@ -61,7 +61,7 @@ fi
 mc admin user add local "$cleanup_access_key" "$cleanup_secret_key"
 mc admin policy attach local ingestion-cleanup --user "$cleanup_access_key"
 
-printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::ingestion-artifacts/books/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::ingestion-artifacts"],"Condition":{"StringLike":{"s3:prefix":["books/*"]}}}]}' > "$policy"
+printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::ingestion-artifacts/books/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::ingestion-artifacts"],"Condition":{"StringLike":{"s3:prefix":["books/*"]}}},{"Effect":"Allow","Action":["s3:GetBucketLocation"],"Resource":["arn:aws:s3:::ingestion-artifacts"]}]}' > "$policy"
 if mc admin user info local "$e2e_access_key" >/dev/null 2>&1; then
   mc admin policy detach local ingestion-e2e-read --user "$e2e_access_key" >/dev/null 2>&1 || true
 fi
@@ -77,7 +77,7 @@ mc admin policy attach local ingestion-e2e-read --user "$e2e_access_key"
 
 # Retrieval owns no source objects. It can read only versioned Ingestion
 # manifests and shards under the controlled books prefix.
-printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::ingestion-artifacts/books/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::ingestion-artifacts"],"Condition":{"StringLike":{"s3:prefix":["books/*"]}}}]}' > "$policy"
+printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::ingestion-artifacts/books/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::ingestion-artifacts"],"Condition":{"StringLike":{"s3:prefix":["books/*"]}}},{"Effect":"Allow","Action":["s3:GetBucketLocation"],"Resource":["arn:aws:s3:::ingestion-artifacts"]}]}' > "$policy"
 if mc admin user info local "$retrieval_access_key" >/dev/null 2>&1; then
   mc admin policy detach local retrieval-artifact-read --user "$retrieval_access_key" >/dev/null 2>&1 || true
 fi
