@@ -874,16 +874,20 @@ services:
     environment:
       RETRIEVAL_POSTGRES_INTEGRATION: "true"
       RETRIEVAL_POSTGRES_DSN_FILE: /run/secrets/retrieval_runtime_dsn
+      RETRIEVAL_PLANNER_POSTGRES_DSN_FILE: /run/secrets/retrieval_planner_dsn
+      RETRIEVAL_CLEANUP_POSTGRES_DSN_FILE: /run/secrets/retrieval_cleanup_dsn
       GOCACHE: /tmp/go-build
     secrets:
       - retrieval_runtime_dsn
+      - retrieval_planner_dsn
+      - retrieval_cleanup_dsn
     networks:
       - backend
       - retrieval-index
     depends_on:
       retrieval-service:
         condition: service_healthy
-    command: ["grep -q '[^[:space:]]' \"$$RETRIEVAL_POSTGRES_DSN_FILE\" && go -C /src/services/retrieval-service test -count=1 -v ./internal/application ./internal/domain ./internal/grpc ./internal/transport ./internal/vector && go -C /src/services/retrieval-service test -count=1 -v -tags=integration -run 'Replay|Recovery|TerminalFailure|Visibility|Manifest|FailBatch|CompleteBatch' ./internal/repository"]
+    command: ["grep -q '[^[:space:]]' \"$$RETRIEVAL_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$$RETRIEVAL_PLANNER_POSTGRES_DSN_FILE\" && grep -q '[^[:space:]]' \"$$RETRIEVAL_CLEANUP_POSTGRES_DSN_FILE\" && go -C /src/services/retrieval-service test -count=1 -v ./internal/application ./internal/domain ./internal/grpc ./internal/transport ./internal/vector && go -C /src/services/retrieval-service test -count=1 -v -tags=integration -run 'Replay|Recovery|TerminalFailure|Visibility|Manifest|FailBatch|CompleteBatch|Lifecycle|Deletion|RolePrivileges' ./internal/repository"]
 
   answer-contract-tests:
     <<: *job-hardening
@@ -1040,6 +1044,8 @@ secrets:
     file: ${SECRET_DIR:-./.dev/secrets}/retrieval_runtime_dsn
   retrieval_search_dsn:
     file: ${SECRET_DIR:-./.dev/secrets}/retrieval_search_dsn
+  retrieval_planner_dsn:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_planner_dsn
   retrieval_cleanup_dsn:
     file: ${SECRET_DIR:-./.dev/secrets}/retrieval_cleanup_dsn
   retrieval_e2e_dsn:

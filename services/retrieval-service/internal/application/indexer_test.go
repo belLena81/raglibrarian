@@ -72,6 +72,95 @@ func TestIndexerResumesExpiredPendingFinalizationExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestIndexerDeletesPriorGenerationsBeforeFinalizing(t *testing.T) {
+	var operations []string
+	repository := &stubBatchRepository{
+		metadata:    BookProjection{BookID: "book-1", Title: "Systems", Author: "Author", Year: 2026},
+		priorJobIDs: []string{"job-old-1", "job-old-2"},
+		finalize: func() error {
+			operations = append(operations, "finalize")
+			return nil
+		},
+	}
+	repository.begin = func() (BookProjection, bool, error) {
+		projection := repository.metadata
+		projection.ResumeFinalization = true
+		return projection, true, nil
+	}
+	index := &stubVectorIndex{
+		activate: func(jobID string) {
+			operations = append(operations, "activate:"+jobID)
+		},
+		delete: func(jobID string) {
+			operations = append(operations, "delete:"+jobID)
+		},
+	}
+	indexer, err := NewIndexer(
+		repository,
+		&stubShardReader{},
+		&stubDocumentEmbedder{},
+		index,
+		func() time.Time { return time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC) },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err = indexer.Process(context.Background(), validBatchWork()); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if len(index.activationCalls) != 1 || index.activationCalls[0] != "job-1" {
+		t.Fatalf("activation calls = %#v", index.activationCalls)
+	}
+	if len(index.deletionCalls) != 2 || index.deletionCalls[0] != "job-old-1" || index.deletionCalls[1] != "job-old-2" {
+		t.Fatalf("deletion calls = %#v", index.deletionCalls)
+	}
+	if repository.finalized != 1 {
+		t.Fatalf("finalized = %d, want 1", repository.finalized)
+	}
+	wantOperations := []string{"activate:job-1", "delete:job-old-1", "delete:job-old-2", "finalize"}
+	if len(operations) != len(wantOperations) {
+		t.Fatalf("operations = %#v, want %#v", operations, wantOperations)
+	}
+	for index := range wantOperations {
+		if operations[index] != wantOperations[index] {
+			t.Fatalf("operations = %#v, want %#v", operations, wantOperations)
+		}
+	}
+}
+
+func TestIndexerLeavesFinalizationRetryableWhenPriorGenerationDeletionFails(t *testing.T) {
+	repository := &stubBatchRepository{
+		metadata:    BookProjection{BookID: "book-1", Title: "Systems", Author: "Author", Year: 2026},
+		priorJobIDs: []string{"job-old"},
+	}
+	repository.begin = func() (BookProjection, bool, error) {
+		projection := repository.metadata
+		projection.ResumeFinalization = true
+		return projection, true, nil
+	}
+	index := &stubVectorIndex{deleteErr: errors.New("qdrant unavailable")}
+	indexer, err := NewIndexer(
+		repository,
+		&stubShardReader{},
+		&stubDocumentEmbedder{},
+		index,
+		func() time.Time { return time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC) },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = indexer.Process(context.Background(), validBatchWork())
+
+	if FailureCategory(err) != domain.FailureVectorStoreUnavailable {
+		t.Fatalf("FailureCategory() = %s, want %s, err=%v", FailureCategory(err), domain.FailureVectorStoreUnavailable, err)
+	}
+	if repository.finalized != 0 {
+		t.Fatalf("finalized = %d, want 0", repository.finalized)
+	}
+}
+
 func TestBatchWorkValidateRejectsProfileTokenMismatch(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -375,6 +464,8 @@ type stubBatchRepository struct {
 	checkActive func() (bool, error)
 	complete    func() (bool, error)
 	finalize    func() error
+	priorJobIDs []string
+	priorErr    error
 	completed   int
 	finalized   int
 }
@@ -406,9 +497,14 @@ func (s *stubBatchRepository) DocumentRecord(_ context.Context, work BatchWork) 
 		Author: s.metadata.Author, Year: s.metadata.Year, Tags: s.metadata.Tags, ChunkCount: work.ChunkCount, PageStart: 1, PageEnd: work.ChunkCount},
 		Vector: mustCentroid(int(work.ChunkCount))}, nil
 }
+func (s *stubBatchRepository) PriorIndexedJobIDs(context.Context, BatchWork) ([]string, error) {
+	return append([]string(nil), s.priorJobIDs...), s.priorErr
+}
 func (s *stubBatchRepository) FinalizeJob(context.Context, BatchWork, time.Time) error {
 	if s.finalize != nil {
-		return s.finalize()
+		if err := s.finalize(); err != nil {
+			return err
+		}
 	}
 	s.finalized++
 	return nil
@@ -442,9 +538,13 @@ type stubVectorIndex struct {
 	chunkCalls      [][]EvidenceRecord
 	documentCalls   []DocumentRecord
 	activationCalls []string
+	deletionCalls   []string
 	upsertChunksErr error
+	deleteErr       error
 	upsertChunks    func() error
 	upsertDocument  func() error
+	activate        func(string)
+	delete          func(string)
 }
 
 func (s *stubVectorIndex) UpsertChunks(_ context.Context, values []EvidenceRecord) error {
@@ -471,9 +571,19 @@ func (s *stubVectorIndex) UpsertDocument(_ context.Context, value DocumentRecord
 }
 func (s *stubVectorIndex) ActivateJob(_ context.Context, jobID string) error {
 	s.activationCalls = append(s.activationCalls, jobID)
+	if s.activate != nil {
+		s.activate(jobID)
+	}
 	return nil
 }
 func (s *stubVectorIndex) DeactivateJob(context.Context, string) error { return nil }
+func (s *stubVectorIndex) DeleteJob(_ context.Context, jobID string) error {
+	s.deletionCalls = append(s.deletionCalls, jobID)
+	if s.delete != nil {
+		s.delete(jobID)
+	}
+	return s.deleteErr
+}
 
 func mustCentroid(chunkCount int) []float32 {
 	vectors := make([][]float32, chunkCount)

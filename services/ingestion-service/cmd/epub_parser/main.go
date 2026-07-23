@@ -3,20 +3,26 @@
 package main
 
 import (
+	"io"
 	"os"
 
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/extractor"
 )
 
 func main() {
-	if len(os.Args) != 2 {
-		os.Exit(2)
+	os.Exit(run(os.Args[1:], os.Stdout))
+}
+
+func run(arguments []string, output io.Writer) int {
+	if len(arguments) != 1 {
+		return 2
 	}
-	pages, err := extractor.ParseEPUBFile(os.Args[1], extractor.DefaultEPUBArchiveLimits())
+	pages, err := extractor.ParseEPUBFile(arguments[0], extractor.DefaultEPUBArchiveLimits())
 	if err != nil {
-		os.Exit(3)
+		return extractor.EPUBParserExitCode(err)
 	}
-	if err = extractor.WriteEPUBOutput(os.Stdout, pages); err != nil {
-		os.Exit(4)
+	if err = extractor.WriteEPUBOutput(output, pages); err != nil {
+		return extractor.EPUBParserExitInternal
 	}
+	return 0
 }

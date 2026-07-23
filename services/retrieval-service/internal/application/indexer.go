@@ -81,6 +81,7 @@ type BatchRepository interface {
 	CheckBatchActive(context.Context, BatchWork) (bool, error)
 	CompleteBatch(context.Context, BatchWork, []EvidenceRecord, time.Time) (bool, error)
 	DocumentRecord(context.Context, BatchWork) (DocumentRecord, error)
+	PriorIndexedJobIDs(context.Context, BatchWork) ([]string, error)
 	FinalizeJob(context.Context, BatchWork, time.Time) error
 }
 
@@ -97,6 +98,7 @@ type VectorIndex interface {
 	UpsertDocument(context.Context, DocumentRecord) error
 	ActivateJob(context.Context, string) error
 	DeactivateJob(context.Context, string) error
+	DeleteJob(context.Context, string) error
 }
 
 type Indexer struct {
@@ -204,6 +206,10 @@ func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
 }
 
 func (i *Indexer) finalizeDocument(ctx context.Context, work BatchWork) error {
+	priorJobIDs, err := i.repository.PriorIndexedJobIDs(ctx, work)
+	if err != nil {
+		return errors.Join(errors.New("resolve prior index generations"), err)
+	}
 	document, err := i.repository.DocumentRecord(ctx, work)
 	if err != nil {
 		return errors.New("build document vector")
@@ -216,6 +222,11 @@ func (i *Indexer) finalizeDocument(ctx context.Context, work BatchWork) error {
 	}
 	if err = i.index.ActivateJob(ctx, work.JobID); err != nil {
 		return Failure(domain.FailureVectorStoreUnavailable, errors.Join(errors.New("activate vectors"), err))
+	}
+	for _, priorJobID := range priorJobIDs {
+		if err = i.index.DeleteJob(ctx, priorJobID); err != nil {
+			return Failure(domain.FailureVectorStoreUnavailable, errors.Join(errors.New("delete prior index generation"), err))
+		}
 	}
 	if err = i.repository.FinalizeJob(ctx, work, i.now().UTC()); err != nil {
 		return errors.Join(errors.New("finalize index job"), err)

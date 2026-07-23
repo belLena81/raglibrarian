@@ -31,7 +31,8 @@ m5_files=(
   retrieval_migration_password retrieval_runtime_password retrieval_search_password retrieval_planner_password
   retrieval_indexer_password retrieval_dispatcher_password retrieval_cleanup_password retrieval_e2e_password
   retrieval_migration_pgpass retrieval_runtime_dsn retrieval_runtime_host_dsn retrieval_search_dsn
-  retrieval_cleanup_dsn retrieval_e2e_dsn retrieval_e2e_container_dsn retrieval_minio_access_key
+  retrieval_planner_dsn retrieval_planner_host_dsn retrieval_cleanup_dsn retrieval_cleanup_host_dsn
+  retrieval_e2e_dsn retrieval_e2e_container_dsn retrieval_minio_access_key
   retrieval_minio_secret_key retrieval_consumer_rabbitmq_uri retrieval_publisher_rabbitmq_uri
   catalog_retrieval_rabbitmq_uri retrieval_e2e_rabbitmq_uri retrieval_e2e_rabbitmq_container_uri
   retrieval_qdrant_api_key retrieval_qdrant_read_api_key
@@ -76,6 +77,25 @@ assert_complete_and_private() {
 fresh_dir="$test_root/fresh"
 bash ./scripts/generate-dev-secrets.sh "$fresh_dir" >/dev/null
 assert_complete_and_private "$fresh_dir"
+
+# Existing complete M5 installations predate the role-specific test DSNs.
+# Upgrade must derive only those files from the existing passwords, without
+# rotating either role or exposing its value.
+legacy_m5_dir="$test_root/legacy-m5"
+cp -a "$fresh_dir" "$legacy_m5_dir"
+planner_password_before=$(<"$legacy_m5_dir/retrieval_planner_password")
+cleanup_password_before=$(<"$legacy_m5_dir/retrieval_cleanup_password")
+rm "$legacy_m5_dir/retrieval_planner_dsn" \
+  "$legacy_m5_dir/retrieval_planner_host_dsn" \
+  "$legacy_m5_dir/retrieval_cleanup_host_dsn"
+bash ./scripts/ensure-m5-dev-secrets.sh "$legacy_m5_dir" >/dev/null
+[[ "$(<"$legacy_m5_dir/retrieval_planner_password")" == "$planner_password_before" &&
+   "$(<"$legacy_m5_dir/retrieval_cleanup_password")" == "$cleanup_password_before" ]] || {
+  echo "M5 role passwords were rotated during the additive DSN upgrade" >&2
+  exit 1
+}
+unset planner_password_before cleanup_password_before
+assert_complete_and_private "$legacy_m5_dir"
 
 # Identity-only upgrade: the M3 generator adds non-database M4 credentials,
 # then the additive helpers must fill the complete M4 and M5 sets without

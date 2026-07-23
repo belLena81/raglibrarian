@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os/exec"
 	"path"
 	"strings"
 
@@ -26,6 +27,12 @@ const (
 	maximumXMLDepth         = 128
 	maximumXMLAttributes    = 64
 	maximumXMLTokens        = 1_000_000
+
+	// These form the private parser process protocol. Keep them separate
+	// from parser_sandbox's reserved 121-124 exit statuses.
+	EPUBParserExitMalformed     = 125
+	EPUBParserExitResourceLimit = 126
+	EPUBParserExitInternal      = 127
 )
 
 // EPUBArchiveLimits bounds every attacker-controlled archive dimension before
@@ -389,6 +396,23 @@ func epubFailure(category domain.FailureCategory, cause error) error {
 	return &categorizedError{category: category, cause: cause}
 }
 
+// EPUBParserExitCode converts a categorized parser failure to the stable,
+// diagnostics-free process protocol consumed by the parent EPUB adapter.
+func EPUBParserExitCode(err error) int {
+	category, categorized := FailureCategory(err)
+	if !categorized {
+		return EPUBParserExitInternal
+	}
+	switch category {
+	case domain.FailureMalformedDocument:
+		return EPUBParserExitMalformed
+	case domain.FailureResourceLimitExceeded:
+		return EPUBParserExitResourceLimit
+	default:
+		return EPUBParserExitInternal
+	}
+}
+
 type epubOutputHeader struct {
 	SchemaVersion string `json:"schema_version"`
 	LocationCount uint32 `json:"location_count"`
@@ -470,6 +494,19 @@ func (e *EPUB) Extract(ctx context.Context, sourcePath string, consume func(Page
 func classifyEPUBCommandError(ctx context.Context, err error) error {
 	if category, ok := FailureCategory(err); ok {
 		return epubFailure(category, err)
+	}
+	if ctx.Err() == nil && !errors.Is(err, exec.ErrNotFound) {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			switch exitErr.ExitCode() {
+			case EPUBParserExitMalformed:
+				return epubFailure(domain.FailureMalformedDocument, err)
+			case EPUBParserExitResourceLimit:
+				return epubFailure(domain.FailureResourceLimitExceeded, err)
+			case EPUBParserExitInternal:
+				return epubFailure(domain.FailureInternalProcessing, err)
+			}
+		}
 	}
 	classified := classifyCommandError(ctx, err)
 	if category, ok := FailureCategory(classified); ok {

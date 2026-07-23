@@ -263,7 +263,14 @@ m5-search-quality-test-real: _require_root m5-model-bootstrap
 	@$(MAKE) M5_TEST_COMPOSE_FILES='-f docker-compose.yml' M5_SEARCH_QUALITY_REQUIRE_MODEL=true m5-search-quality-test
 
 m5-worker-recovery-test: _require_root
-	cd services/retrieval-service && RETRIEVAL_POSTGRES_INTEGRATION=true RETRIEVAL_POSTGRES_DSN_FILE="$(CURDIR)/.dev/secrets/retrieval_runtime_host_dsn" go test -count=1 -v -tags=integration -run 'Replay|Recovery|TerminalFailure|Visibility|Manifest|FailBatch|CompleteBatch' ./internal/repository
+	@secret_dir="$${SECRET_DIR:-$(CURDIR)/.dev/secrets}"; \
+	case "$$secret_dir" in /*) ;; *) secret_dir="$(CURDIR)/$$secret_dir" ;; esac; \
+	cd services/retrieval-service && \
+	RETRIEVAL_POSTGRES_INTEGRATION=true \
+	RETRIEVAL_POSTGRES_DSN_FILE="$$secret_dir/retrieval_runtime_host_dsn" \
+	RETRIEVAL_PLANNER_POSTGRES_DSN_FILE="$$secret_dir/retrieval_planner_host_dsn" \
+	RETRIEVAL_CLEANUP_POSTGRES_DSN_FILE="$$secret_dir/retrieval_cleanup_host_dsn" \
+	go test -count=1 -v -tags=integration -run 'Replay|Recovery|TerminalFailure|Visibility|Manifest|FailBatch|CompleteBatch|Lifecycle|Deletion|RolePrivileges' ./internal/repository
 
 m5-e2e: m4-fixtures
 	cd tests/e2e && M5_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" go test -count=1 -v -tags 'e2e m5' -run '^TestM5' ./...

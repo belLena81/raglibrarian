@@ -863,6 +863,34 @@ func (r *Postgres) DocumentRecord(ctx context.Context, work application.BatchWor
 	return document, nil
 }
 
+func (r *Postgres) PriorIndexedJobIDs(ctx context.Context, work application.BatchWork) ([]string, error) {
+	var jobIDs []string
+	err := r.pool.QueryRow(ctx, `SELECT coalesce(array_agg(old.id ORDER BY old.lifecycle_version,old.id)
+			FILTER (WHERE old.id IS NOT NULL),'{}'::text[])
+		FROM retrieval.index_jobs current
+		JOIN retrieval.book_lifecycle lifecycle
+		  ON lifecycle.book_id=current.book_id
+		 AND lifecycle.lifecycle_version=current.lifecycle_version
+		 AND lifecycle.state IN ('active','reindexing')
+		LEFT JOIN retrieval.index_jobs old
+		  ON old.book_id=current.book_id
+		 AND old.state='indexed'
+		 AND old.lifecycle_version < current.lifecycle_version
+		WHERE current.id=$1
+		  AND current.book_id=$2
+		  AND current.state='pending'
+		  AND current.finalization_inflight
+		GROUP BY current.id`,
+		work.JobID, work.BookID).Scan(&jobIDs)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, application.ErrConflictingEvent
+	}
+	if err != nil {
+		return nil, err
+	}
+	return jobIDs, nil
+}
+
 func (r *Postgres) FinalizeJob(ctx context.Context, work application.BatchWork, now time.Time) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -898,6 +926,14 @@ func (r *Postgres) FinalizeJob(ctx context.Context, work application.BatchWork, 
 	if remaining != 0 || evidenceCount < 1 || uint64(evidenceCount) > uint64(^uint32(0)) {
 		return errors.New("index job is not complete")
 	}
+	var priorJobIDs []string
+	if err = tx.QueryRow(ctx, `SELECT coalesce(array_agg(id ORDER BY lifecycle_version,id),'{}'::text[])
+		FROM retrieval.index_jobs
+		WHERE book_id=$1 AND state='indexed' AND lifecycle_version < (
+			SELECT lifecycle_version FROM retrieval.index_jobs WHERE id=$2
+		)`, work.BookID, work.JobID).Scan(&priorJobIDs); err != nil {
+		return err
+	}
 	command, err := tx.Exec(ctx, `UPDATE retrieval.index_jobs
 		SET state='indexed',evidence_count=$2,finalization_inflight=false,
 		    finalization_lease_expires_at=NULL,updated_at=$3
@@ -911,13 +947,30 @@ func (r *Postgres) FinalizeJob(ctx context.Context, work application.BatchWork, 
 		return err
 	}
 	if command.RowsAffected() == 1 {
-		_, err = tx.Exec(ctx, `UPDATE retrieval.book_lifecycle
+		var lifecycleCommand pgconn.CommandTag
+		lifecycleCommand, err = tx.Exec(ctx, `UPDATE retrieval.book_lifecycle
 			SET active_job_id=$2,state='active',cleanup_pending=false,updated_at=$3
 			WHERE book_id=$1 AND lifecycle_version=(
 				SELECT lifecycle_version FROM retrieval.index_jobs WHERE id=$2
 			) AND state IN ('active','reindexing')`, work.BookID, work.JobID, now)
 		if err != nil {
 			return err
+		}
+		if lifecycleCommand.RowsAffected() != 1 {
+			return application.ErrConflictingEvent
+		}
+		if len(priorJobIDs) > 0 {
+			if _, err = tx.Exec(ctx, `DELETE FROM retrieval.outbox
+				WHERE aggregate_id=ANY($1) AND published_at IS NULL`, priorJobIDs); err != nil {
+				return err
+			}
+			if _, err = tx.Exec(ctx, `DELETE FROM retrieval.index_jobs
+				WHERE id=ANY($1) AND book_id=$2 AND state='indexed'
+				  AND lifecycle_version < (
+					SELECT lifecycle_version FROM retrieval.index_jobs WHERE id=$3
+				  )`, priorJobIDs, work.BookID, work.JobID); err != nil {
+				return err
+			}
 		}
 		message := &retrievalv1.BookIndexedV1{EventId: work.JobID + ":indexed", BookId: work.BookID, JobId: work.JobID,
 			SourceSha256: work.SourceSHA256[:], ManifestSha256: work.ManifestSHA256[:], IndexProfileDigest: work.ProfileDigest[:], EvidenceCount: uint32(evidenceCount), // #nosec G115 -- checked above.

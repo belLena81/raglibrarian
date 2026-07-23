@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -136,6 +137,52 @@ func TestEPUBAdapterMapsParserOutputAndSanitizesFailure(t *testing.T) {
 	_, err = adapter.Extract(context.Background(), "/tmp/source.epub", func(Page) error { return nil })
 	if err == nil || strings.Contains(err.Error(), "private") {
 		t.Fatalf("unsanitized adapter error = %v", err)
+	}
+}
+
+func TestEPUBParserExitProtocolPreservesFailureCategories(t *testing.T) {
+	tests := []struct {
+		name     string
+		code     string
+		expected domain.FailureCategory
+	}{
+		{name: "malformed document", code: "125", expected: domain.FailureMalformedDocument},
+		{name: "resource limit", code: "126", expected: domain.FailureResourceLimitExceeded},
+		{name: "internal parser failure", code: "127", expected: domain.FailureInternalProcessing},
+		{name: "sandbox resource limit", code: "121", expected: domain.FailureResourceLimitExceeded},
+		{name: "sandbox setup", code: "122", expected: domain.FailureDependencyUnavailable},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := exec.Command("sh", "-c", "exit "+testCase.code).Run() // #nosec G204 -- fixed synthetic test input.
+			classified := classifyEPUBCommandError(context.Background(), err)
+			category, categorized := FailureCategory(classified)
+			if !categorized || category != testCase.expected {
+				t.Fatalf("classifyEPUBCommandError() category = %q, want %q", category, testCase.expected)
+			}
+			if strings.Contains(classified.Error(), "exit status") {
+				t.Fatalf("classification exposed command diagnostics: %v", classified)
+			}
+		})
+	}
+}
+
+func TestEPUBParserExitCodeUsesOnlyStableProtocolValues(t *testing.T) {
+	tests := []struct {
+		category domain.FailureCategory
+		expected int
+	}{
+		{category: domain.FailureMalformedDocument, expected: EPUBParserExitMalformed},
+		{category: domain.FailureResourceLimitExceeded, expected: EPUBParserExitResourceLimit},
+		{category: domain.FailureInternalProcessing, expected: EPUBParserExitInternal},
+	}
+	for _, testCase := range tests {
+		if actual := EPUBParserExitCode(epubFailure(testCase.category, errors.New("private diagnostic"))); actual != testCase.expected {
+			t.Fatalf("EPUBParserExitCode(%q) = %d, want %d", testCase.category, actual, testCase.expected)
+		}
+	}
+	if actual := EPUBParserExitCode(errors.New("uncategorized private diagnostic")); actual != EPUBParserExitInternal {
+		t.Fatalf("EPUBParserExitCode(uncategorized) = %d, want %d", actual, EPUBParserExitInternal)
 	}
 }
 
