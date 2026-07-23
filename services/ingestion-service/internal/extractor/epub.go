@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os/exec"
 	"path"
 	"strings"
@@ -239,15 +240,29 @@ func validEPUBIdentifier(value string) bool {
 }
 
 func resolveEPUBReference(directory, href string) (string, error) {
-	if href == "" || strings.ContainsAny(href, `\?#%`) || strings.HasPrefix(href, "/") {
+	fragment := strings.IndexByte(href, '#')
+	if fragment == 0 {
 		return "", errors.New("invalid EPUB manifest reference")
 	}
+	if fragment > 0 {
+		href = href[:fragment]
+	}
+	if href == "" || strings.Contains(href, `\`) || strings.HasPrefix(href, "/") || strings.ContainsRune(href, 0) {
+		return "", errors.New("invalid EPUB manifest reference")
+	}
+	referenceParts := make([]string, 0, 4)
 	for _, segment := range strings.Split(href, "/") {
 		if segment == "" || segment == "." || segment == ".." {
 			return "", errors.New("invalid EPUB manifest reference")
 		}
+		decoded, err := url.PathUnescape(segment)
+		if err != nil || decoded == "" || decoded == "." || decoded == ".." || strings.ContainsAny(decoded, `/\`) ||
+			strings.ContainsRune(decoded, 0) {
+			return "", errors.New("invalid EPUB manifest reference")
+		}
+		referenceParts = append(referenceParts, decoded)
 	}
-	reference := path.Join(directory, href)
+	reference := path.Join(directory, path.Join(referenceParts...))
 	if !validEPUBArchivePath(reference) {
 		return "", errors.New("invalid EPUB manifest reference")
 	}

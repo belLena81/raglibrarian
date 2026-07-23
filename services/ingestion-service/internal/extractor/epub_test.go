@@ -114,6 +114,76 @@ func TestParseEPUBAcceptsStandardHTMLDoctypeInXHTML(t *testing.T) {
 	}
 }
 
+func TestResolveEPUBReferenceAllowsEncodedSegmentsAndStripsFragments(t *testing.T) {
+	tests := []struct {
+		name      string
+		directory string
+		href      string
+		wantErr   bool
+		want      string
+	}{
+		{
+			name:      "encoded filename",
+			directory: "OPS",
+			href:      "Text/Chapter%201.xhtml",
+			want:      "OPS/Text/Chapter 1.xhtml",
+		},
+		{
+			name:      "fragment removed",
+			directory: "OPS",
+			href:      "chapter.xhtml#start",
+			want:      "OPS/chapter.xhtml",
+		},
+		{
+			name:      "invalid percent escape",
+			directory: "OPS",
+			href:      "chapter%ZZ.xhtml",
+			wantErr:   true,
+		},
+		{
+			name:      "decoded traversal rejected",
+			directory: "OPS",
+			href:      "Text/..%2Fsecret.xhtml",
+			wantErr:   true,
+		},
+		{
+			name:      "decoded slash inside segment rejected",
+			directory: "OPS",
+			href:      "chapter%2Fone.xhtml",
+			wantErr:   true,
+		},
+		{
+			name:      "absolute reference rejected",
+			directory: "OPS",
+			href:      "/chapter.xhtml",
+			wantErr:   true,
+		},
+		{
+			name:      "empty fragment rejected",
+			directory: "OPS",
+			href:      "#start",
+			wantErr:   true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveEPUBReference(tc.directory, tc.href)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("resolveEPUBReference() expected error, got %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveEPUBReference() error = %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("resolveEPUBReference() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseEPUBRejectsUnsafeOrAmbiguousArchives(t *testing.T) {
 	tests := []struct {
 		name    string

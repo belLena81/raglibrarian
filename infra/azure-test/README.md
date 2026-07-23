@@ -9,9 +9,9 @@ It is a protected acceptance environment, not a production topology.
 
 The only valid handoff is `paused -> worker -> paused -> serverless -> paused`.
 Never run portable workers and Container Apps Jobs at the same time. The
-protected workflow deploys all jobs with `maxExecutions: 0`, verifies the
-broker's consumer count is zero, then enables event jobs. It always attempts to
-return jobs to `paused` on completion, cancellation, or failure.
+protected workflow omits event jobs while `paused`, verifies the broker's
+consumer count is zero, then enables event jobs in `serverless`. It always
+attempts to return jobs to `paused` on completion, cancellation, or failure.
 
 Each KEDA RabbitMQ rule uses `QueueLength`, a target of one message, and one
 replica completion per execution. Ingestion is capped at two executions; each
@@ -45,8 +45,7 @@ The template creates the environment, one managed identity, and five
 event-driven jobs: M4 ingestion; M5 planner for uploaded, chunks-ready, and
 lifecycle events; and M5 index. It also creates four one-shot scheduled jobs
 only while `serverless` is enabled: M4/M5 dispatchers every minute and M4/M5
-cleanup every 15 minutes. Pausing deletes those four schedules and sets every
-event job execution ceiling to zero.
+cleanup every 15 minutes. Pausing deletes those schedules and event jobs.
 
 Build each event image with its service's `cmd/serverless_job` as the image
 entrypoint. The four retrieval event job definitions inject

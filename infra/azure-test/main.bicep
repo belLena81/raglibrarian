@@ -50,8 +50,6 @@ var commonTags = {
   dataClassification: 'authorized-synthetic-test-only'
 }
 var enabled = processingMode == 'serverless'
-var maximumIngestionExecutions = enabled ? 2 : 0
-var maximumRetrievalExecutions = enabled ? 4 : 0
 var secretUris = {
   ingestionPostgresDSN: 'https://${keyVaultName}.vault.azure.net/secrets/ingestion-postgres-dsn/${secretVersions.ingestionPostgresDSN}'
   ingestionRabbitMQ: 'https://${keyVaultName}.vault.azure.net/secrets/ingestion-rabbitmq-uri/${secretVersions.ingestionRabbitMQ}'
@@ -194,7 +192,7 @@ resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01'
 // Each job receives only its dedicated Key Vault references. The identity is
 // granted Key Vault Secrets User and AcrPull outside this template, after the
 // caller has reviewed the exact vault, registry, and secret scope.
-module ingestionJob 'modules/job.bicep' = {
+module ingestionJob 'modules/job.bicep' = if (enabled) {
   name: '${environmentName}-ingestion-job'
   params: {
     name: '${environmentName}-ingestion'
@@ -204,7 +202,7 @@ module ingestionJob 'modules/job.bicep' = {
     registryServer: registry.properties.loginServer
     image: images.ingestion
     queueName: queues.ingestion
-    maxExecutions: maximumIngestionExecutions
+    maxExecutions: 2
     testHostName: testHostName
     secretFiles: ingestionSecretFiles
     runtimeEnvironment: runtimeEnvironments.ingestion
@@ -213,7 +211,7 @@ module ingestionJob 'modules/job.bicep' = {
   }
 }
 
-module plannerBookUploadedJob 'modules/job.bicep' = {
+module plannerBookUploadedJob 'modules/job.bicep' = if (enabled) {
   name: '${environmentName}-planner-uploaded-job'
   params: {
     name: '${environmentName}-planner-uploaded'
@@ -223,7 +221,7 @@ module plannerBookUploadedJob 'modules/job.bicep' = {
     registryServer: registry.properties.loginServer
     image: images.planner
     queueName: queues.plannerBookUploaded
-    maxExecutions: maximumRetrievalExecutions
+    maxExecutions: 4
     testHostName: testHostName
     secretFiles: plannerSecretFiles
     runtimeEnvironment: union(runtimeEnvironments.planner, { RETRIEVAL_SERVERLESS_QUEUE: queues.plannerBookUploaded })
@@ -232,7 +230,7 @@ module plannerBookUploadedJob 'modules/job.bicep' = {
   }
 }
 
-module plannerChunksReadyJob 'modules/job.bicep' = {
+module plannerChunksReadyJob 'modules/job.bicep' = if (enabled) {
   name: '${environmentName}-planner-chunks-job'
   params: {
     name: '${environmentName}-planner-chunks'
@@ -242,7 +240,7 @@ module plannerChunksReadyJob 'modules/job.bicep' = {
     registryServer: registry.properties.loginServer
     image: images.planner
     queueName: queues.plannerChunksReady
-    maxExecutions: maximumRetrievalExecutions
+    maxExecutions: 4
     testHostName: testHostName
     secretFiles: plannerSecretFiles
     runtimeEnvironment: union(runtimeEnvironments.planner, { RETRIEVAL_SERVERLESS_QUEUE: queues.plannerChunksReady })
@@ -251,7 +249,7 @@ module plannerChunksReadyJob 'modules/job.bicep' = {
   }
 }
 
-module plannerLifecycleJob 'modules/job.bicep' = {
+module plannerLifecycleJob 'modules/job.bicep' = if (enabled) {
   name: '${environmentName}-planner-lifecycle-job'
   params: {
     name: '${environmentName}-planner-lifecycle'
@@ -261,7 +259,7 @@ module plannerLifecycleJob 'modules/job.bicep' = {
     registryServer: registry.properties.loginServer
     image: images.planner
     queueName: queues.plannerLifecycle
-    maxExecutions: maximumRetrievalExecutions
+    maxExecutions: 4
     testHostName: testHostName
     secretFiles: plannerSecretFiles
     runtimeEnvironment: union(runtimeEnvironments.planner, { RETRIEVAL_SERVERLESS_QUEUE: queues.plannerLifecycle })
@@ -270,7 +268,7 @@ module plannerLifecycleJob 'modules/job.bicep' = {
   }
 }
 
-module indexJob 'modules/job.bicep' = {
+module indexJob 'modules/job.bicep' = if (enabled) {
   name: '${environmentName}-index-job'
   params: {
     name: '${environmentName}-index'
@@ -280,7 +278,7 @@ module indexJob 'modules/job.bicep' = {
     registryServer: registry.properties.loginServer
     image: images.index
     queueName: queues.index
-    maxExecutions: maximumRetrievalExecutions
+    maxExecutions: 4
     testHostName: testHostName
     secretFiles: indexSecretFiles
     runtimeEnvironment: union(runtimeEnvironments.index, { RETRIEVAL_SERVERLESS_QUEUE: queues.index })

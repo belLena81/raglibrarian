@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -19,6 +20,14 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
 	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+const defaultRunAs = 65532
+
+var (
+	dropPrivileges = process.DropPrivileges
+	newPool        = pgxpool.New
+	newQdrant      = vector.NewAuthenticatedQdrant
 )
 
 func main() {
@@ -42,15 +51,28 @@ func run(ctx context.Context) error {
 	if !privateURL(qdrantURL) {
 		return errors.New("invalid private vector endpoint")
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	runAs, err := parseRunAs()
 	if err != nil {
+		return err
+	}
+	if err = dropPrivileges(runAs); err != nil {
+		return err
+	}
+	pool, err := newPool(ctx, dsn)
+	if err != nil {
+		return errors.New("database unavailable")
+	}
+	if pool == nil {
 		return errors.New("database unavailable")
 	}
 	defer pool.Close()
 	records := repository.NewPostgres(pool)
-	index, err := vector.NewAuthenticatedQdrant(qdrantURL, "evidence_v2", qdrantKey, &http.Client{Timeout: 90 * time.Second})
+	index, err := newQdrant(qdrantURL, "evidence_v2", qdrantKey, &http.Client{Timeout: 90 * time.Second})
 	if err != nil {
 		return err
+	}
+	if index == nil {
+		return errors.New("invalid vector client")
 	}
 	now := time.Now().UTC()
 	jobs, err := records.PendingVectorCleanup(ctx, 64, now)
@@ -107,4 +129,29 @@ func randomID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(value[:]), nil
+}
+
+func parseRunAs() (process.Identity, error) {
+	uid, err := parseRunAsIdentity("RUN_AS_UID")
+	if err != nil {
+		return process.Identity{}, err
+	}
+	gid, err := parseRunAsIdentity("RUN_AS_GID")
+	if err != nil {
+		return process.Identity{}, err
+	}
+	return process.Identity{UID: uid, GID: gid}, nil
+}
+
+func parseRunAsIdentity(name string) (int, error) {
+	value := os.Getenv(name)
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return defaultRunAs, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 {
+		return 0, errors.New("invalid process identity")
+	}
+	return parsed, nil
 }
