@@ -55,7 +55,7 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
                   queueName: queueName
                   mode: 'QueueLength'
                   value: '1'
-                  protocol: 'amqps'
+                  protocol: 'amqp'
                 }
                 auth: [
                   {

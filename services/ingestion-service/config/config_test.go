@@ -89,6 +89,37 @@ func TestLoadCleanupRequiresOnlyCleanupCredentials(t *testing.T) {
 	}
 }
 
+func TestLoadDispatcherRequiresOnlyDispatcherCredentials(t *testing.T) {
+	directory := t.TempDir()
+	for _, key := range []string{"INGESTION_POSTGRES_DSN_FILE", "INGESTION_RABBITMQ_URI_FILE"} {
+		path := filepath.Join(directory, key)
+		if err := os.WriteFile(path, []byte("dispatcher-only-test-value\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(key, path)
+	}
+
+	value, err := LoadDispatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.DSN == "" || value.RabbitURI == "" || value.ResultExchange != "raglibrarian.ingestion.events.v1" {
+		t.Fatalf("unexpected dispatcher config: %#v", value)
+	}
+}
+
+func TestLoadDispatcherRejectsMissingPublisherSecret(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "postgres")
+	if err := os.WriteFile(path, []byte("dispatcher-only-test-value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("INGESTION_POSTGRES_DSN_FILE", path)
+	if _, err := LoadDispatcher(); err == nil {
+		t.Fatal("LoadDispatcher() accepted a missing publisher secret")
+	}
+}
+
 func setRequiredEnvironment(t *testing.T) {
 	t.Helper()
 	directory := t.TempDir()

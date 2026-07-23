@@ -137,15 +137,11 @@ func readSecretFile(key string, maximum int64) (string, error) {
 	if path == "" {
 		return "", errors.New("missing secret file")
 	}
-	file, err := os.Open(path) // #nosec G304,G703 -- operator-controlled secret path, never derived from public input.
+	file, err := process.OpenSecretFile(path, maximum)
 	if err != nil {
 		return "", errors.New("invalid secret file")
 	}
 	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() < 1 || info.Size() > maximum || info.Mode().Perm()&0o077 != 0 {
-		return "", errors.New("invalid secret file")
-	}
 	contents, err := io.ReadAll(io.LimitReader(file, maximum+1))
 	value := strings.TrimSpace(string(contents))
 	if err != nil || value == "" || strings.ContainsAny(value, "\r\n") {

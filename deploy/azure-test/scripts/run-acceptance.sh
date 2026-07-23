@@ -3,6 +3,7 @@ set -euo pipefail
 
 : "${RAGLIBRARIAN_ACCEPTANCE_COMMAND:?set RAGLIBRARIAN_ACCEPTANCE_COMMAND to the private runner test command}"
 : "${RAGLIBRARIAN_ACCEPTANCE_MODE:?set RAGLIBRARIAN_ACCEPTANCE_MODE to worker or serverless}"
+: "${GITHUB_SHA:?set GITHUB_SHA to the workflow commit under test}"
 
 case "$RAGLIBRARIAN_ACCEPTANCE_MODE" in
   worker|serverless) ;;
@@ -17,4 +18,4 @@ trap 'rm -f "$evidence_file"' EXIT
 
 export RAGLIBRARIAN_ACCEPTANCE_EVIDENCE_FILE="$evidence_file"
 "$RAGLIBRARIAN_ACCEPTANCE_COMMAND" m4 m6 m7
-deploy/azure-test/scripts/validate-acceptance-evidence.sh "$evidence_file" "$RAGLIBRARIAN_ACCEPTANCE_MODE"
+deploy/azure-test/scripts/validate-acceptance-evidence.sh "$evidence_file" "$RAGLIBRARIAN_ACCEPTANCE_MODE" "$GITHUB_SHA"

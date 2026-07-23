@@ -95,6 +95,7 @@ jobs:
           deploy/azure-test/scripts/transition.sh
           deploy/azure-test/scripts/run-acceptance.sh
       - name: Always return serverless consumers to paused
+        id: pause_serverless
         if: always()
         env:
           AZURE_RESOURCE_GROUP: ${{ vars.AZURE_TEST_RESOURCE_GROUP }}
@@ -110,11 +111,12 @@ jobs:
         if: always()
         env:
           CHANGE_TICKET: ${{ inputs.change_ticket }}
+          FINAL_MODE: ${{ steps.pause_serverless.outcome == 'success' && 'paused' || 'unverified' }}
         run: |
           set -euo pipefail
           {
             echo "commit=$GITHUB_SHA"
             echo "change_ticket=$CHANGE_TICKET"
-            echo 'final_mode=paused'
+            echo "final_mode=$FINAL_MODE"
             echo 'evidence=workflow-run-only; no credentials, documents, prompts, or raw logs retained'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -44,6 +44,49 @@ type CleanupConfig struct {
 	CleanupInterval, OrphanGracePeriod                 time.Duration
 }
 
+// DispatcherConfig contains only the settings used to publish ingestion
+// outbox records. It intentionally excludes worker object-store and parser
+// credentials.
+type DispatcherConfig struct {
+	RuntimeBackend string
+	DSN            string
+	RabbitURI      string
+	ResultExchange string
+	OutboxInterval time.Duration
+	RunAs          process.Identity
+}
+
+func loadLocalDispatcher() (DispatcherConfig, error) {
+	dsn, err := readSecret("INGESTION_POSTGRES_DSN_FILE", 4096)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	rabbitURI, err := readSecret("INGESTION_RABBITMQ_URI_FILE", 4096)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	outboxInterval, err := boundedDuration("INGESTION_OUTBOX_INTERVAL", 100*time.Millisecond, time.Minute, time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	uid, err := boundedInt("RUN_AS_UID", 65532, 1<<30)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	gid, err := boundedInt("RUN_AS_GID", 65532, 1<<30)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	return DispatcherConfig{
+		RuntimeBackend: "local",
+		DSN:            dsn,
+		RabbitURI:      rabbitURI,
+		ResultExchange: optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
+		OutboxInterval: outboxInterval,
+		RunAs:          process.Identity{UID: uid, GID: gid},
+	}, nil
+}
+
 func loadLocalCleanup() (CleanupConfig, error) {
 	dsn, err := readSecret("INGESTION_CLEANUP_POSTGRES_DSN_FILE", 4096)
 	if err != nil {
@@ -278,15 +321,11 @@ func readSecret(key string, maximum int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	file, err := os.Open(path) // #nosec G304 -- operator-provided secret path.
+	file, err := process.OpenSecretFile(path, int64(maximum))
 	if err != nil {
 		return "", fmt.Errorf("%s is invalid", key)
 	}
 	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() > int64(maximum) {
-		return "", fmt.Errorf("%s is invalid", key)
-	}
 	contents, err := io.ReadAll(io.LimitReader(file, int64(maximum)+1))
 	value := strings.TrimSpace(string(contents))
 	if err != nil || len(contents) > maximum || value == "" {

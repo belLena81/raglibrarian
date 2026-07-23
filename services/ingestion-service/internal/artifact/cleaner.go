@@ -67,7 +67,7 @@ func (c *Cleaner) RunOnce(ctx context.Context) error {
 
 func (c *Cleaner) runOnce(ctx context.Context) error {
 	now := c.now().UTC()
-	orphans, err := c.repository.ClaimOrphans(ctx, now, now.Add(-c.gracePeriod), time.Minute, 100)
+	orphans, err := c.repository.ClaimOrphans(ctx, now, now.Add(-c.gracePeriod), c.interval, 100)
 	if err != nil {
 		return err
 	}
@@ -79,7 +79,7 @@ func (c *Cleaner) runOnce(ctx context.Context) error {
 		}
 		result = errors.Join(result, c.repository.CompleteOrphanCleanup(ctx, orphan.JobID, now))
 	}
-	deletions, err := c.repository.ClaimDeletionArtifacts(ctx, now, time.Minute, 100)
+	deletions, err := c.repository.ClaimDeletionArtifacts(ctx, now, c.interval, 100)
 	if err != nil {
 		return errors.Join(result, err)
 	}

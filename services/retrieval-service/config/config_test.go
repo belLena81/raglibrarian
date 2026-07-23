@@ -60,6 +60,14 @@ func TestLoadWorkerBoundsServerlessInvocationTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadWorkerRequiresMetricsAddress(t *testing.T) {
+	setWorkerEnvironment(t)
+	t.Setenv("RETRIEVAL_METRICS_ADDR", "")
+	if _, err := LoadWorker(); err == nil {
+		t.Fatal("LoadWorker() accepted a missing metrics address")
+	}
+}
+
 func setWorkerEnvironment(t *testing.T) {
 	t.Helper()
 	directory := t.TempDir()

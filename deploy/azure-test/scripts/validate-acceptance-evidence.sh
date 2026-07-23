@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-evidence_file=${1:?usage: validate-acceptance-evidence.sh EVIDENCE_FILE MODE}
-mode=${2:?usage: validate-acceptance-evidence.sh EVIDENCE_FILE MODE}
+evidence_file=${1:?usage: validate-acceptance-evidence.sh EVIDENCE_FILE MODE EXPECTED_COMMIT}
+mode=${2:?usage: validate-acceptance-evidence.sh EVIDENCE_FILE MODE EXPECTED_COMMIT}
+expected_commit=${3:?usage: validate-acceptance-evidence.sh EVIDENCE_FILE MODE EXPECTED_COMMIT}
 
 case "$mode" in
   worker|serverless) ;;
   *) echo "mode must be worker or serverless" >&2; exit 2 ;;
 esac
 
+if [[ ! "$expected_commit" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "expected commit must be a lowercase 40-character Git SHA" >&2
+  exit 2
+fi
+
 test -f "$evidence_file"
 
-jq -e --arg mode "$mode" '
+jq -e --arg mode "$mode" --arg expected_commit "$expected_commit" '
   .mode == $mode and
   (.milestones | sort == ["m4","m6","m7"]) and
-  (.commit | type == "string" and test("^[0-9a-f]{40}$")) and
+  (.commit == $expected_commit) and
   (.m4.status == "passed") and
   (.m6.status == "passed") and
   (.m7.status == "passed") and

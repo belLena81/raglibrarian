@@ -46,8 +46,6 @@
         "retrievalDispatcherPostgresDSN": "SECRET_VERSION",
         "retrievalDispatcherRabbitMQPublisher": "SECRET_VERSION",
         "retrievalCleanupPostgresDSN": "SECRET_VERSION",
-        "retrievalCleanupMinioAccessKey": "SECRET_VERSION",
-        "retrievalCleanupMinioSecretKey": "SECRET_VERSION",
         "retrievalCleanupQdrantAPIKey": "SECRET_VERSION"
       }
     },
@@ -67,8 +65,9 @@
           "RETRIEVAL_MINIO_ENDPOINT": "test-host.internal:9000",
           "RETRIEVAL_MINIO_INSECURE": "false",
           "RETRIEVAL_ARTIFACT_BUCKET": "authorized-test-artifacts",
-          "RETRIEVAL_QDRANT_URL": "https://test-host.internal:6334",
-          "RETRIEVAL_TEI_URL": "https://test-host.internal:8080",
+          "RETRIEVAL_QDRANT_URL": "http://test-host.internal:6333",
+          "RETRIEVAL_TEI_URL": "http://test-host.internal:8080",
+          "RETRIEVAL_METRICS_ADDR": "127.0.0.1:9094",
           "RETRIEVAL_INDEX_PROFILE": "m7-pdf-epub-v1",
           "RETRIEVAL_SERVERLESS_INVOCATION_TIMEOUT": "13m",
           "RETRIEVAL_SERVERLESS_BROKER_ALLOWED_SUFFIXES": "internal"
@@ -77,8 +76,9 @@
           "RETRIEVAL_MINIO_ENDPOINT": "test-host.internal:9000",
           "RETRIEVAL_MINIO_INSECURE": "false",
           "RETRIEVAL_ARTIFACT_BUCKET": "authorized-test-artifacts",
-          "RETRIEVAL_QDRANT_URL": "https://test-host.internal:6334",
-          "RETRIEVAL_TEI_URL": "https://test-host.internal:8080",
+          "RETRIEVAL_QDRANT_URL": "http://test-host.internal:6333",
+          "RETRIEVAL_TEI_URL": "http://test-host.internal:8080",
+          "RETRIEVAL_METRICS_ADDR": "127.0.0.1:9094",
           "RETRIEVAL_INDEX_PROFILE": "m7-pdf-epub-v1",
           "RETRIEVAL_SERVERLESS_INVOCATION_TIMEOUT": "13m",
           "RETRIEVAL_SERVERLESS_BROKER_ALLOWED_SUFFIXES": "internal"
@@ -86,12 +86,17 @@
         "ingestionDispatcher": {
           "INGESTION_SERVERLESS_BROKER_ALLOWED_SUFFIXES": "internal"
         },
-        "ingestionCleanup": {},
+        "ingestionCleanup": {
+          "INGESTION_MINIO_ENDPOINT": "test-host.internal:9000",
+          "INGESTION_MINIO_INSECURE": "false",
+          "INGESTION_ARTIFACT_BUCKET": "authorized-test-artifacts",
+          "INGESTION_CLEANUP_INTERVAL": "15m"
+        },
         "retrievalDispatcher": {
           "RETRIEVAL_SERVERLESS_BROKER_ALLOWED_SUFFIXES": "internal"
         },
         "retrievalCleanup": {
-          "RETRIEVAL_QDRANT_URL": "https://test-host.internal:6334",
+          "RETRIEVAL_QDRANT_URL": "http://test-host.internal:6333",
           "RETRIEVAL_SERVERLESS_PRIVATE_HOST": "test-host.internal"
         }
         }

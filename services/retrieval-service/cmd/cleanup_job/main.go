@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/process"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
@@ -78,11 +80,12 @@ func readSecretFile(key string, maximum int64) (string, error) {
 	if path == "" {
 		return "", errors.New("missing secret file")
 	}
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() <= 0 || info.Size() > maximum {
+	file, err := process.OpenSecretFile(path, maximum)
+	if err != nil {
 		return "", errors.New("invalid secret file")
 	}
-	value, err := os.ReadFile(path)
+	defer func() { _ = file.Close() }()
+	value, err := io.ReadAll(io.LimitReader(file, maximum+1))
 	if err != nil {
 		return "", errors.New("read secret file")
 	}

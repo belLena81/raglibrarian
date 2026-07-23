@@ -8,12 +8,15 @@ import (
 )
 
 type cleanerRepository struct {
-	deletions []DeletionArtifact
-	completed []string
-	retried   []string
+	deletions     []DeletionArtifact
+	completed     []string
+	retried       []string
+	orphanLease   time.Duration
+	deletionLease time.Duration
 }
 
-func (r *cleanerRepository) ClaimOrphans(context.Context, time.Time, time.Time, time.Duration, int) ([]Orphan, error) {
+func (r *cleanerRepository) ClaimOrphans(_ context.Context, _ time.Time, _ time.Time, lease time.Duration, _ int) ([]Orphan, error) {
+	r.orphanLease = lease
 	return nil, nil
 }
 
@@ -25,7 +28,8 @@ func (r *cleanerRepository) RetryOrphanCleanup(context.Context, string, time.Tim
 	return nil
 }
 
-func (r *cleanerRepository) ClaimDeletionArtifacts(context.Context, time.Time, time.Duration, int) ([]DeletionArtifact, error) {
+func (r *cleanerRepository) ClaimDeletionArtifacts(_ context.Context, _ time.Time, lease time.Duration, _ int) ([]DeletionArtifact, error) {
+	r.deletionLease = lease
 	return r.deletions, nil
 }
 
@@ -87,5 +91,23 @@ func TestCleanerRetriesPartialDeletionWithoutAcknowledging(t *testing.T) {
 	}
 	if len(repository.completed) != 0 || len(repository.retried) != 1 {
 		t.Fatalf("completed=%#v retried=%#v", repository.completed, repository.retried)
+	}
+}
+
+func TestCleanerUsesConfiguredIntervalForClaimLeases(t *testing.T) {
+	repository := &cleanerRepository{}
+	interval := 7 * time.Minute
+	cleaner, err := NewCleaner(repository, &deletionStore{}, interval, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = cleaner.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if repository.orphanLease != interval {
+		t.Fatalf("orphan claim lease = %s, want %s", repository.orphanLease, interval)
+	}
+	if repository.deletionLease != interval {
+		t.Fatalf("deletion claim lease = %s, want %s", repository.deletionLease, interval)
 	}
 }

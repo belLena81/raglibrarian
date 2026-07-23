@@ -21,7 +21,8 @@ Required shape:
 ```
 
 `mode` is `worker` for the private worker-host stage and `serverless` for the
-Azure Container Apps Jobs stage.
+Azure Container Apps Jobs stage. `commit` must match the expected workflow or
+checkout commit supplied to the evidence validator.
 
 The evidence must not include credentials, connection strings, bearer tokens,
 raw uploaded documents, retrieved passages, full prompts, provider responses, or

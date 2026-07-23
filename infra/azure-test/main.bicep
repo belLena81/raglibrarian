@@ -77,8 +77,6 @@ var secretUris = {
   retrievalDispatcherPostgresDSN: 'https://${keyVaultName}.vault.azure.net/secrets/retrieval-dispatcher-postgres-dsn/${secretVersions.retrievalDispatcherPostgresDSN}'
   retrievalDispatcherRabbitMQPublisher: 'https://${keyVaultName}.vault.azure.net/secrets/retrieval-dispatcher-rabbitmq-publisher-uri/${secretVersions.retrievalDispatcherRabbitMQPublisher}'
   retrievalCleanupPostgresDSN: 'https://${keyVaultName}.vault.azure.net/secrets/retrieval-cleanup-postgres-dsn/${secretVersions.retrievalCleanupPostgresDSN}'
-  retrievalCleanupMinioAccessKey: 'https://${keyVaultName}.vault.azure.net/secrets/retrieval-cleanup-minio-access-key/${secretVersions.retrievalCleanupMinioAccessKey}'
-  retrievalCleanupMinioSecretKey: 'https://${keyVaultName}.vault.azure.net/secrets/retrieval-cleanup-minio-secret-key/${secretVersions.retrievalCleanupMinioSecretKey}'
   retrievalCleanupQdrantAPIKey: 'https://${keyVaultName}.vault.azure.net/secrets/retrieval-cleanup-qdrant-api-key/${secretVersions.retrievalCleanupQdrantAPIKey}'
 }
 var ingestionSecretFiles = [
@@ -118,8 +116,6 @@ var retrievalDispatcherSecretFiles = [
 ]
 var retrievalCleanupSecretFiles = [
   { name: 'postgres-dsn', path: 'retrieval_cleanup_postgres_dsn', environmentName: 'RETRIEVAL_POSTGRES_DSN_FILE', uri: secretUris.retrievalCleanupPostgresDSN }
-  { name: 'minio-access-key', path: 'retrieval_cleanup_minio_access_key', environmentName: 'RETRIEVAL_MINIO_ACCESS_KEY_FILE', uri: secretUris.retrievalCleanupMinioAccessKey }
-  { name: 'minio-secret-key', path: 'retrieval_cleanup_minio_secret_key', environmentName: 'RETRIEVAL_MINIO_SECRET_KEY_FILE', uri: secretUris.retrievalCleanupMinioSecretKey }
   { name: 'qdrant-api-key', path: 'retrieval_cleanup_qdrant_api_key', environmentName: 'RETRIEVAL_QDRANT_API_KEY_FILE', uri: secretUris.retrievalCleanupQdrantAPIKey }
 ]
 // Role scopes come from the same fixed URI mappings used by Container Apps.
@@ -320,7 +316,7 @@ module ingestionCleanupJob 'modules/scheduled-job.bicep' = if (enabled) {
     identityId: ingestionCleanupIdentity.outputs.id
     registryServer: registry.properties.loginServer
     image: images.ingestionCleanup
-    cronExpression: '*/15 * * * *'
+    cronExpression: '* * * * *'
     secretFiles: ingestionCleanupSecretFiles
     runtimeEnvironment: runtimeEnvironments.ingestionCleanup
     tags: commonTags

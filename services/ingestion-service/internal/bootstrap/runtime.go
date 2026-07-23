@@ -55,7 +55,7 @@ type DispatcherRuntime struct {
 	pool      *pgxpool.Pool
 }
 
-func NewDispatcher(ctx context.Context, cfg config.Config) (*DispatcherRuntime, error) {
+func NewDispatcher(ctx context.Context, cfg config.DispatcherConfig) (*DispatcherRuntime, error) {
 	poolConfig, err := pgxpool.ParseConfig(cfg.DSN)
 	if err != nil {
 		return nil, errors.New("database configuration invalid")

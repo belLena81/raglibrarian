@@ -30,7 +30,7 @@ func getRuntime(ctx context.Context) (*bootstrap.DispatcherRuntime, error) {
 	if runtime != nil {
 		return runtime, nil
 	}
-	cfg, err := config.LoadContext(ctx)
+	cfg, err := config.LoadDispatcherContext(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/process"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/rabbitmq"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
@@ -77,11 +79,12 @@ func readSecretFile(key string, maximum int64) (string, error) {
 	if path == "" {
 		return "", errors.New("missing secret file")
 	}
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() <= 0 || info.Size() > maximum {
+	file, err := process.OpenSecretFile(path, maximum)
+	if err != nil {
 		return "", errors.New("invalid secret file")
 	}
-	value, err := os.ReadFile(path)
+	defer func() { _ = file.Close() }()
+	value, err := io.ReadAll(io.LimitReader(file, maximum+1))
 	if err != nil {
 		return "", errors.New("read secret file")
 	}

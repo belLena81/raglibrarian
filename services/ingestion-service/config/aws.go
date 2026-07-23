@@ -28,6 +28,19 @@ func LoadContext(ctx context.Context) (Config, error) {
 	return loadAWS(ctx)
 }
 
+func LoadDispatcher() (DispatcherConfig, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return LoadDispatcherContext(ctx)
+}
+
+func LoadDispatcherContext(ctx context.Context) (DispatcherConfig, error) {
+	if optional("INGESTION_RUNTIME_BACKEND", "local") == "local" {
+		return loadLocalDispatcher()
+	}
+	return loadAWSDispatcher(ctx)
+}
+
 func LoadCleanup() (CleanupConfig, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -169,6 +182,37 @@ func loadAWS(ctx context.Context) (Config, error) {
 		ProcessingTimeout: timeout, JobLease: lease, OutboxInterval: outboxInterval, CleanupInterval: cleanupInterval,
 		OrphanGracePeriod: grace, RunAs: process.Identity{UID: uid, GID: gid},
 	}, nil
+}
+
+func loadAWSDispatcher(ctx context.Context) (DispatcherConfig, error) {
+	if os.Getenv("INGESTION_RUNTIME_BACKEND") != "aws" {
+		return DispatcherConfig{}, fmt.Errorf("INGESTION_RUNTIME_BACKEND must be local or aws")
+	}
+	region, err := required("INGESTION_AWS_REGION")
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	dsn, err := readAWSSecret(ctx, region, "INGESTION_DATABASE_SECRET_ARN", "dsn", 4096)
+	if err != nil || validateAWSPostgresDSN(dsn) != nil {
+		return DispatcherConfig{}, fmt.Errorf("INGESTION_DATABASE_SECRET_ARN is invalid")
+	}
+	rabbitURI, err := readAWSSecret(ctx, region, "INGESTION_RABBITMQ_PUBLISHER_SECRET_ARN", "uri", 4096)
+	if err != nil || validateAWSRabbitURI(rabbitURI) != nil {
+		return DispatcherConfig{}, fmt.Errorf("INGESTION_RABBITMQ_PUBLISHER_SECRET_ARN is invalid")
+	}
+	outboxInterval, err := boundedDuration("INGESTION_OUTBOX_INTERVAL", 100*time.Millisecond, time.Minute, time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	uid, err := boundedInt("RUN_AS_UID", 65532, 1<<30)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	gid, err := boundedInt("RUN_AS_GID", 65532, 1<<30)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	return DispatcherConfig{RuntimeBackend: "aws", DSN: dsn, RabbitURI: rabbitURI, ResultExchange: optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"), OutboxInterval: outboxInterval, RunAs: process.Identity{UID: uid, GID: gid}}, nil
 }
 
 func loadAWSCleanup(ctx context.Context) (CleanupConfig, error) {

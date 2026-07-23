@@ -64,6 +64,12 @@ FROM ingestion-runtime AS ingestion-lambda-runtime
 USER 65532:65532
 ENTRYPOINT ["/service"]
 
+FROM ingestion-runtime AS ingestion-cleanup-runtime
+# Cleanup does not need the worker's root-starting privilege drop: it receives
+# only immutable Container Apps secret mounts and rejects root execution.
+USER 65532:65532
+ENTRYPOINT ["/service"]
+
 FROM gcr.io/distroless/static:nonroot AS retrieval-runtime
 COPY --from=builder /bin/service /service
 COPY --from=builder /bin/healthcheck /healthcheck

@@ -23,7 +23,7 @@ func main() {
 }
 
 func run(ctx context.Context) error {
-	cfg, err := config.LoadContext(ctx)
+	cfg, err := config.LoadDispatcherContext(ctx)
 	if err != nil {
 		return err
 	}
