@@ -55,6 +55,28 @@ stop_active_executions() {
   wait_for_active_executions "$trigger_type"
 }
 
+delete_event_jobs() {
+  local job execution
+  while IFS= read -r job; do
+    [ -n "$job" ] || continue
+    while IFS= read -r execution; do
+      [ -n "$execution" ] || continue
+      az containerapp job stop --resource-group "$AZURE_RESOURCE_GROUP" --name "$job" \
+        --job-execution-name "$execution" --only-show-errors
+    done < <(az containerapp job execution list --resource-group "$AZURE_RESOURCE_GROUP" --name "$job" \
+      --query "[?properties.status=='Running' || properties.status=='Pending'].name" --output tsv --only-show-errors)
+  done < <(az containerapp job list --resource-group "$AZURE_RESOURCE_GROUP" \
+    --query "[?tags.application=='raglibrarian' && tags.environment=='$(jq -r '.parameters.environmentName.value' "$AZURE_PARAMETERS_FILE")' && properties.configuration.triggerType=='Event'].name" \
+    --output tsv --only-show-errors)
+  wait_for_active_executions Event
+  while IFS= read -r job; do
+    [ -n "$job" ] || continue
+    az containerapp job delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$job" --yes --only-show-errors
+  done < <(az containerapp job list --resource-group "$AZURE_RESOURCE_GROUP" \
+    --query "[?tags.application=='raglibrarian' && tags.environment=='$(jq -r '.parameters.environmentName.value' "$AZURE_PARAMETERS_FILE")' && properties.configuration.triggerType=='Event'].name" \
+    --output tsv --only-show-errors)
+}
+
 delete_scheduled_jobs() {
   local job execution
   # Stop scheduling by deleting the schedule resources. ARM incremental mode
@@ -82,6 +104,7 @@ delete_scheduled_jobs() {
 
 if [ "$AZURE_PROCESSING_MODE" = paused ]; then
   stop_active_executions Event
+  delete_event_jobs
   delete_scheduled_jobs
 fi
 
@@ -92,18 +115,19 @@ az deployment group create \
   --parameters "@$AZURE_PARAMETERS_FILE" processingMode="$AZURE_PROCESSING_MODE" \
   --only-show-errors >/dev/null
 
+event_job_count() {
+  az containerapp job list --resource-group "$AZURE_RESOURCE_GROUP" \
+    --query "length([?tags.application=='raglibrarian' && tags.environment=='$(jq -r '.parameters.environmentName.value' "$AZURE_PARAMETERS_FILE")' && properties.configuration.triggerType=='Event'])" \
+    --output tsv --only-show-errors
+}
+
 verify_paused_jobs() {
-  local expected=$1 job actual
-  while IFS= read -r job; do
-    actual=$(az containerapp job show --resource-group "$AZURE_RESOURCE_GROUP" --name "$job" \
-      --query 'properties.configuration.eventTriggerConfig.scale.maxExecutions' --output tsv --only-show-errors)
-    test "$actual" = "$expected" || {
-      echo "Job $job has maxExecutions=$actual; expected $expected." >&2
-      return 1
-    }
-  done < <(az containerapp job list --resource-group "$AZURE_RESOURCE_GROUP" \
-    --query "[?tags.application=='raglibrarian' && tags.environment=='$(jq -r '.parameters.environmentName.value' "$AZURE_PARAMETERS_FILE")' && properties.configuration.triggerType=='Event'].name" \
-    --output tsv --only-show-errors)
+  local expected=$1 actual
+  actual=$(event_job_count)
+  test "$actual" = "$expected" || {
+    echo "Expected $expected event jobs while paused, but found $actual." >&2
+    return 1
+  }
 }
 
 verify_enabled_jobs() {

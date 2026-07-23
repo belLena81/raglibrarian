@@ -421,7 +421,7 @@ release-local-stack: _require_root
 	case "$$provider_url" in https://llm-provider-stub|https://llm-provider-stub:*|https://llm-provider-stub/*) echo "release-local-stack requires a non-stub HTTPS provider"; exit 1 ;; https://*) ;; *) echo "release-local-stack provider URL must use HTTPS"; exit 1 ;; esac; \
 	test -r "$${provider_key:-.dev/secrets/answer_llm_api_key}" && test -f "$${provider_key:-.dev/secrets/answer_llm_api_key}" && test ! -L "$${provider_key:-.dev/secrets/answer_llm_api_key}" || { echo "release-local-stack requires a readable regular provider key file"; exit 1; }; \
 	$(MAKE) m6-stack-up; \
-	$(MAKE) release-local-test
+	ANSWER_LLM_BASE_URL="$$provider_url" ANSWER_LLM_MODEL="$$provider_model" ANSWER_LLM_API_KEY_PATH="$${provider_key:-.dev/secrets/answer_llm_api_key}" $(MAKE) release-local-test
 
 # This gate deliberately controls only the local Compose worker. The E2E test
 # owns upload/status assertions and coordinates through two owner-only markers;
