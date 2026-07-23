@@ -6,9 +6,11 @@ import (
 	"testing"
 	"time"
 
+	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/application"
 	"github.com/rabbitmq/amqp091-go"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type recordingAcknowledger struct {
@@ -167,22 +169,24 @@ func TestConsumerAppliesDispositionAfterShutdownCancellation(t *testing.T) {
 }
 
 func TestConsumerRepublishesTransientDeliveryWithBoundedSanitizedRetry(t *testing.T) {
-	payload, err := proto.Marshal(validUploadMessage())
-	if err != nil {
-		t.Fatal(err)
-	}
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.FixedZone("test", 2*60*60))
 	tests := []struct {
 		name        string
+		eventType   string
+		payload     []byte
+		messageID   string
 		headers     amqp091.Table
 		wantKey     string
 		wantAttempt int64
 	}{
-		{name: "first retry", wantKey: "ingestion.retry.5s", wantAttempt: 1},
-		{name: "second retry", headers: amqp091.Table{applicationDeliveryCountHeader: int32(1)}, wantKey: "ingestion.retry.30s", wantAttempt: 2},
-		{name: "third retry from broker count", headers: amqp091.Table{"x-delivery-count": int64(2)}, wantKey: "ingestion.retry.30s", wantAttempt: 3},
-		{name: "fourth retry", headers: amqp091.Table{applicationDeliveryCountHeader: int64(3)}, wantKey: "ingestion.retry.2m", wantAttempt: 4},
-		{name: "fifth retry", headers: amqp091.Table{applicationDeliveryCountHeader: int32(4)}, wantKey: "ingestion.retry.2m", wantAttempt: 5},
+		{name: "upload first retry", eventType: UploadRoute, payload: mustMarshal(t, validUploadMessage()), messageID: validUploadMessage().EventId, wantKey: "ingestion.retry.5s", wantAttempt: 1},
+		{name: "upload second retry", eventType: UploadRoute, payload: mustMarshal(t, validUploadMessage()), messageID: validUploadMessage().EventId, headers: amqp091.Table{applicationDeliveryCountHeader: int32(1)}, wantKey: "ingestion.retry.30s", wantAttempt: 2},
+		{name: "upload third retry from broker count", eventType: UploadRoute, payload: mustMarshal(t, validUploadMessage()), messageID: validUploadMessage().EventId, headers: amqp091.Table{"x-delivery-count": int64(2)}, wantKey: "ingestion.retry.30s", wantAttempt: 3},
+		{name: "upload fourth retry", eventType: UploadRoute, payload: mustMarshal(t, validUploadMessage()), messageID: validUploadMessage().EventId, headers: amqp091.Table{applicationDeliveryCountHeader: int64(3)}, wantKey: "ingestion.retry.2m", wantAttempt: 4},
+		{name: "upload fifth retry", eventType: UploadRoute, payload: mustMarshal(t, validUploadMessage()), messageID: validUploadMessage().EventId, headers: amqp091.Table{applicationDeliveryCountHeader: int32(4)}, wantKey: "ingestion.retry.2m", wantAttempt: 5},
+		{name: "deletion first retry", eventType: DeletionRoute, payload: mustMarshal(t, validDeletionMessage()), messageID: validDeletionMessage().EventId, wantKey: "ingestion.deletion.retry.5s", wantAttempt: 1},
+		{name: "deletion second retry", eventType: DeletionRoute, payload: mustMarshal(t, validDeletionMessage()), messageID: validDeletionMessage().EventId, headers: amqp091.Table{applicationDeliveryCountHeader: int32(1)}, wantKey: "ingestion.deletion.retry.30s", wantAttempt: 2},
+		{name: "deletion fourth retry", eventType: DeletionRoute, payload: mustMarshal(t, validDeletionMessage()), messageID: validDeletionMessage().EventId, headers: amqp091.Table{applicationDeliveryCountHeader: int64(3)}, wantKey: "ingestion.deletion.retry.2m", wantAttempt: 4},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -200,13 +204,18 @@ func TestConsumerRepublishesTransientDeliveryWithBoundedSanitizedRetry(t *testin
 			consumer.handle(context.Background(), amqp091.Delivery{
 				Acknowledger: acknowledger,
 				Headers:      headers,
-				ContentType:  "application/x-protobuf", Type: UploadRoute, MessageId: validUploadMessage().EventId,
-				UserId: "untrusted", ReplyTo: "untrusted", Expiration: "1", Body: payload,
+				ContentType:  "application/x-protobuf",
+				Type:         test.eventType,
+				MessageId:    test.messageID,
+				UserId:       "untrusted",
+				ReplyTo:      "untrusted",
+				Expiration:   "1",
+				Body:         test.payload,
 			})
 			if !acknowledger.acked || acknowledger.nacked || publisher.exchange != RetryExchange || publisher.key != test.wantKey || !publisher.mandatory || publisher.immediate {
 				t.Fatalf("retry result ack=%#v publish=%#v", acknowledger, publisher)
 			}
-			if publisher.message.DeliveryMode != amqp091.Persistent || publisher.message.ContentType != "application/x-protobuf" || publisher.message.MessageId != validUploadMessage().EventId || publisher.message.Type != UploadRoute || !publisher.message.Timestamp.Equal(now.UTC()) {
+			if publisher.message.DeliveryMode != amqp091.Persistent || publisher.message.ContentType != "application/x-protobuf" || publisher.message.MessageId != test.messageID || publisher.message.Type != test.eventType || !publisher.message.Timestamp.Equal(now.UTC()) {
 				t.Fatalf("unexpected retry envelope: %#v", publisher.message)
 			}
 			if len(publisher.message.Headers) != 1 || publisher.message.Headers[applicationDeliveryCountHeader] != test.wantAttempt {
@@ -216,6 +225,31 @@ func TestConsumerRepublishesTransientDeliveryWithBoundedSanitizedRetry(t *testin
 				t.Fatalf("untrusted properties propagated: %#v", publisher.message)
 			}
 		})
+	}
+}
+
+func mustMarshal(t *testing.T, message proto.Message) []byte {
+	t.Helper()
+	payload, err := proto.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+func validDeletionMessage() *catalogv1.BookDeletionRequestedV1 {
+	return &catalogv1.BookDeletionRequestedV1{
+		EventId:          "delete-event",
+		BookId:           "book-1",
+		CommandId:        "delete-command",
+		LifecycleVersion: 2,
+		ActorId:          "actor-1",
+		CorrelationId:    "correlation-1",
+		OccurredAt:       timestamppb.New(time.Now().UTC()),
+		CausationId:      "delete-command",
+		Producer:         "catalog-service",
+		SchemaVersion:    "v1",
+		IdempotencyKey:   "delete-command",
 	}
 }
 

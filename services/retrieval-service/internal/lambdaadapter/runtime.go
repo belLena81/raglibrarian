@@ -117,11 +117,9 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	if secret.PostgresDSN == "" || secret.Region == "" || secret.ArtifactBucket == "" || secret.QdrantURL == "" || secret.QdrantAPIKey == "" {
+	lifecycleConfigured, err := validatePlannerSecret(secret)
+	if err != nil {
 		return nil, errors.New("invalid planner runtime secret")
-	}
-	if err = validatePrivateEndpoint(ctx, secret.QdrantURL); err != nil {
-		return nil, errors.New("invalid private vector endpoint")
 	}
 	pool, err := pgxpool.New(ctx, secret.PostgresDSN)
 	if err != nil {
@@ -138,18 +136,35 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
-	httpClient := &http.Client{Timeout: 90 * time.Second, CheckRedirect: rejectRedirect}
-	index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, "evidence_v2", secret.QdrantAPIKey, httpClient)
-	if err != nil {
-		pool.Close()
-		return nil, err
-	}
-	lifecycle, err := application.NewLifecycleCoordinator(records, index, randomID, time.Now)
-	if err != nil {
-		pool.Close()
-		return nil, err
+	var lifecycle lifecycleProcessor
+	if lifecycleConfigured {
+		if err = validatePrivateEndpoint(ctx, secret.QdrantURL); err != nil {
+			pool.Close()
+			return nil, errors.New("invalid private vector endpoint")
+		}
+		httpClient := &http.Client{Timeout: 90 * time.Second, CheckRedirect: rejectRedirect}
+		index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, "evidence_v2", secret.QdrantAPIKey, httpClient)
+		if err != nil {
+			pool.Close()
+			return nil, err
+		}
+		lifecycle, err = application.NewLifecycleCoordinator(records, index, randomID, time.Now)
+		if err != nil {
+			pool.Close()
+			return nil, err
+		}
 	}
 	return &Runtime{repository: records, manifestFails: records, objects: objects, planner: planner, lifecycle: lifecycle, secret: secret}, nil
+}
+
+func validatePlannerSecret(secret Secret) (bool, error) {
+	if secret.PostgresDSN == "" || secret.Region == "" || secret.ArtifactBucket == "" {
+		return false, errors.New("missing required planner secret fields")
+	}
+	if secret.QdrantURL == "" || secret.QdrantAPIKey == "" {
+		return false, errors.New("missing planner lifecycle configuration")
+	}
+	return true, nil
 }
 
 func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {

@@ -35,3 +35,24 @@ func TestLifecycleMigrationGrantsOnlyDeletionCompletionColumns(t *testing.T) {
 		}
 	}
 }
+
+func TestLifecycleDownMigrationRemovesAcknowledgementsBeforeRestoringOutboxConstraint(t *testing.T) {
+	contents, err := os.ReadFile("../../migrations/002_ingestion_lifecycle.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := strings.Join(strings.Fields(string(contents)), " ")
+	deleteAcknowledgement := "DELETE FROM ingestion.outbox WHERE event_type = 'ingestion.book.artifacts-deleted.v1';"
+	restoreConstraint := "ALTER TABLE ingestion.outbox ADD CONSTRAINT outbox_event_type_check CHECK"
+	deleteIndex := strings.Index(normalized, deleteAcknowledgement)
+	restoreIndex := strings.Index(normalized, restoreConstraint)
+	if deleteIndex < 0 {
+		t.Fatalf("missing lifecycle acknowledgement cleanup statement %q", deleteAcknowledgement)
+	}
+	if restoreIndex < 0 {
+		t.Fatalf("missing outbox constraint restore statement %q", restoreConstraint)
+	}
+	if deleteIndex > restoreIndex {
+		t.Fatal("lifecycle acknowledgements must be removed before restoring the pre-lifecycle outbox constraint")
+	}
+}

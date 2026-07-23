@@ -51,3 +51,34 @@ jq -e '
   echo "M7 Ingestion lifecycle bindings are missing" >&2
   exit 1
 }
+
+jq -e '
+  def retry_queue($name; $routing_key):
+    any(.queues[]?;
+      .name == $name and
+      .arguments["x-dead-letter-exchange"] == "raglibrarian.events.v1" and
+      .arguments["x-dead-letter-routing-key"] == $routing_key
+    );
+  def retry_binding($name):
+    any(.bindings[]?;
+      .source == "raglibrarian.ingestion.retry.v1" and
+      .destination == $name and
+      .destination_type == "queue" and
+      .routing_key == $name
+    );
+  retry_queue("ingestion.retry.5s"; "catalog.book.uploaded.v1") and
+  retry_queue("ingestion.retry.30s"; "catalog.book.uploaded.v1") and
+  retry_queue("ingestion.retry.2m"; "catalog.book.uploaded.v1") and
+  retry_queue("ingestion.deletion.retry.5s"; "catalog.book.deletion-requested.v1") and
+  retry_queue("ingestion.deletion.retry.30s"; "catalog.book.deletion-requested.v1") and
+  retry_queue("ingestion.deletion.retry.2m"; "catalog.book.deletion-requested.v1") and
+  retry_binding("ingestion.retry.5s") and
+  retry_binding("ingestion.retry.30s") and
+  retry_binding("ingestion.retry.2m") and
+  retry_binding("ingestion.deletion.retry.5s") and
+  retry_binding("ingestion.deletion.retry.30s") and
+  retry_binding("ingestion.deletion.retry.2m")
+' "$definitions" >/dev/null || {
+  echo "M4 Ingestion retry queues are not isolated by source route" >&2
+  exit 1
+}

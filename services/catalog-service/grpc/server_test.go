@@ -41,3 +41,10 @@ func TestUnknownFailureRemainsPersistenceUnavailable(t *testing.T) {
 		t.Fatalf("uploadFailureReason() = %q", got)
 	}
 }
+
+func TestProcessingEventConflictMapsToLifecycleConflict(t *testing.T) {
+	mapped := mapError(catalog.ErrProcessingEventConflict)
+	if status.Code(mapped) != codes.Aborted || status.Convert(mapped).Message() != "lifecycle conflict" {
+		t.Fatalf("mapError() = %v", mapped)
+	}
+}

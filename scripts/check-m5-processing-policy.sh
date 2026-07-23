@@ -3,7 +3,8 @@ set -euo pipefail
 
 compose_file="${1:-docker-compose.yml}"
 template="${2:-infra/aws/m5/template.yaml}"
-[[ -f "$compose_file" && -f "$template" ]] || { echo 'M5 runtime files are missing' >&2; exit 1; }
+workflow="${3:-.github/workflows/m5-staging.yml}"
+[[ -f "$compose_file" && -f "$template" && -f "$workflow" ]] || { echo 'M5 runtime files are missing' >&2; exit 1; }
 
 # Compose is the Lambda substitute, so it must expose one worker command and no
 # Lambda preparation command. Search/TEI/Qdrant are deliberately not consumers.
@@ -28,5 +29,9 @@ if grep -Fq 'AWS::ECS::Service' "$template"; then
   exit 1
 fi
 grep -Fq 'AllowedValues: [lambda, paused]' "$template" || { echo 'ProcessingMode is not closed' >&2; exit 1; }
+grep -Fq 'require_planner_lifecycle_secret' "$workflow" || { echo 'M5 Lambda activation must preflight planner lifecycle secret' >&2; exit 1; }
+grep -Fq 'aws secretsmanager get-secret-value' "$workflow" || { echo 'M5 Lambda activation must read the planner runtime secret before enabling mappings' >&2; exit 1; }
+grep -Fq 'qdrant_url' "$workflow" || { echo 'M5 Lambda activation must require qdrant_url' >&2; exit 1; }
+grep -Fq 'qdrant_api_key' "$workflow" || { echo 'M5 Lambda activation must require qdrant_api_key' >&2; exit 1; }
 
 echo 'M5 preparation modes are exclusive; Compose is worker-only'

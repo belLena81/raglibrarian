@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
@@ -30,6 +31,52 @@ func TestValidatePrivateEndpointRejectsCredentialExfiltrationTargets(t *testing.
 	}
 }
 
+func TestValidatePlannerSecretRequiresLifecycleConfiguration(t *testing.T) {
+	if _, err := validatePlannerSecret(Secret{
+		PostgresDSN:    "postgres://retrieval_planner@postgres/retrieval",
+		Region:         "us-east-1",
+		ArtifactBucket: "raglibrarian-artifacts",
+	}); err == nil {
+		t.Fatal("validatePlannerSecret() error = nil")
+	}
+}
+
+func TestValidatePlannerSecretAcceptsCompleteLifecycleConfiguration(t *testing.T) {
+	configured, err := validatePlannerSecret(Secret{
+		PostgresDSN:    "postgres://retrieval_planner@postgres/retrieval",
+		Region:         "us-east-1",
+		ArtifactBucket: "raglibrarian-artifacts",
+		QdrantURL:      "https://10.0.0.2",
+		QdrantAPIKey:   "qdrant-key",
+	})
+	if err != nil {
+		t.Fatalf("validatePlannerSecret() error = %v", err)
+	}
+	if !configured {
+		t.Fatal("complete lifecycle vector configuration was not enabled")
+	}
+}
+
+func TestValidatePlannerSecretRejectsIncompleteLifecycleConfiguration(t *testing.T) {
+	for _, secret := range []Secret{
+		{PostgresDSN: "postgres://retrieval_planner@postgres/retrieval", Region: "us-east-1", ArtifactBucket: "raglibrarian-artifacts", QdrantURL: "https://10.0.0.2"},
+		{PostgresDSN: "postgres://retrieval_planner@postgres/retrieval", Region: "us-east-1", ArtifactBucket: "raglibrarian-artifacts", QdrantAPIKey: "qdrant-key"},
+	} {
+		if _, err := validatePlannerSecret(secret); err == nil {
+			t.Fatalf("validatePlannerSecret(%#v) error = nil", secret)
+		}
+	}
+}
+
+func TestPlanReturnsRuntimeErrorForLifecycleWithoutProcessor(t *testing.T) {
+	runtime := &Runtime{}
+
+	err := runtime.Plan(context.Background(), lifecycleRabbitEvent(t, validLambdaDeletionPayload(t)))
+	if err == nil || err.Error() != "lifecycle processor unavailable" {
+		t.Fatalf("Plan() error = %v, want lifecycle processor unavailable", err)
+	}
+}
+
 func TestPlanRetriesManifestReadFailureBeforeExhaustion(t *testing.T) {
 	recorder := &lambdaManifestFailureRecorder{}
 	runtime := &Runtime{
@@ -43,6 +90,19 @@ func TestPlanRetriesManifestReadFailureBeforeExhaustion(t *testing.T) {
 	}
 	if recorder.calls != 0 {
 		t.Fatalf("terminal manifest failures = %d, want 0", recorder.calls)
+	}
+}
+
+func lifecycleRabbitEvent(t *testing.T, payload []byte) RabbitEvent {
+	t.Helper()
+	return RabbitEvent{
+		Messages: map[string][]RabbitMessage{
+			"retrieval.book-lifecycle.v1": {
+				{
+					Data: base64.StdEncoding.EncodeToString(payload),
+				},
+			},
+		},
 	}
 }
 
@@ -520,6 +580,28 @@ func validLambdaBatchPayload(t *testing.T) []byte {
 		Producer:             "retrieval-service",
 		SchemaVersion:        "v1",
 		IdempotencyKey:       "job-1:0",
+	}
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+func validLambdaDeletionPayload(t *testing.T) []byte {
+	t.Helper()
+	message := &catalogv1.BookDeletionRequestedV1{
+		EventId:          "delete-event",
+		BookId:           "book-1",
+		CommandId:        "delete-command",
+		LifecycleVersion: 2,
+		ActorId:          "actor-1",
+		CorrelationId:    "correlation-1",
+		OccurredAt:       timestamppb.New(time.Date(2026, 7, 23, 10, 0, 0, 0, time.UTC)),
+		CausationId:      "delete-command",
+		Producer:         "catalog-service",
+		SchemaVersion:    "v1",
+		IdempotencyKey:   "delete-command",
 	}
 	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(message)
 	if err != nil {

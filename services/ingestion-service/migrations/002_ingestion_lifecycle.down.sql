@@ -21,6 +21,7 @@ REVOKE UPDATE (
 ) ON ingestion.artifact_sets FROM ingestion_cleanup;
 
 ALTER TABLE ingestion.outbox DROP CONSTRAINT outbox_event_type_check;
+DELETE FROM ingestion.outbox WHERE event_type = 'ingestion.book.artifacts-deleted.v1';
 ALTER TABLE ingestion.outbox ADD CONSTRAINT outbox_event_type_check CHECK (
     event_type IN (
         'ingestion.book.processing-started.v1',

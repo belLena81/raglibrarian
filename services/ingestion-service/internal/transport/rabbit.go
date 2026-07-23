@@ -120,7 +120,7 @@ func (c *Consumer) retry(ctx context.Context, delivery amqp091.Delivery) {
 	err := c.publisher.PublishWithContext(
 		publishCtx,
 		RetryExchange,
-		retryRoute(retryDelay(nextAttempt)),
+		deliveryRetryRoute(delivery.Type, retryDelay(nextAttempt)),
 		true,
 		false,
 		amqp091.Publishing{
@@ -182,14 +182,22 @@ func retryDelay(attempt int) time.Duration {
 	}
 }
 
-func retryRoute(delay time.Duration) string {
+func deliveryRetryRoute(eventType string, delay time.Duration) string {
+	prefix := "ingestion.retry"
+	if eventType == DeletionRoute {
+		prefix = "ingestion.deletion.retry"
+	}
 	if delay <= 5*time.Second {
-		return "ingestion.retry.5s"
+		return prefix + ".5s"
 	}
 	if delay <= 30*time.Second {
-		return "ingestion.retry.30s"
+		return prefix + ".30s"
 	}
-	return "ingestion.retry.2m"
+	return prefix + ".2m"
+}
+
+func retryRoute(delay time.Duration) string {
+	return deliveryRetryRoute(UploadRoute, delay)
 }
 
 type Publisher interface {

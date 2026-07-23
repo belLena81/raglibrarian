@@ -253,6 +253,8 @@ func mapError(err error) error {
 		return status.Error(codes.InvalidArgument, "invalid lifecycle command")
 	case errors.Is(err, catalog.ErrInvalidTransition):
 		return status.Error(codes.FailedPrecondition, "invalid lifecycle transition")
+	case errors.Is(err, catalog.ErrProcessingEventConflict):
+		return status.Error(codes.Aborted, "lifecycle conflict")
 	case errors.Is(err, catalog.ErrUnauthorizedActor):
 		return status.Error(codes.PermissionDenied, "actor is not authorized")
 	case errors.Is(err, catalog.ErrUploadTooLarge):
