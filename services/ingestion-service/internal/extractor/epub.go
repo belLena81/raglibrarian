@@ -307,8 +307,7 @@ func decodeStrictXML(contents []byte, target any) error {
 }
 
 func extractEPUBXHTML(contents []byte, maximum int64) (string, error) {
-	if maximum < 1 || len(contents) == 0 || bytes.Contains(bytes.ToLower(contents), []byte("<!doctype")) ||
-		bytes.Contains(bytes.ToLower(contents), []byte("<!entity")) {
+	if maximum < 1 || len(contents) == 0 || bytes.Contains(bytes.ToLower(contents), []byte("<!entity")) {
 		return "", epubFailure(domain.FailureMalformedDocument, errors.New("unsafe EPUB XHTML"))
 	}
 	decoder := xml.NewDecoder(bytes.NewReader(contents))
@@ -330,7 +329,9 @@ func extractEPUBXHTML(contents []byte, maximum int64) (string, error) {
 		}
 		switch value := token.(type) {
 		case xml.Directive:
-			return "", epubFailure(domain.FailureMalformedDocument, errors.New("EPUB XML directive rejected"))
+			if !standardEPUBHTMLDoctype(value) {
+				return "", epubFailure(domain.FailureMalformedDocument, errors.New("EPUB XML directive rejected"))
+			}
 		case xml.StartElement:
 			depth++
 			if depth > maximumXMLDepth || len(value.Attr) > maximumXMLAttributes {
@@ -378,6 +379,11 @@ func extractEPUBXHTML(contents []byte, maximum int64) (string, error) {
 		return "", epubFailure(domain.FailureResourceLimitExceeded, errors.New("EPUB text limit exceeded"))
 	}
 	return text, nil
+}
+
+func standardEPUBHTMLDoctype(value xml.Directive) bool {
+	fields := strings.Fields(string(value))
+	return len(fields) == 2 && strings.EqualFold(fields[0], "DOCTYPE") && strings.EqualFold(fields[1], "html")
 }
 
 func appendEPUBText(output *strings.Builder, value string, maximum int64) {

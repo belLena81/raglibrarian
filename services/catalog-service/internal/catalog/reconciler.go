@@ -73,6 +73,7 @@ func NewReconciler(repository ReconciliationRepository, objects ReconciliationOb
 
 func (r *Reconciler) RunPass(ctx context.Context, cursor string) (ReconciliationResult, error) {
 	result := ReconciliationResult{NextCursor: cursor}
+	var deletionErr error
 	if repository, ok := r.repository.(DeletionReconciliationRepository); ok {
 		pending, err := repository.PendingOriginalDeletions(ctx, reconcileBatchSize)
 		if err != nil {
@@ -82,7 +83,10 @@ func (r *Reconciler) RunPass(ctx context.Context, cursor string) (Reconciliation
 		for _, deletion := range pending {
 			if err = r.objects.Delete(ctx, deletion.ObjectReference); err != nil {
 				r.recorder.ReconciliationFailed()
-				return result, errors.New("catalog deletion reconciliation object deletion failed")
+				if deletionErr == nil {
+					deletionErr = errors.New("catalog deletion reconciliation object deletion failed")
+				}
+				continue
 			}
 			if _, err = repository.MarkOriginalDeleted(
 				ctx,
@@ -138,6 +142,9 @@ func (r *Reconciler) RunPass(ctx context.Context, cursor string) (Reconciliation
 			return result, errors.New("catalog reconciliation object deletion failed")
 		}
 		result.Deleted++
+	}
+	if deletionErr != nil {
+		return result, deletionErr
 	}
 	r.recorder.ReconciliationCompleted(result.Scanned, result.Deleted)
 	return result, nil

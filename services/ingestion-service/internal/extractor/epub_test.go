@@ -91,6 +91,29 @@ func TestParseEPUBAcceptsTrailingXMLWhitespaceInMetadata(t *testing.T) {
 	}
 }
 
+func TestParseEPUBAcceptsStandardHTMLDoctypeInXHTML(t *testing.T) {
+	path := writeSyntheticEPUB(t, []epubTestEntry{
+		{name: "mimetype", contents: "application/epub+zip", method: zip.Store},
+		{name: "META-INF/container.xml", contents: containerXML("OPS/package.opf")},
+		{name: "OPS/package.opf", contents: packageXML(
+			`<item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>`,
+			`<itemref idref="chapter"/>`,
+		)},
+		{name: "OPS/chapter.xhtml", contents: `<?xml version="1.0"?>` +
+			`<!DOCTYPE html>` +
+			`<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Standard doctype is valid EPUB XHTML.</p></body></html>`},
+	})
+
+	pages, err := ParseEPUBFile(path, DefaultEPUBArchiveLimits())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pages) != 1 || !strings.Contains(pages[0].Text, "Standard doctype is valid EPUB XHTML.") {
+		t.Fatalf("pages = %#v", pages)
+	}
+}
+
 func TestParseEPUBRejectsUnsafeOrAmbiguousArchives(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -116,6 +139,34 @@ func TestParseEPUBRejectsUnsafeOrAmbiguousArchives(t *testing.T) {
 			entries: []epubTestEntry{
 				{name: "mimetype", contents: "application/epub+zip", method: zip.Store},
 				{name: "META-INF/container.xml", contents: `<!DOCTYPE container><container/>`},
+			},
+		},
+		{
+			name: "custom xhtml doctype",
+			entries: []epubTestEntry{
+				{name: "mimetype", contents: "application/epub+zip", method: zip.Store},
+				{name: "META-INF/container.xml", contents: containerXML("OPS/package.opf")},
+				{name: "OPS/package.opf", contents: packageXML(
+					`<item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>`,
+					`<itemref idref="chapter"/>`,
+				)},
+				{name: "OPS/chapter.xhtml", contents: `<?xml version="1.0"?>` +
+					`<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">` +
+					`<html xmlns="http://www.w3.org/1999/xhtml"><body><p>custom doctype</p></body></html>`},
+			},
+		},
+		{
+			name: "xhtml entity declaration",
+			entries: []epubTestEntry{
+				{name: "mimetype", contents: "application/epub+zip", method: zip.Store},
+				{name: "META-INF/container.xml", contents: containerXML("OPS/package.opf")},
+				{name: "OPS/package.opf", contents: packageXML(
+					`<item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>`,
+					`<itemref idref="chapter"/>`,
+				)},
+				{name: "OPS/chapter.xhtml", contents: `<?xml version="1.0"?>` +
+					`<!DOCTYPE html [<!ENTITY private "secret">]>` +
+					`<html xmlns="http://www.w3.org/1999/xhtml"><body><p>&private;</p></body></html>`},
 			},
 		},
 		{

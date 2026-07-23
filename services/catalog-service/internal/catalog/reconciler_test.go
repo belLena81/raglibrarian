@@ -60,6 +60,46 @@ func TestReconcilerDatabaseFailureDeletesNothing(t *testing.T) {
 	}
 }
 
+func TestReconcilerContinuesAfterPendingOriginalDeleteFailure(t *testing.T) {
+	now := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC)
+	failing := "originals/AAAAAAAAAAAAAAAAAAAAAA.pdf"
+	pending := "originals/BBBBBBBBBBBBBBBBBBBBBB.pdf"
+	orphan := "originals/CCCCCCCCCCCCCCCCCCCCCC.pdf"
+	store := &reconcileStoreFake{
+		objects: []StoredObject{{Reference: orphan, LastModified: now.Add(-2 * time.Hour)}},
+		deleteErrors: map[string]error{
+			failing: errors.New("object locked"),
+		},
+	}
+	repository := &reconcileRepositoryFake{
+		pending: []PendingOriginalDeletion{
+			{BookID: "book-failing", CommandID: "command-failing", LifecycleVersion: 2, ObjectReference: failing},
+			{BookID: "book-pending", CommandID: "command-pending", LifecycleVersion: 2, ObjectReference: pending},
+		},
+	}
+	recorder := &reconcileRecorderFake{}
+	reconciler := NewReconciler(repository, store, time.Hour, recorder)
+	reconciler.now = func() time.Time { return now }
+
+	result, err := reconciler.RunPass(context.Background(), "")
+
+	if err == nil {
+		t.Fatal("expected pending deletion failure")
+	}
+	if len(repository.marked) != 1 || repository.marked[0] != "book-pending" {
+		t.Fatalf("marked original deletions = %#v", repository.marked)
+	}
+	if len(store.deleted) != 2 || store.deleted[0] != pending || store.deleted[1] != orphan {
+		t.Fatalf("deleted = %#v", store.deleted)
+	}
+	if result.Scanned != 1 || result.Deleted != 2 {
+		t.Fatalf("result = %+v", result)
+	}
+	if recorder.failed != 1 || recorder.scanned != 0 || recorder.deleted != 0 {
+		t.Fatalf("recorder = %+v", recorder)
+	}
+}
+
 func TestReconcilerBoundsOnePass(t *testing.T) {
 	objects := make([]StoredObject, maximumReconcileObjects+100)
 	for index := range objects {
@@ -84,8 +124,9 @@ func TestReconcilerBoundsOnePass(t *testing.T) {
 }
 
 type reconcileStoreFake struct {
-	objects []StoredObject
-	deleted []string
+	objects      []StoredObject
+	deleted      []string
+	deleteErrors map[string]error
 }
 
 func (s *reconcileStoreFake) ListCompleted(_ context.Context, _ string, cursor string, limit int) ([]StoredObject, string, error) {
@@ -107,12 +148,19 @@ func (s *reconcileStoreFake) ListCompleted(_ context.Context, _ string, cursor s
 }
 
 func (s *reconcileStoreFake) Delete(_ context.Context, reference string) error {
+	if s.deleteErrors != nil {
+		if err := s.deleteErrors[reference]; err != nil {
+			return err
+		}
+	}
 	s.deleted = append(s.deleted, reference)
 	return nil
 }
 
 type reconcileRepositoryFake struct {
 	referenced map[string]bool
+	pending    []PendingOriginalDeletion
+	marked     []string
 	err        error
 }
 
@@ -125,6 +173,21 @@ func (r *reconcileRepositoryFake) ReferencesExist(_ context.Context, references 
 		result[reference] = r.referenced[reference]
 	}
 	return result, nil
+}
+
+func (r *reconcileRepositoryFake) PendingOriginalDeletions(context.Context, int) ([]PendingOriginalDeletion, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return append([]PendingOriginalDeletion(nil), r.pending...), nil
+}
+
+func (r *reconcileRepositoryFake) MarkOriginalDeleted(_ context.Context, bookID, _ string, _ int64, _ time.Time) (Book, error) {
+	if r.err != nil {
+		return Book{}, r.err
+	}
+	r.marked = append(r.marked, bookID)
+	return Book{ID: bookID, OriginalDeleted: true}, nil
 }
 
 type reconcileRecorderFake struct {

@@ -267,6 +267,13 @@ func (r *Postgres) CompleteDeletion(ctx context.Context, cleanup application.Del
 	if _, err = tx.Exec(ctx, `DELETE FROM retrieval.manifest_facts WHERE book_id=$1`, cleanup.BookID); err != nil {
 		return err
 	}
+	if _, err = tx.Exec(ctx, `DELETE FROM retrieval.outbox o
+		USING retrieval.index_jobs j
+		WHERE o.aggregate_id=j.id
+		  AND j.book_id=$1
+		  AND o.published_at IS NULL`, cleanup.BookID); err != nil {
+		return err
+	}
 	if _, err = tx.Exec(ctx, `DELETE FROM retrieval.index_jobs WHERE book_id=$1`, cleanup.BookID); err != nil {
 		return err
 	}

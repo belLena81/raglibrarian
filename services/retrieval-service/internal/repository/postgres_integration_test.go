@@ -1425,6 +1425,17 @@ func exerciseCompleteDeletionRole(t *testing.T, ctx context.Context, runtimePool
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, err = runtimePool.Exec(ctx, `INSERT INTO retrieval.outbox
+		(event_id,event_type,aggregate_id,payload,occurred_at,published_at,next_attempt_at)
+		VALUES
+		($1,'retrieval.index-batch.requested.v1',$3,'pending',$4,NULL,$4),
+		($2,'retrieval.index-batch.requested.v1',$3,'published',$4,$4,$4),
+		($5,'retrieval.book.indexed.v1',$3,'unpublished terminal',$4,NULL,$4),
+		($6,'retrieval.book.indexing-failed.v1',$3,'published terminal',$4,$4,$4)`,
+		jobID+":batch-pending", jobID+":batch-published", jobID, now, jobID+":indexed-pending", jobID+":failed-published")
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, err = runtimePool.Exec(ctx, `INSERT INTO retrieval.book_lifecycle
 		(book_id,lifecycle_version,state,event_id,command_id,event_type,payload_digest,cleanup_pending,correlation_id,updated_at)
 		VALUES($1,2,'deleting',$2,$3,'deletion',$4,true,$5,$6)`,
@@ -1436,6 +1447,7 @@ func exerciseCompleteDeletionRole(t *testing.T, ctx context.Context, runtimePool
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
 		_, _ = runtimePool.Exec(cleanupCtx, `DELETE FROM retrieval.outbox WHERE aggregate_id=$1`, bookID)
+		_, _ = runtimePool.Exec(cleanupCtx, `DELETE FROM retrieval.outbox WHERE aggregate_id=$1`, jobID)
 		_, _ = runtimePool.Exec(cleanupCtx, `DELETE FROM retrieval.book_lifecycle WHERE book_id=$1`, bookID)
 		_, _ = runtimePool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE book_id=$1`, bookID)
 		_, _ = runtimePool.Exec(cleanupCtx, `DELETE FROM retrieval.manifest_facts WHERE book_id=$1`, bookID)
@@ -1459,7 +1471,8 @@ func exerciseCompleteDeletionRole(t *testing.T, ctx context.Context, runtimePool
 	var lifecycleState, title, author string
 	var tags []string
 	var publicationYear int
-	var jobCount, manifestCount, deletionEvents int
+	var jobCount, manifestCount, deletionEvents, pendingBatchEvents, publishedBatchEvents int
+	var pendingTerminalEvents, publishedTerminalEvents int
 	if err = runtimePool.QueryRow(ctx, `SELECT state FROM retrieval.book_lifecycle WHERE book_id=$1`, bookID).Scan(&lifecycleState); err != nil {
 		t.Fatal(err)
 	}
@@ -1476,10 +1489,24 @@ func exerciseCompleteDeletionRole(t *testing.T, ctx context.Context, runtimePool
 	if err = runtimePool.QueryRow(ctx, `SELECT count(*) FROM retrieval.outbox WHERE event_id=$1`, cleanup.EventID+":index-deleted").Scan(&deletionEvents); err != nil {
 		t.Fatal(err)
 	}
+	if err = runtimePool.QueryRow(ctx, `SELECT count(*) FROM retrieval.outbox WHERE event_id=$1`, jobID+":batch-pending").Scan(&pendingBatchEvents); err != nil {
+		t.Fatal(err)
+	}
+	if err = runtimePool.QueryRow(ctx, `SELECT count(*) FROM retrieval.outbox WHERE event_id=$1`, jobID+":batch-published").Scan(&publishedBatchEvents); err != nil {
+		t.Fatal(err)
+	}
+	if err = runtimePool.QueryRow(ctx, `SELECT count(*) FROM retrieval.outbox WHERE event_id=$1`, jobID+":indexed-pending").Scan(&pendingTerminalEvents); err != nil {
+		t.Fatal(err)
+	}
+	if err = runtimePool.QueryRow(ctx, `SELECT count(*) FROM retrieval.outbox WHERE event_id=$1`, jobID+":failed-published").Scan(&publishedTerminalEvents); err != nil {
+		t.Fatal(err)
+	}
 	if lifecycleState != "deleted" || title != "" || author != "" || publicationYear != 0 || len(tags) != 0 ||
-		jobCount != 0 || manifestCount != 0 || deletionEvents != 1 {
-		t.Fatalf("state=%q title=%q author=%q year=%d tags=%#v jobs=%d manifests=%d events=%d",
-			lifecycleState, title, author, publicationYear, tags, jobCount, manifestCount, deletionEvents)
+		jobCount != 0 || manifestCount != 0 || deletionEvents != 1 || pendingBatchEvents != 0 || publishedBatchEvents != 1 ||
+		pendingTerminalEvents != 0 || publishedTerminalEvents != 1 {
+		t.Fatalf("state=%q title=%q author=%q year=%d tags=%#v jobs=%d manifests=%d events=%d pending_batches=%d published_batches=%d pending_terminal=%d published_terminal=%d",
+			lifecycleState, title, author, publicationYear, tags, jobCount, manifestCount, deletionEvents, pendingBatchEvents, publishedBatchEvents,
+			pendingTerminalEvents, publishedTerminalEvents)
 	}
 }
 

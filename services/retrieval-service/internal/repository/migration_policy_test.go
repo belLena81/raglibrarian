@@ -20,8 +20,8 @@ func TestBookLifecycleMigrationGrantsCompleteDeletionLeastPrivilege(t *testing.T
 			revoke: "REVOKE SELECT, INSERT, UPDATE ON retrieval.book_lifecycle FROM retrieval_runtime;",
 		},
 		{
-			grant:  "GRANT DELETE ON retrieval.manifest_facts, retrieval.index_jobs TO retrieval_planner;",
-			revoke: "REVOKE DELETE ON retrieval.manifest_facts, retrieval.index_jobs FROM retrieval_planner;",
+			grant:  "GRANT DELETE ON retrieval.manifest_facts, retrieval.index_jobs, retrieval.outbox TO retrieval_planner;",
+			revoke: "REVOKE DELETE ON retrieval.manifest_facts, retrieval.index_jobs, retrieval.outbox FROM retrieval_planner;",
 		},
 		{
 			grant:  "GRANT SELECT (book_id), UPDATE (title,author,publication_year,tags) ON retrieval.metadata_facts TO retrieval_cleanup;",
@@ -32,8 +32,8 @@ func TestBookLifecycleMigrationGrantsCompleteDeletionLeastPrivilege(t *testing.T
 			revoke: "REVOKE SELECT (book_id), DELETE ON retrieval.manifest_facts FROM retrieval_cleanup;",
 		},
 		{
-			grant:  "GRANT DELETE ON retrieval.index_jobs TO retrieval_cleanup;",
-			revoke: "REVOKE DELETE ON retrieval.index_jobs FROM retrieval_cleanup;",
+			grant:  "GRANT DELETE ON retrieval.index_jobs, retrieval.outbox TO retrieval_cleanup;",
+			revoke: "REVOKE DELETE ON retrieval.index_jobs, retrieval.outbox FROM retrieval_cleanup;",
 		},
 		{
 			grant:  "GRANT INSERT (event_id,event_type,aggregate_id,payload,occurred_at,next_attempt_at) ON retrieval.outbox TO retrieval_cleanup;",
