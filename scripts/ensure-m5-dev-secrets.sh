@@ -7,8 +7,10 @@ if bash ./scripts/check-m5-dev-secrets.sh "$dir" >/dev/null 2>&1; then
 fi
 
 existing=$(find "$dir" -maxdepth 1 -type f -name 'retrieval_*' -print -quit 2>/dev/null || true)
-[[ -z "$existing" ]] || {
+if [[ -n "$existing" ]]; then
+  bash ./scripts/upgrade-m7-rabbitmq-topology.sh "$dir"
+  bash ./scripts/check-m5-dev-secrets.sh "$dir" && exit 0
   echo "Incomplete M5 secret set in $dir; refusing an automatic partial overwrite" >&2
   exit 1
-}
+fi
 bash ./scripts/generate-m5-dev-secrets.sh "$dir"

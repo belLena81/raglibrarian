@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -26,8 +27,12 @@ func NewMinIOObjectStore(client *minio.Client, bucket string) *MinIOObjectStore 
 }
 
 func (s *MinIOObjectStore) Put(ctx context.Context, key string, reader io.Reader) (catalog.ObjectReceipt, error) {
+	contentType := "application/pdf"
+	if strings.HasSuffix(key, ".epub") {
+		contentType = "application/epub+zip"
+	}
 	receipt, err := s.client.PutObject(ctx, s.bucket, key, reader, -1, minio.PutObjectOptions{
-		ContentType: "application/pdf",
+		ContentType: contentType,
 		PartSize:    5 << 20,
 		Checksum:    minio.ChecksumCRC32C,
 	})

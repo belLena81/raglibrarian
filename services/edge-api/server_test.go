@@ -57,6 +57,12 @@ func (*countingCatalog) ListBooks(context.Context, int, string, handler.CatalogA
 func (*countingCatalog) GetBook(context.Context, string, handler.CatalogActor) (handler.Book, error) {
 	return handler.Book{}, nil
 }
+func (*countingCatalog) ReindexBook(context.Context, string, handler.CatalogActor, string, string) (handler.Book, error) {
+	return handler.Book{}, nil
+}
+func (*countingCatalog) DeleteBook(context.Context, string, handler.CatalogActor, string, string) (handler.Book, error) {
+	return handler.Book{}, nil
+}
 
 func (*countingCatalog) CheckReady(context.Context) error {
 	return nil

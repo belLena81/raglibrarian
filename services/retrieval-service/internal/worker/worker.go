@@ -31,6 +31,7 @@ const (
 	metadataQueue         = "retrieval.book-uploaded.v1"
 	manifestQueue         = "retrieval.chunks-ready.v1"
 	batchQueue            = "retrieval.index-batch.v1"
+	lifecycleQueue        = "retrieval.book-lifecycle.v1"
 	eventExchange         = "raglibrarian.retrieval.events.v1"
 	retryExchange         = "raglibrarian.retrieval.retry.v1"
 	initialReconnectDelay = time.Second
@@ -64,6 +65,12 @@ type vectorRuntime interface {
 	DeactivateJob(context.Context, string) error
 }
 
+type lifecycleProcessor interface {
+	HandleReindex(context.Context, application.LifecycleEvent) error
+	HandleDeletion(context.Context, application.LifecycleEvent) error
+	RetryDeletions(context.Context, int) error
+}
+
 type Runtime struct {
 	configuration config.WorkerConfig
 	pool          *pgxpool.Pool
@@ -74,6 +81,7 @@ type Runtime struct {
 	objects       storage.ObjectStore
 	planner       *application.Planner
 	indexer       batchProcessor
+	lifecycle     lifecycleProcessor
 	embedder      *embedding.TEI
 	vector        vectorRuntime
 	diagnostic    *diagnostic.Recorder
@@ -126,7 +134,12 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 		pool.Close()
 		return nil, err
 	}
-	return &Runtime{configuration: configuration, pool: pool, repository: records, manifestFails: records, batchFails: records, vectorJobs: records, objects: objects, planner: planner, indexer: indexer, embedder: embedder, vector: index, diagnostic: recorder}, nil
+	lifecycle, err := application.NewLifecycleCoordinator(records, index, randomID, time.Now)
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return &Runtime{configuration: configuration, pool: pool, repository: records, manifestFails: records, batchFails: records, vectorJobs: records, objects: objects, planner: planner, indexer: indexer, lifecycle: lifecycle, embedder: embedder, vector: index, diagnostic: recorder}, nil
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
@@ -209,6 +222,10 @@ func (r *Runtime) runBrokerSession(ctx context.Context) error {
 	if err != nil {
 		return errors.New("consume batch queue")
 	}
+	lifecycleDeliveries, err := consumerChannel.Consume(lifecycleQueue, "", false, false, false, false, nil)
+	if err != nil {
+		return errors.New("consume lifecycle queue")
+	}
 	consumerConnectionClosed := consumerConnection.NotifyClose(make(chan *amqp091.Error, 1))
 	publisherConnectionClosed := publisherConnection.NotifyClose(make(chan *amqp091.Error, 1))
 	consumerChannelClosed := consumerChannel.NotifyClose(make(chan *amqp091.Error, 1))
@@ -254,6 +271,14 @@ func (r *Runtime) runBrokerSession(ctx context.Context) error {
 				return errors.New("batch delivery channel closed")
 			}
 			r.handle(sessionContext, semaphore, &handlers, publisher, batchQueue, delivery, r.handleBatch, r.failBatch)
+		case delivery, open := <-lifecycleDeliveries:
+			if !open {
+				sessionCancel()
+				return errors.New("lifecycle delivery channel closed")
+			}
+			r.handle(sessionContext, semaphore, &handlers, publisher, lifecycleQueue, delivery, func(handlerContext context.Context, payload []byte) error {
+				return r.handleLifecycle(handlerContext, delivery.Type, payload)
+			}, nil)
 		case <-dispatchTicker.C:
 			r.dispatchOutbox(sessionContext, publisher)
 		case now := <-cleanupTicker.C:
@@ -261,6 +286,9 @@ func (r *Runtime) runBrokerSession(ctx context.Context) error {
 			recovered, _ := r.repository.RecoverStaleBatches(cleanupContext, now.UTC().Add(-15*time.Minute), now.UTC())
 			r.logStaleBatchesRecovered(recovered)
 			_ = r.retryPendingVectorCleanup(cleanupContext, now.UTC(), 64)
+			if r.lifecycle != nil {
+				_ = r.lifecycle.RetryDeletions(cleanupContext, 64)
+			}
 			cleanupCancel()
 		}
 	}
@@ -403,7 +431,7 @@ func retryRoutingKey(sourceQueue string, attempt int64) (string, error) {
 		delay = "5s"
 	}
 	switch sourceQueue {
-	case metadataQueue, manifestQueue, batchQueue:
+	case metadataQueue, manifestQueue, batchQueue, lifecycleQueue:
 		return sourceQueue + ".retry." + delay, nil
 	default:
 		return "", errors.New("unknown retry source queue")
@@ -462,6 +490,28 @@ func (r *Runtime) handleBatch(ctx context.Context, payload []byte) error {
 	}
 	r.logBatchCompleted(work.BookID)
 	return nil
+}
+
+func (r *Runtime) handleLifecycle(ctx context.Context, eventType string, payload []byte) error {
+	if r.lifecycle == nil {
+		return errors.New("lifecycle processor unavailable")
+	}
+	switch eventType {
+	case "catalog.book.reindex-requested.v1":
+		event, err := transport.DecodeReindex(payload)
+		if err != nil {
+			return err
+		}
+		return r.lifecycle.HandleReindex(ctx, event)
+	case "catalog.book.deletion-requested.v1":
+		event, err := transport.DecodeDeletion(payload)
+		if err != nil {
+			return err
+		}
+		return r.lifecycle.HandleDeletion(ctx, event)
+	default:
+		return application.ErrInvalidEvent
+	}
 }
 
 func (r *Runtime) failManifestArtifactRead(ctx context.Context, payload []byte, err error) error {
@@ -647,6 +697,8 @@ func queueOperation(queue string) string {
 		return "manifest_queue"
 	case batchQueue:
 		return "batch_queue"
+	case lifecycleQueue:
+		return "lifecycle_queue"
 	default:
 		return "batch_queue"
 	}
@@ -676,6 +728,8 @@ func (r *Runtime) logRejected(queue, reason string) {
 	case manifestQueue:
 		r.diagnostic.ManifestRejected(reason)
 	case batchQueue:
+		r.diagnostic.BatchRejected(reason)
+	case lifecycleQueue:
 		r.diagnostic.BatchRejected(reason)
 	}
 }

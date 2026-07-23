@@ -13,6 +13,7 @@ import (
 )
 
 const UploadRoute = "catalog.book.uploaded.v1"
+const DeletionRoute = "catalog.book.deletion-requested.v1"
 const RetryExchange = "raglibrarian.ingestion.retry.v1"
 
 const (
@@ -22,6 +23,7 @@ const (
 
 type EventProcessor interface {
 	Process(context.Context, application.UploadedEvent) error
+	ProcessDeletion(context.Context, application.DeletionEvent) error
 }
 
 type Consumer struct {
@@ -70,16 +72,30 @@ func (c *Consumer) Run(ctx context.Context, concurrency int) error {
 }
 
 func (c *Consumer) handle(ctx context.Context, delivery amqp091.Delivery) {
-	if delivery.Type != UploadRoute || delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > 256<<10 {
+	if (delivery.Type != UploadRoute && delivery.Type != DeletionRoute) || delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > 256<<10 {
 		_ = delivery.Reject(false)
 		return
 	}
-	event, err := DecodeUploaded(delivery.Body)
-	if err != nil || delivery.MessageId == "" || delivery.MessageId != event.EventID {
+	var eventID string
+	var err error
+	var upload application.UploadedEvent
+	var deletion application.DeletionEvent
+	if delivery.Type == UploadRoute {
+		upload, err = DecodeUploaded(delivery.Body)
+		eventID = upload.EventID
+	} else {
+		deletion, err = DecodeDeletion(delivery.Body)
+		eventID = deletion.EventID
+	}
+	if err != nil || delivery.MessageId == "" || delivery.MessageId != eventID {
 		_ = delivery.Reject(false)
 		return
 	}
-	err = c.processor.Process(ctx, event)
+	if delivery.Type == UploadRoute {
+		err = c.processor.Process(ctx, upload)
+	} else {
+		err = c.processor.ProcessDeletion(ctx, deletion)
+	}
 	switch application.DeliveryDisposition(err) {
 	case application.DeliveryAcknowledge:
 		_ = delivery.Ack(false)
@@ -114,7 +130,7 @@ func (c *Consumer) retry(ctx context.Context, delivery amqp091.Delivery) {
 			ContentType:  "application/x-protobuf",
 			DeliveryMode: amqp091.Persistent,
 			MessageId:    delivery.MessageId,
-			Type:         UploadRoute,
+			Type:         delivery.Type,
 			Timestamp:    c.now().UTC(),
 			Body:         delivery.Body,
 		},

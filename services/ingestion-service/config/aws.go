@@ -158,8 +158,10 @@ func loadAWS(ctx context.Context) (Config, error) {
 		RuntimeBackend: "aws", DSN: dsn, RabbitURI: rabbitURI, SourceBucket: sourceBucket,
 		ArtifactBucket: artifactBucket, AWSRegion: region, KMSKeyARN: kmsKey, MetricsAddress: metrics,
 		TokenizerFile: tokenizerFile, PDFInfoPath: optional("INGESTION_PDFINFO_PATH", "/usr/bin/pdfinfo"),
-		PDFTextPath: optional("INGESTION_PDFTOTEXT_PATH", "/usr/bin/pdftotext"), TemporaryDirectory: "/tmp",
-		Queue: optional("INGESTION_QUEUE", "ingestion.book-uploaded.v1"), ResultExchange: optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
+		PDFTextPath:        optional("INGESTION_PDFTOTEXT_PATH", "/usr/bin/pdftotext"),
+		EPUBParserPath:     optional("INGESTION_EPUB_PARSER_PATH", "/usr/local/bin/epub-parser"),
+		TemporaryDirectory: "/tmp",
+		Queue:              optional("INGESTION_QUEUE", "ingestion.book-uploaded.v1"), ResultExchange: optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
 		WorkConcurrency: workConcurrency, MaximumAttempts: maximumAttempts, MaximumChunks: maximumChunks,
 		MaximumSourceBytes: maximumSource, MaximumExtractedBytes: maximumExtracted, MaximumPageBytes: maximumPage,
 		MaximumManifestBytes: maximumManifest, MaximumTemporaryBytes: maximumTemporary, MaximumPages: uint32(maximumPages), // #nosec G115 -- bounded above.

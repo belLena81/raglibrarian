@@ -72,8 +72,8 @@ func (s *Server) UploadBook(stream catalogv1.CatalogService_UploadBookServer) er
 		return status.Error(codes.PermissionDenied, "actor is not authorized")
 	}
 	book, err := s.service.UploadBook(ctx, catalog.UploadInput{
-		Metadata: catalog.BookMetadata{Title: metadata.Title, Author: metadata.Author, Year: int(metadata.Year), Tags: append([]string(nil), metadata.Tags...)},
-		Actor:    actor, CorrelationID: requestIDFromMetadata(ctx), Reader: reader,
+		Metadata:  catalog.BookMetadata{Title: metadata.Title, Author: metadata.Author, Year: int(metadata.Year), Tags: append([]string(nil), metadata.Tags...)},
+		MediaType: metadata.MediaType, Actor: actor, CorrelationID: requestIDFromMetadata(ctx), Reader: reader,
 	})
 	if err != nil {
 		s.diagnostics.OperationRejected("upload_book", requestIDFromMetadata(ctx), actor, uploadFailureReason(err))
@@ -81,6 +81,32 @@ func (s *Server) UploadBook(stream catalogv1.CatalogService_UploadBookServer) er
 	}
 	s.diagnostics.UploadCompleted(requestIDFromMetadata(ctx), actor, book)
 	return stream.SendAndClose(&catalogv1.UploadBookResponse{Book: bookProto(book)})
+}
+
+func (s *Server) ReindexBook(ctx context.Context, request *catalogv1.ReindexBookRequest) (*catalogv1.ReindexBookResponse, error) {
+	actor := actorFromProto(request.GetActor())
+	requestID := requestIDFromMetadata(ctx)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	book, err := s.service.ReindexBook(ctx, request.GetBookId(), request.GetCommandId(), actor, requestID)
+	if err != nil {
+		s.diagnostics.OperationRejected("reindex_book", requestID, actor, uploadFailureReason(err))
+		return nil, mapError(err)
+	}
+	return &catalogv1.ReindexBookResponse{Book: bookProto(book)}, nil
+}
+
+func (s *Server) DeleteBook(ctx context.Context, request *catalogv1.DeleteBookRequest) (*catalogv1.DeleteBookResponse, error) {
+	actor := actorFromProto(request.GetActor())
+	requestID := requestIDFromMetadata(ctx)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	book, err := s.service.DeleteBook(ctx, request.GetBookId(), request.GetCommandId(), actor, requestID)
+	if err != nil {
+		s.diagnostics.OperationRejected("delete_book", requestID, actor, uploadFailureReason(err))
+		return nil, mapError(err)
+	}
+	return &catalogv1.DeleteBookResponse{Book: bookProto(book)}, nil
 }
 
 func requestIDFromMetadata(ctx context.Context) string {
@@ -149,6 +175,10 @@ func uploadFailureReason(err error) string {
 		return "unauthorized_actor"
 	case errors.Is(err, catalog.ErrInvalidPDF):
 		return "invalid_pdf"
+	case errors.Is(err, catalog.ErrInvalidEPUB):
+		return "invalid_epub"
+	case errors.Is(err, catalog.ErrInvalidCommand), errors.Is(err, catalog.ErrInvalidTransition):
+		return "invalid_command"
 	case errors.Is(err, catalog.ErrInvalidStream), errors.Is(err, io.EOF):
 		return "invalid_stream"
 	case errors.Is(err, catalog.ErrUploadTooLarge):
@@ -205,6 +235,7 @@ func bookProto(book catalog.Book) *catalogv1.Book {
 		CreatedAt: timestamppb.New(book.CreatedAt), ProcessingStage: string(book.ProcessingStage),
 		ProcessingFailureCategory: string(book.ProcessingFailureCategory),
 		ProcessingUpdatedAt:       timestamppb.New(book.ProcessingUpdatedAt), ProcessingVersion: book.ProcessingVersion,
+		MediaType: book.MediaType, LifecycleVersion: book.LifecycleVersion, CanReindex: book.CanReindex(),
 	}
 }
 
@@ -216,6 +247,12 @@ func mapError(err error) error {
 		return status.Error(codes.InvalidArgument, "invalid pagination")
 	case errors.Is(err, catalog.ErrInvalidMetadata), errors.Is(err, catalog.ErrInvalidPDF), errors.Is(err, catalog.ErrInvalidStream):
 		return status.Error(codes.InvalidArgument, "invalid upload")
+	case errors.Is(err, catalog.ErrInvalidEPUB):
+		return status.Error(codes.InvalidArgument, "invalid upload")
+	case errors.Is(err, catalog.ErrInvalidCommand):
+		return status.Error(codes.InvalidArgument, "invalid lifecycle command")
+	case errors.Is(err, catalog.ErrInvalidTransition):
+		return status.Error(codes.FailedPrecondition, "invalid lifecycle transition")
 	case errors.Is(err, catalog.ErrUnauthorizedActor):
 		return status.Error(codes.PermissionDenied, "actor is not authorized")
 	case errors.Is(err, catalog.ErrUploadTooLarge):

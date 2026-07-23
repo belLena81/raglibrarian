@@ -21,6 +21,8 @@ type BookStatusEvent struct {
 	ProcessingStage           string    `json:"processing_stage"`
 	ProcessingFailureCategory string    `json:"processing_failure_category,omitempty"`
 	ProcessingVersion         int64     `json:"processing_version"`
+	LifecycleVersion          int64     `json:"lifecycle_version"`
+	CanReindex                bool      `json:"can_reindex"`
 	UpdatedAt                 time.Time `json:"updated_at"`
 }
 

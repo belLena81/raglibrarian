@@ -117,7 +117,7 @@ func decode(delivery amqp091.Delivery) (handler.BookStatusEvent, bool) {
 		return handler.BookStatusEvent{}, false
 	}
 	if !validIdentifier(message.EventId) || delivery.MessageId != message.EventId || !validIdentifier(message.BookId) ||
-		message.Producer != "catalog-service" || message.SchemaVersion != "v1" || message.ProcessingVersion < 1 ||
+		message.Producer != "catalog-service" || message.SchemaVersion != "v1" || message.ProcessingVersion < 1 || message.LifecycleVersion < 1 ||
 		message.UpdatedAt == nil || message.UpdatedAt.CheckValid() != nil || !validState(&message) {
 		return handler.BookStatusEvent{}, false
 	}
@@ -128,6 +128,8 @@ func decode(delivery amqp091.Delivery) (handler.BookStatusEvent, bool) {
 		ProcessingStage:           message.ProcessingStage,
 		ProcessingFailureCategory: message.ProcessingFailureCategory,
 		ProcessingVersion:         message.ProcessingVersion,
+		LifecycleVersion:          message.LifecycleVersion,
+		CanReindex:                message.CanReindex,
 		UpdatedAt:                 message.UpdatedAt.AsTime(),
 	}, true
 }
@@ -152,6 +154,14 @@ func validState(message *catalogv1.BookProcessingStatusChangedV1) bool {
 		return message.ProcessingStage == "queued" && message.ProcessingFailureCategory == ""
 	case "processing":
 		return (message.ProcessingStage == "extracting" || message.ProcessingStage == "chunks_ready") && message.ProcessingFailureCategory == ""
+	case "indexed":
+		return message.ProcessingStage == "indexed" && message.ProcessingFailureCategory == ""
+	case "reindexing":
+		return message.ProcessingStage == "chunks_ready" && message.ProcessingFailureCategory == ""
+	case "deleting":
+		return validLifecycleStage(message.ProcessingStage, message.ProcessingFailureCategory)
+	case "deleted":
+		return message.ProcessingStage == "" && message.ProcessingFailureCategory == ""
 	case "failed":
 		return message.ProcessingStage == "failed" && validFailure(message.ProcessingFailureCategory)
 	default:
@@ -159,10 +169,18 @@ func validState(message *catalogv1.BookProcessingStatusChangedV1) bool {
 	}
 }
 
+func validLifecycleStage(stage, failure string) bool {
+	if stage == "failed" {
+		return validFailure(failure)
+	}
+	return failure == "" && (stage == "queued" || stage == "extracting" || stage == "chunks_ready" || stage == "indexed")
+}
+
 func validFailure(category string) bool {
 	switch category {
 	case "encrypted_document", "extraction_not_permitted", "malformed_document", "unsupported_document", "no_extractable_text",
-		"resource_limit_exceeded", "source_integrity_mismatch", "processing_timeout", "dependency_unavailable", "internal_processing_error":
+		"resource_limit_exceeded", "source_integrity_mismatch", "processing_timeout", "dependency_unavailable", "internal_processing_error",
+		"manifest_integrity", "incompatible_profile", "embedding_unavailable", "vector_store_unavailable", "indexing_timeout", "internal_indexing_error":
 		return true
 	default:
 		return false

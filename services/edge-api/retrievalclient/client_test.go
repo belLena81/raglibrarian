@@ -49,7 +49,7 @@ func TestSearchMapsRequestResponseMetadataAndDeadline(t *testing.T) {
 			Query: request.Question,
 			Results: []*retrievalv1.Evidence{{
 				EvidenceId: "evidence-1", ChunkId: "chunk-1",
-				Book:    &retrievalv1.BookMetadata{BookId: "book-1", Title: "Book", Author: "Author", Year: 2024, Tags: []string{"systems"}},
+				Book:    &retrievalv1.BookMetadata{BookId: "book-1", Title: "Book", Author: "Author", Year: 2024, Tags: []string{"systems"}, MediaType: "application/epub+zip"},
 				Chapter: "Replication", Section: "Quorums", PageStart: 5, PageEnd: 6,
 				Passage: "stored passage", Score: 0.9,
 			}},
@@ -76,6 +76,7 @@ func TestSearchMapsRequestResponseMetadataAndDeadline(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, result.Results, 1)
+	assert.Equal(t, "application/epub+zip", result.Results[0].Book.MediaType)
 	assert.Equal(t, "evidence-1", result.Results[0].EvidenceID)
 	assert.Equal(t, "book-1", result.Results[0].Book.ID)
 	assert.Equal(t, uint32(5), result.Results[0].PageStart)

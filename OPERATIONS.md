@@ -49,6 +49,22 @@ For a failed local migration, inspect only sanitized container state with
 rollback must use an explicitly reviewed forward migration or restore runbook;
 the local down target is not a production recovery mechanism.
 
+## M7 lifecycle recovery
+
+Run `scripts/run-local.sh` after updating an existing checkout; it upgrades the
+RabbitMQ definitions additively without rotating credentials. Reindex and delete
+commands require a stable `Idempotency-Key`; retry a timed-out command with the
+same key.
+
+Deletion is complete only after Catalog removes the original, Ingestion emits
+`ingestion.book.artifacts-deleted.v1`, and Retrieval emits
+`retrieval.book.index-deleted.v1`. A book remaining in `deleting` indicates a
+retryable cleanup dependency. Inspect queue depth and sanitized service health;
+do not manually mark the Catalog tombstone complete or delete another service's
+rows. After recovery, run `make m7-e2e` with a fresh active librarian token to
+prove EPUB evidence, replay-safe reindex, Catalog disappearance, and vector
+cleanup.
+
 ## Security and release gates
 
 ```bash

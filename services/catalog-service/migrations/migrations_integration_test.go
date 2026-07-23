@@ -23,6 +23,8 @@ const (
 	catalog002Down            = "002_catalog_processing_events.down.sql"
 	catalog003Up              = "003_catalog_retrieval_events.up.sql"
 	catalog003Down            = "003_catalog_retrieval_events.down.sql"
+	catalog004Up              = "004_catalog_lifecycle.up.sql"
+	catalog004Down            = "004_catalog_lifecycle.down.sql"
 	catalog001UpSHA256        = "c6f6abb116ee62d082f86b335c883ca55edb8ce2ddb310cc9fca301196ccc1c1"
 	catalog001DownSHA256      = "0b9bf8217c2d7f01cfb330a3daf4797d56f3b9c6000aa2c40311364e213b4dc0"
 	catalogMigrationTestLimit = 30 * time.Second
@@ -116,6 +118,48 @@ func TestCatalogMigrationsRebuildCleanly(t *testing.T) {
 				t.Fatal("catalog retrieval down migration did not restore the M4 projection")
 			}
 			applyCatalogMigration(t, ctx, tx, catalog003Up)
+		})
+	})
+
+	t.Run("004 enforces minimal deleted tombstones", func(t *testing.T) {
+		withCatalogMigrationTransaction(t, pool, func(ctx context.Context, tx pgx.Tx) {
+			applyCatalogMigration(t, ctx, tx, catalog001Up)
+			fixture := insertCatalogLegacyFixture(t, ctx, tx)
+			applyCatalogMigration(t, ctx, tx, catalog002Up)
+			applyCatalogMigration(t, ctx, tx, catalog003Up)
+			applyCatalogMigration(t, ctx, tx, catalog004Up)
+
+			assertCatalogStatementRejected(t, ctx, tx, `UPDATE catalog.books
+				SET processing_status='deleted' WHERE id=$1`, fixture.bookID)
+			_, err := tx.Exec(ctx, `UPDATE catalog.books SET
+				title=NULL,author=NULL,year=NULL,tags=NULL,object_reference=NULL,checksum=NULL,
+				byte_size=NULL,media_type=NULL,actor_id=NULL,processing_stage=NULL,
+				processing_failure_category=NULL,manifest_reference=NULL,manifest_sha256=NULL,
+				processing_status='deleted' WHERE id=$1`, fixture.bookID)
+			if err != nil {
+				t.Fatalf("minimal tombstone was rejected: %v", err)
+			}
+			var retained int
+			if err = tx.QueryRow(ctx, `SELECT num_nonnulls(title,author,year,tags,object_reference,
+				checksum,byte_size,media_type,actor_id,processing_stage,processing_failure_category,
+				manifest_reference,manifest_sha256) FROM catalog.books WHERE id=$1`,
+				fixture.bookID).Scan(&retained); err != nil || retained != 0 {
+				t.Fatalf("minimal tombstone retained %d projection columns: %v", retained, err)
+			}
+			applyCatalogMigration(t, ctx, tx, catalog004Down)
+			var tombstones int
+			if err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM catalog.books
+				WHERE processing_status='deleted'`).Scan(&tombstones); err != nil || tombstones != 0 {
+				t.Fatalf("004 rollback retained %d tombstones: %v", tombstones, err)
+			}
+			var nullableColumns int
+			if err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM information_schema.columns
+				WHERE table_schema='catalog' AND table_name='books'
+				AND column_name = ANY(ARRAY['title','author','year','tags','object_reference','checksum',
+					'byte_size','media_type','actor_id','processing_stage','processing_failure_category'])
+				AND is_nullable <> 'NO'`).Scan(&nullableColumns); err != nil || nullableColumns != 0 {
+				t.Fatalf("004 rollback retained %d nullable base columns: %v", nullableColumns, err)
+			}
 		})
 	})
 

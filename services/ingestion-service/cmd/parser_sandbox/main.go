@@ -1,5 +1,5 @@
 // parser_sandbox applies fail-closed Linux process and syscall restrictions
-// before executing one allowlisted Poppler command.
+// before executing one allowlisted document parser command.
 package main
 
 import (
@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -59,11 +60,16 @@ func validatedCommand(arguments []string) (string, []string, string, error) {
 			return "", nil, "", errors.New("invalid pdftotext command")
 		}
 		sourcePath = commandArguments[3]
+	case "/usr/local/bin/epub-parser":
+		if len(commandArguments) != 1 {
+			return "", nil, "", errors.New("invalid EPUB parser command")
+		}
+		sourcePath = commandArguments[0]
 	default:
 		return "", nil, "", errors.New("parser executable is not allowlisted")
 	}
 	cleaned := filepath.Clean(sourcePath)
-	if !filepath.IsAbs(cleaned) || filepath.Dir(cleaned) == "/" || cleaned[:5] != "/tmp/" {
+	if !filepath.IsAbs(cleaned) || filepath.Dir(cleaned) == "/" || !strings.HasPrefix(cleaned, "/tmp/") {
 		return "", nil, "", errors.New("parser source path is invalid")
 	}
 	info, err := os.Lstat(cleaned) // #nosec G703 -- absolute /tmp path is cleaned, shape-checked, and must be a regular non-symlink file.

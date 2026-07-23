@@ -74,7 +74,9 @@ func positiveInteger(value string, fallback int) (int, error) {
 }
 
 func LoadWorker() (WorkerConfig, error) {
-	if os.Getenv("RETRIEVAL_PROCESSING_MODE") != "worker" || os.Getenv("RETRIEVAL_INDEX_PROFILE") != "m5-jina-code-v1" {
+	indexProfile := os.Getenv("RETRIEVAL_INDEX_PROFILE")
+	if os.Getenv("RETRIEVAL_PROCESSING_MODE") != "worker" ||
+		(indexProfile != "m5-jina-code-v1" && indexProfile != "m7-pdf-epub-v1") {
 		return WorkerConfig{}, errors.New("invalid retrieval processing mode")
 	}
 	dsn, err := readSecretFile("RETRIEVAL_POSTGRES_DSN_FILE", 4096)

@@ -28,10 +28,11 @@ var ErrInvalidBookRequest = errors.New("invalid book request")
 var ErrInvalidPagination = errors.New("invalid pagination")
 
 type BookMetadata struct {
-	Title  string   `json:"title"`
-	Author string   `json:"author"`
-	Year   int32    `json:"year"`
-	Tags   []string `json:"tags"`
+	Title     string   `json:"title"`
+	Author    string   `json:"author"`
+	Year      int32    `json:"year"`
+	Tags      []string `json:"tags"`
+	MediaType string   `json:"-"`
 }
 type Book struct {
 	ID                        string    `json:"id"`
@@ -44,6 +45,9 @@ type Book struct {
 	ProcessingFailureCategory string    `json:"processing_failure_category,omitempty"`
 	ProcessingUpdatedAt       time.Time `json:"processing_updated_at"`
 	ProcessingVersion         int64     `json:"processing_version"`
+	MediaType                 string    `json:"media_type"`
+	LifecycleVersion          int64     `json:"lifecycle_version"`
+	CanReindex                bool      `json:"can_reindex"`
 	CreatedAt                 time.Time `json:"created_at"`
 }
 type BookPage struct {
@@ -62,6 +66,8 @@ type BookCatalog interface {
 	UploadBook(context.Context, BookMetadata, CatalogActor, string, io.Reader) (Book, error)
 	ListBooks(context.Context, int, string, CatalogActor) (BookPage, error)
 	GetBook(context.Context, string, CatalogActor) (Book, error)
+	ReindexBook(context.Context, string, CatalogActor, string, string) (Book, error)
+	DeleteBook(context.Context, string, CatalogActor, string, string) (Book, error)
 	CheckReady(context.Context) error
 }
 type BooksHandler struct {
@@ -102,10 +108,12 @@ func (h *BooksHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		writeBookError(w, r, http.StatusBadRequest, "invalid_upload", "invalid upload")
 		return
 	}
-	if mediaType, _, parseErr := mime.ParseMediaType(filePart.Header.Get("Content-Type")); parseErr != nil || mediaType != "application/pdf" {
+	fileMediaType, _, parseErr := mime.ParseMediaType(filePart.Header.Get("Content-Type"))
+	if parseErr != nil || (fileMediaType != "application/pdf" && fileMediaType != "application/epub+zip") {
 		writeBookError(w, r, http.StatusUnsupportedMediaType, "unsupported_media_type", "unsupported media type")
 		return
 	}
+	metadata.MediaType = fileMediaType
 	principal, _ := middleware.PrincipalFromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
@@ -171,6 +179,54 @@ func (h *BooksHandler) Get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, book)
 }
 
+func (h *BooksHandler) Reindex(w http.ResponseWriter, r *http.Request) {
+	h.lifecycleCommand(w, r, h.catalog.ReindexBook)
+}
+
+func (h *BooksHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	h.lifecycleCommand(w, r, h.catalog.DeleteBook)
+}
+
+type lifecycleCommand func(context.Context, string, CatalogActor, string, string) (Book, error)
+
+func (h *BooksHandler) lifecycleCommand(w http.ResponseWriter, r *http.Request, command lifecycleCommand) {
+	bookID := chi.URLParam(r, "book_id")
+	commandID := r.Header.Get("Idempotency-Key")
+	if !validBookID(bookID) {
+		writeBookError(w, r, http.StatusBadRequest, "invalid_book_id", "invalid book ID")
+		return
+	}
+	if !validIdempotencyKey(commandID) {
+		writeBookError(w, r, http.StatusBadRequest, "invalid_idempotency_key", "invalid idempotency key")
+		return
+	}
+	principal, _ := middleware.PrincipalFromContext(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	book, err := command(ctx, bookID, catalogActor(principal), chimiddleware.GetReqID(r.Context()), commandID)
+	if err != nil {
+		status, code, message := mapBookError(err)
+		writeBookError(w, r, status, code, message)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store, private")
+	writeJSON(w, http.StatusAccepted, book)
+}
+
+func validIdempotencyKey(value string) bool {
+	if len(value) < 1 || len(value) > 128 || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '-' || character == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func validBookID(value string) bool {
 	if len(value) != 22 {
 		return false
@@ -184,6 +240,8 @@ var ErrBookUnauthorized = errors.New("book actor is not authorized")
 var ErrBookTooLarge = errors.New("book upload too large")
 var ErrBookUnsupportedMediaType = errors.New("unsupported book media type")
 var ErrBookCapacityExhausted = errors.New("book upload capacity exhausted")
+var ErrBookLifecycleConflict = errors.New("book lifecycle conflict")
+var ErrInvalidBookLifecycleRequest = errors.New("invalid book lifecycle request")
 
 func mapBookError(err error) (int, string, string) {
 	switch {
@@ -195,6 +253,12 @@ func mapBookError(err error) (int, string, string) {
 		return http.StatusTooManyRequests, "upload_capacity_exhausted", "upload capacity exhausted"
 	case errors.Is(err, ErrBookUnauthorized):
 		return http.StatusForbidden, "book_forbidden", "book forbidden"
+	case errors.Is(err, ErrBookNotFound):
+		return http.StatusNotFound, "book_not_found", "book not found"
+	case errors.Is(err, ErrBookLifecycleConflict):
+		return http.StatusConflict, "book_lifecycle_conflict", "book lifecycle conflict"
+	case errors.Is(err, ErrInvalidBookLifecycleRequest):
+		return http.StatusBadRequest, "invalid_lifecycle_command", "invalid lifecycle command"
 	case errors.Is(err, ErrInvalidBookRequest):
 		return http.StatusBadRequest, "invalid_upload", "invalid upload"
 	default:

@@ -35,6 +35,43 @@ func TestIndexerReplayUsesStableEvidenceIDsAndCompletesOnce(t *testing.T) {
 	}
 }
 
+func TestIndexerResumesExpiredPendingFinalizationExactlyOnce(t *testing.T) {
+	beginCalls := 0
+	repository := &stubBatchRepository{metadata: BookProjection{BookID: "book-1", Title: "Systems", Author: "Author", Year: 2026}}
+	repository.begin = func() (BookProjection, bool, error) {
+		beginCalls++
+		if beginCalls == 1 {
+			projection := repository.metadata
+			projection.ResumeFinalization = true
+			return projection, true, nil
+		}
+		return BookProjection{}, false, nil
+	}
+	index := &stubVectorIndex{}
+	indexer, err := NewIndexer(
+		repository,
+		&stubShardReader{err: errors.New("completed shard must not be read")},
+		&stubDocumentEmbedder{err: errors.New("completed chunks must not be embedded")},
+		index,
+		func() time.Time { return time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC) },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err = indexer.Process(context.Background(), validBatchWork()); err != nil {
+		t.Fatalf("resumed Process() error = %v", err)
+	}
+	if err = indexer.Process(context.Background(), validBatchWork()); err != nil {
+		t.Fatalf("duplicate Process() error = %v", err)
+	}
+	if len(index.chunkCalls) != 0 || len(index.documentCalls) != 1 || len(index.activationCalls) != 1 ||
+		repository.finalized != 1 || beginCalls != 2 {
+		t.Fatalf("chunks=%d documents=%d activations=%d finalized=%d begins=%d",
+			len(index.chunkCalls), len(index.documentCalls), len(index.activationCalls), repository.finalized, beginCalls)
+	}
+}
+
 func TestBatchWorkValidateRejectsProfileTokenMismatch(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -333,14 +370,31 @@ func validChunkWithPosition(text string, order uint64, pageStart, pageEnd uint32
 
 type stubBatchRepository struct {
 	metadata    BookProjection
+	begin       func() (BookProjection, bool, error)
 	completeErr error
+	checkActive func() (bool, error)
+	complete    func() (bool, error)
+	finalize    func() error
 	completed   int
+	finalized   int
 }
 
 func (s *stubBatchRepository) BeginBatch(context.Context, BatchWork) (BookProjection, bool, error) {
+	if s.begin != nil {
+		return s.begin()
+	}
 	return s.metadata, true, nil
 }
+func (s *stubBatchRepository) CheckBatchActive(context.Context, BatchWork) (bool, error) {
+	if s.checkActive != nil {
+		return s.checkActive()
+	}
+	return true, nil
+}
 func (s *stubBatchRepository) CompleteBatch(_ context.Context, _ BatchWork, _ []EvidenceRecord, _ time.Time) (bool, error) {
+	if s.complete != nil {
+		return s.complete()
+	}
 	if s.completeErr != nil {
 		return false, s.completeErr
 	}
@@ -352,7 +406,13 @@ func (s *stubBatchRepository) DocumentRecord(_ context.Context, work BatchWork) 
 		Author: s.metadata.Author, Year: s.metadata.Year, Tags: s.metadata.Tags, ChunkCount: work.ChunkCount, PageStart: 1, PageEnd: work.ChunkCount},
 		Vector: mustCentroid(int(work.ChunkCount))}, nil
 }
-func (s *stubBatchRepository) FinalizeJob(context.Context, BatchWork, time.Time) error { return nil }
+func (s *stubBatchRepository) FinalizeJob(context.Context, BatchWork, time.Time) error {
+	if s.finalize != nil {
+		return s.finalize()
+	}
+	s.finalized++
+	return nil
+}
 
 type stubShardReader struct {
 	chunks []Chunk
@@ -383,9 +443,16 @@ type stubVectorIndex struct {
 	documentCalls   []DocumentRecord
 	activationCalls []string
 	upsertChunksErr error
+	upsertChunks    func() error
+	upsertDocument  func() error
 }
 
 func (s *stubVectorIndex) UpsertChunks(_ context.Context, values []EvidenceRecord) error {
+	if s.upsertChunks != nil {
+		if err := s.upsertChunks(); err != nil {
+			return err
+		}
+	}
 	if s.upsertChunksErr != nil {
 		return s.upsertChunksErr
 	}
@@ -394,6 +461,11 @@ func (s *stubVectorIndex) UpsertChunks(_ context.Context, values []EvidenceRecor
 	return nil
 }
 func (s *stubVectorIndex) UpsertDocument(_ context.Context, value DocumentRecord) error {
+	if s.upsertDocument != nil {
+		if err := s.upsertDocument(); err != nil {
+			return err
+		}
+	}
 	s.documentCalls = append(s.documentCalls, value)
 	return nil
 }

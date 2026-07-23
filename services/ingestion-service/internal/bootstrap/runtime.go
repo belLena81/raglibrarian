@@ -227,10 +227,37 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		},
 		nil,
 	)
+	epubExtractor := extractor.NewEPUB(
+		cfg.EPUBParserPath,
+		extractor.Limits{
+			MaximumPages:          cfg.MaximumPages,
+			MaximumPageBytes:      cfg.MaximumPageBytes,
+			MaximumExtractedBytes: cfg.MaximumExtractedBytes,
+		},
+		nil,
+	)
+	extractors, err := application.NewFormatExtractors(
+		application.ExtractionAdapter{
+			MediaType: application.MediaTypePDF,
+			Extension: ".pdf",
+			Version:   extractor.ExtractionVersion,
+			Extractor: pdfExtractor,
+		},
+		application.ExtractionAdapter{
+			MediaType: application.MediaTypeEPUB,
+			Extension: ".epub",
+			Version:   extractor.EPUBExtractionVersion,
+			Extractor: epubExtractor,
+		},
+	)
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
 	processor, err := application.NewProcessor(
 		repo,
 		sourceStore,
-		pdfExtractor,
+		extractors,
 		processingFactory,
 		events,
 		newID,
@@ -243,7 +270,6 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 			ProcessingTimeout:     cfg.ProcessingTimeout,
 			JobLease:              cfg.JobLease,
 			MaximumAttempts:       cfg.MaximumAttempts,
-			ConfigDigest:          processingFactory.ConfigDigest(),
 			Observer:              recorder,
 		},
 	)
@@ -308,6 +334,13 @@ func (r *Runtime) Process(ctx context.Context, event application.UploadedEvent) 
 	r.Metrics.Failed()
 	r.Diagnostics.ProcessingFailed(event.EventID, event.BookID, application.FailureReason(err))
 	return err
+}
+
+func (r *Runtime) ProcessDeletion(ctx context.Context, event application.DeletionEvent) error {
+	if err := event.Validate(); err != nil {
+		return err
+	}
+	return r.Processor.ProcessDeletion(ctx, event)
 }
 
 func newID() (string, error) {

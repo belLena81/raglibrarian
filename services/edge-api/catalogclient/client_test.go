@@ -71,12 +71,15 @@ func TestUploadBookForwardsValidatedYearUnchanged(t *testing.T) {
 
 	const year int32 = 2027
 	client := New(catalogv1.NewCatalogServiceClient(connection))
-	if _, err = client.UploadBook(ctx, handler.BookMetadata{Title: "Title", Author: "Author", Year: year}, handler.CatalogActor{}, testRequestID, bytes.NewBufferString("%PDF")); err != nil {
+	if _, err = client.UploadBook(ctx, handler.BookMetadata{Title: "Title", Author: "Author", Year: year, MediaType: "application/epub+zip"}, handler.CatalogActor{}, testRequestID, bytes.NewBufferString("PK")); err != nil {
 		t.Fatalf("upload book: %v", err)
 	}
 	metadata := <-capture.metadata
 	if metadata.Year != year {
 		t.Fatalf("forwarded year = %d, want %d", metadata.Year, year)
+	}
+	if metadata.MediaType != "application/epub+zip" {
+		t.Fatalf("forwarded media type = %q", metadata.MediaType)
 	}
 }
 
@@ -90,9 +93,11 @@ func TestMapErrorMapsCatalogAuthorizationFailure(t *testing.T) {
 
 type catalogClientStub struct {
 	catalogv1.CatalogServiceClient
-	upload func(context.Context, ...grpc.CallOption) (grpc.ClientStreamingClient[catalogv1.UploadBookRequest, catalogv1.UploadBookResponse], error)
-	list   func(context.Context, *catalogv1.ListBooksRequest, ...grpc.CallOption) (*catalogv1.ListBooksResponse, error)
-	get    func(context.Context, *catalogv1.GetBookRequest, ...grpc.CallOption) (*catalogv1.GetBookResponse, error)
+	upload  func(context.Context, ...grpc.CallOption) (grpc.ClientStreamingClient[catalogv1.UploadBookRequest, catalogv1.UploadBookResponse], error)
+	list    func(context.Context, *catalogv1.ListBooksRequest, ...grpc.CallOption) (*catalogv1.ListBooksResponse, error)
+	get     func(context.Context, *catalogv1.GetBookRequest, ...grpc.CallOption) (*catalogv1.GetBookResponse, error)
+	reindex func(context.Context, *catalogv1.ReindexBookRequest, ...grpc.CallOption) (*catalogv1.ReindexBookResponse, error)
+	delete  func(context.Context, *catalogv1.DeleteBookRequest, ...grpc.CallOption) (*catalogv1.DeleteBookResponse, error)
 }
 
 func (s *catalogClientStub) UploadBook(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[catalogv1.UploadBookRequest, catalogv1.UploadBookResponse], error) {
@@ -105,6 +110,40 @@ func (s *catalogClientStub) ListBooks(ctx context.Context, request *catalogv1.Li
 
 func (s *catalogClientStub) GetBook(ctx context.Context, request *catalogv1.GetBookRequest, opts ...grpc.CallOption) (*catalogv1.GetBookResponse, error) {
 	return s.get(ctx, request, opts...)
+}
+func (s *catalogClientStub) ReindexBook(ctx context.Context, request *catalogv1.ReindexBookRequest, opts ...grpc.CallOption) (*catalogv1.ReindexBookResponse, error) {
+	return s.reindex(ctx, request, opts...)
+}
+func (s *catalogClientStub) DeleteBook(ctx context.Context, request *catalogv1.DeleteBookRequest, opts ...grpc.CallOption) (*catalogv1.DeleteBookResponse, error) {
+	return s.delete(ctx, request, opts...)
+}
+
+func TestLifecycleCommandsForwardActorCommandAndProjection(t *testing.T) {
+	service := &catalogClientStub{
+		reindex: func(_ context.Context, request *catalogv1.ReindexBookRequest, _ ...grpc.CallOption) (*catalogv1.ReindexBookResponse, error) {
+			if request.CommandId != "reindex-command" || request.Actor.GetUserId() != "manager" {
+				t.Fatalf("unexpected reindex request: %+v", request)
+			}
+			return &catalogv1.ReindexBookResponse{Book: &catalogv1.Book{Id: request.BookId, MediaType: "application/epub+zip", LifecycleVersion: 4, CanReindex: false}}, nil
+		},
+		delete: func(_ context.Context, request *catalogv1.DeleteBookRequest, _ ...grpc.CallOption) (*catalogv1.DeleteBookResponse, error) {
+			if request.CommandId != "delete-command" || request.Actor.GetUserId() != "manager" {
+				t.Fatalf("unexpected delete request: %+v", request)
+			}
+			return &catalogv1.DeleteBookResponse{Book: &catalogv1.Book{Id: request.BookId, LifecycleVersion: 5}}, nil
+		},
+	}
+	client := New(service)
+	actor := handler.CatalogActor{UserID: "manager"}
+
+	reindexed, err := client.ReindexBook(context.Background(), "book-id", actor, testRequestID, "reindex-command")
+	if err != nil || reindexed.MediaType != "application/epub+zip" || reindexed.LifecycleVersion != 4 {
+		t.Fatalf("ReindexBook() = (%+v, %v)", reindexed, err)
+	}
+	deleted, err := client.DeleteBook(context.Background(), "book-id", actor, testRequestID, "delete-command")
+	if err != nil || deleted.LifecycleVersion != 5 {
+		t.Fatalf("DeleteBook() = (%+v, %v)", deleted, err)
+	}
 }
 
 type earlyClosedUploadStream struct {

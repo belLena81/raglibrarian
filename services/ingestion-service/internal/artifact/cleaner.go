@@ -11,10 +11,19 @@ type Orphan struct {
 	Prefix string
 }
 
+type DeletionArtifact struct {
+	JobID   string
+	EventID string
+	Prefix  string
+}
+
 type OrphanRepository interface {
 	ClaimOrphans(context.Context, time.Time, time.Time, time.Duration, int) ([]Orphan, error)
 	CompleteOrphanCleanup(context.Context, string, time.Time) error
 	RetryOrphanCleanup(context.Context, string, time.Time) error
+	ClaimDeletionArtifacts(context.Context, time.Time, time.Duration, int) ([]DeletionArtifact, error)
+	CompleteDeletionArtifact(context.Context, string, string, time.Time) error
+	RetryDeletionArtifact(context.Context, string, time.Time) error
 }
 
 type PrefixStore interface {
@@ -69,6 +78,17 @@ func (c *Cleaner) runOnce(ctx context.Context) error {
 			continue
 		}
 		result = errors.Join(result, c.repository.CompleteOrphanCleanup(ctx, orphan.JobID, now))
+	}
+	deletions, err := c.repository.ClaimDeletionArtifacts(ctx, now, time.Minute, 100)
+	if err != nil {
+		return errors.Join(result, err)
+	}
+	for _, deletion := range deletions {
+		if err = c.store.DeletePrefix(ctx, deletion.Prefix); err != nil {
+			result = errors.Join(result, err, c.repository.RetryDeletionArtifact(ctx, deletion.JobID, now))
+			continue
+		}
+		result = errors.Join(result, c.repository.CompleteDeletionArtifact(ctx, deletion.EventID, deletion.JobID, now))
 	}
 	return result
 }

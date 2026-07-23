@@ -57,9 +57,28 @@ func (r *Postgres) Accept(ctx context.Context, event application.UploadedEvent, 
 		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: begin accept: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	_, err = tx.Exec(ctx, `INSERT INTO ingestion.lifecycle_fences(book_id,lifecycle_version,deleted,updated_at)
+		VALUES($1,$2,false,$3) ON CONFLICT(book_id) DO NOTHING`, event.BookID, event.LifecycleVersion, proposed.CreatedAt())
+	if err != nil {
+		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: initialize lifecycle fence: %w", err)
+	}
+	var fencedVersion int64
+	var deleted bool
+	if err = tx.QueryRow(ctx, `SELECT lifecycle_version,deleted FROM ingestion.lifecycle_fences WHERE book_id=$1 FOR UPDATE`, event.BookID).Scan(&fencedVersion, &deleted); err != nil {
+		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: inspect lifecycle fence: %w", err)
+	}
+	if fencedVersion > event.LifecycleVersion || (deleted && fencedVersion >= event.LifecycleVersion) {
+		return proposed, false, nil
+	}
+	if fencedVersion < event.LifecycleVersion {
+		_, err = tx.Exec(ctx, `UPDATE ingestion.lifecycle_fences SET lifecycle_version=$2,deleted=false,updated_at=$3 WHERE book_id=$1`, event.BookID, event.LifecycleVersion, proposed.CreatedAt())
+		if err != nil {
+			return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: advance lifecycle fence: %w", err)
+		}
+	}
 	configBytes := configDigestBytes(proposed.ConfigDigest())
-	command, err := tx.Exec(ctx, `INSERT INTO ingestion.inbox(event_id,payload_digest,payload,business_key,source_sha256,processing_config_digest,received_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`, event.EventID, payloadDigest[:], event.Payload, event.IdempotencyKey, event.SourceSHA256[:], configBytes, proposed.CreatedAt())
+	command, err := tx.Exec(ctx, `INSERT INTO ingestion.inbox(event_id,payload_digest,payload,business_key,source_sha256,processing_config_digest,received_at,lifecycle_version)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`, event.EventID, payloadDigest[:], event.Payload, event.IdempotencyKey, event.SourceSHA256[:], configBytes, proposed.CreatedAt(), event.LifecycleVersion)
 	if err != nil {
 		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: insert inbox: %w", err)
 	}
@@ -111,9 +130,9 @@ func (r *Postgres) Accept(ctx context.Context, event application.UploadedEvent, 
 	}
 	sourceSHA256 := proposed.SourceSHA256()
 	command, err = tx.Exec(ctx, `INSERT INTO ingestion.jobs
-	    (id,book_id,source_sha256,processing_config_digest,structure_version,maximum_tokens,overlap_tokens,state,attempts,lease_owner,lease_expires_at,created_at,updated_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-		ON CONFLICT(book_id,source_sha256,processing_config_digest) DO NOTHING`, proposed.ID(), proposed.BookID(), sourceSHA256[:], configDigestBytes(proposed.ConfigDigest()), chunking.StructureVersion, chunking.DefaultMaximumTokens, chunking.DefaultOverlapTokens, proposed.State(), proposed.Attempts(), proposed.LeaseOwner(), proposed.LeaseExpiresAt(), proposed.CreatedAt(), proposed.UpdatedAt())
+	    (id,book_id,source_sha256,processing_config_digest,structure_version,maximum_tokens,overlap_tokens,state,attempts,lease_owner,lease_expires_at,created_at,updated_at,lifecycle_version)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		ON CONFLICT(book_id,source_sha256,processing_config_digest) DO NOTHING`, proposed.ID(), proposed.BookID(), sourceSHA256[:], configDigestBytes(proposed.ConfigDigest()), chunking.StructureVersion, chunking.DefaultMaximumTokens, chunking.DefaultOverlapTokens, proposed.State(), proposed.Attempts(), proposed.LeaseOwner(), proposed.LeaseExpiresAt(), proposed.CreatedAt(), proposed.UpdatedAt(), event.LifecycleVersion)
 	if err != nil {
 		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: insert job: %w", err)
 	}
@@ -124,7 +143,7 @@ func (r *Postgres) Accept(ctx context.Context, event application.UploadedEvent, 
 		return proposed, false, nil
 	}
 	prefix := fmt.Sprintf("books/%s/%x/%x/", proposed.BookID(), proposed.SourceSHA256(), configBytes)
-	_, err = tx.Exec(ctx, `INSERT INTO ingestion.artifact_sets(job_id,prefix,structure_version,maximum_tokens,overlap_tokens,updated_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(job_id) DO NOTHING`, proposed.ID(), prefix, chunking.StructureVersion, chunking.DefaultMaximumTokens, chunking.DefaultOverlapTokens, proposed.CreatedAt())
+	_, err = tx.Exec(ctx, `INSERT INTO ingestion.artifact_sets(job_id,prefix,structure_version,maximum_tokens,overlap_tokens,updated_at,lifecycle_version) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(job_id) DO NOTHING`, proposed.ID(), prefix, chunking.StructureVersion, chunking.DefaultMaximumTokens, chunking.DefaultOverlapTokens, proposed.CreatedAt(), event.LifecycleVersion)
 	if err != nil {
 		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: register artifact set: %w", err)
 	}
@@ -138,6 +157,108 @@ func (r *Postgres) Accept(ctx context.Context, event application.UploadedEvent, 
 	}
 	r.notify()
 	return proposed, true, nil
+}
+
+func (r *Postgres) AcceptDeletion(ctx context.Context, event application.DeletionEvent, payloadDigest [32]byte, ack application.OutboxEvent, now time.Time) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("ingestion: begin deletion: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	command, err := tx.Exec(ctx, `INSERT INTO ingestion.deletion_inbox
+		(event_id,book_id,command_id,lifecycle_version,payload_digest,ack_event_id,ack_event_type,ack_payload,ack_occurred_at,occurred_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING`,
+		event.EventID, event.BookID, event.CommandID, event.LifecycleVersion, payloadDigest[:],
+		ack.ID, ack.Type, ack.Payload, ack.OccurredAt, event.OccurredAt)
+	if err != nil {
+		return fmt.Errorf("ingestion: insert deletion inbox: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		var existingEventID string
+		var existingDigest []byte
+		err = tx.QueryRow(ctx, `SELECT event_id,payload_digest FROM ingestion.deletion_inbox
+			WHERE event_id=$1 OR command_id=$2 OR (book_id=$3 AND lifecycle_version=$4) FOR UPDATE`,
+			event.EventID, event.CommandID, event.BookID, event.LifecycleVersion).Scan(&existingEventID, &existingDigest)
+		if err != nil {
+			return fmt.Errorf("ingestion: inspect deletion duplicate: %w", err)
+		}
+		if existingEventID != event.EventID || !constantEqual(existingDigest, payloadDigest[:]) {
+			return application.ErrConflictingEvent
+		}
+		return tx.Commit(ctx)
+	}
+
+	_, err = tx.Exec(ctx, `INSERT INTO ingestion.lifecycle_fences(book_id,lifecycle_version,deleted,updated_at)
+		VALUES($1,$2,true,$3) ON CONFLICT(book_id) DO NOTHING`, event.BookID, event.LifecycleVersion, now)
+	if err != nil {
+		return fmt.Errorf("ingestion: initialize deletion fence: %w", err)
+	}
+	var fencedVersion int64
+	if err = tx.QueryRow(ctx, `SELECT lifecycle_version FROM ingestion.lifecycle_fences WHERE book_id=$1 FOR UPDATE`, event.BookID).Scan(&fencedVersion); err != nil {
+		return fmt.Errorf("ingestion: inspect deletion fence: %w", err)
+	}
+	if fencedVersion > event.LifecycleVersion {
+		return application.ErrConflictingEvent
+	}
+	_, err = tx.Exec(ctx, `UPDATE ingestion.lifecycle_fences
+		SET lifecycle_version=$2,deleted=true,updated_at=$3 WHERE book_id=$1`,
+		event.BookID, event.LifecycleVersion, now)
+	if err != nil {
+		return fmt.Errorf("ingestion: persist deletion fence: %w", err)
+	}
+
+	_, err = tx.Exec(ctx, `UPDATE ingestion.artifact_sets a
+		SET deletion_event_id=$2,
+			cleanup_after=GREATEST(
+				$3,
+				COALESCE(j.lease_expires_at,$3),
+				COALESCE(a.cleanup_after,$3)
+			),
+			cleanup_lease_until=NULL,updated_at=$3
+		FROM ingestion.jobs j
+		WHERE a.job_id=j.id AND j.book_id=$1 AND a.lifecycle_version <= $4
+			AND a.deletion_cleanup_completed_at IS NULL AND a.deletion_event_id IS NULL`,
+		event.BookID, event.EventID, now, event.LifecycleVersion)
+	if err != nil {
+		return fmt.Errorf("ingestion: schedule deletion artifacts: %w", err)
+	}
+	if err = completeDeletionIfReady(ctx, tx, event.EventID, now); err != nil {
+		return err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("ingestion: commit deletion: %w", err)
+	}
+	r.notify()
+	return nil
+}
+
+func completeDeletionIfReady(ctx context.Context, tx pgx.Tx, eventID string, now time.Time) error {
+	var pending int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM ingestion.artifact_sets
+		WHERE deletion_event_id=$1 AND deletion_cleanup_completed_at IS NULL`, eventID).Scan(&pending); err != nil {
+		return fmt.Errorf("ingestion: inspect deletion cleanup: %w", err)
+	}
+	if pending != 0 {
+		return nil
+	}
+	command, err := tx.Exec(ctx, `UPDATE ingestion.deletion_inbox SET completed_at=$2
+		WHERE event_id=$1 AND completed_at IS NULL`, eventID, now)
+	if err != nil {
+		return fmt.Errorf("ingestion: complete deletion inbox: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return nil
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO ingestion.outbox
+		(event_id,event_type,aggregate_id,aggregate_sequence,payload,occurred_at,next_attempt_at)
+		SELECT ack_event_id,ack_event_type,event_id,1,ack_payload,ack_occurred_at,$2
+		FROM ingestion.deletion_inbox WHERE event_id=$1
+		ON CONFLICT(aggregate_id,aggregate_sequence) DO NOTHING`, eventID, now)
+	if err != nil {
+		return fmt.Errorf("ingestion: insert deletion acknowledgment: %w", err)
+	}
+	return nil
 }
 
 func existingJobDecision(job domain.ProcessingJob, now time.Time) (bool, error) {
@@ -201,6 +322,26 @@ func (r *Postgres) Complete(ctx context.Context, job domain.ProcessingJob, claim
 		return fmt.Errorf("ingestion: begin complete: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var fencedVersion, jobLifecycleVersion int64
+	var deleted bool
+	err = tx.QueryRow(ctx, `SELECT f.lifecycle_version,f.deleted,j.lifecycle_version
+		FROM ingestion.jobs j JOIN ingestion.lifecycle_fences f ON f.book_id=j.book_id
+		WHERE j.id=$1 FOR UPDATE OF f`, job.ID()).Scan(&fencedVersion, &deleted, &jobLifecycleVersion)
+	if err != nil {
+		return fmt.Errorf("ingestion: inspect completion lifecycle fence: %w", err)
+	}
+	if deleted && fencedVersion >= jobLifecycleVersion {
+		_, err = tx.Exec(ctx, `UPDATE ingestion.artifact_sets
+			SET deletion_cleanup_completed_at=NULL,cleanup_after=$2,cleanup_lease_until=NULL,updated_at=$2
+			WHERE job_id=$1 AND deletion_event_id IS NOT NULL`, job.ID(), job.UpdatedAt())
+		if err != nil {
+			return fmt.Errorf("ingestion: reschedule fenced artifacts: %w", err)
+		}
+		if err = tx.Commit(ctx); err == nil {
+			r.notify()
+		}
+		return err
+	}
 	command, err := tx.Exec(ctx, `UPDATE ingestion.jobs SET state='completed',lease_owner=NULL,lease_expires_at=NULL,
 		manifest_reference=$2,manifest_sha256=$3,manifest_byte_size=$4,updated_at=$5
 		WHERE id=$1 AND state='processing' AND lease_owner=$6 AND attempts=$7 AND lease_expires_at=$8 AND lease_expires_at >= $5`, job.ID(), result.ManifestReference, result.ManifestSHA256[:], result.ManifestByteSize, job.UpdatedAt(), claim.Owner, claim.Attempt, claim.ExpiresAt)
@@ -407,6 +548,75 @@ func (r *Postgres) CompleteOrphanCleanup(ctx context.Context, jobID string, now 
 
 func (r *Postgres) RetryOrphanCleanup(ctx context.Context, jobID string, now time.Time) error {
 	_, err := r.pool.Exec(ctx, `UPDATE ingestion.artifact_sets SET cleanup_attempts=cleanup_attempts+1,cleanup_after=$2 + LEAST(interval '5 minutes', interval '5 seconds' * power(2, LEAST(cleanup_attempts,6))),cleanup_lease_until=NULL,updated_at=$2 WHERE job_id=$1 AND committed_at IS NULL`, jobID, now)
+	return err
+}
+
+func (r *Postgres) ClaimDeletionArtifacts(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]artifact.DeletionArtifact, error) {
+	rows, err := r.pool.Query(ctx, `WITH candidates AS (
+		SELECT job_id FROM ingestion.artifact_sets
+		WHERE deletion_event_id IS NOT NULL AND deletion_cleanup_completed_at IS NULL
+			AND cleanup_after IS NOT NULL AND cleanup_after <= $1
+			AND (cleanup_lease_until IS NULL OR cleanup_lease_until <= $1)
+		ORDER BY cleanup_after,job_id FOR UPDATE SKIP LOCKED LIMIT $2)
+		UPDATE ingestion.artifact_sets a SET cleanup_lease_until=$3
+		FROM candidates c WHERE a.job_id=c.job_id
+		RETURNING a.job_id,a.deletion_event_id,a.prefix`,
+		now, limit, now.Add(lease))
+	if err != nil {
+		return nil, fmt.Errorf("ingestion: claim deletion artifacts: %w", err)
+	}
+	defer rows.Close()
+	var artifacts []artifact.DeletionArtifact
+	for rows.Next() {
+		var value artifact.DeletionArtifact
+		if err = rows.Scan(&value.JobID, &value.EventID, &value.Prefix); err != nil {
+			return nil, fmt.Errorf("ingestion: scan deletion artifact: %w", err)
+		}
+		artifacts = append(artifacts, value)
+	}
+	return artifacts, rows.Err()
+}
+
+func (r *Postgres) CompleteDeletionArtifact(ctx context.Context, eventID, jobID string, now time.Time) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("ingestion: begin artifact deletion completion: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	command, err := tx.Exec(ctx, `UPDATE ingestion.artifact_sets
+		SET manifest_reference=NULL,manifest_sha256=NULL,
+			deletion_cleanup_completed_at=$3,cleanup_lease_until=NULL,updated_at=$3
+		WHERE job_id=$1 AND deletion_event_id=$2 AND deletion_cleanup_completed_at IS NULL`,
+		jobID, eventID, now)
+	if err != nil {
+		return fmt.Errorf("ingestion: complete deletion artifact: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return application.ErrConflictingEvent
+	}
+	_, err = tx.Exec(ctx, `UPDATE ingestion.jobs
+		SET manifest_reference=NULL,manifest_sha256=NULL,manifest_byte_size=NULL,updated_at=$2
+		WHERE id=$1`, jobID, now)
+	if err != nil {
+		return fmt.Errorf("ingestion: delete manifest projection: %w", err)
+	}
+	if err = completeDeletionIfReady(ctx, tx, eventID, now); err != nil {
+		return err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("ingestion: commit artifact deletion completion: %w", err)
+	}
+	r.notify()
+	return nil
+}
+
+func (r *Postgres) RetryDeletionArtifact(ctx context.Context, jobID string, now time.Time) error {
+	_, err := r.pool.Exec(ctx, `UPDATE ingestion.artifact_sets
+		SET cleanup_attempts=cleanup_attempts+1,
+			cleanup_after=$2 + LEAST(interval '5 minutes', interval '5 seconds' * power(2, LEAST(cleanup_attempts,6))),
+			cleanup_lease_until=NULL,updated_at=$2
+		WHERE job_id=$1 AND deletion_event_id IS NOT NULL AND deletion_cleanup_completed_at IS NULL`,
+		jobID, now)
 	return err
 }
 

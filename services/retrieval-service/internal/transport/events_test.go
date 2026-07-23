@@ -226,3 +226,50 @@ func validManifestPayloads(t *testing.T) ([]byte, []byte) {
 	}
 	return eventPayload, manifestPayload
 }
+
+func TestDecodeLifecycleEventsPreservesGenerationAndTrustedReferences(t *testing.T) {
+	now := timestamppb.New(time.Date(2026, 7, 23, 10, 0, 0, 0, time.UTC))
+	source := sha256.Sum256([]byte("source"))
+	manifest := sha256.Sum256([]byte("manifest"))
+	reindexPayload, err := proto.MarshalOptions{Deterministic: true}.Marshal(&catalogv1.BookReindexRequestedV1{
+		EventId: "reindex-event", BookId: "book-1", CommandId: "command-2", LifecycleVersion: 2,
+		SourceSha256: source[:], ManifestReference: "books/book-1/source/profile/manifest.pb",
+		ManifestSha256: manifest[:], ActorId: "actor-1", CorrelationId: "correlation-2",
+		OccurredAt: now, CausationId: "command-2", Producer: "catalog-service", SchemaVersion: "v1",
+		IdempotencyKey: "command-2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reindex, err := DecodeReindex(reindexPayload)
+	if err != nil || reindex.LifecycleVersion != 2 || reindex.Kind != application.LifecycleReindex {
+		t.Fatalf("DecodeReindex() = %#v, %v", reindex, err)
+	}
+
+	deletePayload, err := proto.MarshalOptions{Deterministic: true}.Marshal(&catalogv1.BookDeletionRequestedV1{
+		EventId: "delete-event", BookId: "book-1", CommandId: "command-3", LifecycleVersion: 3,
+		ActorId: "actor-1", CorrelationId: "correlation-3", OccurredAt: now, CausationId: "command-3",
+		Producer: "catalog-service", SchemaVersion: "v1", IdempotencyKey: "command-3",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletion, err := DecodeDeletion(deletePayload)
+	if err != nil || deletion.LifecycleVersion != 3 || deletion.Kind != application.LifecycleDelete {
+		t.Fatalf("DecodeDeletion() = %#v, %v", deletion, err)
+	}
+}
+
+func TestDecodeLifecycleRejectsNegativeGeneration(t *testing.T) {
+	payload, err := proto.Marshal(&catalogv1.BookDeletionRequestedV1{
+		EventId: "delete-event", BookId: "book-1", CommandId: "command-3", LifecycleVersion: -1,
+		ActorId: "actor-1", CorrelationId: "correlation-3", OccurredAt: timestamppb.Now(), CausationId: "command-3",
+		Producer: "catalog-service", SchemaVersion: "v1", IdempotencyKey: "command-3",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = DecodeDeletion(payload); !errors.Is(err, application.ErrInvalidEvent) {
+		t.Fatalf("DecodeDeletion() error = %v", err)
+	}
+}

@@ -34,11 +34,13 @@ type processingProfile struct {
 	configDigest         [sha256.Size]byte
 }
 
-var supportedM4Profile = newM4ProcessingProfile()
+var supportedM4Profile = newProcessingProfile("poppler-layout-v1")
+var supportedM7EPUBProfile = newProcessingProfile("epub-spine-v1")
 
-var supportedM5ProfileDigest = newM5ProfileDigest()
+var supportedM5ProfileDigest = newM5ProfileDigest("poppler-layout-v1")
+var supportedM7EPUBIndexProfileDigest = newM5ProfileDigest("epub-spine-v1")
 
-func newM5ProfileDigest() [sha256.Size]byte {
+func newM5ProfileDigest(extractionVersion string) [sha256.Size]byte {
 	values := []string{
 		"jinaai/jina-embeddings-v2-base-code",
 		"516f4baf13dec4ddddda8631e019b5737c8bc250",
@@ -47,7 +49,7 @@ func newM5ProfileDigest() [sha256.Size]byte {
 		"mean",
 		"normalized",
 		"retrieval-index-v2",
-		"poppler-layout-v1",
+		extractionVersion,
 		"nfc-v1",
 		"cl100k_base-v1",
 		"token-window-v2",
@@ -59,11 +61,11 @@ func newM5ProfileDigest() [sha256.Size]byte {
 	return sha256.Sum256([]byte(strings.Join(values, "\x00") + "\x00"))
 }
 
-func newM4ProcessingProfile() processingProfile {
+func newProcessingProfile(extractionVersion string) processingProfile {
 	// #nosec G101 -- token limits and tokenizer identifiers are public processing
 	// contract values, not authentication credentials.
 	profile := processingProfile{
-		extractionVersion:    "poppler-layout-v1",
+		extractionVersion:    extractionVersion,
 		normalizationVersion: "nfc-v1",
 		tokenizerVersion:     "cl100k_base-v1",
 		chunkingVersion:      "token-window-v2",
@@ -96,19 +98,36 @@ var (
 
 // ProcessingEvent is the validated Catalog application input for one asynchronous processing fact.
 type ProcessingEvent struct {
-	EventID       string
-	EventType     string
-	BookID        string
-	SourceSHA256  [sha256.Size]byte
-	PayloadSHA256 [sha256.Size]byte
-	CorrelationID string
-	CausationID   string
-	Fact          ProcessingFact
+	EventID           string
+	EventType         string
+	BookID            string
+	SourceSHA256      [sha256.Size]byte
+	PayloadSHA256     [sha256.Size]byte
+	CorrelationID     string
+	CausationID       string
+	LifecycleVersion  int64
+	ManifestReference string
+	ManifestSHA256    [sha256.Size]byte
+	Fact              ProcessingFact
 }
 
 // ProcessingEventRepository atomically deduplicates and applies a processing fact.
 type ProcessingEventRepository interface {
 	ApplyProcessingEvent(context.Context, ProcessingEvent, string, time.Time) (Book, bool, error)
+}
+
+type LifecycleAck struct {
+	EventID          string
+	EventType        string
+	BookID           string
+	CommandID        string
+	LifecycleVersion int64
+	PayloadSHA256    [sha256.Size]byte
+	OccurredAt       time.Time
+}
+
+type LifecycleAckRepository interface {
+	ApplyLifecycleAck(context.Context, LifecycleAck, time.Time) (Book, bool, error)
 }
 
 // ProcessingService validates versioned events before they reach persistence.
@@ -144,6 +163,18 @@ func (s *ProcessingService) HandleEnvelope(ctx context.Context, eventType, messa
 }
 
 func (s *ProcessingService) handle(ctx context.Context, eventType, messageID string, payload []byte) (bool, error) {
+	if eventType == "ingestion.book.artifacts-deleted.v1" || eventType == "retrieval.book.index-deleted.v1" {
+		ack, err := decodeLifecycleAck(eventType, payload)
+		if err != nil || (messageID != "" && ack.EventID != messageID) {
+			return false, ErrInvalidProcessingEvent
+		}
+		repository, ok := s.repository.(LifecycleAckRepository)
+		if !ok {
+			return false, errors.New("catalog lifecycle acknowledgement persistence unavailable")
+		}
+		_, changed, err := repository.ApplyLifecycleAck(ctx, ack, s.now().UTC())
+		return changed, err
+	}
 	event, err := decodeProcessingEvent(eventType, payload)
 	if err != nil {
 		return false, err
@@ -158,6 +189,48 @@ func (s *ProcessingService) handle(ctx context.Context, eventType, messageID str
 	}
 	_, changed, err := s.repository.ApplyProcessingEvent(ctx, event, statusEventID, event.Fact.OccurredAt)
 	return changed, err
+}
+
+func decodeLifecycleAck(eventType string, payload []byte) (LifecycleAck, error) {
+	if len(payload) == 0 || len(payload) > maxProcessingEventBytes {
+		return LifecycleAck{}, ErrInvalidProcessingEvent
+	}
+	ack := LifecycleAck{EventType: eventType, PayloadSHA256: sha256.Sum256(payload)}
+	var correlationID, causationID, producer, schemaVersion, idempotencyKey string
+	switch eventType {
+	case "ingestion.book.artifacts-deleted.v1":
+		message := &ingestionv1.BookArtifactsDeletedV1{}
+		if err := unmarshalStrict(payload, message); err != nil {
+			return LifecycleAck{}, ErrInvalidProcessingEvent
+		}
+		ack.EventID, ack.BookID, ack.CommandID = message.GetEventId(), message.GetBookId(), message.GetCommandId()
+		ack.LifecycleVersion, ack.OccurredAt = message.GetLifecycleVersion(), timestampValue(message.GetOccurredAt())
+		correlationID, causationID = message.GetCorrelationId(), message.GetCausationId()
+		producer, schemaVersion, idempotencyKey = message.GetProducer(), message.GetSchemaVersion(), message.GetIdempotencyKey()
+	case "retrieval.book.index-deleted.v1":
+		message := &retrievalv1.BookIndexDeletedV1{}
+		if err := unmarshalStrict(payload, message); err != nil {
+			return LifecycleAck{}, ErrInvalidProcessingEvent
+		}
+		ack.EventID, ack.BookID, ack.CommandID = message.GetEventId(), message.GetBookId(), message.GetCommandId()
+		ack.LifecycleVersion, ack.OccurredAt = message.GetLifecycleVersion(), timestampValue(message.GetOccurredAt())
+		correlationID, causationID = message.GetCorrelationId(), message.GetCausationId()
+		producer, schemaVersion, idempotencyKey = message.GetProducer(), message.GetSchemaVersion(), message.GetIdempotencyKey()
+	default:
+		return LifecycleAck{}, ErrInvalidProcessingEvent
+	}
+	expectedProducer := "ingestion-service"
+	if strings.HasPrefix(eventType, "retrieval.") {
+		expectedProducer = "retrieval-service"
+	}
+	if !validEventIdentifier(ack.EventID) || !validEventIdentifier(ack.BookID) ||
+		!validEventIdentifier(ack.CommandID) || !validEventIdentifier(correlationID) ||
+		!validEventIdentifier(causationID) || !validEventIdentifier(idempotencyKey) ||
+		ack.LifecycleVersion < 1 || ack.OccurredAt.IsZero() ||
+		producer != expectedProducer || schemaVersion != "v1" {
+		return LifecycleAck{}, ErrInvalidProcessingEvent
+	}
+	return ack, nil
 }
 
 func decodeProcessingEvent(eventType string, payload []byte) (ProcessingEvent, error) {
@@ -175,6 +248,7 @@ func decodeProcessingEvent(eventType string, payload []byte) (ProcessingEvent, e
 		}
 		event.EventID, event.BookID = message.GetEventId(), message.GetBookId()
 		event.CorrelationID, event.CausationID = message.GetCorrelationId(), message.GetCausationId()
+		event.LifecycleVersion = message.GetLifecycleVersion()
 		producer, schemaVersion, idempotencyKey = message.GetProducer(), message.GetSchemaVersion(), message.GetIdempotencyKey()
 		occurredAt = timestampValue(message.GetOccurredAt())
 		if !copyChecksum(&event.SourceSHA256, message.GetSourceSha256()) {
@@ -188,6 +262,11 @@ func decodeProcessingEvent(eventType string, payload []byte) (ProcessingEvent, e
 		}
 		event.EventID, event.BookID = message.GetEventId(), message.GetBookId()
 		event.CorrelationID, event.CausationID = message.GetCorrelationId(), message.GetCausationId()
+		event.LifecycleVersion = message.GetLifecycleVersion()
+		event.ManifestReference = message.GetManifestReference()
+		if !copyChecksum(&event.ManifestSHA256, message.GetManifestSha256()) {
+			return ProcessingEvent{}, ErrInvalidProcessingEvent
+		}
 		producer, schemaVersion, idempotencyKey = message.GetProducer(), message.GetSchemaVersion(), message.GetIdempotencyKey()
 		occurredAt = timestampValue(message.GetOccurredAt())
 		if !copyChecksum(&event.SourceSHA256, message.GetSourceSha256()) {
@@ -201,6 +280,7 @@ func decodeProcessingEvent(eventType string, payload []byte) (ProcessingEvent, e
 		}
 		event.EventID, event.BookID = message.GetEventId(), message.GetBookId()
 		event.CorrelationID, event.CausationID = message.GetCorrelationId(), message.GetCausationId()
+		event.LifecycleVersion = message.GetLifecycleVersion()
 		producer, schemaVersion, idempotencyKey = message.GetProducer(), message.GetSchemaVersion(), message.GetIdempotencyKey()
 		occurredAt = timestampValue(message.GetOccurredAt())
 		if !copyChecksum(&event.SourceSHA256, message.GetSourceSha256()) {
@@ -218,6 +298,7 @@ func decodeProcessingEvent(eventType string, payload []byte) (ProcessingEvent, e
 		}
 		event.EventID, event.BookID = message.GetEventId(), message.GetBookId()
 		event.CorrelationID, event.CausationID = message.GetCorrelationId(), message.GetCausationId()
+		event.LifecycleVersion = message.GetLifecycleVersion()
 		producer, schemaVersion, idempotencyKey = message.GetProducer(), message.GetSchemaVersion(), message.GetIdempotencyKey()
 		occurredAt = timestampValue(message.GetOccurredAt())
 		if !copyChecksum(&event.SourceSHA256, message.GetSourceSha256()) {
@@ -231,6 +312,7 @@ func decodeProcessingEvent(eventType string, payload []byte) (ProcessingEvent, e
 		}
 		event.EventID, event.BookID = message.GetEventId(), message.GetBookId()
 		event.CorrelationID, event.CausationID = message.GetCorrelationId(), message.GetCausationId()
+		event.LifecycleVersion = message.GetLifecycleVersion()
 		producer, schemaVersion, idempotencyKey = message.GetProducer(), message.GetSchemaVersion(), message.GetIdempotencyKey()
 		occurredAt = timestampValue(message.GetOccurredAt())
 		if !copyChecksum(&event.SourceSHA256, message.GetSourceSha256()) {
@@ -253,20 +335,28 @@ func decodeProcessingEvent(eventType string, payload []byte) (ProcessingEvent, e
 		!validEventIdentifier(idempotencyKey) || producer != expectedProducer || schemaVersion != "v1" || occurredAt.IsZero() {
 		return ProcessingEvent{}, ErrInvalidProcessingEvent
 	}
+	// Zero is accepted during the additive rollout and maps to the original
+	// generation. New producers always send an explicit positive version.
+	if event.LifecycleVersion < 0 {
+		return ProcessingEvent{}, ErrInvalidProcessingEvent
+	}
+	if event.LifecycleVersion == 0 {
+		event.LifecycleVersion = 1
+	}
 	return event, nil
 }
 
 func validIndexedDescriptor(message *retrievalv1.BookIndexedV1) bool {
 	return message != nil && validEventIdentifier(message.GetJobId()) &&
 		len(message.GetSourceSha256()) == sha256.Size && len(message.GetManifestSha256()) == sha256.Size &&
-		bytes.Equal(message.GetIndexProfileDigest(), supportedM5ProfileDigest[:]) &&
+		supportedIndexProfileDigest(message.GetIndexProfileDigest()) &&
 		message.GetEvidenceCount() > 0 && message.GetEvidenceCount() <= maxProcessedChunks
 }
 
 func validIndexingFailedDescriptor(message *retrievalv1.BookIndexingFailedV1) bool {
 	return message != nil && validEventIdentifier(message.GetJobId()) &&
 		len(message.GetSourceSha256()) == sha256.Size && len(message.GetManifestSha256()) == sha256.Size &&
-		bytes.Equal(message.GetIndexProfileDigest(), supportedM5ProfileDigest[:]) &&
+		supportedIndexProfileDigest(message.GetIndexProfileDigest()) &&
 		validIndexingFailureCategory(indexingFailureCategory(message.GetFailureCategory()))
 }
 
@@ -278,26 +368,43 @@ type processingProfileDescriptor interface {
 }
 
 func validProcessingProfile(message processingProfileDescriptor) bool {
-	return message.GetExtractionVersion() == supportedM4Profile.extractionVersion &&
-		message.GetNormalizationVersion() == supportedM4Profile.normalizationVersion &&
-		message.GetTokenizerVersion() == supportedM4Profile.tokenizerVersion &&
-		message.GetChunkingVersion() == supportedM4Profile.chunkingVersion
+	profile, ok := processingProfileForExtraction(message.GetExtractionVersion())
+	return ok && message.GetNormalizationVersion() == profile.normalizationVersion &&
+		message.GetTokenizerVersion() == profile.tokenizerVersion &&
+		message.GetChunkingVersion() == profile.chunkingVersion
 }
 
 func validReadyDescriptor(message *ingestionv1.BookChunksReadyV1) bool {
+	profile, profileFound := processingProfileForExtraction(message.GetExtractionVersion())
 	if message == nil || !validEventIdentifier(message.GetBookId()) || len(message.GetSourceSha256()) != sha256.Size ||
 		len(message.GetManifestSha256()) != sha256.Size || message.GetManifestByteSize() <= 0 || message.GetManifestByteSize() > maxManifestBytes ||
 		message.GetPageCount() == 0 || message.GetPageCount() > maxProcessedPages ||
 		message.GetChunkCount() == 0 || message.GetChunkCount() > maxProcessedChunks ||
 		!validProcessingProfile(message) ||
-		message.GetStructureVersion() != supportedM4Profile.structureVersion ||
-		message.GetMaximumTokens() != supportedM4Profile.maximumTokens ||
-		message.GetOverlapTokens() != supportedM4Profile.overlapTokens {
+		!profileFound || message.GetStructureVersion() != profile.structureVersion ||
+		message.GetMaximumTokens() != profile.maximumTokens ||
+		message.GetOverlapTokens() != profile.overlapTokens {
 		return false
 	}
 	prefix := "books/" + message.GetBookId() + "/" + hex.EncodeToString(message.GetSourceSha256()) + "/"
 	remainder, found := strings.CutPrefix(message.GetManifestReference(), prefix)
-	return found && remainder == hex.EncodeToString(supportedM4Profile.configDigest[:])+"/manifest.pb"
+	return found && remainder == hex.EncodeToString(profile.configDigest[:])+"/manifest.pb"
+}
+
+func processingProfileForExtraction(extractionVersion string) (processingProfile, bool) {
+	switch extractionVersion {
+	case supportedM4Profile.extractionVersion:
+		return supportedM4Profile, true
+	case supportedM7EPUBProfile.extractionVersion:
+		return supportedM7EPUBProfile, true
+	default:
+		return processingProfile{}, false
+	}
+}
+
+func supportedIndexProfileDigest(value []byte) bool {
+	return bytes.Equal(value, supportedM5ProfileDigest[:]) ||
+		bytes.Equal(value, supportedM7EPUBIndexProfileDigest[:])
 }
 
 func unmarshalStrict(payload []byte, message proto.Message) error {

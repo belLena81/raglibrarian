@@ -4,10 +4,10 @@
 The eventual product will ingest books, retrieve evidence, and return answers
 with traceable book, chapter, page, and passage citations.
 
-The repository implements Milestones 2 through 6, including Catalog upload,
-event-driven text-PDF extraction, structured chunking, live processing status,
-Retrieval-owned indexing, Qdrant search, and optional grounded answers. It does
-not perform OCR or extract EPUB files.
+The repository implements Milestones 2 through 7, including PDF/EPUB Catalog
+upload, event-driven extraction, structured chunking, live lifecycle status,
+Retrieval-owned indexing/reindexing/deletion, Qdrant search, and optional
+grounded answers. It does not perform OCR.
 
 ## Architecture decision
 
@@ -30,8 +30,8 @@ client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
   route composition. It owns no business database or evolving aggregate.
 - **identity-service** owns credentials, users, roles, and its `identity`
   Postgres schema. It is the only service that signs access tokens.
-- **catalog-service** owns book metadata, original PDF objects, processing
-  status, and its transactional publication outbox.
+- **catalog-service** owns book metadata, original PDF/EPUB objects, lifecycle
+  commands/status, minimal tombstones, and its transactional publication outbox.
 - **ingestion-service** owns processing jobs and encrypted derived chunk
   artifacts. Its worker and Lambda adapters invoke the same application.
 - **retrieval-service** owns embedding, Qdrant collections, evidence/book
@@ -77,15 +77,15 @@ race, contract, integration, and security checks pass.
 | Real query/retrieval | Implemented | `/query` is authenticated and defaults to bounded evidence-only semantic results from Retrieval. |
 | Sessions, refresh tokens, revocation | Implemented | Refresh tokens rotate in an `HttpOnly`, `SameSite=Strict` cookie; logout/replay invalidates the server-side session family. |
 | Abuse controls | Implemented | Bounded in-process trusted-client-aware limits protect registration, verification, setup, login, and refresh. |
-| Catalog PDF upload/list/get | Implemented | Role-gated streaming upload, deterministic pagination, private MinIO persistence, durable publication, reconciliation, and fixed-label metrics. |
-| PDF ingestion and live status | Release candidate | Event-driven, idempotent worker/Lambda adapters, sandboxed streamed extraction, deterministic chunk artifacts, Catalog status projection, and authenticated SSE with polling reconciliation; protected AWS staging validation remains required. |
+| Catalog PDF/EPUB lifecycle | Release candidate | Role-gated streaming upload, idempotent delete/reindex, minimal tombstones, private MinIO persistence, durable publication, and cleanup reconciliation; live M7 acceptance remains required. |
+| PDF/EPUB ingestion and live status | Release candidate | Event-driven worker/Lambda adapters, sandboxed bounded extraction, deterministic chunk artifacts, deletion cleanup, Catalog lifecycle projection, and authenticated SSE with polling reconciliation. |
 | Vectors and retrieval | Implemented | Retrieval owns vector indexing, Qdrant collections, evidence projection, search policy, and replay-safe indexing. |
 | LLM answer synthesis | Release candidate | Optional `answer` mode uses the additive stateless Answer service, validates citations against returned evidence, and degrades to evidence-only results; protected real-provider staging remains required. |
 
 ## Delivery roadmap
 
-Milestones 2, 3, and 5 are complete in the current checkout. Milestones 4 and 6
-are release candidates. Milestone 4 still requires protected AWS staging plus
+Milestones 2, 3, and 5 are complete in the current checkout. Milestones 4, 6,
+and 7 are release candidates. Milestone 4 still requires protected AWS staging plus
 controlled restart/DLQ acceptance before it is marked complete. Milestone 4 adds
 asynchronous PDF extraction and deterministic chunk manifests through one
 application shared by worker and Lambda adapters. Catalog projects monotonic
@@ -93,15 +93,17 @@ processing state, while Edge gives authenticated clients low-latency SSE hints
 backed by authoritative polling reconciliation. Processing and notification
 queues are bounded; duplicate, out-of-order, poison, malformed, encrypted,
 image-only, and timeout paths terminate with stable behavior. M4 accepts
-text-bearing PDFs only; OCR and EPUB remain later work.
+text-bearing PDFs only. M7 adds bounded EPUB spine extraction while OCR remains
+later work.
 
 The canonical service-by-service roadmap, data ownership, Lambda/worker
 deployment policy, contracts, and acceptance gates are in
 [docs/README.md](docs/README.md). The product requirements are in
 [docs/spec_rag_tech_books.md](docs/spec_rag_tech_books.md). UI routes for admin,
 books, evidence search, and optional grounded answers are implemented. Milestone
-6 remains a release candidate until protected real-provider staging passes;
-lifecycle commands, EPUB support, and Internet-ready hardening follow it.
+6 remains a release candidate until protected real-provider staging passes.
+M7 lifecycle/EPUB code remains open until its live convergence gate passes;
+Internet-ready hardening follows it.
 
 ## Security model
 

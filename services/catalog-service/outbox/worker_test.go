@@ -83,6 +83,15 @@ func TestPublicationRouteSeparatesDurableWorkFromDisposableStatus(t *testing.T) 
 	if err != nil || exchange != statusExchange || key != "catalog.book.processing-status-changed.v1" || mandatory {
 		t.Fatalf("status route = %q %q %v %v", exchange, key, mandatory, err)
 	}
+	for _, eventType := range []string{
+		"catalog.book.reindex-requested.v1",
+		"catalog.book.deletion-requested.v1",
+	} {
+		exchange, key, mandatory, err = publicationRoute(eventType)
+		if err != nil || exchange != uploadExchange || key != eventType || !mandatory {
+			t.Fatalf("%s route = %q %q %v %v", eventType, exchange, key, mandatory, err)
+		}
+	}
 	if _, _, _, err = publicationRoute("catalog.unknown.v1"); err == nil {
 		t.Fatal("expected unknown event rejection")
 	}

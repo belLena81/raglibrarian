@@ -14,9 +14,111 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/proto"
 
+	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	"github.com/belLena81/raglibrarian/services/catalog-service/internal/catalog"
 )
+
+func TestFinalDeletionAcknowledgementEmitsAtomicStatusProjection(t *testing.T) {
+	if os.Getenv("CATALOG_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set CATALOG_POSTGRES_INTEGRATION=true inside the Compose test network")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readCatalogIntegrationSecret(t, "CATALOG_POSTGRES_DSN_FILE"))
+	if err != nil {
+		t.Fatalf("connect catalog database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	id := randomIntegrationID(t)
+	bookID, commandID, ackID := "delete-book-"+id, "delete-command-"+id, "delete-ack-"+id
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	checksum := sha256.Sum256([]byte("deletion fixture " + id))
+	_, err = pool.Exec(ctx, `INSERT INTO catalog.books
+		(id,title,author,year,tags,processing_status,created_at,object_reference,checksum,byte_size,media_type,actor_id,
+		 processing_stage,processing_failure_category,processing_updated_at,processing_version,lifecycle_version,
+		 lifecycle_command_id,original_deleted,artifacts_deleted,index_deleted)
+		VALUES ($1,'Deletion fixture','Catalog integration',2026,ARRAY['synthetic'],'deleting',$2,$3,$4,1,
+		'application/pdf','integration-test','indexed','',$2,5,2,$5,TRUE,TRUE,FALSE)`,
+		bookID, now.Add(-time.Minute), "originals/"+bookID+".pdf", checksum[:], commandID)
+	if err != nil {
+		t.Fatalf("insert deletion book fixture: %v", err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO catalog.lifecycle_commands
+		(command_id,book_id,command_type,lifecycle_version,actor_id,correlation_id,accepted_at)
+		VALUES ($1,$2,'delete',2,'integration-test',$3,$4)`,
+		commandID, bookID, "correlation-"+id, now.Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("insert deletion command fixture: %v", err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO catalog.outbox
+		(event_id,event_type,aggregate_id,sequence,payload,occurred_at,next_attempt_at,published_at)
+		VALUES ($1,'catalog.book.uploaded.v1',$2,0,$3,$4,$4,$4)`,
+		"published-upload-"+id, bookID, []byte("sensitive published upload metadata"), now.Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("insert published upload fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.outbox WHERE aggregate_id=$1", bookID)
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.lifecycle_inbox WHERE event_id=$1", ackID)
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.lifecycle_commands WHERE command_id=$1", commandID)
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.books WHERE id=$1", bookID)
+	})
+
+	repository := NewPostgresBookRepository(pool)
+	book, changed, err := repository.ApplyLifecycleAck(ctx, catalog.LifecycleAck{
+		EventID: ackID, EventType: "retrieval.book.index-deleted.v1", BookID: bookID,
+		CommandID: commandID, LifecycleVersion: 2, PayloadSHA256: sha256.Sum256([]byte("ack " + id)),
+	}, now)
+	if err != nil || !changed || book.ProcessingStatus != catalog.BookStatusDeleted || book.ProcessingVersion != 6 {
+		t.Fatalf("ApplyLifecycleAck() = (%+v, %v, %v)", book, changed, err)
+	}
+	var payload []byte
+	if err = pool.QueryRow(ctx, `SELECT payload FROM catalog.outbox
+		WHERE aggregate_id=$1 AND event_type='catalog.book.processing-status-changed.v1'`, bookID).Scan(&payload); err != nil {
+		t.Fatalf("read final deletion status: %v", err)
+	}
+	status := &catalogv1.BookProcessingStatusChangedV1{}
+	if err = proto.Unmarshal(payload, status); err != nil {
+		t.Fatalf("decode final deletion status: %v", err)
+	}
+	if status.GetProcessingStatus() != "deleted" || status.GetProcessingVersion() != 6 ||
+		status.GetLifecycleVersion() != 2 || status.GetCanReindex() {
+		t.Fatalf("final deletion status = %+v", status)
+	}
+	var retainedProjectionColumns, outboxRows int
+	var retainedActor, retainedCorrelation *string
+	if err = pool.QueryRow(ctx, `SELECT
+		num_nonnulls(title,author,year,tags,object_reference,checksum,byte_size,media_type,actor_id,
+			manifest_reference,manifest_sha256,processing_stage,processing_failure_category),
+		(SELECT COUNT(*) FROM catalog.outbox WHERE aggregate_id=$1)
+		FROM catalog.books WHERE id=$1`, bookID).Scan(&retainedProjectionColumns, &outboxRows); err != nil {
+		t.Fatalf("read minimal tombstone: %v", err)
+	}
+	if retainedProjectionColumns != 0 || outboxRows != 1 {
+		t.Fatalf("minimal tombstone retained columns=%d outbox rows=%d", retainedProjectionColumns, outboxRows)
+	}
+	if err = pool.QueryRow(ctx, `SELECT actor_id,correlation_id FROM catalog.lifecycle_commands
+		WHERE command_id=$1`, commandID).Scan(&retainedActor, &retainedCorrelation); err != nil {
+		t.Fatalf("read scrubbed lifecycle command: %v", err)
+	}
+	if retainedActor != nil || retainedCorrelation != nil {
+		t.Fatalf("lifecycle command retained actor=%v correlation=%v", retainedActor, retainedCorrelation)
+	}
+	if duplicate, duplicateChanged, duplicateErr := repository.ApplyLifecycleAck(ctx, catalog.LifecycleAck{
+		EventID: ackID, EventType: "retrieval.book.index-deleted.v1", BookID: bookID,
+		CommandID: commandID, LifecycleVersion: 2, PayloadSHA256: sha256.Sum256([]byte("ack " + id)),
+	}, now.Add(time.Second)); duplicateErr != nil || duplicateChanged || duplicate.ID != "" {
+		t.Fatalf("duplicate ApplyLifecycleAck() = (%+v, %v, %v)", duplicate, duplicateChanged, duplicateErr)
+	}
+	if err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM catalog.outbox WHERE aggregate_id=$1`, bookID).Scan(&outboxRows); err != nil || outboxRows != 1 {
+		t.Fatalf("duplicate acknowledgement outbox rows=%d error=%v", outboxRows, err)
+	}
+}
 
 func TestApplyRetrievalTerminalEventIsAtomicAndIdempotent(t *testing.T) {
 	if os.Getenv("CATALOG_POSTGRES_INTEGRATION") != "true" {

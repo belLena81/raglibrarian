@@ -25,9 +25,19 @@ func TestM4ProcessingProfileDigestIsStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	configDigest := factory.ConfigDigest()
+	configDigest, err := factory.ConfigDigest(MediaTypePDF)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if digest := hex.EncodeToString(configDigest[:]); digest != m4ConfigDigestHex {
 		t.Fatalf("M4 config digest = %q, want %q", digest, m4ConfigDigestHex)
+	}
+	epubDigest, err := factory.ConfigDigest(MediaTypeEPUB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epubDigest == configDigest {
+		t.Fatal("EPUB and PDF processing profiles share a digest")
 	}
 }
 

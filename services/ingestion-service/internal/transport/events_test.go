@@ -2,10 +2,13 @@ package transport
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 	"time"
 
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
+	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
+	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/application"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -29,6 +32,72 @@ func TestDecodeUploadedAcceptsFrozenCatalogContract(t *testing.T) {
 	}
 }
 
+func TestDecodeDeletionAndBuildSanitizedAcknowledgement(t *testing.T) {
+	request := &catalogv1.BookDeletionRequestedV1{
+		EventId:          "delete-event",
+		BookId:           "book-1",
+		CommandId:        "delete-command",
+		LifecycleVersion: 2,
+		ActorId:          "actor-1",
+		CorrelationId:    "correlation-1",
+		OccurredAt:       timestamppb.New(time.Now().UTC()),
+		CausationId:      "delete-command",
+		Producer:         "catalog-service",
+		SchemaVersion:    "v1",
+		IdempotencyKey:   "delete-command",
+	}
+	payload, err := proto.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := DecodeDeletion(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	factory, err := NewProtoEventFactory(func() (string, error) { return "ack-event", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbox, err := factory.ArtifactsDeleted(event, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outbox.Type != ArtifactsDeletedRoute {
+		t.Fatalf("route = %q", outbox.Type)
+	}
+	var ack ingestionv1.BookArtifactsDeletedV1
+	if err = proto.Unmarshal(outbox.Payload, &ack); err != nil {
+		t.Fatal(err)
+	}
+	if ack.BookId != event.BookID || ack.CommandId != event.CommandID ||
+		ack.LifecycleVersion != event.LifecycleVersion ||
+		ack.CausationId != event.EventID || ack.IdempotencyKey != event.CommandID {
+		t.Fatalf("unexpected acknowledgment: %#v", &ack)
+	}
+}
+
+func TestDecodeDeletionRejectsBookScopedIdempotency(t *testing.T) {
+	request := &catalogv1.BookDeletionRequestedV1{
+		EventId:          "delete-event",
+		BookId:           "book-1",
+		CommandId:        "delete-command",
+		LifecycleVersion: 2,
+		CorrelationId:    "correlation-1",
+		OccurredAt:       timestamppb.New(time.Now().UTC()),
+		CausationId:      "delete-command",
+		Producer:         "catalog-service",
+		SchemaVersion:    "v1",
+		IdempotencyKey:   "book-1",
+	}
+	payload, err := proto.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = DecodeDeletion(payload); !errors.Is(err, application.ErrInvalidEvent) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestDecodeUploadedAcceptsAdditiveUnknownWireFields(t *testing.T) {
 	payload, err := proto.Marshal(validUploadMessage())
 	if err != nil {
@@ -47,17 +116,18 @@ func TestDecodeUploadedAcceptsAdditiveUnknownWireFields(t *testing.T) {
 
 func validUploadMessage() *catalogv1.BookUploadedV1 {
 	return &catalogv1.BookUploadedV1{
-		EventId:         "event-1",
-		BookId:          "book-1",
-		ObjectReference: "originals/01234567-89ab-cdef-0123-456789abcdef.pdf",
-		Sha256:          bytes.Repeat([]byte{1}, 32),
-		ByteSize:        1024,
-		MediaType:       "application/pdf",
-		CorrelationId:   "correlation-1",
-		OccurredAt:      timestamppb.New(time.Now().UTC()),
-		CausationId:     "correlation-1",
-		Producer:        "catalog-service",
-		SchemaVersion:   "v1",
-		IdempotencyKey:  "book-1",
+		EventId:          "event-1",
+		BookId:           "book-1",
+		ObjectReference:  "originals/01234567-89ab-cdef-0123-456789abcdef.pdf",
+		Sha256:           bytes.Repeat([]byte{1}, 32),
+		ByteSize:         1024,
+		MediaType:        "application/pdf",
+		CorrelationId:    "correlation-1",
+		OccurredAt:       timestamppb.New(time.Now().UTC()),
+		CausationId:      "correlation-1",
+		Producer:         "catalog-service",
+		SchemaVersion:    "v1",
+		IdempotencyKey:   "book-1",
+		LifecycleVersion: 1,
 	}
 }

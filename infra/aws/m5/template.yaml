@@ -49,6 +49,9 @@ Parameters:
   ChunksReadyQueueName:
     Type: String
     Default: retrieval.chunks-ready.v1
+  BookLifecycleQueueName:
+    Type: String
+    Default: retrieval.book-lifecycle.v1
   IndexBatchQueueName:
     Type: String
     Default: retrieval.index-batch.v1
@@ -105,7 +108,7 @@ Globals:
         LOG_LEVEL: info
         RETRIEVAL_RUNTIME_BACKEND: aws
         RETRIEVAL_PROCESSING_MODE: lambda
-        RETRIEVAL_INDEX_PROFILE: m5-jina-code-v1
+        RETRIEVAL_INDEX_PROFILE: m7-pdf-epub-v1
         RETRIEVAL_PROCESSING_TIMEOUT: 13m30s
 
 Resources:
@@ -188,6 +191,21 @@ Resources:
       EventSourceArn: !Ref RabbitMQBrokerArn
       FunctionName: !Ref PlannerFunction
       Queues: [!Ref ChunksReadyQueueName]
+      SourceAccessConfigurations:
+        - Type: BASIC_AUTH
+          URI: !Ref RabbitMQBasicAuthSecretArn
+        - Type: VIRTUAL_HOST
+          URI: !Ref RabbitMQVirtualHost
+
+  BookLifecycleMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Condition: LambdaMode
+    Properties:
+      BatchSize: 1
+      Enabled: true
+      EventSourceArn: !Ref RabbitMQBrokerArn
+      FunctionName: !Ref PlannerFunction
+      Queues: [!Ref BookLifecycleQueueName]
       SourceAccessConfigurations:
         - Type: BASIC_AUTH
           URI: !Ref RabbitMQBasicAuthSecretArn

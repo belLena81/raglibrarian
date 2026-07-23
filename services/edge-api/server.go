@@ -140,8 +140,12 @@ func NewRouter(
 					bookUploadRateWindow(config.BookUploadRateWindow),
 					bookUploadRateMaxKeys(config.BookUploadRateMaxKeys),
 				))
-				router.Use(middleware.UploadDeadline)
-				router.Post("/", booksHandler.Upload)
+				router.Group(func(uploadRouter chi.Router) {
+					uploadRouter.Use(middleware.UploadDeadline)
+					uploadRouter.Post("/", booksHandler.Upload)
+				})
+				router.Post("/{book_id}/reindex", booksHandler.Reindex)
+				router.Delete("/{book_id}", booksHandler.Delete)
 			})
 		})
 	}

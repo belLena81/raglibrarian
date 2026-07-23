@@ -3,6 +3,7 @@ package catalog
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -38,6 +39,98 @@ func TestUploadBookStoresPendingPDF(t *testing.T) {
 	if len(objects.objects) != 1 {
 		t.Fatalf("objects = %d", len(objects.objects))
 	}
+}
+
+func TestUploadBookStoresEPUBWithLifecycleProjection(t *testing.T) {
+	repository := NewMemoryRepository()
+	objects := NewMemoryObjectStore()
+	service := NewService(repository, objects, 1024)
+
+	book, err := service.UploadBook(context.Background(), UploadInput{
+		Metadata:  BookMetadata{Title: "An EPUB", Author: "An author", Year: 2026},
+		MediaType: "application/epub+zip",
+		Actor:     Actor{UserID: "actor-1", Role: "librarian", Status: "active"},
+		Reader:    bytes.NewReader([]byte{'P', 'K', 3, 4, 'b', 'o', 'd', 'y'}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if book.MediaType != "application/epub+zip" || book.LifecycleVersion != 1 {
+		t.Fatalf("book = %+v", book)
+	}
+	if !strings.HasSuffix(book.ObjectReference, ".epub") {
+		t.Fatalf("object reference = %q", book.ObjectReference)
+	}
+}
+
+func TestLifecycleCommandsAreIdempotentAndDeletionWaitsForAllCleanup(t *testing.T) {
+	repository := NewMemoryRepository()
+	objects := NewMemoryObjectStore()
+	service := NewServiceWithOptions(repository, objects, ServiceOptions{
+		MaxBytes: 1024,
+		Clock: func() time.Time {
+			return time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+		},
+		NewID: func() (string, error) {
+			return "event-id", nil
+		},
+	})
+	book, err := service.UploadBook(context.Background(), validUploadInput(strings.NewReader("%PDF-1.7\nbody")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	book.ProcessingStatus = BookStatusIndexed
+	book.ProcessingStage = BookStageIndexed
+	book.ManifestReference = "manifests/book.pb"
+	book.ManifestChecksum = sha256.Sum256([]byte("manifest"))
+	repository.books[book.ID] = book
+
+	reindexed, err := service.ReindexBook(context.Background(), book.ID, "reindex-command", validManager(), "correlation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := service.ReindexBook(context.Background(), book.ID, "reindex-command", validManager(), "correlation")
+	if err != nil || duplicate.LifecycleVersion != reindexed.LifecycleVersion {
+		t.Fatalf("duplicate = (%+v, %v)", duplicate, err)
+	}
+
+	reindexed.ProcessingStatus = BookStatusIndexed
+	reindexed.ProcessingStage = BookStageIndexed
+	repository.books[book.ID] = reindexed
+	deleting, err := service.DeleteBook(context.Background(), book.ID, "delete-command", validManager(), "correlation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deleting.OriginalDeleted || deleting.ProcessingStatus != BookStatusDeleting {
+		t.Fatalf("deleting = %+v", deleting)
+	}
+	_, _, err = repository.ApplyLifecycleAck(context.Background(), LifecycleAck{
+		EventType: "ingestion.book.artifacts-deleted.v1", BookID: book.ID,
+		CommandID: "delete-command", LifecycleVersion: deleting.LifecycleVersion,
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, _, err := repository.ApplyLifecycleAck(context.Background(), LifecycleAck{
+		EventType: "retrieval.book.index-deleted.v1", BookID: book.ID,
+		CommandID: "delete-command", LifecycleVersion: deleting.LifecycleVersion,
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted.ProcessingStatus != BookStatusDeleted {
+		t.Fatalf("deleted status = %q", deleted.ProcessingStatus)
+	}
+	if deleted.Metadata.Title != "" || deleted.Metadata.Author != "" || deleted.ObjectReference != "" ||
+		deleted.Checksum != ([32]byte{}) || deleted.ByteSize != 0 || deleted.MediaType != "" ||
+		deleted.ActorID != "" || deleted.ManifestReference != "" || deleted.ManifestChecksum != ([32]byte{}) ||
+		deleted.ProcessingStage != "" || deleted.ProcessingFailureCategory != "" {
+		t.Fatalf("deleted tombstone retained projections: %+v", deleted)
+	}
+}
+
+func validManager() Actor {
+	return Actor{UserID: "manager", Role: "librarian", Status: "active"}
 }
 
 func TestUploadBookNormalizesAbsentTagsToEmptyArray(t *testing.T) {

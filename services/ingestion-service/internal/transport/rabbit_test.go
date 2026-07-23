@@ -65,6 +65,11 @@ func (p *countingProcessor) Process(context.Context, application.UploadedEvent) 
 	return p.err
 }
 
+func (p *countingProcessor) ProcessDeletion(context.Context, application.DeletionEvent) error {
+	p.calls++
+	return p.err
+}
+
 func TestConsumerRejectsMissingOrMismatchedMessageID(t *testing.T) {
 	payload, err := proto.Marshal(validUploadMessage())
 	if err != nil {

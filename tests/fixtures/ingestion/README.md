@@ -1,8 +1,8 @@
-# Synthetic ingestion PDF fixtures
+# Synthetic ingestion document fixtures
 
 This directory contains a deterministic, standard-library-only fixture
-generator. The generated PDFs contain short synthetic sentences written for
-this project; no uploaded or copyrighted book content is included.
+generator. The generated PDF and EPUB files contain short synthetic sentences
+written for this project; no uploaded or copyrighted book content is included.
 
 Generate the corpus into a temporary directory:
 
@@ -13,10 +13,10 @@ go run ./tests/fixtures/ingestion/generate.go -out /tmp/raglibrarian-m4-fixtures
 The corpus covers a minimal text PDF, structured cross-page text, an intentional
 blank middle page, an artifact-confidentiality canary, an image-only page, PDFs
 carrying a Standard encryption dictionary with both empty and non-empty user
-passwords, a truncated malformed PDF, and a syntactically valid file larger
-than 64 MiB that remains safely above the frozen 25 MiB upload bound. Generated
+passwords, a truncated malformed PDF, a syntactically valid file larger than
+64 MiB, and a two-item EPUB spine for location citation tests. Generated
 binaries are intentionally not committed; black-box tests receive their
-directory through `M4_E2E_FIXTURE_DIR`.
+directory through milestone-specific fixture-directory variables.
 
 Run the dedicated black-box contract after starting an M4 stack:
 
@@ -28,6 +28,24 @@ M4_E2E_PUBLIC_ORIGIN='http://localhost:5173' \
 M4_E2E_EDGE_BASE_URLS='http://127.0.0.1:8080,http://127.0.0.1:8081' \
 go -C tests/e2e test -count=1 -v -tags='e2e m4' ./...
 ```
+
+Run the M7 lifecycle contract against a complete M7 stack:
+
+```sh
+M7_E2E_FIXTURE_DIR=/tmp/raglibrarian-m4-fixtures \
+M7_E2E_LIBRARIAN_TOKEN_FILE='/tmp/raglibrarian-m7/librarian-token' \
+E2E_PUBLIC_ORIGIN='http://localhost:5173' \
+E2E_BASE_URL='http://127.0.0.1:8080' \
+go -C tests/e2e test -count=1 -v -tags='e2e m5 m7' \
+  -run '^TestM7EPUBReindexAndDeleteLifecycleConvergesIdempotently$' ./...
+```
+
+The M7 test exercises only public Edge contracts. It uploads the synthetic
+EPUB, verifies media type and spine-location evidence, replays one reindex
+command with the same idempotency key, and waits for indexed convergence. It
+then replays one delete command and waits until Catalog returns `404` and the
+book no longer appears in semantic evidence. The token file must contain an
+active librarian access token and is read without logging its contents.
 
 For an isolated CI stack, the base M2 lifecycle can hand these sessions to the
 separate M4 process without printing them. Point `E2E_M4_ACCESS_TOKEN_OUT` and
@@ -91,3 +109,4 @@ Expected processing outcomes:
 | `encrypted_password.pdf` | failed: encrypted PDF |
 | `malformed.pdf` | failed: malformed PDF |
 | `oversize.pdf` | rejected by the upload boundary |
+| `locations.epub` | indexed with EPUB media type and spine location citations |

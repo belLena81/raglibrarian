@@ -29,7 +29,7 @@ func (s *memoryStore) Delete(_ context.Context, reference string) error {
 
 func TestWriterCommitsManifestLast(t *testing.T) {
 	store := &memoryStore{}
-	writer, err := NewWriter(store, Metadata{BookID: "book-1", SourceSHA256: sum(1), ConfigDigest: sum(2), GeneratedAt: time.Now().UTC()}, Versions{Extraction: "e1", Normalization: "n1", Tokenizer: "t1", Chunking: "c1", Structure: "s1"}, ProcessingProfile{MaximumTokens: 800, OverlapTokens: 120}, Limits{ChunksPerShard: 2, MaximumShardBytes: 1 << 20, MaximumManifestBytes: 1 << 20})
+	writer, err := NewWriter(store, Metadata{BookID: "book-1", SourceSHA256: sum(1), ConfigDigest: sum(2), GeneratedAt: time.Now().UTC(), LifecycleVersion: 1}, Versions{Extraction: "e1", Normalization: "n1", Tokenizer: "t1", Chunking: "c1", Structure: "s1"}, ProcessingProfile{MaximumTokens: 800, OverlapTokens: 120}, Limits{ChunksPerShard: 2, MaximumShardBytes: 1 << 20, MaximumManifestBytes: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestWriterCommitsManifestLast(t *testing.T) {
 
 func TestWriterAbortRemovesUncommittedShards(t *testing.T) {
 	store := &memoryStore{}
-	writer, err := NewWriter(store, Metadata{BookID: "book-1", SourceSHA256: sum(1), ConfigDigest: sum(2), GeneratedAt: time.Now().UTC()}, Versions{Extraction: "e1", Normalization: "n1", Tokenizer: "t1", Chunking: "c1", Structure: "s1"}, ProcessingProfile{MaximumTokens: 800, OverlapTokens: 120}, Limits{ChunksPerShard: 1, MaximumShardBytes: 1 << 20, MaximumManifestBytes: 1 << 20})
+	writer, err := NewWriter(store, Metadata{BookID: "book-1", SourceSHA256: sum(1), ConfigDigest: sum(2), GeneratedAt: time.Now().UTC(), LifecycleVersion: 1}, Versions{Extraction: "e1", Normalization: "n1", Tokenizer: "t1", Chunking: "c1", Structure: "s1"}, ProcessingProfile{MaximumTokens: 800, OverlapTokens: 120}, Limits{ChunksPerShard: 1, MaximumShardBytes: 1 << 20, MaximumManifestBytes: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestWriterRetryProducesByteIdenticalArtifacts(t *testing.T) {
 	store := &memoryStore{}
 	generatedAt := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
 	write := func() Result {
-		writer, err := NewWriter(store, Metadata{BookID: "book-1", SourceSHA256: sum(1), ConfigDigest: sum(2), GeneratedAt: generatedAt}, Versions{Extraction: "e1", Normalization: "n1", Tokenizer: "t1", Chunking: "c1", Structure: "s1"}, ProcessingProfile{MaximumTokens: 800, OverlapTokens: 120}, Limits{ChunksPerShard: 2, MaximumShardBytes: 1 << 20, MaximumManifestBytes: 1 << 20})
+		writer, err := NewWriter(store, Metadata{BookID: "book-1", SourceSHA256: sum(1), ConfigDigest: sum(2), GeneratedAt: generatedAt, LifecycleVersion: 1}, Versions{Extraction: "e1", Normalization: "n1", Tokenizer: "t1", Chunking: "c1", Structure: "s1"}, ProcessingProfile{MaximumTokens: 800, OverlapTokens: 120}, Limits{ChunksPerShard: 2, MaximumShardBytes: 1 << 20, MaximumManifestBytes: 1 << 20})
 		if err != nil {
 			t.Fatal(err)
 		}

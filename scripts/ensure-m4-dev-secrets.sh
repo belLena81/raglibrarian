@@ -52,4 +52,5 @@ if [[ "$database_complete" == false ]]; then
   bash ./scripts/generate-catalog-database-dev-secrets.sh "$dir"
 fi
 
+bash ./scripts/upgrade-m7-ingestion-topology.sh "$dir"
 bash ./scripts/check-m4-dev-secrets.sh "$dir"

@@ -1,11 +1,12 @@
 //go:build ignore
 
-// Command generate writes the deterministic synthetic PDF corpus used by the
-// Milestone 4 black-box tests. It intentionally uses only the standard library
-// and contains no copied book content.
+// Command generate writes the deterministic synthetic document corpus used by
+// the ingestion black-box tests. It intentionally uses only the standard
+// library and contains no copied book content.
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/md5" // #nosec G501 -- mandated by the synthetic PDF R2 fixture format.
 	"crypto/rc4" // #nosec G503 -- mandated by the synthetic PDF R2 fixture format.
@@ -24,7 +25,7 @@ type page struct {
 }
 
 func main() {
-	out := flag.String("out", "", "directory in which to write PDF fixtures")
+	out := flag.String("out", "", "directory in which to write document fixtures")
 	flag.Parse()
 	if *out == "" {
 		fmt.Fprintln(os.Stderr, "-out is required")
@@ -54,6 +55,7 @@ func main() {
 		"encrypted_password.pdf": encryptedPDF([]byte("m4-synthetic-user-password")),
 		"malformed.pdf":          []byte("%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages"),
 		"oversize.pdf":           oversizedPDF(),
+		"locations.epub":         epub(),
 	}
 
 	names := make([]string, 0, len(fixtures))
@@ -67,6 +69,76 @@ func main() {
 			fatal(err)
 		}
 	}
+}
+
+func epub() []byte {
+	var output bytes.Buffer
+	writer := zip.NewWriter(&output)
+
+	mimetypeHeader := &zip.FileHeader{
+		Name:   "mimetype",
+		Method: zip.Store,
+	}
+	mimetype, err := writer.CreateHeader(mimetypeHeader)
+	if err != nil {
+		panic(err)
+	}
+	if _, err = mimetype.Write([]byte("application/epub+zip")); err != nil {
+		panic(err)
+	}
+
+	files := map[string]string{
+		"META-INF/container.xml": `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`,
+		"EPUB/content.opf": `<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" unique-identifier="book-id" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="book-id">urn:uuid:2f10cb1d-77cc-4d85-b10d-1c115b1ab926</dc:identifier>
+    <dc:title>M7 synthetic locations</dc:title>
+    <dc:language>en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="chapter-one" href="chapter-one.xhtml" media-type="application/xhtml+xml"/>
+    <item id="chapter-two" href="chapter-two.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="chapter-one"/>
+    <itemref idref="chapter-two"/>
+  </spine>
+</package>`,
+		"EPUB/chapter-one.xhtml": `<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
+  <head><title>One</title></head>
+  <body><h1>Chapter One</h1><p>Synthetic EPUB evidence starts at the first location.</p></body>
+</html>`,
+		"EPUB/chapter-two.xhtml": `<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
+  <head><title>Two</title></head>
+  <body><h1>Chapter Two</h1><p>Clockwork indexes converge after a replayed command.</p></body>
+</html>`,
+	}
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		file, createErr := writer.Create(name)
+		if createErr != nil {
+			panic(createErr)
+		}
+		if _, writeErr := file.Write([]byte(files[name])); writeErr != nil {
+			panic(writeErr)
+		}
+	}
+	if err = writer.Close(); err != nil {
+		panic(err)
+	}
+	return output.Bytes()
 }
 
 func oversizedPDF() []byte {

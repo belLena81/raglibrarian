@@ -13,7 +13,7 @@ const (
 	maximumReconcileObjects = 1000
 )
 
-var generatedObjectReference = regexp.MustCompile(`^originals/[A-Za-z0-9_-]{22}\.pdf$`)
+var generatedObjectReference = regexp.MustCompile(`^originals/[A-Za-z0-9_-]{22}\.(pdf|epub)$`)
 
 type StoredObject struct {
 	Reference    string
@@ -23,6 +23,18 @@ type StoredObject struct {
 
 type ReconciliationRepository interface {
 	ReferencesExist(context.Context, []string) (map[string]bool, error)
+}
+
+type PendingOriginalDeletion struct {
+	BookID           string
+	CommandID        string
+	LifecycleVersion int64
+	ObjectReference  string
+}
+
+type DeletionReconciliationRepository interface {
+	PendingOriginalDeletions(context.Context, int) ([]PendingOriginalDeletion, error)
+	MarkOriginalDeleted(context.Context, string, string, int64, time.Time) (Book, error)
 }
 
 type ReconciliationObjectStore interface {
@@ -61,6 +73,30 @@ func NewReconciler(repository ReconciliationRepository, objects ReconciliationOb
 
 func (r *Reconciler) RunPass(ctx context.Context, cursor string) (ReconciliationResult, error) {
 	result := ReconciliationResult{NextCursor: cursor}
+	if repository, ok := r.repository.(DeletionReconciliationRepository); ok {
+		pending, err := repository.PendingOriginalDeletions(ctx, reconcileBatchSize)
+		if err != nil {
+			r.recorder.ReconciliationFailed()
+			return result, errors.New("catalog deletion reconciliation lookup failed")
+		}
+		for _, deletion := range pending {
+			if err = r.objects.Delete(ctx, deletion.ObjectReference); err != nil {
+				r.recorder.ReconciliationFailed()
+				return result, errors.New("catalog deletion reconciliation object deletion failed")
+			}
+			if _, err = repository.MarkOriginalDeleted(
+				ctx,
+				deletion.BookID,
+				deletion.CommandID,
+				deletion.LifecycleVersion,
+				r.now().UTC(),
+			); err != nil {
+				r.recorder.ReconciliationFailed()
+				return result, errors.New("catalog deletion reconciliation persistence failed")
+			}
+			result.Deleted++
+		}
+	}
 	candidates := make([]string, 0, maximumReconcileObjects)
 	cutoff := r.now().Add(-r.gracePeriod)
 	for result.Scanned < maximumReconcileObjects {

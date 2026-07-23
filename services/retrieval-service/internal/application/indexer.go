@@ -19,11 +19,15 @@ type BatchWork struct {
 	CompressedBytes, UncompressedBytes                                                                                   int64
 	ChunkCount, ManifestPageCount, MaximumTokens, OverlapTokens                                                          uint32
 	FirstChunkOrder, LastChunkOrder                                                                                      uint64
+	LifecycleVersion                                                                                                     uint64
 	OccurredAt                                                                                                           time.Time
 }
 
 func (w BatchWork) Validate() error {
-	profile := domain.SupportedIndexProfile()
+	profile, ok := domain.SupportedIndexProfileForExtraction(w.ExtractionVersion)
+	if !ok {
+		return ErrInvalidEvent
+	}
 	if !safeID(w.EventID) || !safeID(w.JobID) || !safeID(w.BatchID) || !safeID(w.BookID) || !validArtifactReference(w.ShardReference) ||
 		!safeID(w.CorrelationID) || !safeID(w.CausationID) || w.Producer != "retrieval-service" || w.SchemaVersion != "v1" ||
 		w.IdempotencyKey != w.BatchID || w.ShardSHA256 == ([32]byte{}) || w.SourceSHA256 == ([32]byte{}) ||
@@ -44,9 +48,10 @@ func (w BatchWork) Validate() error {
 }
 
 type BookProjection struct {
-	BookID, Title, Author string
-	Year                  int
-	Tags                  []string
+	BookID, Title, Author, MediaType string
+	Year                             int
+	Tags                             []string
+	ResumeFinalization               bool
 }
 
 type Chunk struct {
@@ -59,18 +64,21 @@ type Chunk struct {
 
 type EvidenceRecord struct {
 	Evidence
-	JobID         string
-	ContentSHA256 [32]byte
-	Vector        []float32
+	JobID            string
+	ContentSHA256    [32]byte
+	LifecycleVersion uint64
+	Vector           []float32
 }
 
 type DocumentRecord struct {
 	DocumentResult
-	Vector []float32
+	Vector           []float32
+	LifecycleVersion uint64
 }
 
 type BatchRepository interface {
 	BeginBatch(context.Context, BatchWork) (BookProjection, bool, error)
+	CheckBatchActive(context.Context, BatchWork) (bool, error)
 	CompleteBatch(context.Context, BatchWork, []EvidenceRecord, time.Time) (bool, error)
 	DocumentRecord(context.Context, BatchWork) (DocumentRecord, error)
 	FinalizeJob(context.Context, BatchWork, time.Time) error
@@ -113,6 +121,9 @@ func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
 	metadata, accepted, err := i.repository.BeginBatch(ctx, work)
 	if err != nil || !accepted {
 		return err
+	}
+	if metadata.ResumeFinalization {
+		return i.finalizeDocument(ctx, work)
 	}
 	chunks, err := i.reader.ReadShard(ctx, work)
 	if err != nil {
@@ -159,14 +170,25 @@ func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
 		return Failure(domain.FailureEmbeddingUnavailable, errors.Join(errors.New("embed shard"), err))
 	}
 	records := make([]EvidenceRecord, len(chunks))
+	mediaType := metadata.MediaType
+	if mediaType == "" {
+		mediaType = domain.MediaTypePDF
+	}
 	for index, chunk := range chunks {
 		if len(vectors[index]) != domain.EmbeddingDimensions {
 			return Failure(domain.FailureEmbeddingUnavailable, errors.New("invalid embedding dimensions"))
 		}
-		records[index] = EvidenceRecord{Evidence: Evidence{EvidenceID: work.BookID + ":" + chunk.ChunkID, ChunkID: chunk.ChunkID,
-			BookID: work.BookID, Title: metadata.Title, Author: metadata.Author, Year: metadata.Year, Tags: append([]string(nil), metadata.Tags...),
+		records[index] = EvidenceRecord{Evidence: Evidence{EvidenceID: work.JobID + ":" + chunk.ChunkID, ChunkID: chunk.ChunkID,
+			BookID: work.BookID, Title: metadata.Title, Author: metadata.Author, MediaType: mediaType, Year: metadata.Year, Tags: append([]string(nil), metadata.Tags...),
 			Chapter: chunk.Chapter, Section: chunk.Section, PageStart: chunk.PageStart, PageEnd: chunk.PageEnd, Passage: chunk.Text},
-			JobID: work.JobID, ContentSHA256: chunk.ContentSHA256, Vector: append([]float32(nil), vectors[index]...)}
+			JobID: work.JobID, ContentSHA256: chunk.ContentSHA256, LifecycleVersion: effectiveLifecycleVersion(work.LifecycleVersion), Vector: append([]float32(nil), vectors[index]...)}
+	}
+	active, err := i.repository.CheckBatchActive(ctx, work)
+	if err != nil {
+		return fmt.Errorf("check batch lifecycle: %w", err)
+	}
+	if !active {
+		return ErrConflictingEvent
 	}
 	if err = i.index.UpsertChunks(ctx, records); err != nil {
 		return Failure(domain.FailureVectorStoreUnavailable, errors.Join(errors.New("upsert vectors"), err))
@@ -176,22 +198,27 @@ func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
 		return fmt.Errorf("complete batch: %w", err)
 	}
 	if completed {
-		document, recordErr := i.repository.DocumentRecord(ctx, work)
-		if recordErr != nil {
-			return errors.New("build document vector")
-		}
-		if len(document.Vector) != domain.EmbeddingDimensions || !normalized(document.Vector) {
-			return Failure(domain.FailureEmbeddingUnavailable, errors.New("invalid document embedding"))
-		}
-		if err = i.index.UpsertDocument(ctx, document); err != nil {
-			return Failure(domain.FailureVectorStoreUnavailable, errors.Join(errors.New("upsert document vector"), err))
-		}
-		if err = i.index.ActivateJob(ctx, work.JobID); err != nil {
-			return Failure(domain.FailureVectorStoreUnavailable, errors.Join(errors.New("activate vectors"), err))
-		}
-		if err = i.repository.FinalizeJob(ctx, work, i.now().UTC()); err != nil {
-			return errors.New("finalize index job")
-		}
+		return i.finalizeDocument(ctx, work)
+	}
+	return nil
+}
+
+func (i *Indexer) finalizeDocument(ctx context.Context, work BatchWork) error {
+	document, err := i.repository.DocumentRecord(ctx, work)
+	if err != nil {
+		return errors.New("build document vector")
+	}
+	if len(document.Vector) != domain.EmbeddingDimensions || !normalized(document.Vector) {
+		return Failure(domain.FailureEmbeddingUnavailable, errors.New("invalid document embedding"))
+	}
+	if err = i.index.UpsertDocument(ctx, document); err != nil {
+		return Failure(domain.FailureVectorStoreUnavailable, errors.Join(errors.New("upsert document vector"), err))
+	}
+	if err = i.index.ActivateJob(ctx, work.JobID); err != nil {
+		return Failure(domain.FailureVectorStoreUnavailable, errors.Join(errors.New("activate vectors"), err))
+	}
+	if err = i.repository.FinalizeJob(ctx, work, i.now().UTC()); err != nil {
+		return errors.Join(errors.New("finalize index job"), err)
 	}
 	return nil
 }

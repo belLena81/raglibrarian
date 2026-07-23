@@ -17,25 +17,38 @@ var (
 	ErrConflictingEvent        = errors.New("conflicting retrieval event")
 	ErrUnsupportedIndexProfile = errors.New("unsupported index profile")
 	ErrArtifactUnavailable     = errors.New("artifact unavailable")
+	ErrLifecycleCleanupPending = errors.New("lifecycle cleanup pending")
 )
 
 const maxManifestPages = 500
 
 type MetadataEvent struct {
-	EventID, BookID, Title, Author, CorrelationID, CausationID, Producer, SchemaVersion, IdempotencyKey string
-	Year                                                                                                int
-	Tags                                                                                                []string
-	SourceSHA256, PayloadDigest                                                                         [32]byte
-	OccurredAt                                                                                          time.Time
+	EventID, BookID, Title, Author, MediaType, CorrelationID, CausationID, Producer, SchemaVersion, IdempotencyKey string
+	Year                                                                                                           int
+	LifecycleVersion                                                                                               uint64
+	Tags                                                                                                           []string
+	SourceSHA256, PayloadDigest                                                                                    [32]byte
+	OccurredAt                                                                                                     time.Time
 }
 
 func (e MetadataEvent) Validate() error {
 	if !safeID(e.EventID) || !safeID(e.BookID) || strings.TrimSpace(e.Title) == "" || strings.TrimSpace(e.Author) == "" ||
-		e.Year < 0 || e.SourceSHA256 == ([32]byte{}) || e.PayloadDigest == ([32]byte{}) || !safeID(e.CorrelationID) ||
+		e.Year < 0 || !supportedMediaType(e.MediaType) || e.SourceSHA256 == ([32]byte{}) || e.PayloadDigest == ([32]byte{}) || !safeID(e.CorrelationID) ||
 		!safeID(e.CausationID) || e.Producer != "catalog-service" || e.SchemaVersion != "v1" || e.IdempotencyKey != e.BookID || e.OccurredAt.IsZero() || len(e.Tags) > domain.MaximumFilterTags {
 		return ErrInvalidEvent
 	}
 	return nil
+}
+
+func supportedMediaType(value string) bool {
+	return value == "" || value == domain.MediaTypePDF || value == domain.MediaTypeEPUB
+}
+
+func (e MetadataEvent) EffectiveMediaType() string {
+	if e.MediaType == "" {
+		return domain.MediaTypePDF
+	}
+	return e.MediaType
 }
 
 type Shard struct {
@@ -50,6 +63,7 @@ type Manifest struct {
 	SchemaVersion, BookID, ExtractionVersion, NormalizationVersion, TokenizerVersion, ChunkingVersion, StructureVersion string
 	SourceSHA256, ManifestSHA256, ProcessingConfigDigest                                                                [32]byte
 	MaximumTokens, OverlapTokens, PageCount, ChunkCount                                                                 uint32
+	LifecycleVersion                                                                                                    uint64
 	GeneratedAt                                                                                                         time.Time
 	Shards                                                                                                              []Shard
 }
@@ -57,6 +71,7 @@ type Manifest struct {
 type ManifestEvent struct {
 	EventID, BookID, ManifestReference, CorrelationID, CausationID, Producer, SchemaVersion, IdempotencyKey string
 	SourceSHA256, ManifestSHA256, PayloadDigest                                                             [32]byte
+	LifecycleVersion                                                                                        uint64
 	OccurredAt                                                                                              time.Time
 	Manifest                                                                                                Manifest
 }
@@ -85,6 +100,9 @@ func (e ManifestEvent) ValidateEnvelope() error {
 
 func (e ManifestEvent) Validate(profile domain.IndexProfile) error {
 	if err := e.ValidateEnvelope(); err != nil || e.Manifest.BookID != e.BookID || e.Manifest.SourceSHA256 != e.SourceSHA256 || e.Manifest.ManifestSHA256 != e.ManifestSHA256 || len(e.Manifest.Shards) == 0 || len(e.Manifest.Shards) > 2048 {
+		return ErrInvalidEvent
+	}
+	if effectiveLifecycleVersion(e.LifecycleVersion) != effectiveLifecycleVersion(e.Manifest.LifecycleVersion) {
 		return ErrInvalidEvent
 	}
 	idempotencyParts := strings.Split(e.IdempotencyKey, ":")
@@ -176,6 +194,7 @@ type BatchPlan struct {
 	FirstChunkOrder, LastChunkOrder                                                              uint64
 	ExtractionVersion, NormalizationVersion, TokenizerVersion, ChunkingVersion, StructureVersion string
 	ProfileDigest                                                                                [32]byte
+	LifecycleVersion                                                                             uint64
 	OccurredAt                                                                                   time.Time
 }
 
@@ -211,7 +230,11 @@ func (p *Planner) HandleMetadata(ctx context.Context, event MetadataEvent) error
 }
 
 func (p *Planner) HandleManifest(ctx context.Context, event ManifestEvent) error {
-	if err := event.Validate(p.profile); err != nil {
+	profile, ok := domain.SupportedIndexProfileForExtraction(event.Manifest.ExtractionVersion)
+	if !ok {
+		return ErrUnsupportedIndexProfile
+	}
+	if err := event.Validate(profile); err != nil {
 		return err
 	}
 	snapshot, err := p.repository.ProjectManifest(ctx, event)
@@ -228,6 +251,10 @@ func (p *Planner) plan(ctx context.Context, snapshot PlanningSnapshot) error {
 	if snapshot.Metadata.BookID != snapshot.Manifest.BookID || snapshot.Metadata.SourceSHA256 != snapshot.Manifest.SourceSHA256 {
 		return ErrConflictingEvent
 	}
+	profile, ok := domain.SupportedIndexProfileForMediaType(snapshot.Metadata.EffectiveMediaType())
+	if !ok || profile.ExtractionVersion != snapshot.Manifest.Manifest.ExtractionVersion {
+		return ErrUnsupportedIndexProfile
+	}
 	jobID, err := p.newID()
 	if err != nil || !safeID(jobID) {
 		return errors.New("generate indexing identity")
@@ -242,10 +269,17 @@ func (p *Planner) plan(ctx context.Context, snapshot PlanningSnapshot) error {
 			NormalizationVersion: snapshot.Manifest.Manifest.NormalizationVersion, TokenizerVersion: snapshot.Manifest.Manifest.TokenizerVersion,
 			ChunkingVersion: snapshot.Manifest.Manifest.ChunkingVersion, StructureVersion: snapshot.Manifest.Manifest.StructureVersion,
 			MaximumTokens: snapshot.Manifest.Manifest.MaximumTokens, OverlapTokens: snapshot.Manifest.Manifest.OverlapTokens,
-			ProfileDigest: p.profile.Digest, OccurredAt: now}
+			ProfileDigest: profile.Digest, LifecycleVersion: effectiveLifecycleVersion(snapshot.Manifest.LifecycleVersion), OccurredAt: now}
 	}
 	_, err = p.repository.CommitPlan(ctx, snapshot, batches)
 	return err
+}
+
+func effectiveLifecycleVersion(value uint64) uint64 {
+	if value == 0 {
+		return 1
+	}
+	return value
 }
 
 func safeID(value string) bool {

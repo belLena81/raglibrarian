@@ -43,7 +43,7 @@ func (c *Client) UploadBook(ctx context.Context, metadata handler.BookMetadata, 
 	if err != nil {
 		return handler.Book{}, err
 	}
-	if err = stream.Send(&catalogv1.UploadBookRequest{Frame: &catalogv1.UploadBookRequest_Metadata{Metadata: &catalogv1.UploadBookMetadata{Title: metadata.Title, Author: metadata.Author, Year: metadata.Year, Tags: metadata.Tags, Actor: actorProto(actor)}}}); err != nil {
+	if err = stream.Send(&catalogv1.UploadBookRequest{Frame: &catalogv1.UploadBookRequest_Metadata{Metadata: &catalogv1.UploadBookMetadata{Title: metadata.Title, Author: metadata.Author, Year: metadata.Year, Tags: metadata.Tags, Actor: actorProto(actor), MediaType: metadata.MediaType}}}); err != nil {
 		return receiveUploadResult(stream, err)
 	}
 	buffer := make([]byte, 64<<10)
@@ -125,6 +125,41 @@ func (c *Client) GetBook(ctx context.Context, id string, actor handler.CatalogAc
 	}
 	return fromProto(response.Book), nil
 }
+
+func (c *Client) ReindexBook(ctx context.Context, id string, actor handler.CatalogActor, correlationID, commandID string) (handler.Book, error) {
+	ctx, err := withRequestID(ctx, correlationID)
+	if err != nil {
+		return handler.Book{}, handler.ErrInvalidBookRequest
+	}
+	response, err := c.service.ReindexBook(ctx, &catalogv1.ReindexBookRequest{
+		BookId: id, Actor: actorProto(actor), CommandId: commandID,
+	})
+	if err != nil {
+		return handler.Book{}, mapLifecycleError(err)
+	}
+	return fromProto(response.Book), nil
+}
+
+func (c *Client) DeleteBook(ctx context.Context, id string, actor handler.CatalogActor, correlationID, commandID string) (handler.Book, error) {
+	ctx, err := withRequestID(ctx, correlationID)
+	if err != nil {
+		return handler.Book{}, handler.ErrInvalidBookRequest
+	}
+	response, err := c.service.DeleteBook(ctx, &catalogv1.DeleteBookRequest{
+		BookId: id, Actor: actorProto(actor), CommandId: commandID,
+	})
+	if err != nil {
+		return handler.Book{}, mapLifecycleError(err)
+	}
+	return fromProto(response.Book), nil
+}
+func mapLifecycleError(err error) error {
+	mapped := mapError(err)
+	if errors.Is(mapped, handler.ErrInvalidBookRequest) {
+		return handler.ErrInvalidBookLifecycleRequest
+	}
+	return mapped
+}
 func actorProto(actor handler.CatalogActor) *catalogv1.Actor {
 	return &catalogv1.Actor{UserId: actor.UserID, Role: actor.Role, Status: actor.Status, MaskedEmail: actor.MaskedEmail}
 }
@@ -144,7 +179,8 @@ func fromProto(book *catalogv1.Book) handler.Book {
 		ID: book.Id, Title: book.Title, Author: book.Author, Year: int(book.Year), Tags: append([]string(nil), book.Tags...),
 		ProcessingStatus: book.ProcessingStatus, ProcessingStage: book.ProcessingStage,
 		ProcessingFailureCategory: book.ProcessingFailureCategory, ProcessingUpdatedAt: processingUpdatedAt,
-		ProcessingVersion: book.ProcessingVersion, CreatedAt: createdAt,
+		ProcessingVersion: book.ProcessingVersion, MediaType: book.MediaType,
+		LifecycleVersion: book.LifecycleVersion, CanReindex: book.CanReindex, CreatedAt: createdAt,
 	}
 }
 func mapError(err error) error {
@@ -153,6 +189,9 @@ func mapError(err error) error {
 	}
 	if status.Code(err) == codes.PermissionDenied {
 		return handler.ErrBookUnauthorized
+	}
+	if status.Code(err) == codes.Aborted || status.Code(err) == codes.FailedPrecondition || status.Code(err) == codes.AlreadyExists {
+		return handler.ErrBookLifecycleConflict
 	}
 	if status.Code(err) == codes.ResourceExhausted && status.Convert(err).Message() == "upload capacity exhausted" {
 		return handler.ErrBookCapacityExhausted

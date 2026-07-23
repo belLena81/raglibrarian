@@ -113,7 +113,9 @@ func publishPending(ctx context.Context, store store, publisher publisher, recor
 
 func publicationRoute(eventType string) (exchange, routingKey string, mandatory bool, err error) {
 	switch eventType {
-	case "catalog.book.uploaded.v1":
+	case "catalog.book.uploaded.v1",
+		"catalog.book.reindex-requested.v1",
+		"catalog.book.deletion-requested.v1":
 		return uploadExchange, eventType, true, nil
 	case "catalog.book.processing-status-changed.v1":
 		return statusExchange, eventType, false, nil

@@ -41,7 +41,7 @@ bounded retries, and dead-letter queues.
 | Edge API | Public HTTP, request validation, perimeter authentication, DTO mapping, routing | Business data, retrieval orchestration, ingestion, prompts |
 | Identity | Accounts, credentials, roles, approvals, sessions, token signing | Books, upload authorization policy outside role facts |
 | Catalog | Book metadata, original objects, public processing status, upload outbox | Extracted text, chunks, embeddings, vectors |
-| Ingestion | Processing jobs, text-PDF extraction, chunk artifacts | Original-book metadata, OCR, EPUB, Qdrant, search |
+| Ingestion | Processing jobs, PDF/EPUB extraction, chunk artifacts and cleanup | Original-book metadata, OCR, Qdrant, search |
 | Retrieval | Embedding compatibility, evidence projection, Qdrant, semantic search | Book lifecycle, LLM answer synthesis |
 | Answer | Prompt construction and grounded answer synthesis | Citation invention, vector storage, book metadata |
 
@@ -309,10 +309,10 @@ Acceptance:
 
 ## Current planned work
 
-The remaining product roadmap starts with Milestone 7 lifecycle/format
-completion, then Milestone 8 Internet-ready hardening. Milestones 4 and 6 remain
-release candidates until their protected AWS and real-provider staging gates
-pass.
+Milestone 7 lifecycle/format completion is a release candidate pending its live
+EPUB/reindex/delete convergence gate. Milestone 8 Internet-ready hardening
+follows it. Milestones 4 and 6 also remain release candidates until their
+protected AWS and real-provider staging gates pass.
 
 ## Milestone 6 — optional grounded answers
 
@@ -355,6 +355,9 @@ Acceptance:
 
 **Owning services:** Catalog for commands/status, Ingestion for parsing,
 Retrieval for index effects.
+
+**Status:** release candidate; focused local gates pass, while the live M7
+convergence test remains required.
 
 **Outcome:** librarians upload EPUB, delete books, and request reindexing while
 all users see a consistent lifecycle state.

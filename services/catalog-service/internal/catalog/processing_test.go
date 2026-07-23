@@ -362,10 +362,44 @@ func TestProcessingServiceAcceptsAdditiveUnknownFieldsOnKnownV1Route(t *testing.
 	}
 }
 
+func TestProcessingServiceValidatesDeletionAcknowledgementGeneration(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	payload, err := proto.Marshal(&ingestionv1.BookArtifactsDeletedV1{
+		EventId: "ack-event", BookId: "book-1", CommandId: "delete-command",
+		LifecycleVersion: 3, CorrelationId: "correlation-1", CausationId: "delete-event",
+		Producer: "ingestion-service", SchemaVersion: "v1", IdempotencyKey: "delete-command:artifacts",
+		OccurredAt: timestamppb.New(now),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &processingRepositoryFake{}
+	service := NewProcessingService(repository, func() time.Time { return now.Add(time.Second) }, nil)
+	changed, err := service.HandleEnvelope(
+		context.Background(),
+		"ingestion.book.artifacts-deleted.v1",
+		"ack-event",
+		payload,
+	)
+	if err != nil || !changed {
+		t.Fatalf("HandleEnvelope() = %v, %v", changed, err)
+	}
+	if repository.ack.CommandID != "delete-command" || repository.ack.LifecycleVersion != 3 {
+		t.Fatalf("ack = %+v", repository.ack)
+	}
+}
+
 type processingRepositoryFake struct {
 	event         ProcessingEvent
+	ack           LifecycleAck
 	statusEventID string
 	calls         int
+}
+
+func (r *processingRepositoryFake) ApplyLifecycleAck(_ context.Context, ack LifecycleAck, _ time.Time) (Book, bool, error) {
+	r.calls++
+	r.ack = ack
+	return Book{}, true, nil
 }
 
 func (r *processingRepositoryFake) ApplyProcessingEvent(_ context.Context, event ProcessingEvent, statusEventID string, _ time.Time) (Book, bool, error) {

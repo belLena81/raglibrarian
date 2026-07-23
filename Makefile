@@ -4,7 +4,7 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer dev local-run local-stop tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-m5-integration-test m4-m5-m6-integration-test m4-worker-recovery-test m4-e2e m4-performance-smoke m4-sse-load m4-soak m5-contract-test m5-contract-only-test m5-contract-ci-test m5-integration-test m5-search-quality-test m5-search-quality-test-real m5-worker-recovery-test m5-e2e m5-performance-smoke m6-contract-test m6-answer-quality-test m6-answer-quality-test-real m6-e2e m6-performance-smoke m6-integration-test contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down migrate-retrieval-up migrate-retrieval-down infra-up infra-down stack-up m6-stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-m5 dev-secrets-m6 dev-secrets-test m6-dev-config-test m5-model-bootstrap m5-model-bootstrap-test bootstrap-verifier compose-config m5-mode-policy sam-validate sam-package-check sam-m5-validate sam-m5-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-build-ci image-scan image-scan-ci image-scan-images security-check security-check-ci full-gates integration-gates smtp-url
+.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer dev local-run local-stop tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-m5-integration-test m4-m5-m6-integration-test m4-worker-recovery-test m4-e2e m4-performance-smoke m4-sse-load m4-soak m5-contract-test m5-contract-only-test m5-contract-ci-test m5-integration-test m5-search-quality-test m5-search-quality-test-real m5-worker-recovery-test m5-e2e m5-performance-smoke m6-contract-test m6-answer-quality-test m6-answer-quality-test-real m6-e2e m6-performance-smoke m6-integration-test m7-e2e m7-integration-test contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down migrate-retrieval-up migrate-retrieval-down infra-up infra-down stack-up m6-stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-m5 dev-secrets-m6 dev-secrets-test m6-dev-config-test m5-model-bootstrap m5-model-bootstrap-test bootstrap-verifier compose-config m5-mode-policy sam-validate sam-package-check sam-m5-validate sam-m5-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-build-ci image-scan image-scan-ci image-scan-images security-check security-check-ci full-gates integration-gates smtp-url
 
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
 HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
@@ -29,6 +29,8 @@ M4_E2E_MINIO_SECRET_KEY_FILE ?= $(CURDIR)/.dev/secrets/ingestion_e2e_minio_secre
 M4_E2E_MINIO_ARTIFACT_BUCKET ?= ingestion-artifacts
 M4_E2E_RABBITMQ_URI_FILE ?= $(CURDIR)/.dev/secrets/ingestion_e2e_rabbitmq_uri
 M4_E2E_FIXTURE_DIR ?= /tmp/raglibrarian-m4-fixtures
+M7_E2E_FIXTURE_DIR ?= $(M4_E2E_FIXTURE_DIR)
+M7_E2E_LIBRARIAN_TOKEN_FILE ?= $(M5_E2E_LIBRARIAN_TOKEN_FILE)
 M4_E2E_EDGE_BASE_URLS ?= http://127.0.0.1:8080,http://127.0.0.1:8081
 M4_E2E_PUBLIC_ORIGIN ?= http://localhost:5173
 E2E_PUBLIC_ORIGIN ?= $(M4_E2E_PUBLIC_ORIGIN)
@@ -53,7 +55,7 @@ MODULES := \
 
 # Go packages import generated protobuf bindings. Generate them before any
 # target that compiles or analyzes those packages.
-GO_PROTO_TARGETS := test test-race lint fmt fmt-check vet vuln build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer tidy e2e m6-answer-quality-test m6-e2e m6-performance-smoke
+GO_PROTO_TARGETS := test test-race lint fmt fmt-check vet vuln build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer tidy e2e m6-answer-quality-test m6-e2e m6-performance-smoke m7-e2e
 $(GO_PROTO_TARGETS): proto-generate
 
 # Guard: abort if not run from the workspace root.
@@ -265,6 +267,14 @@ m5-worker-recovery-test: _require_root
 
 m5-e2e: m4-fixtures
 	cd tests/e2e && M5_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" go test -count=1 -v -tags 'e2e m5' -run '^TestM5' ./...
+
+m7-e2e: m4-fixtures
+	@test -n "$(M7_E2E_LIBRARIAN_TOKEN_FILE)" && test -r "$(M7_E2E_LIBRARIAN_TOKEN_FILE)" || { echo "M7_E2E_LIBRARIAN_TOKEN_FILE must name a readable active librarian token file"; exit 1; }
+	@tests="$$(cd tests/e2e && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" go test -tags 'e2e m5 m7' -list '^TestM7' ./...)"; \
+	printf '%s\n' "$$tests" | grep -qx 'TestM7EPUBReindexAndDeleteLifecycleConvergesIdempotently' || { echo "M7 lifecycle E2E test was not discovered"; exit 1; }
+	cd tests/e2e && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" M7_E2E_FIXTURE_DIR="$(M7_E2E_FIXTURE_DIR)" M7_E2E_LIBRARIAN_TOKEN_FILE="$(M7_E2E_LIBRARIAN_TOKEN_FILE)" E2E_PUBLIC_ORIGIN="$(E2E_PUBLIC_ORIGIN)" go test -count=1 -v -timeout 10m -tags 'e2e m5 m7' -run '^TestM7EPUBReindexAndDeleteLifecycleConvergesIdempotently$$' ./...
+
+m7-integration-test: m5-contract-test m7-e2e
 
 m5-performance-smoke: _require_root
 	cd tests/e2e && go test -count=1 -v -timeout 20m -tags 'e2e m5' -run '^TestM5PerformanceSearchesIndexedEvidenceWithinBudget$$' ./...

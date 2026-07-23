@@ -41,7 +41,8 @@ RUN wget -q -O /cl100k_base.tiktoken https://openaipublic.blob.core.windows.net/
     && echo "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7  /cl100k_base.tiktoken" | sha256sum -c -
 
 FROM builder AS ingestion-sandbox-builder
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /bin/parser-sandbox ./services/ingestion-service/cmd/parser_sandbox
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /bin/parser-sandbox ./services/ingestion-service/cmd/parser_sandbox \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /bin/epub-parser ./services/ingestion-service/cmd/epub_parser
 
 FROM alpine:3.22 AS ingestion-runtime
 # hadolint ignore=DL3018
@@ -49,6 +50,7 @@ RUN apk add --no-cache ca-certificates poppler-utils
 COPY --from=builder /bin/service /service
 COPY --from=builder /bin/healthcheck /healthcheck
 COPY --from=ingestion-sandbox-builder /bin/parser-sandbox /parser-sandbox
+COPY --from=ingestion-sandbox-builder /bin/epub-parser /usr/local/bin/epub-parser
 COPY --from=tokenizer /cl100k_base.tiktoken /opt/raglibrarian/cl100k_base.tiktoken
 # The worker reads root-owned 0400 secrets, then permanently drops to the
 # configured non-root identity before consuming work.

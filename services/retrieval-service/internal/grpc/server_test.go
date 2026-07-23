@@ -13,14 +13,16 @@ import (
 
 func TestSearchMapsAuthorizedRequestAndEvidence(t *testing.T) {
 	service := &stubSearchService{result: application.SearchResult{
-		Evidence: []application.Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Evidence", PageStart: 2, PageEnd: 3, Score: .8}},
-		Documents: []application.DocumentResult{{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems",
-			ChunkCount: 2, PageStart: 1, PageEnd: 3, Score: .7, Evidence: []application.Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Evidence"}}}},
+		Evidence: []application.Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB, Passage: "Evidence", PageStart: 2, PageEnd: 3, Score: .8}},
+		Documents: []application.DocumentResult{{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB,
+			ChunkCount: 2, PageStart: 1, PageEnd: 3, Score: .7, Evidence: []application.Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB, Passage: "Evidence"}}}},
 	}}
 	server := NewServer(service)
 	response, err := server.Search(context.Background(), &retrievalv1.SearchRequest{Question: "replication", Limit: 2,
 		Actor: &retrievalv1.Actor{UserId: "user-1", Role: "reader", Status: "active"}})
-	if err != nil || len(response.Results) != 1 || response.Results[0].Book.BookId != "book-1" || len(response.Documents) != 1 || response.Documents[0].DocumentId != "document-1" {
+	if err != nil || len(response.Results) != 1 || response.Results[0].Book.BookId != "book-1" ||
+		response.Results[0].Book.MediaType != domain.MediaTypeEPUB || len(response.Documents) != 1 ||
+		response.Documents[0].DocumentId != "document-1" || response.Documents[0].Book.MediaType != domain.MediaTypeEPUB {
 		t.Fatalf("Search() = %#v, %v", response, err)
 	}
 }

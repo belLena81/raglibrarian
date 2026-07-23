@@ -33,13 +33,25 @@ jq -e '
 }
 
 jq -e '
+  any(.queues[]?; .name == "retrieval.book-lifecycle.v1") and
+  any(.bindings[]?; .source == "raglibrarian.events.v1" and .destination == "retrieval.book-lifecycle.v1" and .routing_key == "catalog.book.reindex-requested.v1") and
+  any(.bindings[]?; .source == "raglibrarian.events.v1" and .destination == "retrieval.book-lifecycle.v1" and .routing_key == "catalog.book.deletion-requested.v1") and
+  any(.bindings[]?; .source == "raglibrarian.retrieval.events.v1" and .destination == "catalog.retrieval-terminal.v1" and .routing_key == "retrieval.book.index-deleted.v1")
+' "$definitions" >/dev/null || {
+  echo "M7 Retrieval lifecycle topology is incomplete" >&2
+  exit 1
+}
+
+jq -e '
   [
     .queues[]?
     | select(
         .name == "retrieval.book-uploaded.v1.retry.5s" or
         .name == "retrieval.book-uploaded.v1.retry.30s" or
         .name == "retrieval.chunks-ready.v1.retry.5s" or
-        .name == "retrieval.chunks-ready.v1.retry.30s"
+        .name == "retrieval.chunks-ready.v1.retry.30s" or
+        .name == "retrieval.book-lifecycle.v1.retry.5s" or
+        .name == "retrieval.book-lifecycle.v1.retry.30s"
       )
     | {
         name,
@@ -51,7 +63,9 @@ jq -e '
     {name:"retrieval.book-uploaded.v1.retry.5s", exchange:"raglibrarian.retrieval.source-return.v1", routing_key:"catalog.book.uploaded.v1"},
     {name:"retrieval.book-uploaded.v1.retry.30s", exchange:"raglibrarian.retrieval.source-return.v1", routing_key:"catalog.book.uploaded.v1"},
     {name:"retrieval.chunks-ready.v1.retry.5s", exchange:"raglibrarian.retrieval.source-return.v1", routing_key:"ingestion.book.chunks-ready.v1"},
-    {name:"retrieval.chunks-ready.v1.retry.30s", exchange:"raglibrarian.retrieval.source-return.v1", routing_key:"ingestion.book.chunks-ready.v1"}
+    {name:"retrieval.chunks-ready.v1.retry.30s", exchange:"raglibrarian.retrieval.source-return.v1", routing_key:"ingestion.book.chunks-ready.v1"},
+    {name:"retrieval.book-lifecycle.v1.retry.5s", exchange:"raglibrarian.retrieval.source-return.v1", routing_key:"retrieval.book-lifecycle.v1"},
+    {name:"retrieval.book-lifecycle.v1.retry.30s", exchange:"raglibrarian.retrieval.source-return.v1", routing_key:"retrieval.book-lifecycle.v1"}
   ]
 ' "$definitions" >/dev/null || {
   echo "Retrieval source retry queues are not isolated to Retrieval-only return paths" >&2
@@ -70,7 +84,8 @@ jq -e '
   ]
   == [
     {destination:"retrieval.book-uploaded.v1", destination_type:"queue", routing_key:"catalog.book.uploaded.v1"},
-    {destination:"retrieval.chunks-ready.v1", destination_type:"queue", routing_key:"ingestion.book.chunks-ready.v1"}
+    {destination:"retrieval.chunks-ready.v1", destination_type:"queue", routing_key:"ingestion.book.chunks-ready.v1"},
+    {destination:"retrieval.book-lifecycle.v1", destination_type:"queue", routing_key:"retrieval.book-lifecycle.v1"}
   ]
 ' "$definitions" >/dev/null || {
   echo "Retrieval source return exchange bindings are incorrect" >&2
@@ -88,7 +103,10 @@ jq -e '
   ]
   == [
     "catalog.book.uploaded.v1",
-    "ingestion.book.chunks-ready.v1"
+    "ingestion.book.chunks-ready.v1",
+    "catalog.book.reindex-requested.v1",
+    "catalog.book.deletion-requested.v1",
+    "retrieval.book-lifecycle.v1"
   ]
 ' "$definitions" >/dev/null || {
   echo "Retrieval source DLQ bindings do not preserve upstream routing keys" >&2
@@ -102,7 +120,9 @@ jq -e '
       .name != "retrieval.book-uploaded.v1.retry.5s" and
       .name != "retrieval.book-uploaded.v1.retry.30s" and
       .name != "retrieval.chunks-ready.v1.retry.5s" and
-      .name != "retrieval.chunks-ready.v1.retry.30s"
+      .name != "retrieval.chunks-ready.v1.retry.30s" and
+      .name != "retrieval.book-lifecycle.v1.retry.5s" and
+      .name != "retrieval.book-lifecycle.v1.retry.30s"
     ) or (
       .arguments["x-dead-letter-exchange"] != "raglibrarian.events.v1" and
       .arguments["x-dead-letter-exchange"] != "raglibrarian.ingestion.events.v1"

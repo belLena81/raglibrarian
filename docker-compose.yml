@@ -629,7 +629,7 @@ services:
       RETRIEVAL_QDRANT_URL: http://qdrant:6333
       RETRIEVAL_QDRANT_API_KEY_FILE: /run/secrets/retrieval_qdrant_read_api_key
       RETRIEVAL_TEI_URL: http://text-embeddings-inference:8080
-      RETRIEVAL_INDEX_PROFILE: m5-jina-code-v1
+      RETRIEVAL_INDEX_PROFILE: m7-pdf-epub-v1
       RETRIEVAL_GRPC_ADDR: "0.0.0.0:50054"
       RETRIEVAL_METRICS_ADDR: "0.0.0.0:9094"
       RETRIEVAL_TLS_CA_FILE: /run/secrets/internal_ca
@@ -733,7 +733,7 @@ services:
       RETRIEVAL_QDRANT_URL: http://qdrant:6333
       RETRIEVAL_QDRANT_API_KEY_FILE: /run/secrets/retrieval_qdrant_api_key
       RETRIEVAL_TEI_URL: http://text-embeddings-inference:8080
-      RETRIEVAL_INDEX_PROFILE: m5-jina-code-v1
+      RETRIEVAL_INDEX_PROFILE: m7-pdf-epub-v1
       RETRIEVAL_METRICS_ADDR: "0.0.0.0:9095"
       HEALTHCHECK_HTTP_URL: http://127.0.0.1:9095/readyz
       RETRIEVAL_WORK_CONCURRENCY: "${RETRIEVAL_WORK_CONCURRENCY:-1}"

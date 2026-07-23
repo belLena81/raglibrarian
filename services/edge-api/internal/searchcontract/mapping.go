@@ -100,10 +100,11 @@ func bookFromProto(book *retrievalv1.BookMetadata) handler.EvidenceBook {
 		return handler.EvidenceBook{Tags: []string{}}
 	}
 	return handler.EvidenceBook{
-		ID:     book.BookId,
-		Title:  book.Title,
-		Author: book.Author,
-		Year:   int(book.Year),
-		Tags:   append([]string{}, book.Tags...),
+		ID:        book.BookId,
+		Title:     book.Title,
+		Author:    book.Author,
+		Year:      int(book.Year),
+		Tags:      append([]string{}, book.Tags...),
+		MediaType: book.MediaType,
 	}
 }

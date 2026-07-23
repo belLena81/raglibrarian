@@ -52,6 +52,7 @@ message BookMetadata {
   string author = 3;
   int32 year = 4;
   repeated string tags = 5;
+  string media_type = 6;
 }
 
 message Evidence {
@@ -119,6 +120,7 @@ message IndexBatchRequestedV1 {
   string structure_version = 26;
   uint32 maximum_tokens = 27;
   uint32 overlap_tokens = 28;
+  int64 lifecycle_version = 29;
 }
 
 // BookIndexedV1 is emitted only after all evidence and vectors for the job are
@@ -137,6 +139,7 @@ message BookIndexedV1 {
   string producer = 11;
   string schema_version = 12;
   string idempotency_key = 13;
+  int64 lifecycle_version = 14;
 }
 
 // BookIndexingFailedV1 reports a terminal, sanitized outcome. Diagnostics and
@@ -155,4 +158,18 @@ message BookIndexingFailedV1 {
   string producer = 11;
   string schema_version = 12;
   string idempotency_key = 13;
+  int64 lifecycle_version = 14;
+}
+
+message BookIndexDeletedV1 {
+  string event_id = 1;
+  string book_id = 2;
+  string command_id = 3;
+  int64 lifecycle_version = 4;
+  string correlation_id = 5;
+  google.protobuf.Timestamp occurred_at = 6;
+  string causation_id = 7;
+  string producer = 8;
+  string schema_version = 9;
+  string idempotency_key = 10;
 }

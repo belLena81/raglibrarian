@@ -29,6 +29,7 @@ const (
 
 var (
 	ErrInvalidPDF               = errors.New("invalid PDF")
+	ErrInvalidEPUB              = errors.New("invalid EPUB")
 	ErrInvalidPagination        = errors.New("invalid pagination")
 	ErrUploadTooLarge           = errors.New("upload too large")
 	ErrUploadCapacity           = errors.New("upload capacity exhausted")
@@ -41,6 +42,7 @@ var (
 // UploadInput carries only trusted actor data and immutable metadata.
 type UploadInput struct {
 	Metadata      BookMetadata
+	MediaType     string
 	Actor         Actor
 	CorrelationID string
 	Reader        io.Reader
@@ -50,6 +52,29 @@ type BookRepository interface {
 	Create(context.Context, Book, ...OutboxEvent) error
 	List(context.Context, int, string) ([]Book, string, error)
 	Get(context.Context, string) (Book, error)
+}
+
+type LifecycleCommandKind string
+
+const (
+	LifecycleCommandReindex LifecycleCommandKind = "reindex"
+	LifecycleCommandDelete  LifecycleCommandKind = "delete"
+)
+
+type LifecycleCommand struct {
+	Kind          LifecycleCommandKind
+	BookID        string
+	CommandID     string
+	ActorID       string
+	CorrelationID string
+	EventID       string
+	StatusEventID string
+	OccurredAt    time.Time
+}
+
+type LifecycleRepository interface {
+	ApplyLifecycleCommand(context.Context, LifecycleCommand) (Book, bool, error)
+	MarkOriginalDeleted(context.Context, string, string, int64, time.Time) (Book, error)
 }
 
 type OriginalObjectStore interface {
@@ -119,6 +144,13 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 	if input.Metadata.Tags == nil {
 		input.Metadata.Tags = []string{}
 	}
+	if input.MediaType == "" {
+		input.MediaType = "application/pdf"
+	}
+	extension, prefix, invalidFormatError := uploadFormat(input.MediaType)
+	if extension == "" {
+		return Book{}, ErrInvalidMetadata
+	}
 	if input.Actor.UserID != "" && !input.Actor.CanUpload() {
 		return Book{}, ErrUnauthorizedActor
 	}
@@ -128,16 +160,22 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 	default:
 		return Book{}, ErrUploadCapacity
 	}
-	prefix := make([]byte, 5)
-	if _, err := io.ReadFull(input.Reader, prefix); err != nil || string(prefix) != "%PDF-" {
-		return Book{}, ErrInvalidPDF
+	header := make([]byte, len(prefix))
+	if _, err := io.ReadFull(input.Reader, header); err != nil || !bytes.Equal(header, prefix) {
+		return Book{}, invalidFormatError
 	}
 	key, err := s.newID()
 	if err != nil {
 		return Book{}, fmt.Errorf("generate object reference: %w", err)
 	}
-	objectReference := "originals/" + key + ".pdf"
-	reader := &boundedPDFReader{reader: io.MultiReader(bytes.NewReader(prefix), input.Reader), remaining: s.maxBytes, hash: sha256.New()}
+	objectReference := "originals/" + key + extension
+	reader := &boundedBookReader{
+		reader:    io.MultiReader(bytes.NewReader(header), input.Reader),
+		remaining: s.maxBytes,
+		hash:      sha256.New(),
+		prefix:    prefix,
+		formatErr: invalidFormatError,
+	}
 	receipt, err := s.objects.Put(ctx, objectReference, reader)
 	if err != nil {
 		s.deleteObject(objectReference)
@@ -161,6 +199,7 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 		ID: bookID, Metadata: input.Metadata, ProcessingStatus: BookStatusPending,
 		ProcessingStage: BookStageQueued, ProcessingUpdatedAt: now, ProcessingVersion: 1,
 		CreatedAt: now, ObjectReference: objectReference, Checksum: reader.sum(), ByteSize: reader.size,
+		MediaType: input.MediaType, LifecycleVersion: 1,
 		ActorID: input.Actor.UserID,
 	}
 	eventID, err := s.newID()
@@ -173,9 +212,9 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 		Year:            int32(book.Metadata.Year), // #nosec G115 -- ValidateMetadata bounds valid years to int32.
 		Tags:            append([]string(nil), book.Metadata.Tags...),
 		ObjectReference: book.ObjectReference, Sha256: book.Checksum[:], ByteSize: book.ByteSize,
-		MediaType: "application/pdf", ActorId: input.Actor.UserID, CorrelationId: input.CorrelationID,
+		MediaType: input.MediaType, ActorId: input.Actor.UserID, CorrelationId: input.CorrelationID,
 		OccurredAt: timestamppb.New(now), CausationId: input.CorrelationID, Producer: "catalog-service",
-		SchemaVersion: "v1", IdempotencyKey: book.ID,
+		SchemaVersion: "v1", IdempotencyKey: book.ID, LifecycleVersion: book.LifecycleVersion,
 	})
 	if err != nil {
 		s.deleteObject(objectReference)
@@ -192,7 +231,8 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 		ProcessingStage: string(book.ProcessingStage), ProcessingVersion: book.ProcessingVersion,
 		UpdatedAt: timestamppb.New(now), CorrelationId: input.CorrelationID, OccurredAt: timestamppb.New(now),
 		CausationId: eventID, Producer: "catalog-service", SchemaVersion: "v1",
-		IdempotencyKey: fmt.Sprintf("%s:processing:%d", book.ID, book.ProcessingVersion),
+		IdempotencyKey:   fmt.Sprintf("%s:processing:%d", book.ID, book.ProcessingVersion),
+		LifecycleVersion: book.LifecycleVersion, CanReindex: book.CanReindex(),
 	})
 	if err != nil {
 		s.deleteObject(objectReference)
@@ -212,6 +252,91 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 		return Book{}, errors.New("catalog persistence unavailable")
 	}
 	return book, nil
+}
+
+func uploadFormat(mediaType string) (string, []byte, error) {
+	switch mediaType {
+	case "application/pdf":
+		return ".pdf", []byte("%PDF-"), ErrInvalidPDF
+	case "application/epub+zip":
+		return ".epub", []byte{'P', 'K', 3, 4}, ErrInvalidEPUB
+	default:
+		return "", nil, ErrInvalidMetadata
+	}
+}
+
+func (s *Service) ReindexBook(ctx context.Context, bookID, commandID string, actor Actor, correlationID string) (Book, error) {
+	return s.applyLifecycleCommand(ctx, LifecycleCommandReindex, bookID, commandID, actor, correlationID)
+}
+
+func (s *Service) DeleteBook(ctx context.Context, bookID, commandID string, actor Actor, correlationID string) (Book, error) {
+	book, err := s.applyLifecycleCommand(ctx, LifecycleCommandDelete, bookID, commandID, actor, correlationID)
+	if err != nil {
+		return Book{}, err
+	}
+	repository, ok := s.repository.(LifecycleRepository)
+	if !ok {
+		return Book{}, errors.New("catalog lifecycle persistence unavailable")
+	}
+	if !book.OriginalDeleted {
+		if err = s.objects.Delete(ctx, book.ObjectReference); err == nil {
+			book, err = repository.MarkOriginalDeleted(ctx, book.ID, commandID, book.LifecycleVersion, s.now().UTC())
+		}
+	}
+	if err != nil {
+		// The command is durably accepted. Cleanup remains retryable and the
+		// deleting projection truthfully prevents reads as an indexed book.
+		return book, nil
+	}
+	return book, nil
+}
+
+func (s *Service) applyLifecycleCommand(
+	ctx context.Context,
+	kind LifecycleCommandKind,
+	bookID string,
+	commandID string,
+	actor Actor,
+	correlationID string,
+) (Book, error) {
+	if !actor.CanManage() {
+		return Book{}, ErrUnauthorizedActor
+	}
+	if !validCommandID(bookID) || !validCommandID(commandID) || !validCommandID(correlationID) {
+		return Book{}, ErrInvalidCommand
+	}
+	repository, ok := s.repository.(LifecycleRepository)
+	if !ok {
+		return Book{}, errors.New("catalog lifecycle persistence unavailable")
+	}
+	eventID, err := s.newID()
+	if err != nil {
+		return Book{}, fmt.Errorf("generate lifecycle event ID: %w", err)
+	}
+	statusEventID, err := s.newID()
+	if err != nil {
+		return Book{}, fmt.Errorf("generate lifecycle status event ID: %w", err)
+	}
+	book, _, err := repository.ApplyLifecycleCommand(ctx, LifecycleCommand{
+		Kind: kind, BookID: bookID, CommandID: commandID, ActorID: actor.UserID,
+		CorrelationID: correlationID, EventID: eventID, StatusEventID: statusEventID,
+		OccurredAt: s.now().UTC(),
+	})
+	return book, err
+}
+
+func validCommandID(value string) bool {
+	if len(value) == 0 || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '-' || character == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (s *Service) deleteObject(reference string) {
@@ -245,16 +370,18 @@ func (s *Service) GetBook(ctx context.Context, id string) (Book, error) {
 	return s.repository.Get(ctx, id)
 }
 
-type boundedPDFReader struct {
+type boundedBookReader struct {
 	reader    io.Reader
 	remaining int64
 	size      int64
 	hash      hash.Hash
-	prefix    [5]byte
+	prefix    []byte
+	seen      []byte
 	prefixLen int
+	formatErr error
 }
 
-func (r *boundedPDFReader) Read(p []byte) (int, error) {
+func (r *boundedBookReader) Read(p []byte) (int, error) {
 	if int64(len(p)) > r.remaining+1 {
 		p = p[:r.remaining+1]
 	}
@@ -266,7 +393,7 @@ func (r *boundedPDFReader) Read(p []byte) (int, error) {
 	r.remaining -= int64(n)
 	for _, value := range p[:n] {
 		if r.prefixLen < len(r.prefix) {
-			r.prefix[r.prefixLen] = value
+			r.seen = append(r.seen, value)
 			r.prefixLen++
 		}
 	}
@@ -277,14 +404,14 @@ func (r *boundedPDFReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (r *boundedPDFReader) finish() error {
-	if r.prefixLen < len(r.prefix) || string(r.prefix[:]) != "%PDF-" {
-		return ErrInvalidPDF
+func (r *boundedBookReader) finish() error {
+	if r.prefixLen < len(r.prefix) || !bytes.Equal(r.seen, r.prefix) {
+		return r.formatErr
 	}
 	return nil
 }
 
-func (r *boundedPDFReader) sum() [32]byte {
+func (r *boundedBookReader) sum() [32]byte {
 	var checksum [32]byte
 	copy(checksum[:], r.hash.Sum(nil))
 	return checksum
@@ -321,7 +448,7 @@ func (r *MemoryRepository) Create(_ context.Context, book Book, _ ...OutboxEvent
 }
 func (r *MemoryRepository) Get(_ context.Context, id string) (Book, error) {
 	b, ok := r.books[id]
-	if !ok {
+	if !ok || b.ProcessingStatus == BookStatusDeleted {
 		return Book{}, ErrNotFound
 	}
 	return b, nil
@@ -329,7 +456,9 @@ func (r *MemoryRepository) Get(_ context.Context, id string) (Book, error) {
 func (r *MemoryRepository) List(_ context.Context, size int, token string) ([]Book, string, error) {
 	books := make([]Book, 0, len(r.books))
 	for _, b := range r.books {
-		books = append(books, b)
+		if b.ProcessingStatus != BookStatusDeleted {
+			books = append(books, b)
+		}
 	}
 	sort.Slice(books, func(i, j int) bool {
 		if books[i].CreatedAt.Equal(books[j].CreatedAt) {
@@ -353,6 +482,103 @@ func (r *MemoryRepository) List(_ context.Context, size int, token string) ([]Bo
 		next = encodeCursor(books[end-1])
 	}
 	return books[start:end], next, nil
+}
+
+func (r *MemoryRepository) ApplyLifecycleCommand(_ context.Context, command LifecycleCommand) (Book, bool, error) {
+	book, ok := r.books[command.BookID]
+	if !ok {
+		return Book{}, false, ErrNotFound
+	}
+	if book.DeleteCommandID == command.CommandID {
+		return book, false, nil
+	}
+	if book.ProcessingStatus == BookStatusDeleted {
+		return Book{}, false, ErrNotFound
+	}
+	switch command.Kind {
+	case LifecycleCommandReindex:
+		if !book.CanReindex() {
+			return Book{}, false, ErrInvalidTransition
+		}
+		book.LifecycleVersion++
+		book.ProcessingVersion++
+		book.ProcessingStatus = BookStatusReindexing
+		book.ProcessingStage = BookStageChunksReady
+		book.ProcessingFailureCategory = ""
+		book.ProcessingUpdatedAt = command.OccurredAt
+		book.DeleteCommandID = command.CommandID
+	case LifecycleCommandDelete:
+		if err := book.TransitionTo(BookStatusDeleting); err != nil {
+			return Book{}, false, err
+		}
+		book.LifecycleVersion++
+		book.ProcessingVersion++
+		book.ProcessingUpdatedAt = command.OccurredAt
+		book.DeleteCommandID = command.CommandID
+	default:
+		return Book{}, false, ErrInvalidCommand
+	}
+	r.books[book.ID] = book
+	return book, true, nil
+}
+
+func (r *MemoryRepository) MarkOriginalDeleted(_ context.Context, bookID, commandID string, lifecycleVersion int64, appliedAt time.Time) (Book, error) {
+	book, ok := r.books[bookID]
+	if !ok || book.DeleteCommandID != commandID || book.LifecycleVersion != lifecycleVersion {
+		return Book{}, ErrProcessingEventConflict
+	}
+	book.OriginalDeleted = true
+	if book.ArtifactsDeleted && book.IndexDeleted {
+		book.ProcessingStatus = BookStatusDeleted
+		book.ProcessingVersion++
+		book.ProcessingUpdatedAt = appliedAt
+		scrubBookTombstone(&book)
+	}
+	r.books[bookID] = book
+	return book, nil
+}
+
+func (r *MemoryRepository) ApplyLifecycleAck(_ context.Context, ack LifecycleAck, appliedAt time.Time) (Book, bool, error) {
+	book, ok := r.books[ack.BookID]
+	if !ok || book.ProcessingStatus != BookStatusDeleting ||
+		book.DeleteCommandID != ack.CommandID || book.LifecycleVersion != ack.LifecycleVersion {
+		return Book{}, false, ErrProcessingEventConflict
+	}
+	switch ack.EventType {
+	case "ingestion.book.artifacts-deleted.v1":
+		if book.ArtifactsDeleted {
+			return book, false, nil
+		}
+		book.ArtifactsDeleted = true
+	case "retrieval.book.index-deleted.v1":
+		if book.IndexDeleted {
+			return book, false, nil
+		}
+		book.IndexDeleted = true
+	default:
+		return Book{}, false, ErrInvalidProcessingEvent
+	}
+	if book.OriginalDeleted && book.ArtifactsDeleted && book.IndexDeleted {
+		book.ProcessingStatus = BookStatusDeleted
+		book.ProcessingVersion++
+		book.ProcessingUpdatedAt = appliedAt
+		scrubBookTombstone(&book)
+	}
+	r.books[book.ID] = book
+	return book, true, nil
+}
+
+func scrubBookTombstone(book *Book) {
+	book.Metadata = BookMetadata{}
+	book.ObjectReference = ""
+	book.Checksum = [32]byte{}
+	book.ByteSize = 0
+	book.MediaType = ""
+	book.ActorID = ""
+	book.ProcessingStage = ""
+	book.ProcessingFailureCategory = ""
+	book.ManifestReference = ""
+	book.ManifestChecksum = [32]byte{}
 }
 
 type pageCursor struct {

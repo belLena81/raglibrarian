@@ -23,6 +23,7 @@ var (
 
 type eventProcessor interface {
 	Process(context.Context, application.UploadedEvent) error
+	ProcessDeletion(context.Context, application.DeletionEvent) error
 }
 
 type pendingPublisher interface {
@@ -60,30 +61,50 @@ func handleWithLoader(ctx context.Context, incoming events.RabbitMQEvent, load i
 	return invoke(ctx, event, processor, publisher)
 }
 
-func decodeInvocation(incoming events.RabbitMQEvent) (application.UploadedEvent, bool, error) {
+type invocation struct {
+	upload   *application.UploadedEvent
+	deletion *application.DeletionEvent
+}
+
+func decodeInvocation(incoming events.RabbitMQEvent) (invocation, bool, error) {
 	message, err := singleMessage(incoming)
 	if err != nil {
-		return application.UploadedEvent{}, false, err
+		return invocation{}, false, err
 	}
-	if message.BasicProperties.ContentType != "application/x-protobuf" || message.BasicProperties.Type == nil || *message.BasicProperties.Type != transport.UploadRoute || message.BasicProperties.BodySize > 256<<10 {
-		return application.UploadedEvent{}, false, nil
+	if message.BasicProperties.ContentType != "application/x-protobuf" || message.BasicProperties.Type == nil || message.BasicProperties.BodySize > 256<<10 {
+		return invocation{}, false, nil
 	}
 	payload, err := base64.StdEncoding.DecodeString(message.Data)
 	if err != nil || len(payload) == 0 || len(payload) > 256<<10 {
-		return application.UploadedEvent{}, false, nil
+		return invocation{}, false, nil
 	}
-	event, err := transport.DecodeUploaded(payload)
-	if err != nil {
-		return application.UploadedEvent{}, false, nil
+	switch *message.BasicProperties.Type {
+	case transport.UploadRoute:
+		event, decodeErr := transport.DecodeUploaded(payload)
+		if decodeErr != nil || !messageIDMatches(message.BasicProperties.MessageID, event.EventID) {
+			return invocation{}, false, nil
+		}
+		return invocation{upload: &event}, true, nil
+	case transport.DeletionRoute:
+		event, decodeErr := transport.DecodeDeletion(payload)
+		if decodeErr != nil || !messageIDMatches(message.BasicProperties.MessageID, event.EventID) {
+			return invocation{}, false, nil
+		}
+		return invocation{deletion: &event}, true, nil
+	default:
+		return invocation{}, false, nil
 	}
-	if !messageIDMatches(message.BasicProperties.MessageID, event.EventID) {
-		return application.UploadedEvent{}, false, nil
-	}
-	return event, true, nil
 }
 
-func invoke(ctx context.Context, event application.UploadedEvent, processor eventProcessor, publisher pendingPublisher) error {
-	processErr := processor.Process(ctx, event)
+func invoke(ctx context.Context, event invocation, processor eventProcessor, publisher pendingPublisher) error {
+	var processErr error
+	if event.upload != nil {
+		processErr = processor.Process(ctx, *event.upload)
+	} else if event.deletion != nil {
+		processErr = processor.ProcessDeletion(ctx, *event.deletion)
+	} else {
+		processErr = errInvalidBrokerMessage
+	}
 	publishErr := publisher.PublishPending(ctx)
 	if publishErr != nil {
 		return errors.Join(processErr, publishErr)

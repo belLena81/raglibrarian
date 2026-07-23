@@ -79,12 +79,14 @@ jq --arg catalog_consume "$catalog_consume_password" --arg ingestion "$ingestion
     {name:"edge.book-status.dlq.v1",vhost:"/",durable:true,auto_delete:false,arguments:{"x-queue-type":"quorum","x-message-ttl":604800000,"x-max-length-bytes":67108864,"x-overflow":"reject-publish"}}
   ] |
   .bindings += [
+    {source:"raglibrarian.events.v1",vhost:"/",destination:"ingestion.book-uploaded.v1",destination_type:"queue",routing_key:"catalog.book.deletion-requested.v1",arguments:{}},
     {source:"raglibrarian.ingestion.retry.v1",vhost:"/",destination:"ingestion.retry.5s",destination_type:"queue",routing_key:"ingestion.retry.5s",arguments:{}},
     {source:"raglibrarian.ingestion.retry.v1",vhost:"/",destination:"ingestion.retry.30s",destination_type:"queue",routing_key:"ingestion.retry.30s",arguments:{}},
     {source:"raglibrarian.ingestion.retry.v1",vhost:"/",destination:"ingestion.retry.2m",destination_type:"queue",routing_key:"ingestion.retry.2m",arguments:{}},
     {source:"raglibrarian.ingestion.events.v1",vhost:"/",destination:"catalog.book-processing.v1",destination_type:"queue",routing_key:"ingestion.book.processing-started.v1",arguments:{}},
     {source:"raglibrarian.ingestion.events.v1",vhost:"/",destination:"catalog.book-processing.v1",destination_type:"queue",routing_key:"ingestion.book.chunks-ready.v1",arguments:{}},
     {source:"raglibrarian.ingestion.events.v1",vhost:"/",destination:"catalog.book-processing.v1",destination_type:"queue",routing_key:"ingestion.book.processing-failed.v1",arguments:{}},
+    {source:"raglibrarian.ingestion.events.v1",vhost:"/",destination:"catalog.book-processing.v1",destination_type:"queue",routing_key:"ingestion.book.artifacts-deleted.v1",arguments:{}},
     {source:"raglibrarian.ingestion.events.dlx.v1",vhost:"/",destination:"catalog.book-processing.dlq.v1",destination_type:"queue",routing_key:"#",arguments:{}},
     {source:"raglibrarian.edge-status.dlx.v1",vhost:"/",destination:"edge.book-status.dlq.v1",destination_type:"queue",routing_key:"#",arguments:{}}
   ]

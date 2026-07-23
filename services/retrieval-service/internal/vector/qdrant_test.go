@@ -165,13 +165,14 @@ func TestQdrantEnsureCollectionCreatesExactSchema(t *testing.T) {
 		case 2:
 			var body map[string]map[string]any
 			if request.Method != http.MethodPut || json.NewDecoder(request.Body).Decode(&body) != nil || body["vectors"]["size"] != float64(domain.EmbeddingDimensions) || body["vectors"]["distance"] != "Cosine" ||
-				body["metadata"][collectionProfileDigestKey] != supportedProfileDigestHex() {
+				body["metadata"][collectionProfileDigestKey] != supportedProfileDigestHex() ||
+				body["metadata"][collectionSchemaDigestKey] != supportedCollectionSchemaDigestHex() {
 				t.Fatalf("unexpected collection creation request: %s %#v", request.Method, body)
 			}
 			return response(http.StatusOK, `{}`)
 		case 3:
 			return response(http.StatusOK, `{"result":{"config":{"metadata":{"raglibrarian_index_profile_digest":"`+supportedProfileDigestHex()+`"},"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
-		case 4, 5, 6, 7, 8, 9:
+		case 4, 5, 6, 7, 8, 9, 10:
 			assertFieldIndexRequest(t, request, requests-4)
 			return response(http.StatusOK, `{}`)
 		default:
@@ -180,7 +181,7 @@ func TestQdrantEnsureCollectionCreatesExactSchema(t *testing.T) {
 		}
 	})}
 	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
-	if err := store.EnsureCollection(context.Background()); err != nil || requests != 9 {
+	if err := store.EnsureCollection(context.Background()); err != nil || requests != 10 {
 		t.Fatalf("EnsureCollection() requests=%d error=%v", requests, err)
 	}
 }
@@ -192,8 +193,16 @@ func TestQdrantEnsureCollectionRepairsIndexesForExistingCollection(t *testing.T)
 		switch requests {
 		case 1:
 			return response(http.StatusOK, `{"result":{"config":{"metadata":{"raglibrarian_index_profile_digest":"`+supportedProfileDigestHex()+`"},"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
-		case 2, 3, 4, 5, 6, 7:
-			assertFieldIndexRequest(t, request, requests-2)
+		case 2:
+			var body map[string]map[string]string
+			if request.Method != http.MethodPatch || json.NewDecoder(request.Body).Decode(&body) != nil ||
+				body["metadata"][collectionProfileDigestKey] != supportedProfileDigestHex() ||
+				body["metadata"][collectionSchemaDigestKey] != supportedCollectionSchemaDigestHex() {
+				t.Fatalf("unexpected metadata request: %s %#v", request.Method, body)
+			}
+			return response(http.StatusOK, `{}`)
+		case 3, 4, 5, 6, 7, 8, 9:
+			assertFieldIndexRequest(t, request, requests-3)
 			return response(http.StatusOK, `{}`)
 		default:
 			t.Fatalf("unexpected request %d", requests)
@@ -201,7 +210,7 @@ func TestQdrantEnsureCollectionRepairsIndexesForExistingCollection(t *testing.T)
 		}
 	})}
 	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
-	if err := store.EnsureCollection(context.Background()); err != nil || requests != 7 {
+	if err := store.EnsureCollection(context.Background()); err != nil || requests != 9 {
 		t.Fatalf("EnsureCollection() requests=%d error=%v", requests, err)
 	}
 }
@@ -272,6 +281,40 @@ func TestQdrantStagesBeforeActivatingJob(t *testing.T) {
 	}
 }
 
+func TestQdrantDeletesOnlyServerDerivedJobOrBookFilter(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
+		requests++
+		var body struct {
+			Filter filter `json:"filter"`
+		}
+		if request.Method != http.MethodPost || request.URL.Path != "/collections/evidence/points/delete" ||
+			request.URL.Query().Get("wait") != "true" || json.NewDecoder(request.Body).Decode(&body) != nil ||
+			len(body.Filter.Must) != 1 {
+			t.Fatalf("unexpected deletion request: %s %s %#v", request.Method, request.URL.String(), body)
+		}
+		wantField, wantValue := "job_id", "job-1"
+		if requests == 2 {
+			wantField, wantValue = "book_id", "book-1"
+		}
+		if body.Filter.Must[0].Key != wantField || body.Filter.Must[0].Match == nil || body.Filter.Must[0].Match.Value != wantValue {
+			t.Fatalf("unexpected deletion filter: %#v", body.Filter.Must)
+		}
+		return response(http.StatusOK, `{}`)
+	})}
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+
+	if err := store.DeleteJob(context.Background(), "job-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteBook(context.Background(), "book-1"); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 {
+		t.Fatalf("deletion requests = %d", requests)
+	}
+}
+
 type roundTripFunc func(*http.Request) *http.Response
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -291,6 +334,7 @@ func assertFieldIndexRequest(t *testing.T, request *http.Request, index int) {
 		{name: "indexed", schema: "keyword"},
 		{name: "vector_kind", schema: "keyword"},
 		{name: "job_id", schema: "keyword"},
+		{name: "book_id", schema: "keyword"},
 		{name: "author_normalized", schema: "keyword"},
 		{name: "tags_normalized", schema: "keyword"},
 		{name: "year", schema: "integer"},

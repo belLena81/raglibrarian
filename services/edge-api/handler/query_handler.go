@@ -65,11 +65,12 @@ type SearchRequest struct {
 
 // EvidenceBook is the stored book projection attached to retrieved evidence.
 type EvidenceBook struct {
-	ID     string   `json:"id"`
-	Title  string   `json:"title"`
-	Author string   `json:"author"`
-	Year   int      `json:"year"`
-	Tags   []string `json:"tags"`
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Author    string   `json:"author"`
+	Year      int      `json:"year"`
+	Tags      []string `json:"tags"`
+	MediaType string   `json:"media_type,omitempty"`
 }
 
 // Evidence is one Retrieval-owned stored passage and its location.

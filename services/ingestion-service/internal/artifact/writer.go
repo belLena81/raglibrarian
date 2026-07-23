@@ -34,10 +34,11 @@ type ProcessingProfile struct {
 	OverlapTokens int
 }
 type Metadata struct {
-	BookID       string
-	SourceSHA256 [32]byte
-	ConfigDigest [32]byte
-	GeneratedAt  time.Time
+	BookID           string
+	SourceSHA256     [32]byte
+	ConfigDigest     [32]byte
+	GeneratedAt      time.Time
+	LifecycleVersion int64
 }
 type Limits struct {
 	ChunksPerShard       int
@@ -74,7 +75,7 @@ type encodedChunk struct {
 }
 
 func NewWriter(store Store, metadata Metadata, versions Versions, profile ProcessingProfile, limits Limits) (*Writer, error) {
-	if store == nil || metadata.BookID == "" || metadata.GeneratedAt.IsZero() || versions.Extraction == "" || versions.Normalization == "" || versions.Tokenizer == "" || versions.Chunking == "" || versions.Structure == "" || profile.MaximumTokens < 1 || profile.OverlapTokens < 0 || profile.OverlapTokens >= profile.MaximumTokens || limits.ChunksPerShard < 1 || limits.MaximumShardBytes < 1024 || limits.MaximumManifestBytes < 1024 {
+	if store == nil || metadata.BookID == "" || metadata.GeneratedAt.IsZero() || metadata.LifecycleVersion < 1 || versions.Extraction == "" || versions.Normalization == "" || versions.Tokenizer == "" || versions.Chunking == "" || versions.Structure == "" || profile.MaximumTokens < 1 || profile.OverlapTokens < 0 || profile.OverlapTokens >= profile.MaximumTokens || limits.ChunksPerShard < 1 || limits.MaximumShardBytes < 1024 || limits.MaximumManifestBytes < 1024 {
 		return nil, errors.New("invalid artifact writer configuration")
 	}
 	encoder, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest), zstd.WithEncoderConcurrency(1))
@@ -117,7 +118,7 @@ func (w *Writer) Finalize(ctx context.Context, pageCount uint32) (Result, error)
 	if err := w.flush(ctx); err != nil {
 		return Result{}, err
 	}
-	manifest := &ingestionv1.ChunkManifestV1{SchemaVersion: "v1", BookId: w.metadata.BookID, SourceSha256: append([]byte(nil), w.metadata.SourceSHA256[:]...), ProcessingConfigDigest: append([]byte(nil), w.metadata.ConfigDigest[:]...), ExtractionVersion: w.versions.Extraction, NormalizationVersion: w.versions.Normalization, TokenizerVersion: w.versions.Tokenizer, ChunkingVersion: w.versions.Chunking, StructureVersion: w.versions.Structure, MaximumTokens: uint32(w.profile.MaximumTokens), OverlapTokens: uint32(w.profile.OverlapTokens), PageCount: pageCount, ChunkCount: w.chunkCount, GeneratedAt: timestamppb.New(w.metadata.GeneratedAt), Shards: w.descriptors} // #nosec G115 -- validated positive processing bounds.
+	manifest := &ingestionv1.ChunkManifestV1{SchemaVersion: "v1", BookId: w.metadata.BookID, SourceSha256: append([]byte(nil), w.metadata.SourceSHA256[:]...), ProcessingConfigDigest: append([]byte(nil), w.metadata.ConfigDigest[:]...), ExtractionVersion: w.versions.Extraction, NormalizationVersion: w.versions.Normalization, TokenizerVersion: w.versions.Tokenizer, ChunkingVersion: w.versions.Chunking, StructureVersion: w.versions.Structure, MaximumTokens: uint32(w.profile.MaximumTokens), OverlapTokens: uint32(w.profile.OverlapTokens), PageCount: pageCount, ChunkCount: w.chunkCount, GeneratedAt: timestamppb.New(w.metadata.GeneratedAt), Shards: w.descriptors, LifecycleVersion: w.metadata.LifecycleVersion} // #nosec G115 -- validated positive processing bounds.
 	contents, err := proto.MarshalOptions{Deterministic: true}.Marshal(manifest)
 	if err != nil || len(contents) > w.limits.MaximumManifestBytes {
 		return Result{}, ErrArtifactLimit

@@ -57,6 +57,7 @@ type Runtime struct {
 	planner            *application.Planner
 	indexer            batchProcessor
 	vector             vectorDeactivator
+	lifecycle          lifecycleProcessor
 	secret             Secret
 	processingTimeout  time.Duration
 	failureRecordLimit time.Duration
@@ -93,8 +94,16 @@ type vectorDeactivator interface {
 	DeactivateJob(context.Context, string) error
 }
 
+type lifecycleProcessor interface {
+	HandleReindex(context.Context, application.LifecycleEvent) error
+	HandleDeletion(context.Context, application.LifecycleEvent) error
+	RetryDeletions(context.Context, int) error
+}
+
 func validateMode() error {
-	if os.Getenv("RETRIEVAL_PROCESSING_MODE") != "lambda" || os.Getenv("RETRIEVAL_RUNTIME_BACKEND") != "aws" || os.Getenv("RETRIEVAL_INDEX_PROFILE") != "m5-jina-code-v1" {
+	indexProfile := os.Getenv("RETRIEVAL_INDEX_PROFILE")
+	if os.Getenv("RETRIEVAL_PROCESSING_MODE") != "lambda" || os.Getenv("RETRIEVAL_RUNTIME_BACKEND") != "aws" ||
+		(indexProfile != "m5-jina-code-v1" && indexProfile != "m7-pdf-epub-v1") {
 		return errors.New("invalid Lambda processing mode")
 	}
 	return nil
@@ -108,8 +117,11 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	if secret.PostgresDSN == "" || secret.Region == "" || secret.ArtifactBucket == "" {
+	if secret.PostgresDSN == "" || secret.Region == "" || secret.ArtifactBucket == "" || secret.QdrantURL == "" || secret.QdrantAPIKey == "" {
 		return nil, errors.New("invalid planner runtime secret")
+	}
+	if err = validatePrivateEndpoint(ctx, secret.QdrantURL); err != nil {
+		return nil, errors.New("invalid private vector endpoint")
 	}
 	pool, err := pgxpool.New(ctx, secret.PostgresDSN)
 	if err != nil {
@@ -126,7 +138,18 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
-	return &Runtime{repository: records, manifestFails: records, objects: objects, planner: planner, secret: secret}, nil
+	httpClient := &http.Client{Timeout: 90 * time.Second, CheckRedirect: rejectRedirect}
+	index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, "evidence_v2", secret.QdrantAPIKey, httpClient)
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	lifecycle, err := application.NewLifecycleCoordinator(records, index, randomID, time.Now)
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return &Runtime{repository: records, manifestFails: records, objects: objects, planner: planner, lifecycle: lifecycle, secret: secret}, nil
 }
 
 func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
@@ -221,7 +244,12 @@ func NewCleanupRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
-	return &Runtime{repository: records, manifestFails: records, vectorJobs: records, vector: index, secret: secret}, nil
+	lifecycle, err := application.NewLifecycleCoordinator(records, index, randomID, time.Now)
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return &Runtime{repository: records, manifestFails: records, vectorJobs: records, vector: index, lifecycle: lifecycle, secret: secret}, nil
 }
 
 func newDatabaseRuntime(ctx context.Context, publisher bool) (*Runtime, error) {
@@ -269,6 +297,20 @@ func (r *Runtime) Plan(ctx context.Context, event RabbitEvent) error {
 			return decodeErr
 		}
 		return r.planner.HandleMetadata(ctx, metadata)
+	}
+	if queueContains(queue, "retrieval.book-lifecycle.v1") {
+		if r.lifecycle == nil {
+			return errors.New("lifecycle processor unavailable")
+		}
+		reindex, decodeErr := transport.DecodeReindex(payload)
+		if decodeErr == nil {
+			return r.lifecycle.HandleReindex(ctx, reindex)
+		}
+		deletion, deleteErr := transport.DecodeDeletion(payload)
+		if deleteErr != nil {
+			return application.ErrInvalidEvent
+		}
+		return r.lifecycle.HandleDeletion(ctx, deletion)
 	}
 	if !queueContains(queue, "retrieval.chunks-ready.v1") {
 		return application.ErrInvalidEvent
@@ -411,7 +453,13 @@ func (r *Runtime) Cleanup(ctx context.Context) error {
 	if _, err := r.repository.RecoverStaleBatches(ctx, now.Add(-15*time.Minute), now); err != nil {
 		return err
 	}
-	return r.retryPendingVectorCleanup(ctx, now, 64)
+	if err := r.retryPendingVectorCleanup(ctx, now, 64); err != nil {
+		return err
+	}
+	if r.lifecycle != nil {
+		return r.lifecycle.RetryDeletions(ctx, 64)
+	}
+	return nil
 }
 
 func loadSecret(ctx context.Context, arn string) (Secret, error) {

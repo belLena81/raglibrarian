@@ -71,5 +71,6 @@ printf '%s\n' "$smtp_password" > "$dir/identity_smtp_password"
 chmod 400 "$dir"/*
 unset postgres_password migration_password runtime_password catalog_migration_password catalog_runtime_password ingestion_migration_password ingestion_runtime_password ingestion_cleanup_password ingestion_e2e_password smtp_password key_output signing_key verify_key
 bash ./scripts/generate-catalog-dev-secrets.sh "$dir"
+bash ./scripts/upgrade-m7-ingestion-topology.sh "$dir"
 bash ./scripts/ensure-m5-dev-secrets.sh "$dir"
 echo "Generated file-backed development credentials in $dir"

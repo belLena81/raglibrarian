@@ -17,12 +17,19 @@ import (
 )
 
 type stubProcessor struct {
-	err   error
-	calls int
+	err           error
+	calls         int
+	deletionCalls int
 }
 
 func (s *stubProcessor) Process(context.Context, application.UploadedEvent) error {
 	s.calls++
+	return s.err
+}
+
+func (s *stubProcessor) ProcessDeletion(context.Context, application.DeletionEvent) error {
+	s.calls++
+	s.deletionCalls++
 	return s.err
 }
 
@@ -162,6 +169,20 @@ func TestHandleInvocationAppliesDeliveryDispositionAfterPublishing(t *testing.T)
 	}
 }
 
+func TestHandleInvocationProcessesDeletionRoute(t *testing.T) {
+	processor := &stubProcessor{}
+	publisher := &stubPublisher{}
+	err := handleWithLoader(context.Background(), validDeletionIncoming(t), func(context.Context) (eventProcessor, pendingPublisher, error) {
+		return processor, publisher, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processor.deletionCalls != 1 || publisher.calls != 1 {
+		t.Fatalf("deletion calls=%d publish calls=%d", processor.deletionCalls, publisher.calls)
+	}
+}
+
 func TestHandleInvocationReturnsPublicationFailureForEveryProcessOutcome(t *testing.T) {
 	publishErr := errors.New("outbox unavailable")
 	processErrors := []error{
@@ -218,18 +239,19 @@ func TestMessageIDMatchesRequiresExactNonEmptyIdentity(t *testing.T) {
 func validIncoming(t *testing.T) events.RabbitMQEvent {
 	t.Helper()
 	message := &catalogv1.BookUploadedV1{
-		EventId:         "event-1",
-		BookId:          "book-1",
-		ObjectReference: "originals/01234567-89ab-cdef-0123-456789abcdef.pdf",
-		Sha256:          bytes.Repeat([]byte{1}, 32),
-		ByteSize:        1024,
-		MediaType:       "application/pdf",
-		CorrelationId:   "correlation-1",
-		OccurredAt:      timestamppb.New(time.Now().UTC()),
-		CausationId:     "correlation-1",
-		Producer:        "catalog-service",
-		SchemaVersion:   "v1",
-		IdempotencyKey:  "book-1",
+		EventId:          "event-1",
+		BookId:           "book-1",
+		ObjectReference:  "originals/01234567-89ab-cdef-0123-456789abcdef.pdf",
+		Sha256:           bytes.Repeat([]byte{1}, 32),
+		ByteSize:         1024,
+		MediaType:        "application/pdf",
+		CorrelationId:    "correlation-1",
+		OccurredAt:       timestamppb.New(time.Now().UTC()),
+		CausationId:      "correlation-1",
+		Producer:         "catalog-service",
+		SchemaVersion:    "v1",
+		IdempotencyKey:   "book-1",
+		LifecycleVersion: 1,
 	}
 	payload, err := proto.Marshal(message)
 	if err != nil {
@@ -245,6 +267,43 @@ func validIncoming(t *testing.T) events.RabbitMQEvent {
 					ContentType: "application/x-protobuf",
 					Type:        &route,
 					MessageID:   &messageID,
+					BodySize:    uint64(len(payload)),
+				},
+				Data: base64.StdEncoding.EncodeToString(payload),
+			}},
+		},
+	}
+}
+
+func validDeletionIncoming(t *testing.T) events.RabbitMQEvent {
+	t.Helper()
+	message := &catalogv1.BookDeletionRequestedV1{
+		EventId:          "delete-event",
+		BookId:           "book-1",
+		CommandId:        "delete-command",
+		LifecycleVersion: 2,
+		ActorId:          "actor-1",
+		CorrelationId:    "correlation-1",
+		OccurredAt:       timestamppb.New(time.Now().UTC()),
+		CausationId:      "delete-command",
+		Producer:         "catalog-service",
+		SchemaVersion:    "v1",
+		IdempotencyKey:   "delete-command",
+	}
+	payload, err := proto.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messageID := message.EventId
+	eventType := transport.DeletionRoute
+	return events.RabbitMQEvent{
+		EventSource: "aws:rmq",
+		MessagesByQueue: map[string][]events.RabbitMQMessage{
+			"queue": {{
+				BasicProperties: events.RabbitMQBasicProperties{
+					ContentType: "application/x-protobuf",
+					MessageID:   &messageID,
+					Type:        &eventType,
 					BodySize:    uint64(len(payload)),
 				},
 				Data: base64.StdEncoding.EncodeToString(payload),

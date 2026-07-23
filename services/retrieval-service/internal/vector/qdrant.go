@@ -21,6 +21,7 @@ const (
 	maximumQdrantResponseBytes        = 4 << 20
 	maximumEvidenceBatchResponseBytes = 8 << 20
 	collectionProfileDigestKey        = "raglibrarian_index_profile_digest"
+	collectionSchemaDigestKey         = "raglibrarian_collection_schema_digest"
 )
 
 type Qdrant struct {
@@ -109,6 +110,7 @@ type pointPayload struct {
 	BookID     string   `json:"book_id"`
 	Title      string   `json:"title"`
 	Author     string   `json:"author"`
+	MediaType  string   `json:"media_type"`
 	Year       int      `json:"year"`
 	Tags       []string `json:"tags"`
 	Chapter    string   `json:"chapter"`
@@ -157,7 +159,7 @@ func (q *Qdrant) SearchDocuments(ctx context.Context, query domain.SearchQuery, 
 			continue
 		}
 		results = append(results, application.DocumentResult{DocumentID: value.DocumentID, JobID: value.JobID, BookID: value.BookID,
-			Title: value.Title, Author: value.Author, Year: value.Year, Tags: value.Tags, ChunkCount: value.ChunkCount,
+			Title: value.Title, Author: value.Author, MediaType: value.MediaType, Year: value.Year, Tags: value.Tags, ChunkCount: value.ChunkCount,
 			PageStart: value.PageStart, PageEnd: value.PageEnd, Score: point.Score})
 		jobIDs = append(jobIDs, value.JobID)
 	}
@@ -209,7 +211,7 @@ func (q *Qdrant) searchEvidence(ctx context.Context, query domain.SearchQuery, v
 			continue
 		}
 		results = append(results, application.Evidence{EvidenceID: value.EvidenceID, ChunkID: value.ChunkID, JobID: value.JobID, BookID: value.BookID,
-			Title: value.Title, Author: value.Author, Year: value.Year, Tags: value.Tags, Chapter: value.Chapter,
+			Title: value.Title, Author: value.Author, MediaType: value.MediaType, Year: value.Year, Tags: value.Tags, Chapter: value.Chapter,
 			Section: value.Section, PageStart: value.PageStart, PageEnd: value.PageEnd, Passage: value.Passage, Score: point.Score})
 	}
 	return results, nil
@@ -266,7 +268,7 @@ func evidenceFromPoints(points []queryPoint) []application.Evidence {
 			continue
 		}
 		results = append(results, application.Evidence{EvidenceID: value.EvidenceID, ChunkID: value.ChunkID, JobID: value.JobID, BookID: value.BookID,
-			Title: value.Title, Author: value.Author, Year: value.Year, Tags: value.Tags, Chapter: value.Chapter,
+			Title: value.Title, Author: value.Author, MediaType: value.MediaType, Year: value.Year, Tags: value.Tags, Chapter: value.Chapter,
 			Section: value.Section, PageStart: value.PageStart, PageEnd: value.PageEnd, Passage: value.Passage, Score: point.Score})
 	}
 	return results
@@ -304,9 +306,14 @@ func (q *Qdrant) CheckReady(ctx context.Context) error {
 	if err = json.NewDecoder(io.LimitReader(response.Body, maximumQdrantResponseBytes)).Decode(&description); err != nil {
 		return errors.New("incompatible vector collection")
 	}
-	profileDigest, ok := description.Result.Config.Metadata[collectionProfileDigestKey].(string)
+	profileDigest, hasLegacyProfile := description.Result.Config.Metadata[collectionProfileDigestKey].(string)
+	schemaDigest, hasSchemaDigest := description.Result.Config.Metadata[collectionSchemaDigestKey].(string)
+	compatibleMetadata := hasSchemaDigest && schemaDigest == supportedCollectionSchemaDigestHex()
+	if !hasSchemaDigest {
+		compatibleMetadata = hasLegacyProfile && profileDigest == supportedProfileDigestHex()
+	}
 	if description.Result.Config.Params.Vectors.Size != domain.EmbeddingDimensions || !strings.EqualFold(description.Result.Config.Params.Vectors.Distance, "cosine") ||
-		!ok || profileDigest != supportedProfileDigestHex() {
+		!compatibleMetadata {
 		return errors.New("incompatible vector collection")
 	}
 	return nil
@@ -314,12 +321,16 @@ func (q *Qdrant) CheckReady(ctx context.Context) error {
 
 func (q *Qdrant) EnsureCollection(ctx context.Context) error {
 	if err := q.CheckReady(ctx); err == nil {
+		if err = q.ensureCollectionMetadata(ctx); err != nil {
+			return err
+		}
 		return q.ensurePayloadIndexes(ctx)
 	}
 	body, _ := json.Marshal(map[string]any{
 		"vectors": map[string]any{"size": domain.EmbeddingDimensions, "distance": "Cosine"},
 		"metadata": map[string]string{
 			collectionProfileDigestKey: supportedProfileDigestHex(),
+			collectionSchemaDigestKey:  supportedCollectionSchemaDigestHex(),
 		},
 	})
 	request, err := http.NewRequestWithContext(ctx, http.MethodPut, q.endpoint+"/collections/"+q.collection, bytes.NewReader(body))
@@ -345,11 +356,40 @@ func (q *Qdrant) EnsureCollection(ctx context.Context) error {
 	return q.ensurePayloadIndexes(ctx)
 }
 
+func (q *Qdrant) ensureCollectionMetadata(ctx context.Context) error {
+	body, err := json.Marshal(map[string]map[string]string{"metadata": {
+		collectionProfileDigestKey: supportedProfileDigestHex(),
+		collectionSchemaDigestKey:  supportedCollectionSchemaDigestHex(),
+	}})
+	if err != nil {
+		return errors.New("encode collection metadata")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPatch, q.endpoint+"/collections/"+q.collection, bytes.NewReader(body))
+	if err != nil {
+		return errors.New("create collection metadata request")
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if q.apiKey != "" {
+		request.Header.Set("api-key", q.apiKey)
+	}
+	response, err := q.client.Do(request) // #nosec G704 -- NewQdrant accepts only a validated operator-controlled endpoint.
+	if err != nil {
+		return errors.New("vector dependency unavailable")
+	}
+	defer func() { _ = response.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumQdrantResponseBytes))
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return errors.New("update collection metadata")
+	}
+	return nil
+}
+
 func (q *Qdrant) ensurePayloadIndexes(ctx context.Context) error {
 	indexes := []fieldIndexRequest{
 		{FieldName: "indexed", FieldSchema: "keyword"},
 		{FieldName: "vector_kind", FieldSchema: "keyword"},
 		{FieldName: "job_id", FieldSchema: "keyword"},
+		{FieldName: "book_id", FieldSchema: "keyword"},
 		{FieldName: "author_normalized", FieldSchema: "keyword"},
 		{FieldName: "tags_normalized", FieldSchema: "keyword"},
 		{FieldName: "year", FieldSchema: "integer"},
@@ -424,9 +464,10 @@ func (q *Qdrant) UpsertChunks(ctx context.Context, records []application.Evidenc
 		}
 		points[index] = upsertPoint{ID: deterministicPointID(record.EvidenceID), Vector: record.Vector, Payload: map[string]any{
 			"evidence_id": record.EvidenceID, "chunk_id": record.ChunkID, "book_id": record.BookID, "title": record.Title,
-			"author": record.Author, "author_normalized": strings.ToLower(strings.Join(strings.Fields(record.Author), " ")), "year": record.Year,
+			"author": record.Author, "media_type": record.MediaType, "author_normalized": strings.ToLower(strings.Join(strings.Fields(record.Author), " ")), "year": record.Year,
 			"tags": record.Tags, "tags_normalized": normalizedValues(record.Tags), "chapter": record.Chapter, "section": record.Section,
 			"page_start": record.PageStart, "page_end": record.PageEnd, "passage": record.Passage, "job_id": record.JobID, "indexed": "false", "vector_kind": "chunk",
+			"lifecycle_version": record.LifecycleVersion,
 		}}
 	}
 	return q.upsertPoints(ctx, points)
@@ -437,10 +478,11 @@ func (q *Qdrant) UpsertDocument(ctx context.Context, record application.Document
 		return errors.New("invalid document vector")
 	}
 	point := upsertPoint{ID: deterministicPointID("document:" + record.DocumentID), Vector: record.Vector, Payload: map[string]any{
-		"document_id": record.DocumentID, "book_id": record.BookID, "title": record.Title, "author": record.Author,
+		"document_id": record.DocumentID, "book_id": record.BookID, "title": record.Title, "author": record.Author, "media_type": record.MediaType,
 		"author_normalized": strings.ToLower(strings.Join(strings.Fields(record.Author), " ")), "year": record.Year,
 		"tags": record.Tags, "tags_normalized": normalizedValues(record.Tags), "page_start": record.PageStart, "page_end": record.PageEnd,
 		"chunk_count": record.ChunkCount, "job_id": record.JobID, "indexed": "false", "vector_kind": "document",
+		"lifecycle_version": record.LifecycleVersion,
 	}}
 	return q.upsertPoints(ctx, []upsertPoint{point})
 }
@@ -480,6 +522,45 @@ func (q *Qdrant) DeactivateJob(ctx context.Context, jobID string) error {
 	return q.setJobVisibility(ctx, jobID, "false")
 }
 
+// DeleteJob removes every staged or active point for one server-derived
+// generation. The filter is bounded to the indexed job identifier.
+func (q *Qdrant) DeleteJob(ctx context.Context, jobID string) error {
+	return q.deleteByField(ctx, "job_id", jobID)
+}
+
+// DeleteBook removes every generation for a server-derived book identifier.
+func (q *Qdrant) DeleteBook(ctx context.Context, bookID string) error {
+	return q.deleteByField(ctx, "book_id", bookID)
+}
+
+func (q *Qdrant) deleteByField(ctx context.Context, field, value string) error {
+	if (field != "job_id" && field != "book_id") || value == "" || len(value) > 256 {
+		return errors.New("invalid vector deletion")
+	}
+	body, err := json.Marshal(map[string]any{"filter": filter{Must: []condition{{Key: field, Match: &matchValue{Value: value}}}}})
+	if err != nil {
+		return errors.New("encode vector deletion")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, q.endpoint+"/collections/"+q.collection+"/points/delete?wait=true", bytes.NewReader(body))
+	if err != nil {
+		return errors.New("create vector deletion")
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if q.apiKey != "" {
+		request.Header.Set("api-key", q.apiKey)
+	}
+	response, err := q.client.Do(request) // #nosec G704 -- NewQdrant accepts only a validated operator-controlled endpoint.
+	if err != nil {
+		return errors.New("vector dependency unavailable")
+	}
+	defer func() { _ = response.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumQdrantResponseBytes))
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return errors.New("vector dependency rejected deletion")
+	}
+	return nil
+}
+
 func (q *Qdrant) setJobVisibility(ctx context.Context, jobID, indexed string) error {
 	if jobID == "" {
 		return errors.New("invalid index job")
@@ -516,6 +597,11 @@ func deterministicPointID(value string) string {
 
 func supportedProfileDigestHex() string {
 	digest := domain.SupportedIndexProfile().Digest
+	return hex.EncodeToString(digest[:])
+}
+
+func supportedCollectionSchemaDigestHex() string {
+	digest := domain.CollectionSchemaDigest()
 	return hex.EncodeToString(digest[:])
 }
 

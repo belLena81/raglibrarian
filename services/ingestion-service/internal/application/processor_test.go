@@ -17,23 +17,29 @@ import (
 )
 
 type processorRepository struct {
-	accepted    bool
-	acceptErr   error
-	completeErr error
-	retryErr    error
-	failErr     error
-	accepts     int
-	completes   int
-	retries     int
-	fails       int
-	failedJob   domain.ProcessingJob
-	retryCtxErr error
-	failCtxErr  error
+	accepted      bool
+	acceptErr     error
+	completeErr   error
+	retryErr      error
+	failErr       error
+	accepts       int
+	deletionCalls int
+	completes     int
+	retries       int
+	fails         int
+	failedJob     domain.ProcessingJob
+	retryCtxErr   error
+	failCtxErr    error
 }
 
 func (r *processorRepository) Accept(_ context.Context, _ UploadedEvent, _ [32]byte, job domain.ProcessingJob, _ OutboxEvent) (domain.ProcessingJob, bool, error) {
 	r.accepts++
 	return job, r.accepted, r.acceptErr
+}
+
+func (r *processorRepository) AcceptDeletion(_ context.Context, _ DeletionEvent, _ [32]byte, _ OutboxEvent, _ time.Time) error {
+	r.deletionCalls++
+	return nil
 }
 
 func (r *processorRepository) Complete(_ context.Context, _ domain.ProcessingJob, _ ClaimToken, _ artifact.Result, _ OutboxEvent) error {
@@ -137,6 +143,13 @@ func (f processorFactory) NewArtifactWriter(UploadedEvent, time.Time) (ArtifactW
 	return f.writer, nil
 }
 
+func (processorFactory) ConfigDigest(mediaType string) ([32]byte, error) {
+	if mediaType != MediaTypePDF && mediaType != MediaTypeEPUB {
+		return [32]byte{}, ErrUnsupportedProcessingProfile
+	}
+	return sha256.Sum256([]byte(mediaType)), nil
+}
+
 type processorEvents struct {
 	readyErr error
 	started  int
@@ -157,6 +170,10 @@ func (e *processorEvents) Ready(UploadedEvent, domain.ProcessingJob, artifact.Re
 func (e *processorEvents) Failed(UploadedEvent, domain.ProcessingJob, domain.FailureCategory, time.Time) (OutboxEvent, error) {
 	e.failed++
 	return OutboxEvent{ID: "failed-1"}, nil
+}
+
+func (e *processorEvents) ArtifactsDeleted(DeletionEvent, time.Time) (OutboxEvent, error) {
+	return OutboxEvent{ID: "artifacts-deleted", Type: "ingestion.book.artifacts-deleted.v1", Payload: []byte{1}}, nil
 }
 
 func TestProcessorCompletesAndTreatsDuplicateAsDurableSuccess(t *testing.T) {
@@ -373,11 +390,20 @@ func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *proc
 	writer := &processorWriter{result: artifact.Result{ManifestReference: "books/book-1/source/profile/manifest.pb", ManifestSHA256: sha256.Sum256([]byte("manifest")), ManifestByteSize: 8, PageCount: 1, ChunkCount: 1}}
 	events := &processorEvents{readyErr: options.readyErr}
 	pdfExtractor := &processorExtractor{err: options.extractErr, waitForCtx: options.waitForContext}
+	extractors, err := NewFormatExtractors(ExtractionAdapter{
+		MediaType: MediaTypePDF,
+		Extension: ".pdf",
+		Version:   extractor.ExtractionVersion,
+		Extractor: pdfExtractor,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
 	processor, err := NewProcessor(
 		repository,
 		processorSource{contents: contents, size: int64(len(contents)), err: options.sourceErr},
-		pdfExtractor,
+		extractors,
 		processorFactory{writer: writer},
 		events,
 		func() (string, error) { return "job-1", nil },
@@ -401,19 +427,20 @@ func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *proc
 func validProcessorEvent() UploadedEvent {
 	contents := []byte("%PDF-1.7\nsynthetic")
 	return UploadedEvent{
-		EventID:         "event-1",
-		BookID:          "book-1",
-		ObjectReference: "originals/book-1.pdf",
-		MediaType:       "application/pdf",
-		CorrelationID:   "correlation-1",
-		CausationID:     "causation-1",
-		Producer:        "catalog-service",
-		SchemaVersion:   "v1",
-		IdempotencyKey:  "book-1",
-		SourceSHA256:    sha256.Sum256(contents),
-		ByteSize:        int64(len(contents)),
-		OccurredAt:      time.Date(2026, 7, 19, 11, 0, 0, 0, time.UTC),
-		Payload:         []byte("synthetic-protobuf-payload"),
+		EventID:          "event-1",
+		BookID:           "book-1",
+		ObjectReference:  "originals/book-1.pdf",
+		MediaType:        "application/pdf",
+		CorrelationID:    "correlation-1",
+		CausationID:      "causation-1",
+		Producer:         "catalog-service",
+		SchemaVersion:    "v1",
+		IdempotencyKey:   "book-1",
+		SourceSHA256:     sha256.Sum256(contents),
+		ByteSize:         int64(len(contents)),
+		LifecycleVersion: 1,
+		OccurredAt:       time.Date(2026, 7, 19, 11, 0, 0, 0, time.UTC),
+		Payload:          []byte("synthetic-protobuf-payload"),
 	}
 }
 

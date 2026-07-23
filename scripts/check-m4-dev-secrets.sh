@@ -41,3 +41,13 @@ for file in "${files[@]}"; do
     exit 1
   fi
 done
+
+definitions="$dir/rabbitmq_definitions.json"
+command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+jq -e '
+  any(.bindings[]?; .source == "raglibrarian.events.v1" and .destination == "ingestion.book-uploaded.v1" and .routing_key == "catalog.book.deletion-requested.v1") and
+  any(.bindings[]?; .source == "raglibrarian.ingestion.events.v1" and .destination == "catalog.book-processing.v1" and .routing_key == "ingestion.book.artifacts-deleted.v1")
+' "$definitions" >/dev/null || {
+  echo "M7 Ingestion lifecycle bindings are missing" >&2
+  exit 1
+}

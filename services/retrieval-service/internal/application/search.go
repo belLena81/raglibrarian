@@ -13,22 +13,22 @@ const maximumSearchCandidates = domain.MaximumResultLimit * 5
 
 // Evidence is Retrieval's controlled local chunk projection returned to an authorized caller.
 type Evidence struct {
-	EvidenceID, ChunkID, JobID, BookID, Title, Author, Chapter, Section, Passage string
-	Year                                                                         int
-	Tags                                                                         []string
-	PageStart, PageEnd                                                           uint32
-	Score                                                                        float64
+	EvidenceID, ChunkID, JobID, BookID, Title, Author, MediaType, Chapter, Section, Passage string
+	Year                                                                                    int
+	Tags                                                                                    []string
+	PageStart, PageEnd                                                                      uint32
+	Score                                                                                   float64
 }
 
 // DocumentResult is Retrieval's controlled document-level projection with stored chunk evidence.
 type DocumentResult struct {
-	DocumentID, JobID, BookID, Title, Author string
-	Year                                     int
-	Tags                                     []string
-	ChunkCount                               uint32
-	PageStart, PageEnd                       uint32
-	Score                                    float64
-	Evidence                                 []Evidence
+	DocumentID, JobID, BookID, Title, Author, MediaType string
+	Year                                                int
+	Tags                                                []string
+	ChunkCount                                          uint32
+	PageStart, PageEnd                                  uint32
+	Score                                               float64
+	Evidence                                            []Evidence
 }
 
 // DocumentPage is a hydrated document-search page. Exhausted reflects the raw

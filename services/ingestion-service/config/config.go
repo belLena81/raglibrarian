@@ -15,21 +15,21 @@ import (
 )
 
 type Config struct {
-	RuntimeBackend                                                string
-	DSN, RabbitURI, MinIOEndpoint, MinIOAccessKey, MinIOSecretKey string
-	SourceBucket, ArtifactBucket, MinIOCAFile, MetricsAddress     string
-	AWSRegion, KMSKeyARN                                          string
-	TokenizerFile, PDFInfoPath, PDFTextPath, TemporaryDirectory   string
-	Queue, ResultExchange                                         string
-	MinIOInsecure                                                 bool
-	WorkConcurrency, MaximumAttempts, MaximumChunks               int
-	MaximumSourceBytes, MaximumExtractedBytes, MaximumPageBytes   int64
-	MaximumManifestBytes, MaximumTemporaryBytes                   int64
-	MemoryLimitBytes                                              int64
-	MaximumPages                                                  uint32
-	ProcessingTimeout, JobLease, OutboxInterval                   time.Duration
-	CleanupInterval, OrphanGracePeriod                            time.Duration
-	RunAs                                                         process.Identity
+	RuntimeBackend                                                              string
+	DSN, RabbitURI, MinIOEndpoint, MinIOAccessKey, MinIOSecretKey               string
+	SourceBucket, ArtifactBucket, MinIOCAFile, MetricsAddress                   string
+	AWSRegion, KMSKeyARN                                                        string
+	TokenizerFile, PDFInfoPath, PDFTextPath, EPUBParserPath, TemporaryDirectory string
+	Queue, ResultExchange                                                       string
+	MinIOInsecure                                                               bool
+	WorkConcurrency, MaximumAttempts, MaximumChunks                             int
+	MaximumSourceBytes, MaximumExtractedBytes, MaximumPageBytes                 int64
+	MaximumManifestBytes, MaximumTemporaryBytes                                 int64
+	MemoryLimitBytes                                                            int64
+	MaximumPages                                                                uint32
+	ProcessingTimeout, JobLease, OutboxInterval                                 time.Duration
+	CleanupInterval, OrphanGracePeriod                                          time.Duration
+	RunAs                                                                       process.Identity
 }
 
 // CleanupConfig deliberately contains no source-store, RabbitMQ, parser or
@@ -249,6 +249,7 @@ func loadLocal() (Config, error) {
 		TokenizerFile:         tokenizerFile,
 		PDFInfoPath:           optional("INGESTION_PDFINFO_PATH", "/usr/bin/pdfinfo"),
 		PDFTextPath:           optional("INGESTION_PDFTOTEXT_PATH", "/usr/bin/pdftotext"),
+		EPUBParserPath:        optional("INGESTION_EPUB_PARSER_PATH", "/usr/local/bin/epub-parser"),
 		TemporaryDirectory:    temporaryDirectory,
 		Queue:                 optional("INGESTION_QUEUE", "ingestion.book-uploaded.v1"),
 		ResultExchange:        optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),

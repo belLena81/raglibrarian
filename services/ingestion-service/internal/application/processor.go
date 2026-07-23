@@ -1,4 +1,4 @@
-// Package application coordinates one durable PDF processing use case.
+// Package application coordinates durable document processing use cases.
 package application
 
 import (
@@ -63,25 +63,36 @@ type UploadedEvent struct {
 	EventID, BookID, ObjectReference, MediaType, CorrelationID, CausationID, Producer, SchemaVersion, IdempotencyKey string
 	SourceSHA256                                                                                                     [32]byte
 	ByteSize                                                                                                         int64
+	LifecycleVersion                                                                                                 int64
 	OccurredAt                                                                                                       time.Time
 	Payload                                                                                                          []byte
+	ExtractionVersion                                                                                                string
 }
 
 func (e UploadedEvent) Validate(maximumBytes int64) error {
-	if !safeID(e.EventID) || !safeID(e.BookID) || !safeID(e.CorrelationID) || !safeID(e.CausationID) || e.IdempotencyKey != e.BookID || e.Producer != "catalog-service" || e.SchemaVersion != "v1" || e.MediaType != "application/pdf" || e.ByteSize < 1 || e.ByteSize > maximumBytes || e.OccurredAt.IsZero() || len(e.Payload) == 0 || len(e.Payload) > 256<<10 {
+	if !safeID(e.EventID) || !safeID(e.BookID) || !safeID(e.CorrelationID) || !safeID(e.CausationID) || e.IdempotencyKey != e.BookID || e.Producer != "catalog-service" || e.SchemaVersion != "v1" || e.LifecycleVersion < 1 || e.ByteSize < 1 || e.ByteSize > maximumBytes || e.OccurredAt.IsZero() || len(e.Payload) == 0 || len(e.Payload) > 256<<10 {
 		return ErrInvalidEvent
 	}
-	if !validSourceReference(e.ObjectReference) {
+	if !validSourceReference(e.ObjectReference, e.MediaType) {
 		return ErrInvalidEvent
 	}
 	return nil
 }
 
-func validSourceReference(reference string) bool {
-	if !strings.HasPrefix(reference, "originals/") || strings.Count(reference, "/") != 1 || !strings.HasSuffix(reference, ".pdf") || len(reference) > 512 {
+func validSourceReference(reference, mediaType string) bool {
+	extension := ""
+	switch mediaType {
+	case MediaTypePDF:
+		extension = ".pdf"
+	case MediaTypeEPUB:
+		extension = ".epub"
+	default:
 		return false
 	}
-	name := strings.TrimSuffix(strings.TrimPrefix(reference, "originals/"), ".pdf")
+	if !strings.HasPrefix(reference, "originals/") || strings.Count(reference, "/") != 1 || !strings.HasSuffix(reference, extension) || len(reference) > 512 {
+		return false
+	}
+	name := strings.TrimSuffix(strings.TrimPrefix(reference, "originals/"), extension)
 	if name == "" {
 		return false
 	}
@@ -101,6 +112,7 @@ type OutboxEvent struct {
 
 type Repository interface {
 	Accept(context.Context, UploadedEvent, [32]byte, domain.ProcessingJob, OutboxEvent) (domain.ProcessingJob, bool, error)
+	AcceptDeletion(context.Context, DeletionEvent, [32]byte, OutboxEvent, time.Time) error
 	Complete(context.Context, domain.ProcessingJob, ClaimToken, artifact.Result, OutboxEvent) error
 	Fail(context.Context, domain.ProcessingJob, ClaimToken, OutboxEvent) error
 	Retry(context.Context, domain.ProcessingJob, ClaimToken) error
@@ -134,12 +146,14 @@ type ArtifactWriter interface {
 type Factory interface {
 	NewChunker() (Chunker, error)
 	NewArtifactWriter(UploadedEvent, time.Time) (ArtifactWriter, error)
+	ConfigDigest(string) ([32]byte, error)
 }
 
 type EventFactory interface {
 	Started(UploadedEvent, domain.ProcessingJob, time.Time) (OutboxEvent, error)
 	Ready(UploadedEvent, domain.ProcessingJob, artifact.Result, time.Time) (OutboxEvent, error)
 	Failed(UploadedEvent, domain.ProcessingJob, domain.FailureCategory, time.Time) (OutboxEvent, error)
+	ArtifactsDeleted(DeletionEvent, time.Time) (OutboxEvent, error)
 }
 
 type IDGenerator func() (string, error)
@@ -152,7 +166,6 @@ type Config struct {
 	ProcessingTimeout     time.Duration
 	JobLease              time.Duration
 	MaximumAttempts       int
-	ConfigDigest          [32]byte
 	Observer              PhaseObserver
 }
 
@@ -176,7 +189,7 @@ func (noopObserver) ObservePhase(ProcessingPhase, time.Duration) {}
 type Processor struct {
 	repository Repository
 	sources    SourceReader
-	extractor  Extractor
+	extractors ExtractorSelector
 	factory    Factory
 	events     EventFactory
 	newID      IDGenerator
@@ -186,15 +199,15 @@ type Processor struct {
 	observer   PhaseObserver
 }
 
-func NewProcessor(repository Repository, sources SourceReader, pdfExtractor Extractor, factory Factory, events EventFactory, newID IDGenerator, now Clock, workerID string, config Config) (*Processor, error) {
-	if repository == nil || sources == nil || pdfExtractor == nil || factory == nil || events == nil || newID == nil || now == nil || !safeID(workerID) || config.MaximumSourceBytes < 1 || config.MaximumTemporaryBytes < config.MaximumSourceBytes || config.ProcessingTimeout <= 0 || config.JobLease < config.ProcessingTimeout+30*time.Second || config.MaximumAttempts < 1 || config.TemporaryDirectory == "" {
+func NewProcessor(repository Repository, sources SourceReader, extractors ExtractorSelector, factory Factory, events EventFactory, newID IDGenerator, now Clock, workerID string, config Config) (*Processor, error) {
+	if repository == nil || sources == nil || extractors == nil || factory == nil || events == nil || newID == nil || now == nil || !safeID(workerID) || config.MaximumSourceBytes < 1 || config.MaximumTemporaryBytes < config.MaximumSourceBytes || config.ProcessingTimeout <= 0 || config.JobLease < config.ProcessingTimeout+30*time.Second || config.MaximumAttempts < 1 || config.TemporaryDirectory == "" {
 		return nil, errors.New("invalid processor configuration")
 	}
 	observer := config.Observer
 	if observer == nil {
 		observer = noopObserver{}
 	}
-	return &Processor{repository: repository, sources: sources, extractor: pdfExtractor, factory: factory, events: events, newID: newID, now: now, workerID: workerID, config: config, observer: observer}, nil
+	return &Processor{repository: repository, sources: sources, extractors: extractors, factory: factory, events: events, newID: newID, now: now, workerID: workerID, config: config, observer: observer}, nil
 }
 
 func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
@@ -203,12 +216,21 @@ func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
 	if err := event.Validate(p.config.MaximumSourceBytes); err != nil {
 		return err
 	}
+	adapter, err := p.extractors.Select(event.MediaType)
+	if err != nil {
+		return err
+	}
+	event.ExtractionVersion = adapter.Version
+	configDigest, err := p.factory.ConfigDigest(event.MediaType)
+	if err != nil {
+		return err
+	}
 	jobID, err := p.newID()
 	if err != nil {
 		return errors.New("generate processing identity")
 	}
 	now := p.now().UTC()
-	job, err := domain.NewProcessingJob(jobID, event.BookID, event.SourceSHA256, hex.EncodeToString(p.config.ConfigDigest[:]), now)
+	job, err := domain.NewProcessingJob(jobID, event.BookID, event.SourceSHA256, hex.EncodeToString(configDigest[:]), now)
 	if err != nil {
 		return err
 	}
@@ -230,7 +252,7 @@ func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
 	}
 	ctx, cancel := context.WithTimeout(parent, p.config.ProcessingTimeout)
 	defer cancel()
-	result, processErr := p.processClaimed(ctx, event, job.CreatedAt())
+	result, processErr := p.processClaimed(ctx, event, adapter, job.CreatedAt())
 	claim := ClaimToken{Owner: job.LeaseOwner(), Attempt: job.Attempts(), ExpiresAt: job.LeaseExpiresAt()}
 	if processErr == nil {
 		ready, readyErr := p.events.Ready(event, job, result, p.now().UTC())
@@ -271,7 +293,7 @@ func persistenceContext(parent context.Context) (context.Context, context.Cancel
 	return context.WithTimeout(parent, persistenceTimeout)
 }
 
-func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, generatedAt time.Time) (artifact.Result, error) {
+func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, adapter ExtractionAdapter, generatedAt time.Time) (artifact.Result, error) {
 	if err := ensureTemporaryCapacity(p.config.TemporaryDirectory, p.config.MaximumTemporaryBytes); err != nil {
 		return artifact.Result{}, categorized(domain.FailureResourceLimitExceeded)
 	}
@@ -281,7 +303,7 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, gen
 	}
 	_ = os.Chmod(invocationDir, 0o700) // #nosec G302 -- directories require execute permission and remain owner-only.
 	defer func() { _ = os.RemoveAll(invocationDir) }()
-	sourcePath := filepath.Join(invocationDir, "source.pdf")
+	sourcePath := filepath.Join(invocationDir, "source"+adapter.Extension)
 	downloadStarted := p.now()
 	err = p.download(ctx, event, sourcePath)
 	p.observer.ObservePhase(PhaseDownload, p.now().Sub(downloadStarted))
@@ -308,7 +330,7 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, gen
 	}()
 	var chunkCount uint32
 	extractStarted := p.now()
-	info, err := p.extractor.Extract(ctx, sourcePath, func(page extractor.Page) error {
+	info, err := adapter.Extractor.Extract(ctx, sourcePath, func(page extractor.Page) error {
 		chunks, chunkErr := chunker.AddPage(event.BookID, chunking.Page{Number: page.Number, Text: page.Text})
 		if chunkErr != nil {
 			return chunkErr

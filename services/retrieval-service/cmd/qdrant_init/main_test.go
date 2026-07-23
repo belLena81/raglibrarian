@@ -36,7 +36,8 @@ func TestRunCreatesMissingQdrantCollection(t *testing.T) {
 				t.Fatalf("unexpected collection creation request: %s %s %#v", request.Method, request.URL.Path, body)
 			}
 			if body["vectors"]["size"] != float64(domain.EmbeddingDimensions) || body["vectors"]["distance"] != "Cosine" ||
-				body["metadata"]["raglibrarian_index_profile_digest"] != supportedProfileDigestHex() {
+				body["metadata"]["raglibrarian_index_profile_digest"] != supportedProfileDigestHex() ||
+				body["metadata"]["raglibrarian_collection_schema_digest"] != supportedCollectionSchemaDigestHex() {
 				t.Fatalf("unexpected collection schema: %#v", body)
 			}
 			return response(http.StatusOK, `{}`)
@@ -45,7 +46,7 @@ func TestRunCreatesMissingQdrantCollection(t *testing.T) {
 				t.Fatalf("unexpected post-create readiness request: %s %s", request.Method, request.URL.Path)
 			}
 			return response(http.StatusOK, `{"result":{"config":{"metadata":{"raglibrarian_index_profile_digest":"`+supportedProfileDigestHex()+`"},"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
-		case 4, 5, 6, 7, 8, 9:
+		case 4, 5, 6, 7, 8, 9, 10:
 			assertFieldIndexRequest(t, request, requests-4)
 			return response(http.StatusOK, `{}`)
 		default:
@@ -61,7 +62,7 @@ func TestRunCreatesMissingQdrantCollection(t *testing.T) {
 		"/run/secrets/retrieval_qdrant_api_key": "writer-key\n",
 	}), client)
 
-	if err != nil || requests != 9 {
+	if err != nil || requests != 10 {
 		t.Fatalf("run() requests=%d error=%v", requests, err)
 	}
 }
@@ -77,8 +78,11 @@ func TestRunAcceptsExistingQdrantCollection(t *testing.T) {
 				t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
 			}
 			return response(http.StatusOK, `{"result":{"config":{"metadata":{"raglibrarian_index_profile_digest":"`+supportedProfileDigestHex()+`"},"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
-		case 2, 3, 4, 5, 6, 7:
-			assertFieldIndexRequest(t, request, requests-2)
+		case 2:
+			assertCollectionMetadataRequest(t, request)
+			return response(http.StatusOK, `{}`)
+		case 3, 4, 5, 6, 7, 8, 9:
+			assertFieldIndexRequest(t, request, requests-3)
 			return response(http.StatusOK, `{}`)
 		default:
 			t.Fatalf("unexpected request %d", requests)
@@ -93,7 +97,7 @@ func TestRunAcceptsExistingQdrantCollection(t *testing.T) {
 		"/run/secrets/retrieval_qdrant_api_key": "writer-key\n",
 	}), client)
 
-	if err != nil || requests != 7 {
+	if err != nil || requests != 9 {
 		t.Fatalf("run() requests=%d error=%v", requests, err)
 	}
 }
@@ -110,8 +114,11 @@ func TestRunRetriesTransientQdrantReadinessFailure(t *testing.T) {
 			return response(http.StatusServiceUnavailable, `{}`)
 		case 3:
 			return response(http.StatusOK, `{"result":{"config":{"metadata":{"raglibrarian_index_profile_digest":"`+supportedProfileDigestHex()+`"},"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
-		case 4, 5, 6, 7, 8, 9:
-			assertFieldIndexRequest(t, request, requests-4)
+		case 4:
+			assertCollectionMetadataRequest(t, request)
+			return response(http.StatusOK, `{}`)
+		case 5, 6, 7, 8, 9, 10, 11:
+			assertFieldIndexRequest(t, request, requests-5)
 			return response(http.StatusOK, `{}`)
 		default:
 			t.Fatalf("unexpected request %d", requests)
@@ -126,7 +133,7 @@ func TestRunRetriesTransientQdrantReadinessFailure(t *testing.T) {
 		"/run/secrets/retrieval_qdrant_api_key": "writer-key\n",
 	}), client)
 
-	if err != nil || requests != 9 {
+	if err != nil || requests != 11 {
 		t.Fatalf("run() requests=%d error=%v", requests, err)
 	}
 }
@@ -150,8 +157,11 @@ func TestRunDropsPrivilegesBeforeCreatingQdrantClient(t *testing.T) {
 		switch len(steps) {
 		case 2:
 			return response(http.StatusOK, `{"result":{"config":{"metadata":{"raglibrarian_index_profile_digest":"`+supportedProfileDigestHex()+`"},"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
-		case 3, 4, 5, 6, 7, 8:
-			assertFieldIndexRequest(t, request, len(steps)-3)
+		case 3:
+			assertCollectionMetadataRequest(t, request)
+			return response(http.StatusOK, `{}`)
+		case 4, 5, 6, 7, 8, 9, 10:
+			assertFieldIndexRequest(t, request, len(steps)-4)
 			return response(http.StatusOK, `{}`)
 		default:
 			t.Fatalf("unexpected request sequence: %#v", steps)
@@ -171,7 +181,7 @@ func TestRunDropsPrivilegesBeforeCreatingQdrantClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
-	want := []string{"drop", "GET", "PUT", "PUT", "PUT", "PUT", "PUT", "PUT"}
+	want := []string{"drop", "GET", "PATCH", "PUT", "PUT", "PUT", "PUT", "PUT", "PUT", "PUT"}
 	if !reflect.DeepEqual(steps, want) {
 		t.Fatalf("run() steps = %#v, want %#v", steps, want)
 	}
@@ -251,6 +261,22 @@ func supportedProfileDigestHex() string {
 	return hex.EncodeToString(digest[:])
 }
 
+func supportedCollectionSchemaDigestHex() string {
+	digest := domain.CollectionSchemaDigest()
+	return hex.EncodeToString(digest[:])
+}
+
+func assertCollectionMetadataRequest(t *testing.T, request *http.Request) {
+	t.Helper()
+	var body map[string]map[string]string
+	if request.Method != http.MethodPatch || request.URL.Path != "/collections/evidence_v2" ||
+		json.NewDecoder(request.Body).Decode(&body) != nil ||
+		body["metadata"]["raglibrarian_index_profile_digest"] != supportedProfileDigestHex() ||
+		body["metadata"]["raglibrarian_collection_schema_digest"] != supportedCollectionSchemaDigestHex() {
+		t.Fatalf("unexpected collection metadata request: %s %s %#v", request.Method, request.URL.Path, body)
+	}
+}
+
 func assertFieldIndexRequest(t *testing.T, request *http.Request, index int) {
 	t.Helper()
 	expected := []struct {
@@ -260,6 +286,7 @@ func assertFieldIndexRequest(t *testing.T, request *http.Request, index int) {
 		{name: "indexed", schema: "keyword"},
 		{name: "vector_kind", schema: "keyword"},
 		{name: "job_id", schema: "keyword"},
+		{name: "book_id", schema: "keyword"},
 		{name: "author_normalized", schema: "keyword"},
 		{name: "tags_normalized", schema: "keyword"},
 		{name: "year", schema: "integer"},

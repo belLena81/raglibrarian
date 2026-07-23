@@ -71,10 +71,19 @@ func TestValidatedCommandAllowsOnlyFixedPopplerShapeAndRegularTemporarySource(t 
 	if _, _, _, err := validatedCommand([]string{"/usr/bin/pdftotext", "-layout", "-enc", "UTF-8", source, "-"}); err != nil {
 		t.Fatalf("pdftotext command rejected: %v", err)
 	}
+	epubSource := filepath.Join(directory, "source.epub")
+	if err := os.WriteFile(epubSource, []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := validatedCommand([]string{"/usr/local/bin/epub-parser", epubSource}); err != nil {
+		t.Fatalf("EPUB parser command rejected: %v", err)
+	}
 	for _, arguments := range [][]string{
 		{"/bin/sh", source},
+		{"/usr/bin/pdfinfo", "/a/b"},
 		{"/usr/bin/pdfinfo", "/etc/passwd"},
 		{"/usr/bin/pdftotext", source, "-"},
+		{"/usr/local/bin/epub-parser", epubSource, "extra"},
 	} {
 		if _, _, _, err := validatedCommand(arguments); err == nil {
 			t.Fatalf("unsafe command accepted: %q", arguments)

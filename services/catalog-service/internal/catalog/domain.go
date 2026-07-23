@@ -18,6 +18,7 @@ var (
 	ErrInvalidMetadata           = errors.New("invalid book metadata")
 	ErrUnauthorizedActor         = errors.New("unauthorized actor")
 	ErrInvalidTransition         = errors.New("invalid book status transition")
+	ErrInvalidCommand            = errors.New("invalid lifecycle command")
 	ErrConflictingProcessingFact = errors.New("conflicting processing fact")
 )
 
@@ -104,6 +105,10 @@ func (a Actor) CanUpload() bool {
 	return a.Status == "active" && a.UserID != "" && (a.Role == "librarian" || a.Role == "admin")
 }
 
+func (a Actor) CanManage() bool {
+	return a.CanUpload()
+}
+
 // BookMetadata is immutable upload metadata.
 type BookMetadata struct {
 	Title  string
@@ -121,11 +126,24 @@ type Book struct {
 	ObjectReference           string
 	Checksum                  [32]byte
 	ByteSize                  int64
+	MediaType                 string
 	ActorID                   string
 	ProcessingStage           BookProcessingStage
 	ProcessingFailureCategory ProcessingFailureCategory
 	ProcessingUpdatedAt       time.Time
 	ProcessingVersion         int64
+	LifecycleVersion          int64
+	ManifestReference         string
+	ManifestChecksum          [32]byte
+	DeleteCommandID           string
+	ArtifactsDeleted          bool
+	IndexDeleted              bool
+	OriginalDeleted           bool
+}
+
+func (b Book) CanReindex() bool {
+	return (b.ProcessingStatus == BookStatusIndexed || b.ProcessingStatus == BookStatusFailed) &&
+		b.ManifestReference != "" && b.ManifestChecksum != [32]byte{}
 }
 
 // ApplyProcessingFact applies an idempotent, monotonic Ingestion fact.
@@ -193,6 +211,14 @@ func (b *Book) ApplyProcessingFact(fact ProcessingFact) (bool, error) {
 		if b.ProcessingStage == BookStageIndexed && b.ProcessingStatus == BookStatusIndexed {
 			return false, nil
 		}
+		if b.ProcessingStatus == BookStatusReindexing && b.ProcessingStage == BookStageChunksReady {
+			if err := b.TransitionTo(BookStatusIndexed); err != nil {
+				return false, err
+			}
+			b.ProcessingStage = BookStageIndexed
+			b.ProcessingFailureCategory = ""
+			break
+		}
 		if b.ProcessingStatus == BookStatusPending && b.ProcessingStage == BookStageQueued {
 			if err := b.TransitionTo(BookStatusProcessing); err != nil {
 				return false, err
@@ -213,6 +239,14 @@ func (b *Book) ApplyProcessingFact(fact ProcessingFact) (bool, error) {
 		if b.ProcessingStage == BookStageFailed && b.ProcessingStatus == BookStatusFailed &&
 			b.ProcessingFailureCategory == fact.FailureCategory {
 			return false, nil
+		}
+		if b.ProcessingStatus == BookStatusReindexing && b.ProcessingStage == BookStageChunksReady {
+			if err := b.TransitionTo(BookStatusFailed); err != nil {
+				return false, err
+			}
+			b.ProcessingStage = BookStageFailed
+			b.ProcessingFailureCategory = fact.FailureCategory
+			break
 		}
 		if b.ProcessingStatus == BookStatusPending && b.ProcessingStage == BookStageQueued {
 			if err := b.TransitionTo(BookStatusProcessing); err != nil {
