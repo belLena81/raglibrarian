@@ -1,6 +1,9 @@
 ALTER TABLE retrieval.index_jobs
     DROP CONSTRAINT IF EXISTS index_jobs_book_id_source_sha256_manifest_sha256_profile_di_key;
 
+ALTER TABLE retrieval.book_lifecycle
+    DROP CONSTRAINT IF EXISTS book_lifecycle_book_id_fkey;
+
 GRANT SELECT, INSERT, UPDATE ON retrieval.book_lifecycle TO retrieval_runtime;
 REVOKE DELETE ON retrieval.book_lifecycle FROM retrieval_runtime;
 

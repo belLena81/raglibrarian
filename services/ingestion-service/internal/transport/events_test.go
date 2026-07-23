@@ -114,6 +114,41 @@ func TestDecodeUploadedAcceptsAdditiveUnknownWireFields(t *testing.T) {
 	}
 }
 
+func TestDecodeUploadedNormalizesLegacyLifecycleVersion(t *testing.T) {
+	message := validUploadMessage()
+	message.LifecycleVersion = 0
+	payload, err := proto.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := DecodeUploaded(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.LifecycleVersion != 1 {
+		t.Fatalf("lifecycle version = %d, want 1", event.LifecycleVersion)
+	}
+	if err = event.Validate(50 << 20); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDecodeUploadedRejectsNegativeLifecycleVersion(t *testing.T) {
+	message := validUploadMessage()
+	message.LifecycleVersion = -1
+	payload, err := proto.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := DecodeUploaded(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = event.Validate(50 << 20); !errors.Is(err, application.ErrInvalidEvent) {
+		t.Fatalf("Validate() error = %v, want %v", err, application.ErrInvalidEvent)
+	}
+}
+
 func validUploadMessage() *catalogv1.BookUploadedV1 {
 	return &catalogv1.BookUploadedV1{
 		EventId:          "event-1",

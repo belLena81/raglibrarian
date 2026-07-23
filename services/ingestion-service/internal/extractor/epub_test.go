@@ -46,6 +46,30 @@ func TestParseEPUBReturnsSpineOrderAsLocations(t *testing.T) {
 	}
 }
 
+func TestParseEPUBSkipsExplicitDirectoryEntries(t *testing.T) {
+	path := writeSyntheticEPUB(t, []epubTestEntry{
+		{name: "mimetype", contents: "application/epub+zip", method: zip.Store},
+		{name: "META-INF/", directory: true},
+		{name: "META-INF/container.xml", contents: containerXML("OPS/package.opf")},
+		{name: "OPS/", directory: true},
+		{name: "OPS/package.opf", contents: packageXML(
+			`<item id="chapter" href="text/chapter.xhtml" media-type="application/xhtml+xml"/>`,
+			`<itemref idref="chapter"/>`,
+		)},
+		{name: "OPS/text/", directory: true},
+		{name: "OPS/text/chapter.xhtml", contents: xhtml("Chapter One", "Directory entries are valid.")},
+	})
+
+	pages, err := ParseEPUBFile(path, DefaultEPUBArchiveLimits())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pages) != 1 || !strings.Contains(pages[0].Text, "Directory entries are valid.") {
+		t.Fatalf("pages = %#v", pages)
+	}
+}
+
 func TestParseEPUBRejectsUnsafeOrAmbiguousArchives(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -71,6 +95,14 @@ func TestParseEPUBRejectsUnsafeOrAmbiguousArchives(t *testing.T) {
 			entries: []epubTestEntry{
 				{name: "mimetype", contents: "application/epub+zip", method: zip.Store},
 				{name: "META-INF/container.xml", contents: `<!DOCTYPE container><container/>`},
+			},
+		},
+		{
+			name: "traversal directory",
+			entries: []epubTestEntry{
+				{name: "mimetype", contents: "application/epub+zip", method: zip.Store},
+				{name: "../OPS/", directory: true},
+				{name: "META-INF/container.xml", contents: containerXML("OPS/package.opf")},
 			},
 		},
 	}
@@ -200,9 +232,10 @@ func (r *epubRunnerStub) Run(_ context.Context, path string, args []string, _ in
 }
 
 type epubTestEntry struct {
-	name     string
-	contents string
-	method   uint16
+	name      string
+	contents  string
+	method    uint16
+	directory bool
 }
 
 func writeSyntheticEPUB(t *testing.T, entries []epubTestEntry) string {
@@ -211,6 +244,9 @@ func writeSyntheticEPUB(t *testing.T, entries []epubTestEntry) string {
 	writer := zip.NewWriter(&contents)
 	for _, entry := range entries {
 		header := &zip.FileHeader{Name: entry.name, Method: entry.method}
+		if entry.directory {
+			header.SetMode(os.ModeDir | 0o755)
+		}
 		value, err := writer.CreateHeader(header)
 		if err != nil {
 			t.Fatal(err)

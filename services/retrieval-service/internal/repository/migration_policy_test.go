@@ -77,9 +77,20 @@ func TestBookLifecycleRemediationPreservesAppliedMigrationChecksum(t *testing.T)
 
 func TestBookLifecycleDownMigrationFailsClosedAndDeduplicates(t *testing.T) {
 	up := readMigration(t, "007_book_lifecycle_remediation.up.sql")
+	remediationDown := readMigration(t, "007_book_lifecycle_remediation.down.sql")
 	down := readMigration(t, "006_book_lifecycle.down.sql")
 	if !strings.Contains(up, "DROP CONSTRAINT IF EXISTS index_jobs_book_id_source_sha256_manifest_sha256_profile_di_key") {
 		t.Error("remediation migration does not drop PostgreSQL's generated uniqueness constraint")
+	}
+	if !strings.Contains(up, "DROP CONSTRAINT IF EXISTS book_lifecycle_book_id_fkey") {
+		t.Error("remediation migration keeps book_lifecycle dependent on metadata projection")
+	}
+	if strings.Contains(remediationDown, "DELETE FROM retrieval.book_lifecycle l") {
+		t.Error("remediation rollback deletes orphan lifecycle fences instead of failing closed")
+	}
+	if !strings.Contains(remediationDown, "RAISE EXCEPTION 'cannot roll back retrieval lifecycle remediation while orphan lifecycle fences exist'") ||
+		!strings.Contains(remediationDown, "ADD CONSTRAINT book_lifecycle_book_id_fkey") {
+		t.Error("remediation rollback does not fail closed before restoring lifecycle metadata FK")
 	}
 	required := []string{
 		"LOCK TABLE retrieval.book_lifecycle,",

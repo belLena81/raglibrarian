@@ -116,8 +116,12 @@ func decode(delivery amqp091.Delivery) (handler.BookStatusEvent, bool) {
 	if err := (proto.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(delivery.Body, &message); err != nil || len(message.ProtoReflect().GetUnknown()) != 0 {
 		return handler.BookStatusEvent{}, false
 	}
+	lifecycleVersion := message.LifecycleVersion
+	if lifecycleVersion == 0 {
+		lifecycleVersion = 1
+	}
 	if !validIdentifier(message.EventId) || delivery.MessageId != message.EventId || !validIdentifier(message.BookId) ||
-		message.Producer != "catalog-service" || message.SchemaVersion != "v1" || message.ProcessingVersion < 1 || message.LifecycleVersion < 1 ||
+		message.Producer != "catalog-service" || message.SchemaVersion != "v1" || message.ProcessingVersion < 1 || lifecycleVersion < 1 ||
 		message.UpdatedAt == nil || message.UpdatedAt.CheckValid() != nil || !validState(&message) {
 		return handler.BookStatusEvent{}, false
 	}
@@ -128,7 +132,7 @@ func decode(delivery amqp091.Delivery) (handler.BookStatusEvent, bool) {
 		ProcessingStage:           message.ProcessingStage,
 		ProcessingFailureCategory: message.ProcessingFailureCategory,
 		ProcessingVersion:         message.ProcessingVersion,
-		LifecycleVersion:          message.LifecycleVersion,
+		LifecycleVersion:          lifecycleVersion,
 		CanReindex:                message.CanReindex,
 		UpdatedAt:                 message.UpdatedAt.AsTime(),
 	}, true

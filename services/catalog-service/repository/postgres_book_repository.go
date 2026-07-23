@@ -4,8 +4,10 @@ package repository
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -575,7 +577,7 @@ func (r *PostgresBookRepository) finalizeDeletion(
 	if _, err := tx.Exec(ctx, `DELETE FROM catalog.outbox WHERE aggregate_id=$1`, book.ID); err != nil {
 		return fmt.Errorf("catalog: purge lifecycle outbox payloads: %w", err)
 	}
-	eventID := book.DeleteCommandID + ":deleted"
+	eventID := finalDeletionStatusEventID(book.ID, book.DeleteCommandID, book.LifecycleVersion, book.ProcessingVersion)
 	payload, err := proto.Marshal(&catalogv1.BookProcessingStatusChangedV1{
 		EventId: eventID, BookId: book.ID, ProcessingStatus: string(book.ProcessingStatus),
 		ProcessingVersion: book.ProcessingVersion, UpdatedAt: timestamppb.New(book.ProcessingUpdatedAt),
@@ -594,6 +596,11 @@ func (r *PostgresBookRepository) finalizeDeletion(
 		return fmt.Errorf("catalog: insert final deletion status outbox: %w", err)
 	}
 	return nil
+}
+
+func finalDeletionStatusEventID(bookID, commandID string, lifecycleVersion, processingVersion int64) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%s:%d:%d", bookID, commandID, lifecycleVersion, processingVersion)))
+	return "deleted-" + hex.EncodeToString(sum[:16])
 }
 
 func (r *PostgresBookRepository) ReferencesExist(ctx context.Context, references []string) (map[string]bool, error) {

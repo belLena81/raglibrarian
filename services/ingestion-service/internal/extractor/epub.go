@@ -98,7 +98,16 @@ func ParseEPUBFile(sourcePath string, limits EPUBArchiveLimits) ([]Page, error) 
 	files := make(map[string]*zip.File, len(archive.File))
 	var declaredExpanded uint64
 	for _, file := range archive.File {
-		if !validEPUBArchivePath(file.Name) || file.FileInfo().IsDir() || file.Flags&1 != 0 {
+		if file.Flags&1 != 0 {
+			return nil, epubFailure(domain.FailureMalformedDocument, errors.New("unsafe EPUB entry"))
+		}
+		if file.FileInfo().IsDir() {
+			if !validEPUBArchiveDirectory(file.Name) {
+				return nil, epubFailure(domain.FailureMalformedDocument, errors.New("unsafe EPUB entry"))
+			}
+			continue
+		}
+		if !validEPUBArchivePath(file.Name) {
 			return nil, epubFailure(domain.FailureMalformedDocument, errors.New("unsafe EPUB entry"))
 		}
 		if _, duplicate := files[file.Name]; duplicate {
@@ -211,6 +220,10 @@ func validEPUBArchivePath(value string) bool {
 		}
 	}
 	return true
+}
+
+func validEPUBArchiveDirectory(value string) bool {
+	return strings.HasSuffix(value, "/") && validEPUBArchivePath(strings.TrimSuffix(value, "/"))
 }
 
 func validEPUBIdentifier(value string) bool {

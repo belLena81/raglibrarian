@@ -34,9 +34,13 @@ func DecodeUploaded(payload []byte) (application.UploadedEvent, error) {
 	// Known v1 envelopes accept additive protobuf fields. The envelope remains
 	// byte-bounded above and all authorization/security-relevant known fields are
 	// still validated by UploadedEvent.Validate.
+	lifecycleVersion := event.LifecycleVersion
+	if lifecycleVersion == 0 {
+		lifecycleVersion = 1
+	}
 	var sum [sha256Size]byte
 	copy(sum[:], event.Sha256)
-	return application.UploadedEvent{EventID: event.EventId, BookID: event.BookId, ObjectReference: event.ObjectReference, MediaType: event.MediaType, CorrelationID: event.CorrelationId, CausationID: event.CausationId, Producer: event.Producer, SchemaVersion: event.SchemaVersion, IdempotencyKey: event.IdempotencyKey, SourceSHA256: sum, ByteSize: event.ByteSize, LifecycleVersion: event.LifecycleVersion, OccurredAt: event.OccurredAt.AsTime(), Payload: append([]byte(nil), payload...)}, nil
+	return application.UploadedEvent{EventID: event.EventId, BookID: event.BookId, ObjectReference: event.ObjectReference, MediaType: event.MediaType, CorrelationID: event.CorrelationId, CausationID: event.CausationId, Producer: event.Producer, SchemaVersion: event.SchemaVersion, IdempotencyKey: event.IdempotencyKey, SourceSHA256: sum, ByteSize: event.ByteSize, LifecycleVersion: lifecycleVersion, OccurredAt: event.OccurredAt.AsTime(), Payload: append([]byte(nil), payload...)}, nil
 }
 
 func DecodeDeletion(payload []byte) (application.DeletionEvent, error) {

@@ -169,16 +169,27 @@ func (r *Postgres) FenceDeletion(ctx context.Context, event application.Lifecycl
 	if event.LifecycleVersion == currentVersion {
 		return false, application.ErrConflictingEvent
 	}
-	command, err := tx.Exec(ctx, `UPDATE retrieval.book_lifecycle
-		SET lifecycle_version=$2,state='deleting',active_job_id=NULL,event_id=$3,command_id=$4,event_type='delete',
-		    payload_digest=$5,cleanup_pending=true,cleanup_attempts=0,cleanup_next_attempt_at=$6,
-		    correlation_id=$7,updated_at=$6
-		WHERE book_id=$1`, event.BookID, int64(event.LifecycleVersion), event.EventID, event.CommandID, event.PayloadDigest[:], now, event.CorrelationID) // #nosec G115 -- lifecycle versions originate as validated int64 protobuf fields.
-	if err != nil {
-		return false, err
-	}
-	if command.RowsAffected() != 1 {
-		return false, application.ErrConflictingEvent
+	if currentVersion == 0 {
+		_, err = tx.Exec(ctx, `INSERT INTO retrieval.book_lifecycle
+			(book_id,lifecycle_version,state,active_job_id,event_id,command_id,event_type,payload_digest,
+			 cleanup_pending,cleanup_attempts,cleanup_next_attempt_at,correlation_id,updated_at)
+			VALUES($1,$2,'deleting',NULL,$3,$4,'delete',$5,true,0,$6,$7,$6)`,
+			event.BookID, int64(event.LifecycleVersion), event.EventID, event.CommandID, event.PayloadDigest[:], now, event.CorrelationID) // #nosec G115 -- lifecycle versions originate as validated int64 protobuf fields.
+		if err != nil {
+			return false, err
+		}
+	} else {
+		command, updateErr := tx.Exec(ctx, `UPDATE retrieval.book_lifecycle
+			SET lifecycle_version=$2,state='deleting',active_job_id=NULL,event_id=$3,command_id=$4,event_type='delete',
+			    payload_digest=$5,cleanup_pending=true,cleanup_attempts=0,cleanup_next_attempt_at=$6,
+			    correlation_id=$7,updated_at=$6
+			WHERE book_id=$1`, event.BookID, int64(event.LifecycleVersion), event.EventID, event.CommandID, event.PayloadDigest[:], now, event.CorrelationID) // #nosec G115 -- lifecycle versions originate as validated int64 protobuf fields.
+		if updateErr != nil {
+			return false, updateErr
+		}
+		if command.RowsAffected() != 1 {
+			return false, application.ErrConflictingEvent
+		}
 	}
 	_, err = tx.Exec(ctx, `UPDATE retrieval.index_jobs
 		SET state='failed',failure_category=$2,vector_cleanup_pending=false,updated_at=$3
@@ -197,6 +208,9 @@ func checkLifecycleEvent(ctx context.Context, tx queryExecer, event application.
 		FROM retrieval.book_lifecycle WHERE book_id=$1 FOR UPDATE`, event.BookID).
 		Scan(&currentVersion, &eventID, &eventType, &payloadDigest)
 	if errors.Is(err, pgx.ErrNoRows) {
+		if event.Kind == application.LifecycleDelete {
+			return 0, false, nil
+		}
 		return 0, false, application.ErrConflictingEvent
 	}
 	if err != nil {
@@ -350,6 +364,9 @@ func (r *Postgres) ProjectMetadata(ctx context.Context, event application.Metada
 			return application.PlanningSnapshot{}, application.ErrConflictingEvent
 		}
 	}
+	if err = scrubMetadataWhenLifecycleDeleted(ctx, tx, event.BookID); err != nil {
+		return application.PlanningSnapshot{}, err
+	}
 	_, err = tx.Exec(ctx, `INSERT INTO retrieval.book_lifecycle
 		(book_id,lifecycle_version,state,event_id,event_type,payload_digest,correlation_id,updated_at)
 		VALUES($1,$2,'active',$3,'metadata',$4,$5,$6)
@@ -372,7 +389,22 @@ func (r *Postgres) ProjectManifest(ctx context.Context, event application.Manife
 	if err != nil {
 		return application.PlanningSnapshot{}, application.ErrInvalidEvent
 	}
-	command, err := r.pool.Exec(ctx, `INSERT INTO retrieval.manifest_facts
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return application.PlanningSnapshot{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err = lockBookProjection(ctx, tx, event.BookID); err != nil {
+		return application.PlanningSnapshot{}, err
+	}
+	fenced, err := lifecycleDeletionFenced(ctx, tx, event.BookID)
+	if err != nil {
+		return application.PlanningSnapshot{}, err
+	}
+	if fenced {
+		return application.PlanningSnapshot{Planned: true}, tx.Commit(ctx)
+	}
+	command, err := tx.Exec(ctx, `INSERT INTO retrieval.manifest_facts
 		(book_id,event_id,payload_digest,source_sha256,manifest_sha256,manifest_reference,manifest_payload,correlation_id,causation_id,occurred_at)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING`, event.BookID, event.EventID, event.PayloadDigest[:], event.SourceSHA256[:], event.ManifestSHA256[:], event.ManifestReference, manifestPayload, event.CorrelationID, event.CausationID, event.OccurredAt)
 	if err != nil {
@@ -380,9 +412,12 @@ func (r *Postgres) ProjectManifest(ctx context.Context, event application.Manife
 	}
 	if command.RowsAffected() == 0 {
 		var digest []byte
-		if err = r.pool.QueryRow(ctx, `SELECT payload_digest FROM retrieval.manifest_facts WHERE book_id=$1 OR event_id=$2`, event.BookID, event.EventID).Scan(&digest); err != nil || !equalDigest(digest, event.PayloadDigest) {
+		if err = tx.QueryRow(ctx, `SELECT payload_digest FROM retrieval.manifest_facts WHERE book_id=$1 OR event_id=$2`, event.BookID, event.EventID).Scan(&digest); err != nil || !equalDigest(digest, event.PayloadDigest) {
 			return application.PlanningSnapshot{}, application.ErrConflictingEvent
 		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return application.PlanningSnapshot{}, err
 	}
 	return r.loadSnapshot(ctx, event.BookID)
 }
@@ -425,6 +460,20 @@ func (r *Postgres) loadSnapshot(ctx context.Context, bookID string) (application
 	}
 	if snapshot.Metadata != nil && snapshot.Manifest != nil {
 		err = r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM retrieval.index_jobs WHERE book_id=$1 AND source_sha256=$2 AND manifest_sha256=$3)`, bookID, snapshot.Manifest.SourceSHA256[:], snapshot.Manifest.ManifestSHA256[:]).Scan(&snapshot.Planned)
+		if err != nil {
+			return snapshot, err
+		}
+		var fenced bool
+		err = r.pool.QueryRow(ctx, `SELECT EXISTS(
+			SELECT 1 FROM retrieval.book_lifecycle
+			WHERE book_id=$1 AND state IN ('deleting','deleted')
+		)`, bookID).Scan(&fenced)
+		if err != nil {
+			return snapshot, err
+		}
+		if fenced {
+			snapshot.Planned = true
+		}
 	}
 	return snapshot, err
 }
@@ -439,9 +488,17 @@ func (r *Postgres) CommitPlan(ctx context.Context, snapshot application.Planning
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	first := batches[0]
+	if err = lockBookProjection(ctx, tx, first.BookID); err != nil {
+		return false, err
+	}
 	command, err := tx.Exec(ctx, `INSERT INTO retrieval.index_jobs
 		(id,book_id,source_sha256,manifest_sha256,profile_digest,state,expected_batches,correlation_id,created_at,updated_at,lifecycle_version)
-		VALUES($1,$2,$3,$4,$5,'pending',$6,$7,$8,$8,$9) ON CONFLICT DO NOTHING`, first.JobID, first.BookID, snapshot.Manifest.SourceSHA256[:], snapshot.Manifest.ManifestSHA256[:], first.ProfileDigest[:], len(batches), snapshot.Manifest.CorrelationID, first.OccurredAt, int64(repositoryLifecycleVersion(first.LifecycleVersion))) // #nosec G115 -- lifecycle versions originate as validated int64 protobuf fields.
+		SELECT $1,$2,$3,$4,$5,'pending',$6,$7,$8,$8,$9
+		WHERE NOT EXISTS (
+			SELECT 1 FROM retrieval.book_lifecycle
+			WHERE book_id=$2 AND state IN ('deleting','deleted')
+		)
+		ON CONFLICT DO NOTHING`, first.JobID, first.BookID, snapshot.Manifest.SourceSHA256[:], snapshot.Manifest.ManifestSHA256[:], first.ProfileDigest[:], len(batches), snapshot.Manifest.CorrelationID, first.OccurredAt, int64(repositoryLifecycleVersion(first.LifecycleVersion))) // #nosec G115 -- lifecycle versions originate as validated int64 protobuf fields.
 	if err != nil {
 		return false, err
 	}
@@ -1085,6 +1142,13 @@ func (r *Postgres) FailManifest(ctx context.Context, event application.ManifestE
 	if err = lockBookProjection(ctx, tx, event.BookID); err != nil {
 		return err
 	}
+	fenced, err := lifecycleDeletionFenced(ctx, tx, event.BookID)
+	if err != nil {
+		return err
+	}
+	if fenced {
+		return tx.Commit(ctx)
+	}
 	command, err := tx.Exec(ctx, `INSERT INTO retrieval.manifest_facts
 		(book_id,event_id,payload_digest,source_sha256,manifest_sha256,manifest_reference,manifest_payload,correlation_id,causation_id,occurred_at,failure_category,failure_recorded_at)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING`, event.BookID, event.EventID, event.PayloadDigest[:], event.SourceSHA256[:], event.ManifestSHA256[:], event.ManifestReference, manifestPayload, event.CorrelationID, event.CausationID, event.OccurredAt, string(category), now)
@@ -1125,6 +1189,26 @@ func metadataExists(ctx context.Context, tx queryExecer, bookID string) (bool, e
 		return false, err
 	}
 	return exists, nil
+}
+
+func scrubMetadataWhenLifecycleDeleted(ctx context.Context, tx queryExecer, bookID string) error {
+	_, err := tx.Exec(ctx, `UPDATE retrieval.metadata_facts
+		SET title='',author='',publication_year=0,tags='{}'
+		WHERE book_id=$1
+		  AND EXISTS (
+		    SELECT 1 FROM retrieval.book_lifecycle
+		    WHERE book_id=$1 AND state IN ('deleting','deleted')
+		  )`, bookID)
+	return err
+}
+
+func lifecycleDeletionFenced(ctx context.Context, tx queryExecer, bookID string) (bool, error) {
+	var fenced bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1 FROM retrieval.book_lifecycle
+		WHERE book_id=$1 AND state IN ('deleting','deleted')
+	)`, bookID).Scan(&fenced)
+	return fenced, err
 }
 
 func lockBookProjection(ctx context.Context, tx queryExecer, bookID string) error {

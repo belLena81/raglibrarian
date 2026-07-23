@@ -251,6 +251,149 @@ func TestFailManifestEmitsIncompatibleProfileTerminalEvent(t *testing.T) {
 	}
 }
 
+func TestFenceDeletionCreatesDurableTombstoneWhenMetadataProjectionIsMissing(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository := NewPostgres(pool)
+	suffix := randomIntegrationID(t)
+	bookID := "book-" + suffix
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	event := application.LifecycleEvent{
+		EventID:          "delete-event-" + suffix,
+		BookID:           bookID,
+		CommandID:        "delete-command-" + suffix,
+		ActorID:          "actor-" + suffix,
+		CorrelationID:    "correlation-" + suffix,
+		CausationID:      "delete-command-" + suffix,
+		Producer:         "catalog-service",
+		SchemaVersion:    "v1",
+		IdempotencyKey:   "delete-command-" + suffix,
+		Kind:             application.LifecycleDelete,
+		LifecycleVersion: 2,
+		PayloadDigest:    integrationDigest(81),
+		OccurredAt:       now,
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.outbox WHERE aggregate_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.manifest_facts WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.book_lifecycle WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
+	})
+
+	cleanupRequired, err := repository.FenceDeletion(ctx, event, now)
+
+	if !cleanupRequired || err != nil {
+		t.Fatalf("FenceDeletion() cleanup=%v error=%v, want durable cleanup", cleanupRequired, err)
+	}
+	if err = repository.CompleteDeletion(ctx, application.DeletionCleanup{
+		BookID:           bookID,
+		EventID:          event.EventID,
+		CommandID:        event.CommandID,
+		CorrelationID:    event.CorrelationID,
+		LifecycleVersion: event.LifecycleVersion,
+	}, now.Add(time.Second)); err != nil {
+		t.Fatalf("CompleteDeletion() error = %v", err)
+	}
+	var lifecycleState string
+	var ackEvents int
+	if err = pool.QueryRow(ctx, `SELECT state FROM retrieval.book_lifecycle WHERE book_id=$1`, bookID).Scan(&lifecycleState); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.outbox
+		WHERE aggregate_id=$1 AND event_type='retrieval.book.index-deleted.v1'`, bookID).Scan(&ackEvents); err != nil {
+		t.Fatal(err)
+	}
+	if lifecycleState != "deleted" || ackEvents != 1 {
+		t.Fatalf("post-cleanup lifecycle state=%q ack events=%d", lifecycleState, ackEvents)
+	}
+	metadata := application.MetadataEvent{
+		EventID:        "metadata-" + suffix,
+		BookID:         bookID,
+		Title:          "Must be scrubbed",
+		Author:         "Must be scrubbed",
+		Year:           2026,
+		CorrelationID:  "correlation-" + suffix,
+		CausationID:    "upload-" + suffix,
+		Producer:       "catalog-service",
+		SchemaVersion:  "v1",
+		IdempotencyKey: bookID,
+		SourceSHA256:   integrationDigest(82),
+		PayloadDigest:  integrationDigest(83),
+		OccurredAt:     now.Add(2 * time.Second),
+	}
+	if _, err = repository.ProjectMetadata(ctx, metadata); err != nil {
+		t.Fatalf("ProjectMetadata() after deletion error = %v", err)
+	}
+	var title, author string
+	var year int
+	if err = pool.QueryRow(ctx, `SELECT title,author,publication_year FROM retrieval.metadata_facts WHERE book_id=$1`, bookID).Scan(&title, &author, &year); err != nil {
+		t.Fatal(err)
+	}
+	if title != "" || author != "" || year != 0 {
+		t.Fatalf("delayed metadata was not scrubbed: title=%q author=%q year=%d", title, author, year)
+	}
+	work := validIntegrationBatchWork(bookID, "job-"+suffix, "batch-"+suffix, now.Add(3*time.Second))
+	work.SourceSHA256 = metadata.SourceSHA256
+	work.ManifestSHA256 = integrationDigest(84)
+	manifest := manifestForWork(work)
+	manifest.SourceSHA256 = work.SourceSHA256
+	manifest.ManifestSHA256 = work.ManifestSHA256
+	manifestSnapshot, err := repository.ProjectManifest(ctx, application.ManifestEvent{
+		EventID:           "manifest-" + suffix,
+		BookID:            bookID,
+		ManifestReference: "books/" + bookID + "/source/profile/manifest.pb",
+		CorrelationID:     "correlation-" + suffix,
+		CausationID:       "chunks-" + suffix,
+		Producer:          "ingestion-service",
+		SchemaVersion:     "v1",
+		IdempotencyKey:    bookID + ":ready",
+		SourceSHA256:      work.SourceSHA256,
+		ManifestSHA256:    work.ManifestSHA256,
+		PayloadDigest:     integrationDigest(85),
+		OccurredAt:        now.Add(3 * time.Second),
+		Manifest:          manifest,
+	})
+	if err != nil || !manifestSnapshot.Planned {
+		t.Fatalf("ProjectManifest() after deletion snapshot=%+v error=%v, want ignored planned snapshot", manifestSnapshot, err)
+	}
+	var manifestRows int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.manifest_facts WHERE book_id=$1`, bookID).Scan(&manifestRows); err != nil {
+		t.Fatal(err)
+	}
+	if manifestRows != 0 {
+		t.Fatalf("delayed manifest rows after deletion = %d, want 0", manifestRows)
+	}
+	accepted, err := repository.CommitPlan(ctx, application.PlanningSnapshot{
+		Metadata: &metadata,
+		Manifest: &application.ManifestEvent{
+			BookID:         bookID,
+			SourceSHA256:   metadata.SourceSHA256,
+			ManifestSHA256: work.ManifestSHA256,
+		},
+	}, []application.BatchPlan{{
+		JobID:            "job-" + suffix,
+		BatchID:          "batch-" + suffix,
+		BookID:           bookID,
+		ProfileDigest:    domain.SupportedIndexProfile().Digest,
+		OccurredAt:       now.Add(3 * time.Second),
+		LifecycleVersion: 1,
+	}})
+	if err != nil || accepted {
+		t.Fatalf("CommitPlan() after deletion accepted=%v error=%v, want ignored", accepted, err)
+	}
+}
+
 func TestFailManifestIntegrityDoesNotPersistCorruptManifestPayload(t *testing.T) {
 	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
 		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")

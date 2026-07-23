@@ -48,6 +48,21 @@ func TestLifecycleDeletionRemainsPendingWhenVectorCleanupFails(t *testing.T) {
 	}
 }
 
+func TestLifecycleDeletionCompletesAfterDurablePreMetadataFence(t *testing.T) {
+	repository := &lifecycleRepositoryStub{cleanupRequired: true}
+	vectors := &lifecycleVectorStub{}
+	coordinator, _ := NewLifecycleCoordinator(repository, vectors, func() (string, error) {
+		return "job-new", nil
+	}, lifecycleNow)
+
+	if err := coordinator.HandleDeletion(context.Background(), validLifecycleEvent(LifecycleDelete)); err != nil {
+		t.Fatal(err)
+	}
+	if vectors.deletions != 1 || repository.acknowledged != 1 {
+		t.Fatalf("vector deletions=%d acknowledgements=%d, want cleanup and acknowledgement", vectors.deletions, repository.acknowledged)
+	}
+}
+
 func TestLifecycleReindexDelegatesValidatedGeneration(t *testing.T) {
 	repository := &lifecycleRepositoryStub{}
 	coordinator, _ := NewLifecycleCoordinator(repository, &lifecycleVectorStub{}, func() (string, error) {

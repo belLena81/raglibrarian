@@ -77,9 +77,10 @@ func TestFinalDeletionAcknowledgementEmitsAtomicStatusProjection(t *testing.T) {
 	if err != nil || !changed || book.ProcessingStatus != catalog.BookStatusDeleted || book.ProcessingVersion != 6 {
 		t.Fatalf("ApplyLifecycleAck() = (%+v, %v, %v)", book, changed, err)
 	}
+	var finalEventID string
 	var payload []byte
-	if err = pool.QueryRow(ctx, `SELECT payload FROM catalog.outbox
-		WHERE aggregate_id=$1 AND event_type='catalog.book.processing-status-changed.v1'`, bookID).Scan(&payload); err != nil {
+	if err = pool.QueryRow(ctx, `SELECT event_id,payload FROM catalog.outbox
+		WHERE aggregate_id=$1 AND event_type='catalog.book.processing-status-changed.v1'`, bookID).Scan(&finalEventID, &payload); err != nil {
 		t.Fatalf("read final deletion status: %v", err)
 	}
 	status := &catalogv1.BookProcessingStatusChangedV1{}
@@ -89,6 +90,9 @@ func TestFinalDeletionAcknowledgementEmitsAtomicStatusProjection(t *testing.T) {
 	if status.GetProcessingStatus() != "deleted" || status.GetProcessingVersion() != 6 ||
 		status.GetLifecycleVersion() != 2 || status.GetCanReindex() {
 		t.Fatalf("final deletion status = %+v", status)
+	}
+	if status.GetEventId() != finalEventID || strings.Contains(finalEventID, ":") || len(finalEventID) > 128 || !edgeStatusIdentifier(finalEventID) {
+		t.Fatalf("final deletion event ID is not Edge-compatible: outbox=%q payload=%q", finalEventID, status.GetEventId())
 	}
 	var retainedProjectionColumns, outboxRows int
 	var retainedActor, retainedCorrelation *string
@@ -394,4 +398,18 @@ func randomIntegrationID(t *testing.T) string {
 		t.Fatalf("generate integration ID: %v", err)
 	}
 	return hex.EncodeToString(value)
+}
+
+func edgeStatusIdentifier(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '-' || character == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }

@@ -25,6 +25,36 @@ func TestDecodeAcceptsSanitizedStatusEvent(t *testing.T) {
 	}
 }
 
+func TestDecodeNormalizesLegacyLifecycleVersion(t *testing.T) {
+	payload, err := proto.Marshal(&catalogv1.BookProcessingStatusChangedV1{
+		EventId: "event-1", BookId: "book-1", ProcessingStatus: "processing", ProcessingStage: "chunks_ready",
+		ProcessingVersion: 3, LifecycleVersion: 0, UpdatedAt: timestamppb.New(time.Unix(10, 0)), Producer: "catalog-service", SchemaVersion: "v1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, valid := decode(amqp091.Delivery{ContentType: "application/x-protobuf", Type: "catalog.book.processing-status-changed.v1", MessageId: "event-1", Body: payload})
+	if !valid {
+		t.Fatal("legacy lifecycle event was rejected")
+	}
+	if event.LifecycleVersion != 1 {
+		t.Fatalf("lifecycle version = %d, want 1", event.LifecycleVersion)
+	}
+}
+
+func TestDecodeRejectsNegativeLifecycleVersion(t *testing.T) {
+	payload, err := proto.Marshal(&catalogv1.BookProcessingStatusChangedV1{
+		EventId: "event-1", BookId: "book-1", ProcessingStatus: "processing", ProcessingStage: "chunks_ready",
+		ProcessingVersion: 3, LifecycleVersion: -1, UpdatedAt: timestamppb.New(time.Unix(10, 0)), Producer: "catalog-service", SchemaVersion: "v1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, valid := decode(amqp091.Delivery{ContentType: "application/x-protobuf", Type: "catalog.book.processing-status-changed.v1", MessageId: "event-1", Body: payload}); valid {
+		t.Fatal("negative lifecycle event was accepted")
+	}
+}
+
 func TestDecodeRejectsSSEIdentifierInjection(t *testing.T) {
 	payload, err := proto.Marshal(&catalogv1.BookProcessingStatusChangedV1{
 		EventId: "event-1\nevent: injected", BookId: "book-1", ProcessingStatus: "pending", ProcessingStage: "queued",
