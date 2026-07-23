@@ -112,7 +112,7 @@ jobs:
             mappings=$(resource_count AWS::Lambda::EventSourceMapping)
             functions=$(resource_count AWS::Lambda::Function)
             case "$expected" in
-              lambda) [[ "$mappings" == 3 && "$functions" == 4 ]] ;;
+              lambda) [[ "$mappings" == 4 && "$functions" == 4 ]] ;;
               paused) [[ "$mappings" == 0 && "$functions" == 0 ]] ;;
             esac
           }

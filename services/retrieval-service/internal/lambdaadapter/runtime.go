@@ -92,6 +92,7 @@ type vectorCleanupRepository interface {
 
 type vectorDeactivator interface {
 	DeactivateJob(context.Context, string) error
+	DeleteJob(context.Context, string) error
 }
 
 type lifecycleProcessor interface {
@@ -394,7 +395,7 @@ func (r *Runtime) Index(ctx context.Context, event RabbitEvent) error {
 				return nil
 			}
 			if r.vector != nil {
-				if cleanupErr := r.vector.DeactivateJob(failureCtx, work.JobID); cleanupErr == nil {
+				if cleanupErr := r.vector.DeleteJob(failureCtx, work.JobID); cleanupErr == nil {
 					if completeErr := r.vectorCleanupRepository().CompleteVectorCleanup(failureCtx, work.JobID); completeErr != nil {
 						return errors.New("complete vector cleanup")
 					}
@@ -561,7 +562,7 @@ func (r *Runtime) retryPendingVectorCleanup(ctx context.Context, now time.Time, 
 		return err
 	}
 	for _, job := range jobs {
-		if err = r.vector.DeactivateJob(ctx, job.JobID); err != nil {
+		if err = r.vector.DeleteJob(ctx, job.JobID); err != nil {
 			if retryErr := r.vectorCleanupRepository().RetryVectorCleanup(ctx, job.JobID, now); retryErr != nil {
 				return retryErr
 			}

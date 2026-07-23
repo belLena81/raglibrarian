@@ -142,8 +142,13 @@ type Book struct {
 }
 
 func (b Book) CanReindex() bool {
-	return (b.ProcessingStatus == BookStatusIndexed || b.ProcessingStatus == BookStatusFailed) &&
-		b.ManifestReference != "" && b.ManifestChecksum != [32]byte{}
+	if b.ManifestReference == "" || b.ManifestChecksum == [32]byte{} {
+		return false
+	}
+	if b.ProcessingStatus == BookStatusIndexed {
+		return true
+	}
+	return b.ProcessingStatus == BookStatusFailed && reindexableFailureCategory(b.ProcessingFailureCategory)
 }
 
 // ApplyProcessingFact applies an idempotent, monotonic Ingestion fact.
@@ -274,6 +279,17 @@ func validIndexingFailureCategory(category ProcessingFailureCategory) bool {
 	case FailureManifestIntegrity, FailureIncompatibleProfile, FailureEmbeddingUnavailable,
 		FailureVectorStoreUnavailable, FailureResourceLimitExceeded, FailureIndexingTimeout,
 		FailureInternalIndexingError:
+		return true
+	default:
+		return false
+	}
+}
+
+func reindexableFailureCategory(category ProcessingFailureCategory) bool {
+	switch category {
+	case FailureDependencyUnavailable, FailureProcessingTimeout, FailureResourceLimitExceeded,
+		FailureInternalProcessingError, FailureEmbeddingUnavailable, FailureVectorStoreUnavailable,
+		FailureIndexingTimeout, FailureInternalIndexingError:
 		return true
 	default:
 		return false

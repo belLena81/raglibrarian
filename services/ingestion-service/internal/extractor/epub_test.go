@@ -70,6 +70,27 @@ func TestParseEPUBSkipsExplicitDirectoryEntries(t *testing.T) {
 	}
 }
 
+func TestParseEPUBAcceptsTrailingXMLWhitespaceInMetadata(t *testing.T) {
+	path := writeSyntheticEPUB(t, []epubTestEntry{
+		{name: "mimetype", contents: "application/epub+zip", method: zip.Store},
+		{name: "META-INF/container.xml", contents: containerXML("OPS/package.opf") + "\n \t"},
+		{name: "OPS/package.opf", contents: packageXML(
+			`<item id="chapter" href="text/chapter.xhtml" media-type="application/xhtml+xml"/>`,
+			`<itemref idref="chapter"/>`,
+		) + "\n \t"},
+		{name: "OPS/text/chapter.xhtml", contents: xhtml("Chapter One", "Trailing XML whitespace is valid.")},
+	})
+
+	pages, err := ParseEPUBFile(path, DefaultEPUBArchiveLimits())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pages) != 1 || !strings.Contains(pages[0].Text, "Trailing XML whitespace is valid.") {
+		t.Fatalf("pages = %#v", pages)
+	}
+}
+
 func TestParseEPUBRejectsUnsafeOrAmbiguousArchives(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -95,6 +116,24 @@ func TestParseEPUBRejectsUnsafeOrAmbiguousArchives(t *testing.T) {
 			entries: []epubTestEntry{
 				{name: "mimetype", contents: "application/epub+zip", method: zip.Store},
 				{name: "META-INF/container.xml", contents: `<!DOCTYPE container><container/>`},
+			},
+		},
+		{
+			name: "trailing container content",
+			entries: []epubTestEntry{
+				{name: "mimetype", contents: "application/epub+zip", method: zip.Store},
+				{name: "META-INF/container.xml", contents: containerXML("OPS/package.opf") + "trailing"},
+			},
+		},
+		{
+			name: "trailing package content",
+			entries: []epubTestEntry{
+				{name: "mimetype", contents: "application/epub+zip", method: zip.Store},
+				{name: "META-INF/container.xml", contents: containerXML("OPS/package.opf")},
+				{name: "OPS/package.opf", contents: packageXML(
+					`<item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>`,
+					`<itemref idref="chapter"/>`,
+				) + "trailing"},
 			},
 		},
 		{

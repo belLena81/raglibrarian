@@ -1233,7 +1233,7 @@ func TestCompleteBatchSerializesFinalBatchCompletion(t *testing.T) {
 	}
 }
 
-func TestLifecycleFinalizeReindexRemovesPriorSQLGenerationAndUnpublishedOutbox(t *testing.T) {
+func TestLifecycleFinalizeReindexMarksPriorSQLGenerationForCleanup(t *testing.T) {
 	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
 		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
 	}
@@ -1337,10 +1337,12 @@ func TestLifecycleFinalizeReindexRemovesPriorSQLGenerationAndUnpublishedOutbox(t
 	if err = pool.QueryRow(ctx, `SELECT active_job_id,state FROM retrieval.book_lifecycle WHERE book_id=$1`, bookID).Scan(&activeJobID, &state); err != nil {
 		t.Fatal(err)
 	}
-	var oldJobs, unpublishedOld, publishedOld, indexedEvents int
-	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.index_jobs WHERE id=$1`, oldJobID).Scan(&oldJobs); err != nil {
+	var oldState, oldFailureCategory string
+	var cleanupPending bool
+	if err = pool.QueryRow(ctx, `SELECT state,failure_category,vector_cleanup_pending FROM retrieval.index_jobs WHERE id=$1`, oldJobID).Scan(&oldState, &oldFailureCategory, &cleanupPending); err != nil {
 		t.Fatal(err)
 	}
+	var unpublishedOld, publishedOld, indexedEvents int
 	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.outbox WHERE aggregate_id=$1 AND published_at IS NULL`, oldJobID).Scan(&unpublishedOld); err != nil {
 		t.Fatal(err)
 	}
@@ -1350,9 +1352,9 @@ func TestLifecycleFinalizeReindexRemovesPriorSQLGenerationAndUnpublishedOutbox(t
 	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.outbox WHERE event_id=$1`, newJobID+":indexed").Scan(&indexedEvents); err != nil {
 		t.Fatal(err)
 	}
-	if activeJobID != newJobID || state != "active" || oldJobs != 0 || unpublishedOld != 0 || publishedOld != 1 || indexedEvents != 1 {
-		t.Fatalf("active=%q state=%q old_jobs=%d unpublished_old=%d published_old=%d indexed_events=%d",
-			activeJobID, state, oldJobs, unpublishedOld, publishedOld, indexedEvents)
+	if activeJobID != newJobID || state != "active" || oldState != "failed" || oldFailureCategory != string(domain.FailureVectorStoreUnavailable) || !cleanupPending || unpublishedOld != 0 || publishedOld != 1 || indexedEvents != 1 {
+		t.Fatalf("active=%q state=%q old_state=%q old_failure_category=%q cleanup_pending=%v unpublished_old=%d published_old=%d indexed_events=%d",
+			activeJobID, state, oldState, oldFailureCategory, cleanupPending, unpublishedOld, publishedOld, indexedEvents)
 	}
 }
 

@@ -83,6 +83,7 @@ type BatchRepository interface {
 	DocumentRecord(context.Context, BatchWork) (DocumentRecord, error)
 	PriorIndexedJobIDs(context.Context, BatchWork) ([]string, error)
 	FinalizeJob(context.Context, BatchWork, time.Time) error
+	CompleteVectorCleanup(context.Context, string) error
 }
 
 type ShardReader interface {
@@ -223,13 +224,16 @@ func (i *Indexer) finalizeDocument(ctx context.Context, work BatchWork) error {
 	if err = i.index.ActivateJob(ctx, work.JobID); err != nil {
 		return Failure(domain.FailureVectorStoreUnavailable, errors.Join(errors.New("activate vectors"), err))
 	}
+	if err = i.repository.FinalizeJob(ctx, work, i.now().UTC()); err != nil {
+		return errors.Join(errors.New("finalize index job"), err)
+	}
 	for _, priorJobID := range priorJobIDs {
 		if err = i.index.DeleteJob(ctx, priorJobID); err != nil {
 			return Failure(domain.FailureVectorStoreUnavailable, errors.Join(errors.New("delete prior index generation"), err))
 		}
-	}
-	if err = i.repository.FinalizeJob(ctx, work, i.now().UTC()); err != nil {
-		return errors.Join(errors.New("finalize index job"), err)
+		if err = i.repository.CompleteVectorCleanup(ctx, priorJobID); err != nil {
+			return errors.Join(errors.New("complete prior index cleanup"), err)
+		}
 	}
 	return nil
 }

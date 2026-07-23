@@ -42,7 +42,9 @@ func (r *countingRetrieval) Search(context.Context, handler.SearchRequest) (hand
 }
 
 type countingCatalog struct {
-	uploads atomic.Int32
+	uploads   atomic.Int32
+	reindexes atomic.Int32
+	deletes   atomic.Int32
 }
 
 func (c *countingCatalog) UploadBook(context.Context, handler.BookMetadata, handler.CatalogActor, string, io.Reader) (handler.Book, error) {
@@ -57,11 +59,13 @@ func (*countingCatalog) ListBooks(context.Context, int, string, handler.CatalogA
 func (*countingCatalog) GetBook(context.Context, string, handler.CatalogActor) (handler.Book, error) {
 	return handler.Book{}, nil
 }
-func (*countingCatalog) ReindexBook(context.Context, string, handler.CatalogActor, string, string) (handler.Book, error) {
-	return handler.Book{}, nil
+func (c *countingCatalog) ReindexBook(context.Context, string, handler.CatalogActor, string, string) (handler.Book, error) {
+	c.reindexes.Add(1)
+	return handler.Book{ID: "book-id", ProcessingStatus: "reindexing"}, nil
 }
-func (*countingCatalog) DeleteBook(context.Context, string, handler.CatalogActor, string, string) (handler.Book, error) {
-	return handler.Book{}, nil
+func (c *countingCatalog) DeleteBook(context.Context, string, handler.CatalogActor, string, string) (handler.Book, error) {
+	c.deletes.Add(1)
+	return handler.Book{ID: "book-id", ProcessingStatus: "deleting"}, nil
 }
 
 func (*countingCatalog) CheckReady(context.Context) error {
@@ -232,8 +236,12 @@ func TestBookUploadRateLimitUsesRouterConfiguration(t *testing.T) {
 
 	assertAuthenticatedMultipartStatus(t, router, token, http.StatusCreated)
 	assertAuthenticatedMultipartStatus(t, router, token, http.StatusTooManyRequests)
+	assertAuthenticatedBookCommandStatus(t, router, http.MethodPost, "/books/AAAAAAAAAAAAAAAAAAAAAA/reindex", token, "reindex-command", http.StatusAccepted)
+	assertAuthenticatedBookCommandStatus(t, router, http.MethodDelete, "/books/AAAAAAAAAAAAAAAAAAAAAA", token, "delete-command", http.StatusAccepted)
 
 	assert.Equal(t, int32(1), catalog.uploads.Load())
+	assert.Equal(t, int32(1), catalog.reindexes.Load())
+	assert.Equal(t, int32(1), catalog.deletes.Load())
 }
 
 type passwordResetIdentity struct {
@@ -332,6 +340,16 @@ func assertAuthenticatedMultipartStatus(t *testing.T, router http.Handler, token
 	request.Header.Set("Authorization", "Bearer "+token)
 	router.ServeHTTP(recorder, request)
 	assert.Equal(t, want, recorder.Code, "upload response: %s", recorder.Body.String())
+}
+
+func assertAuthenticatedBookCommandStatus(t *testing.T, router http.Handler, method, path, token, commandID string, want int) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(method, path, nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Idempotency-Key", commandID)
+	router.ServeHTTP(recorder, request)
+	assert.Equal(t, want, recorder.Code, "%s %s response: %s", method, path, recorder.Body.String())
 }
 
 type deadlineRecorder struct {

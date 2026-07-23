@@ -518,6 +518,10 @@ func (s *stubWorkerVector) DeactivateJob(_ context.Context, jobID string) error 
 	return s.deactivateErr
 }
 
+func (s *stubWorkerVector) DeleteJob(ctx context.Context, jobID string) error {
+	return s.DeactivateJob(ctx, jobID)
+}
+
 type stubVectorCleanupRepository struct {
 	jobs           []repository.VectorCleanupJob
 	completed      int

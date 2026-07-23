@@ -72,13 +72,17 @@ func TestIndexerResumesExpiredPendingFinalizationExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestIndexerDeletesPriorGenerationsBeforeFinalizing(t *testing.T) {
+func TestIndexerFinalizesReplacementBeforeDeletingPriorGenerations(t *testing.T) {
 	var operations []string
 	repository := &stubBatchRepository{
 		metadata:    BookProjection{BookID: "book-1", Title: "Systems", Author: "Author", Year: 2026},
 		priorJobIDs: []string{"job-old-1", "job-old-2"},
 		finalize: func() error {
 			operations = append(operations, "finalize")
+			return nil
+		},
+		completeVectorCleanup: func(jobID string) error {
+			operations = append(operations, "complete:"+jobID)
 			return nil
 		},
 	}
@@ -118,7 +122,14 @@ func TestIndexerDeletesPriorGenerationsBeforeFinalizing(t *testing.T) {
 	if repository.finalized != 1 {
 		t.Fatalf("finalized = %d, want 1", repository.finalized)
 	}
-	wantOperations := []string{"activate:job-1", "delete:job-old-1", "delete:job-old-2", "finalize"}
+	wantOperations := []string{
+		"activate:job-1",
+		"finalize",
+		"delete:job-old-1",
+		"complete:job-old-1",
+		"delete:job-old-2",
+		"complete:job-old-2",
+	}
 	if len(operations) != len(wantOperations) {
 		t.Fatalf("operations = %#v, want %#v", operations, wantOperations)
 	}
@@ -129,7 +140,7 @@ func TestIndexerDeletesPriorGenerationsBeforeFinalizing(t *testing.T) {
 	}
 }
 
-func TestIndexerLeavesFinalizationRetryableWhenPriorGenerationDeletionFails(t *testing.T) {
+func TestIndexerPersistsReplacementWhenPriorGenerationDeletionFails(t *testing.T) {
 	repository := &stubBatchRepository{
 		metadata:    BookProjection{BookID: "book-1", Title: "Systems", Author: "Author", Year: 2026},
 		priorJobIDs: []string{"job-old"},
@@ -156,8 +167,11 @@ func TestIndexerLeavesFinalizationRetryableWhenPriorGenerationDeletionFails(t *t
 	if FailureCategory(err) != domain.FailureVectorStoreUnavailable {
 		t.Fatalf("FailureCategory() = %s, want %s, err=%v", FailureCategory(err), domain.FailureVectorStoreUnavailable, err)
 	}
-	if repository.finalized != 0 {
-		t.Fatalf("finalized = %d, want 0", repository.finalized)
+	if repository.finalized != 1 {
+		t.Fatalf("finalized = %d, want 1", repository.finalized)
+	}
+	if repository.vectorCleanupCompleted != 0 {
+		t.Fatalf("completed vector cleanup = %d, want 0", repository.vectorCleanupCompleted)
 	}
 }
 
@@ -458,16 +472,18 @@ func validChunkWithPosition(text string, order uint64, pageStart, pageEnd uint32
 }
 
 type stubBatchRepository struct {
-	metadata    BookProjection
-	begin       func() (BookProjection, bool, error)
-	completeErr error
-	checkActive func() (bool, error)
-	complete    func() (bool, error)
-	finalize    func() error
-	priorJobIDs []string
-	priorErr    error
-	completed   int
-	finalized   int
+	metadata               BookProjection
+	begin                  func() (BookProjection, bool, error)
+	completeErr            error
+	checkActive            func() (bool, error)
+	complete               func() (bool, error)
+	finalize               func() error
+	completeVectorCleanup  func(string) error
+	priorJobIDs            []string
+	priorErr               error
+	completed              int
+	finalized              int
+	vectorCleanupCompleted int
 }
 
 func (s *stubBatchRepository) BeginBatch(context.Context, BatchWork) (BookProjection, bool, error) {
@@ -507,6 +523,15 @@ func (s *stubBatchRepository) FinalizeJob(context.Context, BatchWork, time.Time)
 		}
 	}
 	s.finalized++
+	return nil
+}
+func (s *stubBatchRepository) CompleteVectorCleanup(_ context.Context, jobID string) error {
+	if s.completeVectorCleanup != nil {
+		if err := s.completeVectorCleanup(jobID); err != nil {
+			return err
+		}
+	}
+	s.vectorCleanupCompleted++
 	return nil
 }
 

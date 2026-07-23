@@ -129,6 +129,41 @@ func TestLifecycleCommandsAreIdempotentAndDeletionWaitsForAllCleanup(t *testing.
 	}
 }
 
+func TestReindexRejectsUnusableManifestFailures(t *testing.T) {
+	for _, category := range []ProcessingFailureCategory{FailureManifestIntegrity, FailureIncompatibleProfile} {
+		t.Run(string(category), func(t *testing.T) {
+			repository := NewMemoryRepository()
+			service := NewServiceWithOptions(repository, NewMemoryObjectStore(), ServiceOptions{
+				MaxBytes: 1024,
+				Clock: func() time.Time {
+					return time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+				},
+				NewID: func() (string, error) {
+					return "event-id", nil
+				},
+			})
+			book, err := service.UploadBook(context.Background(), validUploadInput(strings.NewReader("%PDF-1.7\nbody")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			book.ProcessingStatus = BookStatusFailed
+			book.ProcessingStage = BookStageFailed
+			book.ProcessingFailureCategory = category
+			book.ManifestReference = "manifests/book.pb"
+			book.ManifestChecksum = sha256.Sum256([]byte("manifest"))
+			repository.books[book.ID] = book
+
+			_, err = service.ReindexBook(context.Background(), book.ID, "reindex-command", validManager(), "correlation")
+			if !errors.Is(err, ErrInvalidTransition) {
+				t.Fatalf("ReindexBook() error = %v, want %v", err, ErrInvalidTransition)
+			}
+			if stored := repository.books[book.ID]; stored.ProcessingStatus != BookStatusFailed || stored.LifecycleVersion != book.LifecycleVersion {
+				t.Fatalf("book was mutated after rejected reindex: %+v", stored)
+			}
+		})
+	}
+}
+
 func validManager() Actor {
 	return Actor{UserID: "manager", Role: "librarian", Status: "active"}
 }

@@ -433,6 +433,10 @@ func (s *lambdaVectorDeactivator) DeactivateJob(_ context.Context, jobID string)
 	return s.err
 }
 
+func (s *lambdaVectorDeactivator) DeleteJob(ctx context.Context, jobID string) error {
+	return s.DeactivateJob(ctx, jobID)
+}
+
 type lambdaVectorCleanupRepository struct {
 	jobs           []repository.VectorCleanupJob
 	completed      int

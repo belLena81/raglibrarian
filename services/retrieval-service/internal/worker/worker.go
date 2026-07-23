@@ -63,6 +63,7 @@ type vectorRuntime interface {
 	EnsureCollection(context.Context) error
 	CheckReady(context.Context) error
 	DeactivateJob(context.Context, string) error
+	DeleteJob(context.Context, string) error
 }
 
 type lifecycleProcessor interface {
@@ -548,7 +549,7 @@ func (r *Runtime) failBatch(ctx context.Context, payload []byte, failure error) 
 	if r.vector == nil {
 		return nil
 	}
-	if err = r.vector.DeactivateJob(ctx, work.JobID); err != nil {
+	if err = r.vector.DeleteJob(ctx, work.JobID); err != nil {
 		r.logVectorDeactivateFailed(work.BookID)
 		return nil
 	}
@@ -585,7 +586,7 @@ func (r *Runtime) retryPendingVectorCleanup(ctx context.Context, now time.Time, 
 		return err
 	}
 	for _, job := range jobs {
-		if err = r.vector.DeactivateJob(ctx, job.JobID); err != nil {
+		if err = r.vector.DeleteJob(ctx, job.JobID); err != nil {
 			r.logVectorDeactivateFailed(job.BookID)
 			if retryErr := r.vectorCleanupRepository().RetryVectorCleanup(ctx, job.JobID, now); retryErr != nil {
 				return retryErr

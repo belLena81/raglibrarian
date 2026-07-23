@@ -291,10 +291,19 @@ func decodeStrictXML(contents []byte, target any) error {
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}
-	if decoder.InputOffset() != int64(len(contents)) {
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if charData, ok := token.(xml.CharData); ok && strings.TrimSpace(string(charData)) == "" {
+			continue
+		}
 		return errors.New("trailing XML")
 	}
-	return nil
 }
 
 func extractEPUBXHTML(contents []byte, maximum int64) (string, error) {

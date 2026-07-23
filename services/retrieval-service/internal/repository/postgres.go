@@ -1021,11 +1021,19 @@ func (r *Postgres) FinalizeJob(ctx context.Context, work application.BatchWork, 
 				WHERE aggregate_id=ANY($1) AND published_at IS NULL`, priorJobIDs); err != nil {
 				return err
 			}
-			if _, err = tx.Exec(ctx, `DELETE FROM retrieval.index_jobs
+			if _, err = tx.Exec(ctx, `UPDATE retrieval.index_jobs
+				SET state='failed',
+				    failure_category='vector_store_unavailable',
+				    vector_cleanup_pending=true,
+				    vector_cleanup_attempts=0,
+				    vector_cleanup_next_attempt_at=$4,
+				    finalization_inflight=false,
+				    finalization_lease_expires_at=NULL,
+				    updated_at=$4
 				WHERE id=ANY($1) AND book_id=$2 AND state='indexed'
 				  AND lifecycle_version < (
 					SELECT lifecycle_version FROM retrieval.index_jobs WHERE id=$3
-				  )`, priorJobIDs, work.BookID, work.JobID); err != nil {
+				  )`, priorJobIDs, work.BookID, work.JobID, now); err != nil {
 				return err
 			}
 		}

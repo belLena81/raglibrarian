@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"crypto/sha256"
 	"testing"
 	"time"
 )
@@ -173,6 +174,33 @@ func TestBookRejectsContradictoryRetrievalFacts(t *testing.T) {
 	book := Book{ProcessingStatus: BookStatusIndexed, ProcessingStage: BookStageIndexed, ProcessingVersion: 4}
 	if changed, err := book.ApplyProcessingFact(ProcessingFact{Kind: ProcessingIndexingFailed, FailureCategory: FailureInternalIndexingError, OccurredAt: now}); err != ErrConflictingProcessingFact || changed {
 		t.Fatalf("ApplyProcessingFact() = %v, %v", changed, err)
+	}
+}
+
+func TestBookCanReindexRejectsUnusableManifestFailures(t *testing.T) {
+	manifest := sha256.Sum256([]byte("manifest"))
+	tests := []struct {
+		category ProcessingFailureCategory
+		want     bool
+	}{
+		{FailureManifestIntegrity, false},
+		{FailureIncompatibleProfile, false},
+		{FailureVectorStoreUnavailable, true},
+		{FailureEmbeddingUnavailable, true},
+	}
+	for _, test := range tests {
+		t.Run(string(test.category), func(t *testing.T) {
+			book := Book{
+				ProcessingStatus:          BookStatusFailed,
+				ProcessingStage:           BookStageFailed,
+				ProcessingFailureCategory: test.category,
+				ManifestReference:         "manifests/book.pb",
+				ManifestChecksum:          manifest,
+			}
+			if got := book.CanReindex(); got != test.want {
+				t.Fatalf("CanReindex() = %v, want %v", got, test.want)
+			}
+		})
 	}
 }
 
