@@ -1,0 +1,120 @@
+name: Protected Azure serverless acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      change_ticket:
+        description: Approved change ticket identifier
+        required: true
+        type: string
+      confirmation:
+        description: Type DEPLOY_AZURE_SERVERLESS_TEST
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: azure-serverless-protected-test
+  cancel-in-progress: false
+
+jobs:
+  accept:
+    name: paused to worker to paused to serverless to paused
+    runs-on: [self-hosted, linux, x64, raglibrarian-azure-test-private]
+    environment: azure-serverless-test
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate protected invocation
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+          CHANGE_TICKET: ${{ inputs.change_ticket }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRMATION" = DEPLOY_AZURE_SERVERLESS_TEST
+          test "$REF_PROTECTED" = true
+          [[ "$CHANGE_TICKET" =~ ^[A-Za-z0-9._/-]{3,64}$ ]]
+          command -v az >/dev/null
+          command -v jq >/dev/null
+      - name: Authenticate with the protected Azure deployment identity
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Prove paused state before worker mode
+        env:
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_TEST_RESOURCE_GROUP }}
+          AZURE_DEPLOYMENT_NAME: raglibrarian-serverless-${{ github.run_id }}
+          AZURE_PARAMETERS_FILE: ${{ vars.AZURE_TEST_PARAMETERS_FILE }}
+          AZURE_PROCESSING_MODE: paused
+          AZURE_VERIFY_CONSUMERS_COMMAND: ${{ vars.AZURE_VERIFY_CONSUMERS_COMMAND }}
+          AZURE_ACR_LOGIN_SERVER: ${{ vars.AZURE_ACR_LOGIN_SERVER }}
+          AZURE_ALLOWED_IMAGE_REPOSITORIES: ${{ vars.AZURE_ALLOWED_IMAGE_REPOSITORIES }}
+          AZURE_VERIFY_APPROVED_IMAGE_COMMAND: ${{ vars.AZURE_VERIFY_APPROVED_IMAGE_COMMAND }}
+        run: deploy/azure-test/scripts/transition.sh
+      - name: Enable portable workers and exercise the private test host
+        env:
+          RAGLIBRARIAN_SET_WORKER_MODE_COMMAND: ${{ vars.AZURE_SET_WORKER_MODE_COMMAND }}
+          RAGLIBRARIAN_ACCEPTANCE_COMMAND: ${{ vars.AZURE_ACCEPTANCE_COMMAND }}
+          RAGLIBRARIAN_ACCEPTANCE_MODE: worker
+        run: |
+          set -euo pipefail
+          "$RAGLIBRARIAN_SET_WORKER_MODE_COMMAND" worker
+          trap '"$RAGLIBRARIAN_SET_WORKER_MODE_COMMAND" paused' EXIT
+          deploy/azure-test/scripts/run-acceptance.sh
+      - name: Pause workers before serverless mode
+        env:
+          RAGLIBRARIAN_SET_WORKER_MODE_COMMAND: ${{ vars.AZURE_SET_WORKER_MODE_COMMAND }}
+          AZURE_VERIFY_CONSUMERS_COMMAND: ${{ vars.AZURE_VERIFY_CONSUMERS_COMMAND }}
+        run: |
+          set -euo pipefail
+          "$RAGLIBRARIAN_SET_WORKER_MODE_COMMAND" paused
+          "$AZURE_VERIFY_CONSUMERS_COMMAND" zero
+      - name: Enable serverless jobs and exercise the same release corpus
+        env:
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_TEST_RESOURCE_GROUP }}
+          AZURE_DEPLOYMENT_NAME: raglibrarian-serverless-${{ github.run_id }}
+          AZURE_PARAMETERS_FILE: ${{ vars.AZURE_TEST_PARAMETERS_FILE }}
+          AZURE_PROCESSING_MODE: serverless
+          AZURE_VERIFY_CONSUMERS_COMMAND: ${{ vars.AZURE_VERIFY_CONSUMERS_COMMAND }}
+          AZURE_ACR_LOGIN_SERVER: ${{ vars.AZURE_ACR_LOGIN_SERVER }}
+          AZURE_ALLOWED_IMAGE_REPOSITORIES: ${{ vars.AZURE_ALLOWED_IMAGE_REPOSITORIES }}
+          AZURE_VERIFY_APPROVED_IMAGE_COMMAND: ${{ vars.AZURE_VERIFY_APPROVED_IMAGE_COMMAND }}
+          RAGLIBRARIAN_ACCEPTANCE_COMMAND: ${{ vars.AZURE_ACCEPTANCE_COMMAND }}
+          RAGLIBRARIAN_ACCEPTANCE_MODE: serverless
+        run: |
+          set -euo pipefail
+          deploy/azure-test/scripts/transition.sh
+          deploy/azure-test/scripts/run-acceptance.sh
+      - name: Always return serverless consumers to paused
+        if: always()
+        env:
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_TEST_RESOURCE_GROUP }}
+          AZURE_DEPLOYMENT_NAME: raglibrarian-serverless-${{ github.run_id }}
+          AZURE_PARAMETERS_FILE: ${{ vars.AZURE_TEST_PARAMETERS_FILE }}
+          AZURE_PROCESSING_MODE: paused
+          AZURE_VERIFY_CONSUMERS_COMMAND: ${{ vars.AZURE_VERIFY_CONSUMERS_COMMAND }}
+          AZURE_ACR_LOGIN_SERVER: ${{ vars.AZURE_ACR_LOGIN_SERVER }}
+          AZURE_ALLOWED_IMAGE_REPOSITORIES: ${{ vars.AZURE_ALLOWED_IMAGE_REPOSITORIES }}
+          AZURE_VERIFY_APPROVED_IMAGE_COMMAND: ${{ vars.AZURE_VERIFY_APPROVED_IMAGE_COMMAND }}
+        run: deploy/azure-test/scripts/transition.sh
+      - name: Write sanitized release evidence
+        if: always()
+        env:
+          CHANGE_TICKET: ${{ inputs.change_ticket }}
+        run: |
+          set -euo pipefail
+          {
+            echo "commit=$GITHUB_SHA"
+            echo "change_ticket=$CHANGE_TICKET"
+            echo 'final_mode=paused'
+            echo 'evidence=workflow-run-only; no credentials, documents, prompts, or raw logs retained'
+          } >> "$GITHUB_STEP_SUMMARY"

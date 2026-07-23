@@ -143,6 +143,13 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 	return &Runtime{configuration: configuration, pool: pool, repository: records, manifestFails: records, batchFails: records, vectorJobs: records, objects: objects, planner: planner, indexer: indexer, lifecycle: lifecycle, embedder: embedder, vector: index, diagnostic: recorder}, nil
 }
 
+// Close releases resources owned by a one-message runtime.
+func (r *Runtime) Close() {
+	if r != nil && r.pool != nil {
+		r.pool.Close()
+	}
+}
+
 func (r *Runtime) Run(ctx context.Context) error {
 	collectionContext, collectionCancel := context.WithTimeout(ctx, 10*time.Second)
 	collectionErr := r.vector.EnsureCollection(collectionContext)
@@ -326,14 +333,14 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 		defer func() { <-semaphore }()
 		if delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > 256<<10 {
 			r.logRejected(sourceQueue, "invalid_delivery")
-			_ = delivery.Nack(false, false)
+			settleNack(ctx, delivery, false)
 			return
 		}
-		handleContext, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		handleContext, cancel := context.WithTimeout(ctx, r.configuration.ServerlessInvocationTimeout)
 		err := handler(handleContext, delivery.Body)
 		cancel()
 		if err == nil {
-			_ = delivery.Ack(false)
+			settleAck(ctx, delivery)
 			return
 		}
 		if terminalFailure != nil && application.TerminalIndexingFailure(err) {
@@ -341,57 +348,68 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 			failureErr := terminalFailure(failureContext, delivery.Body, err)
 			failureCancel()
 			if failureErr == nil {
-				_ = delivery.Ack(false)
+				settleAck(ctx, delivery)
 				return
 			}
 			r.logRetry(sourceQueue, "terminal_failure_record_failed")
 			nextAttempt, retry := failureRecordingRetryAttempt(delivery.Headers)
 			if !retry {
-				_ = delivery.Nack(false, false)
+				settleNack(ctx, delivery, false)
 				return
 			}
 			if r.publishRetry(ctx, publisher, sourceQueue, delivery, nextAttempt) == nil {
-				_ = delivery.Ack(false)
+				settleAck(ctx, delivery)
 				return
 			}
 			r.logRetryPublishFailed(sourceQueue, "retry_publish_failed")
 			if ctx.Err() == nil {
-				_ = delivery.Nack(false, false)
+				settleNack(ctx, delivery, false)
 			}
 			return
 		}
 		if errors.Is(err, application.ErrInvalidEvent) || errors.Is(err, application.ErrConflictingEvent) {
 			r.logRejected(sourceQueue, rejectionReason(err))
-			_ = delivery.Nack(false, false)
+			settleNack(ctx, delivery, false)
 			return
 		}
 		if retryAttempt(delivery.Headers) >= maximumRetryAttempts {
 			if terminalFailure == nil {
 				r.logRejected(sourceQueue, "invalid_event")
-				_ = delivery.Nack(false, false)
+				settleNack(ctx, delivery, false)
 				return
 			}
 			failureContext, failureCancel := context.WithTimeout(ctx, 10*time.Second)
 			failureErr := terminalFailure(failureContext, delivery.Body, err)
 			failureCancel()
 			if failureErr == nil {
-				_ = delivery.Ack(false)
+				settleAck(ctx, delivery)
 				return
 			}
 			r.logRejected(sourceQueue, "terminal_failure_record_failed")
-			_ = delivery.Nack(false, false)
+			settleNack(ctx, delivery, false)
 			return
 		}
 		r.logRetry(sourceQueue, rejectionReason(err))
 		if r.publishRetry(ctx, publisher, sourceQueue, delivery, retryAttempt(delivery.Headers)+1) == nil {
-			_ = delivery.Ack(false)
+			settleAck(ctx, delivery)
 			return
 		}
 		r.logRetryPublishFailed(sourceQueue, "retry_publish_failed")
 		if ctx.Err() == nil {
-			_ = delivery.Nack(false, false)
+			settleNack(ctx, delivery, false)
 		}
 	}()
+}
+
+func settleAck(ctx context.Context, delivery amqp091.Delivery) {
+	if ctx.Err() == nil {
+		_ = delivery.Ack(false)
+	}
+}
+func settleNack(ctx context.Context, delivery amqp091.Delivery, requeue bool) {
+	if ctx.Err() == nil {
+		_ = delivery.Nack(false, requeue)
+	}
 }
 
 func (r *Runtime) publishRetry(ctx context.Context, publisher retryPublisher, sourceQueue string, delivery amqp091.Delivery, attempt int64) error {
@@ -450,6 +468,64 @@ func (r *Runtime) handleMetadata(ctx context.Context, payload []byte) error {
 	}
 	r.logMetadataCompleted(event.BookID)
 	return nil
+}
+
+// ProcessOne runs one already-authenticated delivery through the same typed
+// handlers used by the long-running AMQP worker. Broker settlement remains the
+// responsibility of the caller.
+func (r *Runtime) ProcessOne(ctx context.Context, queue, eventType string, payload []byte) error {
+	switch queue {
+	case metadataQueue:
+		if eventType != "catalog.book.uploaded.v1" {
+			return application.ErrInvalidEvent
+		}
+		return r.handleMetadata(ctx, payload)
+	case manifestQueue:
+		if eventType != "ingestion.book.chunks-ready.v1" {
+			return application.ErrInvalidEvent
+		}
+		return r.handleManifest(ctx, payload)
+	case batchQueue:
+		if eventType != "retrieval.index-batch.v1" {
+			return application.ErrInvalidEvent
+		}
+		return r.handleBatch(ctx, payload)
+	case lifecycleQueue:
+		return r.handleLifecycle(ctx, eventType, payload)
+	default:
+		return application.ErrInvalidEvent
+	}
+}
+
+// ProcessOneDelivery applies the long-running worker's bounded retry republish
+// and DLQ policy to one AMQP delivery. It waits for settlement before returning.
+func (r *Runtime) ProcessOneDelivery(ctx context.Context, publisher retryPublisher, queue string, delivery amqp091.Delivery) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	var handler func(context.Context, []byte) error
+	var terminalFailure func(context.Context, []byte, error) error
+	switch queue {
+	case metadataQueue:
+		handler = r.handleMetadata
+	case manifestQueue:
+		handler = r.handleManifest
+		terminalFailure = r.failManifestArtifactRead
+	case batchQueue:
+		handler = r.handleBatch
+		terminalFailure = r.failBatch
+	case lifecycleQueue:
+		handler = func(handlerCtx context.Context, payload []byte) error {
+			return r.handleLifecycle(handlerCtx, delivery.Type, payload)
+		}
+	default:
+		return application.ErrInvalidEvent
+	}
+	semaphore := make(chan struct{}, 1)
+	var handlers sync.WaitGroup
+	r.handle(ctx, semaphore, &handlers, publisher, queue, delivery, handler, terminalFailure)
+	handlers.Wait()
+	return ctx.Err()
 }
 
 func (r *Runtime) handleManifest(ctx context.Context, payload []byte) error {

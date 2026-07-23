@@ -44,6 +44,16 @@ credential can forge the application attempt header and force early DLQ
 delivery; use only authorized test data here, and use separate least-privilege
 broker identities and quorum queues in production.
 
+After the host is started, the release-candidate worker stage is run through:
+
+```sh
+bash deploy/cloud-test/scripts/run-worker-acceptance.sh
+```
+
+Set `RAGLIBRARIAN_WORKER_ACCEPTANCE_COMMAND` to the private runner command that
+mints disposable sessions, exercises the M4/M6/M7 corpus, and writes sanitized
+JSON to `RAGLIBRARIAN_ACCEPTANCE_EVIDENCE_FILE`.
+
 ## 1. Provision providers
 
 Create the following resources before touching the host:

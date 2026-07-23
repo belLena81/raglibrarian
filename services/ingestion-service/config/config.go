@@ -377,3 +377,38 @@ func privateAddress(value string) (string, error) {
 	}
 	return value, nil
 }
+
+// ValidateServerlessBrokerURI restricts short-lived jobs to private AMQPS.
+func ValidateServerlessBrokerURI(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "amqps" || parsed.Host == "" || parsed.User == nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("invalid serverless broker URI")
+	}
+	host := parsed.Hostname()
+	if serverlessBrokerHostAllowed(host,
+		optional("INGESTION_SERVERLESS_BROKER_ALLOWED_HOSTS", "localhost,rabbit,rabbitmq"),
+		os.Getenv("INGESTION_SERVERLESS_BROKER_ALLOWED_SUFFIXES")) {
+		return nil
+	}
+	if address := net.ParseIP(host); address != nil && (address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast()) {
+		return nil
+	}
+	return fmt.Errorf("serverless broker must be private")
+}
+
+func serverlessBrokerHostAllowed(host, allowedHosts, allowedSuffixes string) bool {
+	normalizedHost := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	for _, value := range strings.Split(allowedHosts, ",") {
+		allowed := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
+		if allowed != "" && normalizedHost == allowed {
+			return true
+		}
+	}
+	for _, value := range strings.Split(allowedSuffixes, ",") {
+		suffix := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
+		if suffix != "" && (normalizedHost == suffix || strings.HasSuffix(normalizedHost, "."+suffix)) {
+			return true
+		}
+	}
+	return false
+}

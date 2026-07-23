@@ -4,14 +4,14 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer dev local-run local-stop tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-m5-integration-test m4-m5-m6-integration-test m4-worker-recovery-test m4-e2e m4-performance-smoke m4-sse-load m4-soak m5-contract-test m5-contract-only-test m5-contract-ci-test m5-integration-test m5-search-quality-test m5-search-quality-test-real m5-worker-recovery-test m5-e2e m5-performance-smoke m6-contract-test m6-answer-quality-test m6-answer-quality-test-real m6-e2e m6-performance-smoke m6-integration-test m7-e2e m7-integration-test contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down migrate-retrieval-up migrate-retrieval-down infra-up infra-down stack-up m6-stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-m5 dev-secrets-m6 dev-secrets-test m6-dev-config-test m5-model-bootstrap m5-model-bootstrap-test bootstrap-verifier compose-config m5-mode-policy sam-validate sam-package-check sam-m5-validate sam-m5-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-build-ci image-scan image-scan-ci image-scan-images security-check security-check-ci full-gates integration-gates smtp-url
+.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer dev local-run local-stop tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-m5-integration-test m4-m5-m6-integration-test release-local-stack release-local-test m4-worker-recovery-test m4-e2e m4-performance-smoke m4-sse-load m4-soak m5-contract-test m5-contract-only-test m5-contract-ci-test m5-integration-test m5-search-quality-test m5-search-quality-test-real m5-worker-recovery-test m5-e2e m5-performance-smoke m6-contract-test m6-answer-quality-test m6-answer-quality-test-real m6-e2e m6-performance-smoke m6-integration-test m7-e2e m7-integration-test contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down migrate-retrieval-up migrate-retrieval-down infra-up infra-down stack-up m6-stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-m5 dev-secrets-m6 dev-secrets-test m6-dev-config-test m5-model-bootstrap m5-model-bootstrap-test bootstrap-verifier compose-config m5-mode-policy sam-validate sam-package-check sam-m5-validate sam-m5-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-build-ci image-scan image-scan-ci image-scan-images security-check security-check-ci full-gates integration-gates smtp-url
 
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
 HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
 # 0.69.2 is the vendor-designated unaffected Trivy release after the 2026
 # publishing incident. Do not move this pin without reviewing the advisory.
 TRIVY_IMAGE := aquasec/trivy:0.69.2
-SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-ingestion-lambda:local raglibrarian-ingestion-dispatcher-lambda:local raglibrarian-ingestion-cleanup-lambda:local raglibrarian-retrieval-service:local raglibrarian-retrieval-worker:local raglibrarian-retrieval-qdrant-init:local raglibrarian-retrieval-planner-lambda:local raglibrarian-retrieval-index-lambda:local raglibrarian-retrieval-dispatcher-lambda:local raglibrarian-retrieval-cleanup-lambda:local raglibrarian-answer-service:local raglibrarian-answer-provider-stub:local raglibrarian-web:local
+SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-ingestion-lambda:local raglibrarian-ingestion-serverless-job:local raglibrarian-ingestion-dispatcher-job:local raglibrarian-ingestion-cleanup-job:local raglibrarian-retrieval-service:local raglibrarian-retrieval-worker:local raglibrarian-retrieval-serverless-job:local raglibrarian-retrieval-qdrant-init:local raglibrarian-retrieval-planner-lambda:local raglibrarian-retrieval-index-lambda:local raglibrarian-retrieval-dispatcher-job:local raglibrarian-retrieval-cleanup-job:local raglibrarian-answer-service:local raglibrarian-answer-provider-stub:local raglibrarian-web:local
 QDRANT_IMAGE := qdrant/qdrant:v1.18.3
 QDRANT_TRIVY_IGNORE_FILE := security/trivy/qdrant-v1.18.3.ignore.yaml
 M5_TEI_IMAGE := ghcr.io/huggingface/text-embeddings-inference@sha256:cb570aabbfa016b86684f576b5bd72d1ee96cc0b7a00b0ad221b298762b32157
@@ -381,6 +381,48 @@ m4-m5-m6-integration-test: _require_root
 	M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" M5_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" M5_E2E_ADMIN_TOKEN_FILE="$$token_dir/admin" $(MAKE) m6-e2e; \
 	M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" $(MAKE) m6-performance-smoke
 
+# release-local-test is the release-candidate local proof. It deliberately
+# preserves short-lived sessions in one owner-only directory so M4, M6, and M7
+# execute against the same authenticated fixture stack without exposing tokens.
+# Start the M5/M6 stack first and configure an HTTPS, non-stub provider before
+# invoking this target. The optional external-provider latency smoke is kept
+# separate because a CPU-only self-hosted model is functional evidence, not a
+# three-second production-provider benchmark.
+release-local-test: full-gates _require_root
+	@set -eu; \
+	provider_url="$${ANSWER_LLM_BASE_URL:-}"; \
+	provider_model="$${ANSWER_LLM_MODEL:-}"; \
+	provider_key="$${ANSWER_LLM_API_KEY_PATH:-.dev/secrets/answer_llm_api_key}"; \
+	test -n "$$provider_url" && test -n "$$provider_model" || { echo "release-local-test requires ANSWER_LLM_BASE_URL and ANSWER_LLM_MODEL"; exit 1; }; \
+	case "$$provider_url" in https://llm-provider-stub|https://llm-provider-stub:*|https://llm-provider-stub/*) echo "release-local-test requires a non-stub HTTPS provider"; exit 1 ;; https://*) ;; *) echo "release-local-test provider URL must use HTTPS"; exit 1 ;; esac; \
+	test -r "$$provider_key" && test -f "$$provider_key" && test ! -L "$$provider_key" || { echo "release-local-test requires a readable regular provider key file"; exit 1; }; \
+	token_dir="$$(mktemp -d /tmp/raglibrarian-release-local-tokens.XXXXXX)"; \
+	chmod 700 "$$token_dir"; \
+	trap 'rm -f "$$token_dir/access" "$$token_dir/revocable" "$$token_dir/reader" "$$token_dir/librarian" "$$token_dir/admin"; rmdir "$$token_dir"' EXIT; \
+	E2E_M4_ACCESS_TOKEN_OUT="$$token_dir/access" E2E_M4_REVOCABLE_TOKEN_OUT="$$token_dir/revocable" \
+	E2E_M5_READER_TOKEN_OUT="$$token_dir/reader" E2E_M5_LIBRARIAN_TOKEN_OUT="$$token_dir/librarian" E2E_M5_ADMIN_TOKEN_OUT="$$token_dir/admin" $(MAKE) e2e; \
+	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE="$$token_dir/revocable" $(MAKE) m4-e2e; \
+	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" $(MAKE) m4-worker-recovery-test; \
+	M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" M5_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" M5_E2E_ADMIN_TOKEN_FILE="$$token_dir/admin" $(MAKE) m5-e2e m5-worker-recovery-test m5-performance-smoke; \
+	M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" M5_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" $(MAKE) m6-answer-quality-test-real; \
+	M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" M5_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" M5_E2E_ADMIN_TOKEN_FILE="$$token_dir/admin" $(MAKE) m6-e2e; \
+	M7_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" $(MAKE) m7-e2e; \
+	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" $(MAKE) m4-performance-smoke m4-sse-load m4-soak
+
+# release-local-stack is stage 1: it starts the complete local Docker stack with
+# the operator-provided HTTPS OpenAI-compatible provider, then runs the same
+# M4/M6/M7 proof as release-local-test.
+release-local-stack: _require_root
+	@set -eu; \
+	provider_url="$${ANSWER_LLM_BASE_URL:-$$(sed -n 's/^ANSWER_LLM_BASE_URL=//p' .env 2>/dev/null | tail -n 1)}"; \
+	provider_model="$${ANSWER_LLM_MODEL:-$$(sed -n 's/^ANSWER_LLM_MODEL=//p' .env 2>/dev/null | tail -n 1)}"; \
+	provider_key="$${ANSWER_LLM_API_KEY_PATH:-$$(sed -n 's/^ANSWER_LLM_API_KEY_PATH=//p' .env 2>/dev/null | tail -n 1)}"; \
+	test -n "$$provider_url" && test -n "$$provider_model" || { echo "release-local-stack requires ANSWER_LLM_BASE_URL and ANSWER_LLM_MODEL"; exit 1; }; \
+	case "$$provider_url" in https://llm-provider-stub|https://llm-provider-stub:*|https://llm-provider-stub/*) echo "release-local-stack requires a non-stub HTTPS provider"; exit 1 ;; https://*) ;; *) echo "release-local-stack provider URL must use HTTPS"; exit 1 ;; esac; \
+	test -r "$${provider_key:-.dev/secrets/answer_llm_api_key}" && test -f "$${provider_key:-.dev/secrets/answer_llm_api_key}" && test ! -L "$${provider_key:-.dev/secrets/answer_llm_api_key}" || { echo "release-local-stack requires a readable regular provider key file"; exit 1; }; \
+	$(MAKE) m6-stack-up; \
+	$(MAKE) release-local-test
+
 # This gate deliberately controls only the local Compose worker. The E2E test
 # owns upload/status assertions and coordinates through two owner-only markers;
 # no production control endpoint or shell-command injection seam is introduced.
@@ -621,15 +663,17 @@ image-build: _require_root
 	docker build --build-arg SERVICE=edge-api -t raglibrarian-edge-api:local .
 	docker build --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/worker -t raglibrarian-ingestion-service:local .
 	docker build --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/lambda -t raglibrarian-ingestion-lambda:local .
-	docker build --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/dispatcher_lambda -t raglibrarian-ingestion-dispatcher-lambda:local .
-	docker build --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda -t raglibrarian-ingestion-cleanup-lambda:local .
+	docker build --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/serverless_job -t raglibrarian-ingestion-serverless-job:local .
+	docker build --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/dispatcher_job -t raglibrarian-ingestion-dispatcher-job:local .
+	docker build --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/cleanup_job -t raglibrarian-ingestion-cleanup-job:local .
 	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/server -t raglibrarian-retrieval-service:local .
 	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/worker -t raglibrarian-retrieval-worker:local .
+	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/serverless_job -t raglibrarian-retrieval-serverless-job:local .
 	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/qdrant_init -t raglibrarian-retrieval-qdrant-init:local .
 	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/planner_lambda -t raglibrarian-retrieval-planner-lambda:local .
 	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/index_lambda -t raglibrarian-retrieval-index-lambda:local .
-	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/dispatcher_lambda -t raglibrarian-retrieval-dispatcher-lambda:local .
-	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda -t raglibrarian-retrieval-cleanup-lambda:local .
+	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/dispatcher_job -t raglibrarian-retrieval-dispatcher-job:local .
+	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/cleanup_job -t raglibrarian-retrieval-cleanup-job:local .
 	docker build --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/server -t raglibrarian-answer-service:local .
 	docker build --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/provider_stub -t raglibrarian-answer-provider-stub:local .
 	docker build -f deploy/cloud-test/Dockerfile.ui -t raglibrarian-web:local .
@@ -647,15 +691,17 @@ image-build-ci: _require_root
 	build_ci raglibrarian-edge-api:local edge-api --build-arg SERVICE=edge-api; \
 	build_ci raglibrarian-ingestion-service:local ingestion-service --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/worker; \
 	build_ci raglibrarian-ingestion-lambda:local ingestion-lambda --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/lambda; \
-	build_ci raglibrarian-ingestion-dispatcher-lambda:local ingestion-dispatcher-lambda --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/dispatcher_lambda; \
-	build_ci raglibrarian-ingestion-cleanup-lambda:local ingestion-cleanup-lambda --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda; \
+	build_ci raglibrarian-ingestion-serverless-job:local ingestion-serverless-job --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/serverless_job; \
+	build_ci raglibrarian-ingestion-dispatcher-job:local ingestion-dispatcher-job --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/dispatcher_job; \
+	build_ci raglibrarian-ingestion-cleanup-job:local ingestion-cleanup-job --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/cleanup_job; \
 	build_ci raglibrarian-retrieval-service:local retrieval-service --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/server; \
 	build_ci raglibrarian-retrieval-worker:local retrieval-worker --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/worker; \
+	build_ci raglibrarian-retrieval-serverless-job:local retrieval-serverless-job --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/serverless_job; \
 	build_ci raglibrarian-retrieval-qdrant-init:local retrieval-qdrant-init --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/qdrant_init; \
 	build_ci raglibrarian-retrieval-planner-lambda:local retrieval-planner-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/planner_lambda; \
 	build_ci raglibrarian-retrieval-index-lambda:local retrieval-index-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/index_lambda; \
-	build_ci raglibrarian-retrieval-dispatcher-lambda:local retrieval-dispatcher-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/dispatcher_lambda; \
-	build_ci raglibrarian-retrieval-cleanup-lambda:local retrieval-cleanup-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda; \
+	build_ci raglibrarian-retrieval-dispatcher-job:local retrieval-dispatcher-job --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/dispatcher_job; \
+	build_ci raglibrarian-retrieval-cleanup-job:local retrieval-cleanup-job --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/cleanup_job; \
 	build_ci raglibrarian-answer-service:local answer-service --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/server; \
 	build_ci raglibrarian-answer-provider-stub:local answer-provider-stub --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/provider_stub; \
 	build_ci raglibrarian-web:local web -f deploy/cloud-test/Dockerfile.ui

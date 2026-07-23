@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/process"
@@ -32,6 +33,7 @@ type WorkerConfig struct {
 	MinIOInsecure                                                 bool
 	TEIURL, QdrantURL, QdrantCollection, QdrantAPIKey             string
 	MetricsAddress                                                string
+	ServerlessInvocationTimeout                                   time.Duration
 	Concurrency                                                   int
 	RunAs                                                         process.Identity
 }
@@ -73,6 +75,17 @@ func positiveInteger(value string, fallback int) (int, error) {
 	return parsed, nil
 }
 
+func boundedDuration(value string, minimum, maximum, fallback time.Duration) (time.Duration, error) {
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return 0, errors.New("invalid duration")
+	}
+	return parsed, nil
+}
+
 func LoadWorker() (WorkerConfig, error) {
 	indexProfile := os.Getenv("RETRIEVAL_INDEX_PROFILE")
 	if os.Getenv("RETRIEVAL_PROCESSING_MODE") != "worker" ||
@@ -107,11 +120,12 @@ func LoadWorker() (WorkerConfig, error) {
 	gid, gidErr := positiveInteger(os.Getenv("RUN_AS_GID"), 65532)
 	concurrency, concurrencyErr := positiveInteger(os.Getenv("RETRIEVAL_WORK_CONCURRENCY"), 1)
 	minioInsecure, insecureErr := strconv.ParseBool(os.Getenv("RETRIEVAL_MINIO_INSECURE"))
+	serverlessInvocationTimeout, timeoutErr := boundedDuration(os.Getenv("RETRIEVAL_SERVERLESS_INVOCATION_TIMEOUT"), 10*time.Second, 13*time.Minute, 3*time.Minute)
 	configuration := WorkerConfig{DSN: dsn, ConsumerRabbitURI: consumerURI, PublisherRabbitURI: publisherURI,
 		MinIOEndpoint: os.Getenv("RETRIEVAL_MINIO_ENDPOINT"), MinIOAccessKey: accessKey, MinIOSecretKey: secretKey, ArtifactBucket: os.Getenv("RETRIEVAL_ARTIFACT_BUCKET"), MinIOInsecure: minioInsecure,
 		TEIURL: os.Getenv("RETRIEVAL_TEI_URL"), QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: "evidence_v2", QdrantAPIKey: qdrantAPIKey,
-		MetricsAddress: os.Getenv("RETRIEVAL_METRICS_ADDR"), Concurrency: concurrency, RunAs: process.Identity{UID: uid, GID: gid}}
-	if uidErr != nil || gidErr != nil || concurrencyErr != nil || concurrency > 16 || insecureErr != nil || configuration.MinIOEndpoint == "" ||
+		MetricsAddress: os.Getenv("RETRIEVAL_METRICS_ADDR"), ServerlessInvocationTimeout: serverlessInvocationTimeout, Concurrency: concurrency, RunAs: process.Identity{UID: uid, GID: gid}}
+	if uidErr != nil || gidErr != nil || concurrencyErr != nil || concurrency > 16 || insecureErr != nil || timeoutErr != nil || configuration.MinIOEndpoint == "" ||
 		configuration.ArtifactBucket == "" || configuration.MetricsAddress == "" || !privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) {
 		return WorkerConfig{}, errors.New("invalid retrieval worker configuration")
 	}
@@ -151,4 +165,46 @@ func privateServiceURL(value string) bool {
 		return true
 	}
 	return !strings.Contains(host, ".")
+}
+
+// ValidateServerlessBrokerURI restricts short-lived jobs to private AMQPS.
+func ValidateServerlessBrokerURI(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "amqps" || parsed.Host == "" || parsed.User == nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("invalid serverless broker URI")
+	}
+	host := parsed.Hostname()
+	if serverlessBrokerHostAllowed(host,
+		optional("RETRIEVAL_SERVERLESS_BROKER_ALLOWED_HOSTS", "localhost,rabbit,rabbitmq"),
+		os.Getenv("RETRIEVAL_SERVERLESS_BROKER_ALLOWED_SUFFIXES")) {
+		return nil
+	}
+	if address := net.ParseIP(host); address != nil && (address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast()) {
+		return nil
+	}
+	return errors.New("serverless broker must be private")
+}
+
+func optional(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func serverlessBrokerHostAllowed(host, allowedHosts, allowedSuffixes string) bool {
+	normalizedHost := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	for _, value := range strings.Split(allowedHosts, ",") {
+		allowed := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
+		if allowed != "" && normalizedHost == allowed {
+			return true
+		}
+	}
+	for _, value := range strings.Split(allowedSuffixes, ",") {
+		suffix := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
+		if suffix != "" && (normalizedHost == suffix || strings.HasSuffix(normalizedHost, "."+suffix)) {
+			return true
+		}
+	}
+	return false
 }

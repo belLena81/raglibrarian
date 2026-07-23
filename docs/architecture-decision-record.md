@@ -87,8 +87,9 @@ RabbitMQ mappings default to one concurrent Lambda environment; measured
 throughput must justify a mapping-specific limit increase or selection of the
 portable worker deployment.
 Only one processing mode may consume the document queue. Production mode
-changes use an explicit `lambda` -> `paused` -> `worker` (or reverse) handoff;
-the paused state is verified before the replacement consumer is enabled.
+changes use an explicit `lambda` or provider-neutral `serverless` -> `paused`
+-> `worker` handoff (or reverse); the paused state is verified before the
+replacement consumer is enabled.
 Functions have no public URL and accept only validated versioned events with
 controlled object references; an event can never direct a function to fetch an
 arbitrary URL or object prefix.
@@ -109,10 +110,11 @@ projection, and optional grounded `/query` answers are implemented in the
 current checkout. Answer is stateless, calls Retrieval over mTLS, and owns its
 provider-neutral synthesis and citation-validation boundary.
 
-Milestone 4 Ingestion remains a release candidate until protected AWS staging
-and controlled restart/DLQ acceptance pass. Milestone 6 Answer remains a
-release candidate until protected real-provider staging passes. Those gates are
-operational evidence, not boundary changes.
+Milestones 4, 6, and 7 remain release candidates until the controlled local,
+private workers-first, and provider-neutral serverless acceptance sequence
+passes. M4 additionally requires restart/DLQ evidence, M6 requires a protected
+real-provider gate, and M7 requires EPUB/reindex/delete convergence. Those
+gates are operational evidence, not boundary changes.
 
 The remaining vertical slices are delivered in this order:
 

@@ -1,0 +1,100 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": { "value": "ragtest" },
+    "location": { "value": "westeurope" },
+    "infrastructureSubnetId": { "value": "/subscriptions/REPLACE/resourceGroups/REPLACE/providers/Microsoft.Network/virtualNetworks/REPLACE/subnets/REPLACE" },
+    "keyVaultName": { "value": "REPLACE" },
+    "containerRegistryName": { "value": "REPLACE" },
+    "testHostName": { "value": "raglibrarian-test.internal" },
+    "processingMode": { "value": "paused" },
+    "images": {
+      "value": {
+        "ingestion": "REGISTRY/REPOSITORY@sha256:REPLACE_WITH_64_HEX_DIGEST",
+        "planner": "REGISTRY/REPOSITORY@sha256:REPLACE_WITH_64_HEX_DIGEST",
+        "index": "REGISTRY/REPOSITORY@sha256:REPLACE_WITH_64_HEX_DIGEST",
+        "ingestionDispatcher": "REGISTRY/REPOSITORY@sha256:REPLACE_WITH_64_HEX_DIGEST",
+        "ingestionCleanup": "REGISTRY/REPOSITORY@sha256:REPLACE_WITH_64_HEX_DIGEST",
+        "retrievalDispatcher": "REGISTRY/REPOSITORY@sha256:REPLACE_WITH_64_HEX_DIGEST",
+        "retrievalCleanup": "REGISTRY/REPOSITORY@sha256:REPLACE_WITH_64_HEX_DIGEST"
+      }
+    },
+    "secretVersions": {
+      "value": {
+        "ingestionPostgresDSN": "SECRET_VERSION",
+        "ingestionRabbitMQ": "SECRET_VERSION",
+        "ingestionMinioAccessKey": "SECRET_VERSION",
+        "ingestionMinioSecretKey": "SECRET_VERSION",
+        "plannerPostgresDSN": "SECRET_VERSION",
+        "plannerRabbitMQConsumer": "SECRET_VERSION",
+        "plannerRabbitMQPublisher": "SECRET_VERSION",
+        "plannerMinioAccessKey": "SECRET_VERSION",
+        "plannerMinioSecretKey": "SECRET_VERSION",
+        "plannerQdrantAPIKey": "SECRET_VERSION",
+        "indexPostgresDSN": "SECRET_VERSION",
+        "indexRabbitMQConsumer": "SECRET_VERSION",
+        "indexRabbitMQPublisher": "SECRET_VERSION",
+        "indexMinioAccessKey": "SECRET_VERSION",
+        "indexMinioSecretKey": "SECRET_VERSION",
+        "indexQdrantAPIKey": "SECRET_VERSION",
+        "ingestionDispatcherPostgresDSN": "SECRET_VERSION",
+        "ingestionDispatcherRabbitMQ": "SECRET_VERSION",
+        "ingestionCleanupPostgresDSN": "SECRET_VERSION",
+        "ingestionCleanupMinioAccessKey": "SECRET_VERSION",
+        "ingestionCleanupMinioSecretKey": "SECRET_VERSION",
+        "retrievalDispatcherPostgresDSN": "SECRET_VERSION",
+        "retrievalDispatcherRabbitMQPublisher": "SECRET_VERSION",
+        "retrievalCleanupPostgresDSN": "SECRET_VERSION",
+        "retrievalCleanupMinioAccessKey": "SECRET_VERSION",
+        "retrievalCleanupMinioSecretKey": "SECRET_VERSION",
+        "retrievalCleanupQdrantAPIKey": "SECRET_VERSION"
+      }
+    },
+    "runtimeEnvironments": {
+      "value": {
+        "ingestion": {
+          "INGESTION_MINIO_ENDPOINT": "test-host.internal:9000",
+          "INGESTION_MINIO_INSECURE": "false",
+          "INGESTION_SOURCE_BUCKET": "authorized-test-originals",
+          "INGESTION_ARTIFACT_BUCKET": "authorized-test-artifacts",
+          "INGESTION_TOKENIZER_FILE": "/opt/raglibrarian/cl100k_base.tiktoken",
+          "INGESTION_PROCESSING_TIMEOUT": "12m30s",
+          "INGESTION_JOB_LEASE": "13m",
+          "INGESTION_SERVERLESS_BROKER_ALLOWED_SUFFIXES": "internal"
+        },
+        "planner": {
+          "RETRIEVAL_MINIO_ENDPOINT": "test-host.internal:9000",
+          "RETRIEVAL_MINIO_INSECURE": "false",
+          "RETRIEVAL_ARTIFACT_BUCKET": "authorized-test-artifacts",
+          "RETRIEVAL_QDRANT_URL": "https://test-host.internal:6334",
+          "RETRIEVAL_TEI_URL": "https://test-host.internal:8080",
+          "RETRIEVAL_INDEX_PROFILE": "m7-pdf-epub-v1",
+          "RETRIEVAL_SERVERLESS_INVOCATION_TIMEOUT": "13m",
+          "RETRIEVAL_SERVERLESS_BROKER_ALLOWED_SUFFIXES": "internal"
+        },
+        "index": {
+          "RETRIEVAL_MINIO_ENDPOINT": "test-host.internal:9000",
+          "RETRIEVAL_MINIO_INSECURE": "false",
+          "RETRIEVAL_ARTIFACT_BUCKET": "authorized-test-artifacts",
+          "RETRIEVAL_QDRANT_URL": "https://test-host.internal:6334",
+          "RETRIEVAL_TEI_URL": "https://test-host.internal:8080",
+          "RETRIEVAL_INDEX_PROFILE": "m7-pdf-epub-v1",
+          "RETRIEVAL_SERVERLESS_INVOCATION_TIMEOUT": "13m",
+          "RETRIEVAL_SERVERLESS_BROKER_ALLOWED_SUFFIXES": "internal"
+        },
+        "ingestionDispatcher": {
+          "INGESTION_SERVERLESS_BROKER_ALLOWED_SUFFIXES": "internal"
+        },
+        "ingestionCleanup": {},
+        "retrievalDispatcher": {
+          "RETRIEVAL_SERVERLESS_BROKER_ALLOWED_SUFFIXES": "internal"
+        },
+        "retrievalCleanup": {
+          "RETRIEVAL_QDRANT_URL": "https://test-host.internal:6334",
+          "RETRIEVAL_SERVERLESS_PRIVATE_HOST": "test-host.internal"
+        }
+        }
+      }
+    }
+  }

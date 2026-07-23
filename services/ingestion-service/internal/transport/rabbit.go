@@ -34,6 +34,13 @@ type Consumer struct {
 	now       func() time.Time
 }
 
+// ProcessOneDelivery applies the worker's bounded retry and DLQ policy to one
+// delivery. It is used by short-lived serverless jobs as well as Consumer.Run.
+func ProcessOneDelivery(ctx context.Context, delivery amqp091.Delivery, processor EventProcessor, publisher Publisher) {
+	consumer := &Consumer{processor: processor, publisher: publisher, now: time.Now}
+	consumer.handle(ctx, delivery)
+}
+
 func NewConsumer(channel *amqp091.Channel, queue string, concurrency int, processor EventProcessor, publisher Publisher) (*Consumer, error) {
 	if channel == nil || queue == "" || concurrency < 1 || processor == nil || publisher == nil {
 		return nil, errors.New("invalid RabbitMQ consumer")
@@ -73,7 +80,7 @@ func (c *Consumer) Run(ctx context.Context, concurrency int) error {
 
 func (c *Consumer) handle(ctx context.Context, delivery amqp091.Delivery) {
 	if (delivery.Type != UploadRoute && delivery.Type != DeletionRoute) || delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > 256<<10 {
-		_ = delivery.Reject(false)
+		settleReject(ctx, delivery)
 		return
 	}
 	var eventID string
@@ -88,7 +95,7 @@ func (c *Consumer) handle(ctx context.Context, delivery amqp091.Delivery) {
 		eventID = deletion.EventID
 	}
 	if err != nil || delivery.MessageId == "" || delivery.MessageId != eventID {
-		_ = delivery.Reject(false)
+		settleReject(ctx, delivery)
 		return
 	}
 	if delivery.Type == UploadRoute {
@@ -98,9 +105,9 @@ func (c *Consumer) handle(ctx context.Context, delivery amqp091.Delivery) {
 	}
 	switch application.DeliveryDisposition(err) {
 	case application.DeliveryAcknowledge:
-		_ = delivery.Ack(false)
+		settleAck(ctx, delivery)
 	case application.DeliveryReject:
-		_ = delivery.Reject(false)
+		settleReject(ctx, delivery)
 	case application.DeliveryRequeue:
 		c.retry(ctx, delivery)
 	}
@@ -112,7 +119,7 @@ func (c *Consumer) retry(ctx context.Context, delivery amqp091.Delivery) {
 	}
 	attempt, valid := deliveryAttempt(delivery.Headers)
 	if !valid || attempt >= maximumDeliveryAttempts {
-		_ = delivery.Nack(false, false)
+		settleNack(ctx, delivery, false)
 		return
 	}
 	nextAttempt := attempt + 1
@@ -138,11 +145,27 @@ func (c *Consumer) retry(ctx context.Context, delivery amqp091.Delivery) {
 	cancel()
 	if err != nil {
 		if ctx.Err() == nil {
-			_ = delivery.Nack(false, false)
+			settleNack(ctx, delivery, false)
 		}
 		return
 	}
-	_ = delivery.Ack(false)
+	settleAck(ctx, delivery)
+}
+
+func settleAck(ctx context.Context, delivery amqp091.Delivery) {
+	if ctx.Err() == nil {
+		_ = delivery.Ack(false)
+	}
+}
+func settleReject(ctx context.Context, delivery amqp091.Delivery) {
+	if ctx.Err() == nil {
+		_ = delivery.Reject(false)
+	}
+}
+func settleNack(ctx context.Context, delivery amqp091.Delivery, requeue bool) {
+	if ctx.Err() == nil {
+		_ = delivery.Nack(false, requeue)
+	}
 }
 
 func deliveryAttempt(headers amqp091.Table) (int, bool) {

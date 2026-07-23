@@ -139,7 +139,7 @@ func TestConsumerAppliesDispositionAfterShutdownCancellation(t *testing.T) {
 		wantAck       bool
 		wantUnsettled bool
 	}{
-		{name: "durable retry", processErr: application.ErrProcessingDeferred, wantAck: true},
+		{name: "durable retry", processErr: application.ErrProcessingDeferred, wantUnsettled: true},
 		{name: "non-durable transient", processErr: errors.New("database unavailable"), wantUnsettled: true},
 	}
 	for _, test := range tests {

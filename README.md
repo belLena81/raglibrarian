@@ -85,8 +85,10 @@ race, contract, integration, and security checks pass.
 ## Delivery roadmap
 
 Milestones 2, 3, and 5 are complete in the current checkout. Milestones 4, 6,
-and 7 are release candidates. Milestone 4 still requires protected AWS staging plus
-controlled restart/DLQ acceptance before it is marked complete. Milestone 4 adds
+and 7 are release candidates. They require the controlled local, private
+workers-first host, and provider-neutral serverless acceptance sequence in
+[the release completion runbook](docs/release-candidate-completion.md) before
+they are marked complete. Milestone 4 adds
 asynchronous PDF extraction and deterministic chunk manifests through one
 application shared by worker and Lambda adapters. Catalog projects monotonic
 processing state, while Edge gives authenticated clients low-latency SSE hints
@@ -101,7 +103,7 @@ deployment policy, contracts, and acceptance gates are in
 [docs/README.md](docs/README.md). The product requirements are in
 [docs/spec_rag_tech_books.md](docs/spec_rag_tech_books.md). UI routes for admin,
 books, evidence search, and optional grounded answers are implemented. Milestone
-6 remains a release candidate until protected real-provider staging passes.
+6 remains a release candidate until its protected real-provider gate passes.
 M7 lifecycle/EPUB code remains open until its live convergence gate passes;
 Internet-ready hardening follows it.
 

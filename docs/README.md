@@ -219,8 +219,9 @@ Acceptance:
 
 **Owning service:** Ingestion.
 
-**Status:** release candidate; protected AWS staging and controlled restart/DLQ
-acceptance must pass before this milestone can be marked complete.
+**Status:** release candidate; controlled local, private workers-first, and
+provider-neutral serverless acceptance plus restart/DLQ evidence must pass
+before this milestone can be marked complete.
 
 **Outcome:** every accepted PDF progresses to processing and then either
 produces traceable chunks or displays a deterministic failure status.
@@ -312,14 +313,14 @@ Acceptance:
 Milestone 7 lifecycle/format completion is a release candidate pending its live
 EPUB/reindex/delete convergence gate. Milestone 8 Internet-ready hardening
 follows it. Milestones 4 and 6 also remain release candidates until their
-protected AWS and real-provider staging gates pass.
+controlled serverless and real-provider acceptance gates pass.
 
 ## Milestone 6 — optional grounded answers
 
 **Owning service:** Answer.
 
 **Status:** release candidate in the current checkout; protected real-provider
-staging remains required.
+acceptance remains required.
 
 **Outcome:** users choose evidence-only search or an LLM answer grounded in the
 same returned passages.
@@ -356,8 +357,8 @@ Acceptance:
 **Owning services:** Catalog for commands/status, Ingestion for parsing,
 Retrieval for index effects.
 
-**Status:** release candidate; focused local gates pass, while the live M7
-convergence test remains required.
+**Status:** release candidate; focused local gates pass, while the protected
+live M7 convergence test remains required.
 
 **Outcome:** librarians upload EPUB, delete books, and request reindexing while
 all users see a consistent lifecycle state.
