@@ -194,11 +194,11 @@ func (r *PostgresBookRepository) ApplyProcessingEvent(ctx context.Context, event
 	if err != nil {
 		return catalog.Book{}, false, err
 	}
+	if event.Fact.Kind == catalog.ProcessingChunksReady {
+		book.ManifestReference = event.ManifestReference
+		book.ManifestChecksum = event.ManifestSHA256
+	}
 	if changed {
-		if event.Fact.Kind == catalog.ProcessingChunksReady {
-			book.ManifestReference = event.ManifestReference
-			book.ManifestChecksum = event.ManifestSHA256
-		}
 		var manifestReference any
 		var manifestChecksum any
 		if book.ManifestReference != "" {
@@ -232,6 +232,11 @@ func (r *PostgresBookRepository) ApplyProcessingEvent(ctx context.Context, event
 			(event_id,event_type,aggregate_id,sequence,payload,occurred_at,next_attempt_at)
 			VALUES ($1,'catalog.book.processing-status-changed.v1',$2,$3,$4,$5,$5)`, statusEventID, book.ID, sequence, payload, appliedAt); err != nil {
 			return catalog.Book{}, false, fmt.Errorf("catalog: insert processing status outbox: %w", err)
+		}
+	} else if event.Fact.Kind == catalog.ProcessingChunksReady {
+		if _, err = tx.Exec(ctx, `UPDATE catalog.books SET manifest_reference=$2,manifest_sha256=$3 WHERE id=$1`,
+			book.ID, book.ManifestReference, book.ManifestChecksum[:]); err != nil {
+			return catalog.Book{}, false, fmt.Errorf("catalog: update processing manifest: %w", err)
 		}
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -290,9 +295,7 @@ func (r *PostgresBookRepository) ApplyLifecycleCommand(
 		if !book.CanReindex() {
 			return catalog.Book{}, false, catalog.ErrInvalidTransition
 		}
-		if err = book.TransitionTo(catalog.BookStatusReindexing); err != nil {
-			return catalog.Book{}, false, err
-		}
+		book.ProcessingStatus = catalog.BookStatusReindexing
 		book.ProcessingStage = catalog.BookStageChunksReady
 		book.ProcessingFailureCategory = ""
 	case catalog.LifecycleCommandDelete:

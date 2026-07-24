@@ -3,6 +3,8 @@ package application
 import (
 	"context"
 	"errors"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 )
@@ -18,6 +20,7 @@ type Evidence struct {
 	Tags                                                                                    []string
 	PageStart, PageEnd                                                                      uint32
 	Score                                                                                   float64
+	Summary                                                                                 string
 }
 
 // DocumentResult is Retrieval's controlled document-level projection with stored chunk evidence.
@@ -29,6 +32,7 @@ type DocumentResult struct {
 	PageStart, PageEnd                                  uint32
 	Score                                               float64
 	Evidence                                            []Evidence
+	Summary                                             string
 }
 
 // DocumentPage is a hydrated document-search page. Exhausted reflects the raw
@@ -114,7 +118,11 @@ func (s *Searcher) searchVisibleEvidence(ctx context.Context, query domain.Searc
 			break
 		}
 	}
-	return trimEvidence(results, query.Limit()), nil
+	results = trimEvidence(results, query.Limit())
+	for index := range results {
+		results[index].Summary = summarizeEvidence(results[index])
+	}
+	return results, nil
 }
 
 func (s *Searcher) searchVisibleDocuments(ctx context.Context, query domain.SearchQuery, vector []float32) ([]DocumentResult, error) {
@@ -134,7 +142,14 @@ func (s *Searcher) searchVisibleDocuments(ctx context.Context, query domain.Sear
 			break
 		}
 	}
-	return trimDocuments(results, query.Limit()), nil
+	results = trimDocuments(results, query.Limit())
+	for index := range results {
+		for evidenceIndex := range results[index].Evidence {
+			results[index].Evidence[evidenceIndex].Summary = summarizeEvidence(results[index].Evidence[evidenceIndex])
+		}
+		results[index].Summary = summarizeDocument(results[index])
+	}
+	return results, nil
 }
 
 func searchPageLimit(limit int) int {
@@ -164,4 +179,53 @@ func trimDocuments(values []DocumentResult, limit int) []DocumentResult {
 		return values
 	}
 	return values[:limit]
+}
+
+func summarizeEvidence(value Evidence) string {
+	return summarizeText(value.Passage)
+}
+
+func summarizeDocument(value DocumentResult) string {
+	if len(value.Evidence) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(value.Evidence))
+	for _, evidence := range value.Evidence {
+		summary := summarizeText(evidence.Passage)
+		if summary != "" {
+			parts = append(parts, summary)
+		}
+		if len(parts) >= 2 {
+			break
+		}
+	}
+	return summarizeText(strings.Join(parts, " "))
+}
+
+func summarizeText(value string) string {
+	normalized := strings.Join(strings.Fields(value), " ")
+	if normalized == "" {
+		return ""
+	}
+	firstSentence := normalized
+	if match := firstSentenceMatch(normalized); match != "" {
+		firstSentence = match
+	}
+	const maximumSummaryRunes = 220
+	if utf8.RuneCountInString(firstSentence) <= maximumSummaryRunes {
+		return firstSentence
+	}
+	runes := []rune(firstSentence)
+	return strings.TrimSpace(string(runes[:maximumSummaryRunes-1])) + "…"
+}
+
+func firstSentenceMatch(value string) string {
+	for index, r := range value {
+		if r == '.' || r == '!' || r == '?' {
+			if index+1 == len(value) || value[index+1] == ' ' {
+				return value[:index+1]
+			}
+		}
+	}
+	return ""
 }

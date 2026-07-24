@@ -28,7 +28,7 @@ func TestSearcherReturnsRankedEvidence(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{
 		results:   []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Replication keeps copies.", Score: 0.91}},
-		documents: []DocumentResult{{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", ChunkCount: 10, Evidence: []Evidence{{EvidenceID: "evidence-1"}}}},
+		documents: []DocumentResult{{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", ChunkCount: 10, Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "Replication keeps copies."}}}},
 	}
 	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
 	if err != nil {
@@ -38,7 +38,9 @@ func TestSearcherReturnsRankedEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
-	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "evidence-1" || len(result.Documents) != 1 || result.Documents[0].DocumentID != "document-1" || store.query.Question() != "replication" || embedder.calls != 1 {
+	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "evidence-1" || result.Evidence[0].Summary != "Replication keeps copies." ||
+		len(result.Documents) != 1 || result.Documents[0].DocumentID != "document-1" || result.Documents[0].Summary != "Replication keeps copies." ||
+		store.query.Question() != "replication" || embedder.calls != 1 {
 		t.Fatalf("unexpected results: %#v", result)
 	}
 }
@@ -62,8 +64,8 @@ func TestSearcherBackfillsAfterVisibilityFiltering(t *testing.T) {
 				{DocumentID: "pending-document-2", JobID: "pending-2", BookID: "book-pending", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "pending-2"}}},
 			},
 			{
-				{DocumentID: "visible-document-1", JobID: "indexed-1", BookID: "book-1", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "visible-1"}}},
-				{DocumentID: "visible-document-2", JobID: "indexed-2", BookID: "book-2", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "visible-2"}}},
+				{DocumentID: "visible-document-1", JobID: "indexed-1", BookID: "book-1", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "visible-1", Passage: "visible one"}}},
+				{DocumentID: "visible-document-2", JobID: "indexed-2", BookID: "book-2", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "visible-2", Passage: "visible two"}}},
 			},
 		},
 	}

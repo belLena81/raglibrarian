@@ -77,7 +77,7 @@ func resultFromProto(response *answerv1.AnswerResponse) handler.AnswerResult {
 	if response == nil {
 		return handler.AnswerResult{Search: searchcontract.ResultFromProto(nil)}
 	}
-	result := handler.AnswerResult{Search: searchcontract.ResultFromProto(response.Search)}
+	result := handler.AnswerResult{Search: searchcontract.ResultFromProto(response.Search), Summary: response.Summary}
 	if response.Answer == nil {
 		return result
 	}

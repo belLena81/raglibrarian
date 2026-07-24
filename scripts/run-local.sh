@@ -127,14 +127,9 @@ if [[ ! -r "$secret_dir/identity_bootstrap_verifier" ]]; then
 elif [[ "$regenerate_bootstrap_code" == false ]]; then
   bootstrap_status="existing"
   echo "Admin bootstrap verifier already exists in $bootstrap_verifier_file (no new code printed)."
-  echo "To print the stored verifier value now: cat \"$bootstrap_verifier_file\""
 elif [[ "$regenerate_bootstrap_code" == true ]]; then
-  rm -f "$bootstrap_verifier_file"
-  echo "Creating a replacement local admin bootstrap verifier (interactive)."
-  echo "The one-time bootstrap code is printed below; store it now."
-  make bootstrap-verifier
-  bootstrap_status="created"
-  echo "Use the code only with /setup/admin, then remove the verifier after setup."
+  bootstrap_status="regenerate"
+  echo "Admin bootstrap verifier will be replaced after setup is confirmed available."
 fi
 
 if [[ ! -r "$cert_dir/ca.crt" ]]; then
@@ -400,7 +395,7 @@ wait_for_backend() {
   return 1
 }
 
-if [[ "$regenerate_bootstrap_code" == true && "$bootstrap_status" != "created" ]]; then
+if [[ "$regenerate_bootstrap_code" == true ]]; then
   setup_status="$(curl --fail --silent --show-error http://127.0.0.1:8080/setup/status)"
   if [[ "$setup_status" != '{"required":true}' ]]; then
     echo "Bootstrap is unavailable because an administrator is already configured." >&2
@@ -412,6 +407,7 @@ if [[ "$regenerate_bootstrap_code" == true && "$bootstrap_status" != "created" ]
   make bootstrap-verifier
   docker compose up -d --force-recreate identity-service
   wait_for_backend
+  bootstrap_status="created"
 fi
 
 if (( compose_exit != 0 )); then
@@ -430,11 +426,9 @@ echo "  GET  http://127.0.0.1:8080/setup/status"
 echo "  POST http://127.0.0.1:8080/setup/admin"
 if [[ "$bootstrap_status" == "created" ]]; then
   echo "Bootstrap verifier file: $bootstrap_verifier_file"
-  echo "Print now with: cat \"$bootstrap_verifier_file\""
 fi
 if [[ "$bootstrap_status" == "existing" ]]; then
   echo "Bootstrap verifier file (existing): $bootstrap_verifier_file"
-  echo "Print now with: cat \"$bootstrap_verifier_file\""
 fi
 echo "Backend logs:  $root_dir/_logs/{edge-api,identity-service,catalog-service,ingestion-service,retrieval-service,retrieval-worker,answer-service}/service.log"
 echo "Stop backend with: docker compose down --profile m5 --profile m6"

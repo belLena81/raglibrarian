@@ -203,6 +203,83 @@ func TestApplyRetrievalTerminalEventIsAtomicAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestLateChunksReadyPersistsManifestForIndexedBook(t *testing.T) {
+	if os.Getenv("CATALOG_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set CATALOG_POSTGRES_INTEGRATION=true inside the Compose test network")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	dsn := readCatalogIntegrationSecret(t, "CATALOG_POSTGRES_DSN_FILE")
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect catalog database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	id := randomIntegrationID(t)
+	bookID := "late-chunks-book-" + id
+	eventID := "late-chunks-event-" + id
+	statusEventID := "late-chunks-status-" + id
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sourceChecksum := sha256.Sum256([]byte("synthetic source " + id))
+	manifestChecksum := sha256.Sum256([]byte("synthetic manifest " + id))
+	manifestReference := "books/" + bookID + "/" + hex.EncodeToString(sourceChecksum[:]) + "/bf78af147282f437086fe289afc14968ef7e20db0546c63672369e6530a18add/manifest.pb"
+	_, err = pool.Exec(ctx, `INSERT INTO catalog.books
+		(id,title,author,year,tags,processing_status,created_at,object_reference,checksum,byte_size,media_type,actor_id,
+		 processing_stage,processing_failure_category,processing_updated_at,processing_version,lifecycle_version)
+		VALUES ($1,'Late chunks fixture','Catalog integration',2026,ARRAY['synthetic'],'indexed',$2,$3,$4,1,
+		'application/pdf','integration-test','indexed','',$2,3,2)`,
+		bookID, now.Add(-time.Minute), "originals/"+bookID+".pdf", sourceChecksum[:])
+	if err != nil {
+		t.Fatalf("insert indexed book fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.outbox WHERE aggregate_id=$1", bookID)
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.processing_inbox WHERE event_id=$1", eventID)
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.books WHERE id=$1", bookID)
+	})
+
+	event := catalog.ProcessingEvent{
+		EventID:           eventID,
+		EventType:         "ingestion.book.chunks-ready.v1",
+		BookID:            bookID,
+		SourceSHA256:      sourceChecksum,
+		ManifestReference: manifestReference,
+		ManifestSHA256:    manifestChecksum,
+		CorrelationID:     "correlation-" + id,
+		CausationID:       "indexed-" + id,
+		Fact: catalog.ProcessingFact{
+			Kind:       catalog.ProcessingChunksReady,
+			OccurredAt: now,
+		},
+	}
+	repository := NewPostgresBookRepository(pool)
+	book, changed, err := repository.ApplyProcessingEvent(ctx, event, statusEventID, now)
+	if err != nil {
+		t.Fatalf("ApplyProcessingEvent() error = %v", err)
+	}
+	if changed {
+		t.Fatalf("ApplyProcessingEvent() changed = %v, want false", changed)
+	}
+	if book.ManifestReference != manifestReference || book.ManifestChecksum != manifestChecksum || !book.CanReindex() {
+		t.Fatalf("late chunks-ready did not persist manifest: %+v", book)
+	}
+	var storedReference string
+	var storedChecksum []byte
+	var outboxCount int
+	if err = pool.QueryRow(ctx, `SELECT manifest_reference,manifest_sha256,
+		(SELECT COUNT(*) FROM catalog.outbox WHERE aggregate_id=$1)
+		FROM catalog.books WHERE id=$1`, bookID).Scan(&storedReference, &storedChecksum, &outboxCount); err != nil {
+		t.Fatalf("read late chunks-ready projection: %v", err)
+	}
+	if storedReference != manifestReference || !bytes.Equal(storedChecksum, manifestChecksum[:]) || outboxCount != 0 {
+		t.Fatalf("stored manifest = %q/%x outbox=%d", storedReference, storedChecksum, outboxCount)
+	}
+}
+
 func TestListPaginatesBooksWithSharedTimestamp(t *testing.T) {
 	if os.Getenv("CATALOG_POSTGRES_INTEGRATION") != "true" {
 		t.Skip("set CATALOG_POSTGRES_INTEGRATION=true inside the Compose test network")

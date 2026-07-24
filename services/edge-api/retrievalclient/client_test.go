@@ -51,17 +51,17 @@ func TestSearchMapsRequestResponseMetadataAndDeadline(t *testing.T) {
 				EvidenceId: "evidence-1", ChunkId: "chunk-1",
 				Book:    &retrievalv1.BookMetadata{BookId: "book-1", Title: "Book", Author: "Author", Year: 2024, Tags: []string{"systems"}, MediaType: "application/epub+zip"},
 				Chapter: "Replication", Section: "Quorums", PageStart: 5, PageEnd: 6,
-				Passage: "stored passage", Score: 0.9,
+				Passage: "stored passage", Score: 0.9, Summary: "stored passage",
 			}},
 			Documents: []*retrievalv1.DocumentResult{{
 				DocumentId: "book-1:job-1",
 				Book:       &retrievalv1.BookMetadata{BookId: "book-1", Title: "Book", Author: "Author", Year: 2024, Tags: []string{"systems"}},
-				ChunkCount: 10, PageStart: 1, PageEnd: 100, Score: 0.8,
+				ChunkCount: 10, PageStart: 1, PageEnd: 100, Score: 0.8, Summary: "stored passage",
 				Evidence: []*retrievalv1.Evidence{{
 					EvidenceId: "evidence-1", ChunkId: "chunk-1",
 					Book:    &retrievalv1.BookMetadata{BookId: "book-1", Title: "Book", Author: "Author", Year: 2024, Tags: []string{"systems"}},
 					Chapter: "Replication", Section: "Quorums", PageStart: 5, PageEnd: 6,
-					Passage: "stored passage", Score: 0.9,
+					Passage: "stored passage", Score: 0.9, Summary: "stored passage",
 				}},
 			}},
 		}, nil
@@ -80,9 +80,11 @@ func TestSearchMapsRequestResponseMetadataAndDeadline(t *testing.T) {
 	assert.Equal(t, "evidence-1", result.Results[0].EvidenceID)
 	assert.Equal(t, "book-1", result.Results[0].Book.ID)
 	assert.Equal(t, uint32(5), result.Results[0].PageStart)
+	assert.Equal(t, "stored passage", result.Results[0].Summary)
 	require.Len(t, result.Documents, 1)
 	assert.Equal(t, "book-1:job-1", result.Documents[0].DocumentID)
 	assert.Equal(t, uint32(10), result.Documents[0].ChunkCount)
+	assert.Equal(t, "stored passage", result.Documents[0].Summary)
 	require.Len(t, result.Documents[0].Evidence, 1)
 }
 

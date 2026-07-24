@@ -128,6 +128,7 @@ type GroundedAnswer struct {
 }
 
 type AnswerResult struct {
-	Search SearchResult
-	Answer *GroundedAnswer
+	Search  SearchResult
+	Answer  *GroundedAnswer
+	Summary string
 }

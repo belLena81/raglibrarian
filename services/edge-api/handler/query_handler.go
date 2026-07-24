@@ -84,6 +84,7 @@ type Evidence struct {
 	PageEnd    uint32
 	Passage    string
 	Score      float64
+	Summary    string
 }
 
 // DocumentResult is one document-level hit with Retrieval-owned stored evidence.
@@ -95,6 +96,7 @@ type DocumentResult struct {
 	PageEnd    uint32
 	Score      float64
 	Evidence   []Evidence
+	Summary    string
 }
 
 // SearchResult contains only evidence returned by Retrieval.
@@ -117,8 +119,9 @@ type GroundedAnswer struct {
 
 // AnswerResult preserves Retrieval's evidence and may include synthesis.
 type AnswerResult struct {
-	Search SearchResult
-	Answer *GroundedAnswer
+	Search  SearchResult
+	Answer  *GroundedAnswer
+	Summary string
 }
 
 // Searcher is the outbound Retrieval use-case port required by the handler.
@@ -279,6 +282,7 @@ func validQueryYear(year *int) bool {
 
 type queryResponse struct {
 	Query     string             `json:"query"`
+	Summary   string             `json:"summary,omitempty"`
 	Results   []evidenceResponse `json:"results"`
 	Documents []documentResponse `json:"documents"`
 	Answer    *answerResponse    `json:"answer,omitempty"`
@@ -302,6 +306,7 @@ type evidenceResponse struct {
 	Pages      [2]uint32    `json:"pages"`
 	Passage    string       `json:"passage"`
 	Score      float64      `json:"score"`
+	Summary    string       `json:"summary,omitempty"`
 }
 
 type documentResponse struct {
@@ -311,6 +316,7 @@ type documentResponse struct {
 	Pages      [2]uint32          `json:"pages"`
 	Score      float64            `json:"score"`
 	Evidence   []evidenceResponse `json:"evidence"`
+	Summary    string             `json:"summary,omitempty"`
 }
 
 func queryResponseFrom(result SearchResult) queryResponse {
@@ -325,13 +331,14 @@ func queryResponseFrom(result SearchResult) queryResponse {
 			evidence = append(evidence, evidenceResponseFrom(value))
 		}
 		documents = append(documents, documentResponse{DocumentID: document.DocumentID, Book: document.Book, ChunkCount: document.ChunkCount,
-			Pages: [2]uint32{document.PageStart, document.PageEnd}, Score: document.Score, Evidence: evidence})
+			Pages: [2]uint32{document.PageStart, document.PageEnd}, Score: document.Score, Evidence: evidence, Summary: document.Summary})
 	}
 	return queryResponse{Query: result.Query, Results: results, Documents: documents}
 }
 
 func queryResponseFromAnswer(result AnswerResult) queryResponse {
 	response := queryResponseFrom(result.Search)
+	response.Summary = result.Summary
 	if result.Answer == nil {
 		return response
 	}
@@ -356,5 +363,6 @@ func evidenceResponseFrom(evidence Evidence) evidenceResponse {
 		Pages:      [2]uint32{evidence.PageStart, evidence.PageEnd},
 		Passage:    evidence.Passage,
 		Score:      evidence.Score,
+		Summary:    evidence.Summary,
 	}
 }

@@ -94,7 +94,7 @@ func (s *Server) Search(parent context.Context, request *retrievalv1.SearchReque
 		}
 		response.Documents = append(response.Documents, &retrievalv1.DocumentResult{DocumentId: result.DocumentID,
 			Book:       &retrievalv1.BookMetadata{BookId: result.BookID, Title: result.Title, Author: result.Author, Year: int32(result.Year), Tags: append([]string(nil), result.Tags...), MediaType: result.MediaType}, // #nosec G115 -- range checked above.
-			ChunkCount: result.ChunkCount, PageStart: result.PageStart, PageEnd: result.PageEnd, Score: result.Score, Evidence: evidence})
+			ChunkCount: result.ChunkCount, PageStart: result.PageStart, PageEnd: result.PageEnd, Score: result.Score, Evidence: evidence, Summary: result.Summary})
 	}
 	return response, nil
 }
@@ -105,7 +105,7 @@ func evidenceToProto(result application.Evidence) (*retrievalv1.Evidence, error)
 	}
 	return &retrievalv1.Evidence{EvidenceId: result.EvidenceID, ChunkId: result.ChunkID,
 		Book:    &retrievalv1.BookMetadata{BookId: result.BookID, Title: result.Title, Author: result.Author, Year: int32(result.Year), Tags: append([]string(nil), result.Tags...), MediaType: result.MediaType}, // #nosec G115 -- range checked above.
-		Chapter: result.Chapter, Section: result.Section, PageStart: result.PageStart, PageEnd: result.PageEnd, Passage: result.Passage, Score: result.Score}, nil
+		Chapter: result.Chapter, Section: result.Section, PageStart: result.PageStart, PageEnd: result.PageEnd, Passage: result.Passage, Score: result.Score, Summary: result.Summary}, nil
 }
 
 func mapError(err error) error {

@@ -93,6 +93,7 @@ var allowedFieldNames = map[string]struct{}{
 	"request_id": {}, "method": {}, "route": {}, "route_template": {}, "status": {}, "outcome": {}, "duration": {}, "duration_ms": {},
 	"response_bytes": {}, "operation": {}, "code": {}, "grpc_code": {}, "stage": {}, "reason": {}, "reason_code": {}, "error_code": {},
 	"stack_fingerprint": {}, "actor_id": {}, "book_id": {}, "checksum_sha256": {}, "byte_size": {}, "tag_count": {}, "page_size": {}, "result_count": {}, "role": {}, "account_status": {},
+	"segment_count": {}, "summary_length": {},
 }
 
 func safeFieldSuffix(fields []zapcore.Field) string {
@@ -148,6 +149,9 @@ var (
 )
 
 func validDiagnosticField(key string, fieldType zapcore.FieldType, value string) bool {
+	if key == "summary" {
+		return fieldType == zapcore.StringType && len(value) <= 1024 && value != "" && !strings.ContainsAny(value, "=\t\r\n")
+	}
 	if len(value) > 256 || value == "" || strings.ContainsAny(value, " =\t\r\n") {
 		return false
 	}
@@ -169,6 +173,8 @@ func validDiagnosticField(key string, fieldType zapcore.FieldType, value string)
 	case "checksum_sha256":
 		return fieldType == zapcore.StringType && checksumPattern.MatchString(value)
 	case "byte_size", "tag_count", "page_size", "result_count":
+		return integerField(fieldType) && parseBoundedInt(value, 0, 1<<53-1)
+	case "segment_count", "summary_length":
 		return integerField(fieldType) && parseBoundedInt(value, 0, 1<<53-1)
 	case "role":
 		return fieldType == zapcore.StringType && (value == "admin" || value == "librarian" || value == "reader")

@@ -170,7 +170,7 @@ type readinessDependencyError struct {
 }
 
 func (err readinessDependencyError) Error() string {
-	return err.err.Error()
+	return fmt.Sprintf("readiness dependency %s unavailable", err.dependency)
 }
 
 func (err readinessDependencyError) DependencyName() string {

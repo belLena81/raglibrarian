@@ -65,6 +65,7 @@ message Evidence {
   uint32 page_end = 7;
   string passage = 8;
   double score = 9;
+  string summary = 10;
 }
 
 message DocumentResult {
@@ -75,6 +76,7 @@ message DocumentResult {
   uint32 page_end = 5;
   double score = 6;
   repeated Evidence evidence = 7;
+  string summary = 8;
 }
 
 enum BookIndexingFailureCategory {

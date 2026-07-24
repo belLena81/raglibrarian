@@ -1,4 +1,5 @@
-// Package diagnostic emits fixed, content-free Answer lifecycle outcomes.
+// Package diagnostic emits fixed Answer lifecycle outcomes and content-free
+// provider response metadata.
 package diagnostic
 
 import (
@@ -32,6 +33,14 @@ func (r *Recorder) Observe(outcome application.Outcome, duration time.Duration) 
 
 func (r *Recorder) ProviderStarted() {
 	r.metrics.ProviderStarted()
+	r.log.Info("answer.provider.request")
+}
+
+func (r *Recorder) ProviderResponse(segmentCount, summaryLength int) {
+	r.log.Info("answer.provider.response",
+		zap.Int("segment_count", segmentCount),
+		zap.Int("summary_length", summaryLength),
+	)
 }
 
 func (r *Recorder) ProviderFinished() {

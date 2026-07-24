@@ -41,6 +41,7 @@ const (
 type Observer interface {
 	Observe(Outcome, time.Duration)
 	ProviderStarted()
+	ProviderResponse(segmentCount, summaryLength int)
 	ProviderFinished()
 }
 
@@ -136,7 +137,10 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 		s.observer.Observe(OutcomeInvalidOutput, time.Since(started))
 		return result, nil
 	}
+	summary := summarizeSegments(validated)
 	result.Answer = &domain.GroundedAnswer{Segments: validated}
+	result.Summary = summary
+	s.observer.ProviderResponse(len(validated), utf8.RuneCountInString(summary))
 	s.observer.Observe(OutcomeAnswered, time.Since(started))
 	return result, nil
 }
@@ -206,4 +210,25 @@ func validateSegments(values []domain.AnswerSegment, evidence []domain.ContextEv
 
 func unsafeAnswerRune(value rune) bool {
 	return unicode.IsControl(value) || unicode.Is(unicode.Cf, value) || value == '\u2028' || value == '\u2029'
+}
+
+func summarizeSegments(values []domain.AnswerSegment) string {
+	if len(values) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		text := strings.TrimSpace(value.Text)
+		if text != "" {
+			parts = append(parts, text)
+		}
+	}
+	summary := strings.Join(parts, " ")
+	summary = strings.Join(strings.Fields(summary), " ")
+	const maximumSummaryRunes = 512
+	if utf8.RuneCountInString(summary) <= maximumSummaryRunes {
+		return summary
+	}
+	runes := []rune(summary)
+	return strings.TrimSpace(string(runes[:maximumSummaryRunes-1])) + "…"
 }

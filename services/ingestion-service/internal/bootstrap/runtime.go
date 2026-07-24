@@ -340,7 +340,11 @@ func (r *Runtime) ProcessDeletion(ctx context.Context, event application.Deletio
 	if err := event.Validate(); err != nil {
 		return err
 	}
-	return r.Processor.ProcessDeletion(ctx, event)
+	if err := r.Processor.ProcessDeletion(ctx, event); err != nil {
+		return err
+	}
+	r.Cleaner.WakeDeletionCleanup()
+	return nil
 }
 
 func newID() (string, error) {

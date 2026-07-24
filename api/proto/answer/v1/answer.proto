@@ -26,6 +26,7 @@ message AnswerRequest {
 message AnswerResponse {
   retrieval.v1.SearchResponse search = 1;
   GroundedAnswer answer = 2;
+  string summary = 3;
 }
 
 message GroundedAnswer {

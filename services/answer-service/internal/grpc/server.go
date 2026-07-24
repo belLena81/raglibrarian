@@ -60,7 +60,7 @@ func searchFromProto(value *retrievalv1.SearchRequest) domain.SearchRequest {
 }
 
 func responseToProto(result domain.AnswerResult) *answerv1.AnswerResponse {
-	response := &answerv1.AnswerResponse{Search: searchToProto(result.Search)}
+	response := &answerv1.AnswerResponse{Search: searchToProto(result.Search), Summary: result.Summary}
 	if result.Answer != nil {
 		segments := make([]*answerv1.AnswerSegment, 0, len(result.Answer.Segments))
 		for _, value := range result.Answer.Segments {

@@ -31,18 +31,35 @@ type PrefixStore interface {
 }
 
 type Cleaner struct {
-	repository  OrphanRepository
-	store       PrefixStore
-	interval    time.Duration
-	gracePeriod time.Duration
-	now         func() time.Time
+	repository   OrphanRepository
+	store        PrefixStore
+	interval     time.Duration
+	gracePeriod  time.Duration
+	now          func() time.Time
+	deletionWake chan struct{}
 }
 
 func NewCleaner(repository OrphanRepository, store PrefixStore, interval, gracePeriod time.Duration) (*Cleaner, error) {
 	if repository == nil || store == nil || interval <= 0 || gracePeriod <= 0 {
 		return nil, errors.New("invalid artifact cleaner")
 	}
-	return &Cleaner{repository: repository, store: store, interval: interval, gracePeriod: gracePeriod, now: time.Now}, nil
+	return &Cleaner{
+		repository:   repository,
+		store:        store,
+		interval:     interval,
+		gracePeriod:  gracePeriod,
+		now:          time.Now,
+		deletionWake: make(chan struct{}, 1),
+	}, nil
+}
+
+// WakeDeletionCleanup requests prompt cleanup after a deletion is accepted.
+// The buffered signal coalesces concurrent requests while a pass is running.
+func (c *Cleaner) WakeDeletionCleanup() {
+	select {
+	case c.deletionWake <- struct{}{}:
+	default:
+	}
 }
 
 func (c *Cleaner) Run(ctx context.Context) error {
@@ -55,6 +72,7 @@ func (c *Cleaner) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-c.deletionWake:
 		case <-ticker.C:
 		}
 	}

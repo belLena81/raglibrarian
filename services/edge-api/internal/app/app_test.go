@@ -16,6 +16,12 @@ type readinessStub struct {
 	name  string
 }
 
+type panickingReadinessError struct{}
+
+func (panickingReadinessError) Error() string {
+	panic("wrapped readiness error must not be formatted")
+}
+
 func (s readinessStub) CheckReady(context.Context) error {
 	*s.calls = append(*s.calls, s.name)
 	return s.err
@@ -54,6 +60,17 @@ func TestReadinessCanSkipRetrievalForM4OnlyStacks(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, []string{"identity", "catalog"}, calls)
+}
+
+func TestReadinessDependencyErrorUsesSanitizedMessageAndPreservesCause(t *testing.T) {
+	cause := panickingReadinessError{}
+	err := readinessDependencyError{dependency: "catalog", err: cause}
+
+	assert.NotPanics(t, func() {
+		assert.Equal(t, "readiness dependency catalog unavailable", err.Error())
+	})
+	assert.Equal(t, "catalog", err.DependencyName())
+	assert.ErrorIs(t, err, cause)
 }
 
 func TestTLSFailureClassifiesFileAccessAndMaterialErrors(t *testing.T) {

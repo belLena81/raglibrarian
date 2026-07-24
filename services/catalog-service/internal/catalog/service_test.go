@@ -129,6 +129,39 @@ func TestLifecycleCommandsAreIdempotentAndDeletionWaitsForAllCleanup(t *testing.
 	}
 }
 
+func TestReindexBookAllowsEligibleFailedBook(t *testing.T) {
+	repository := NewMemoryRepository()
+	objects := NewMemoryObjectStore()
+	service := NewServiceWithOptions(repository, objects, ServiceOptions{
+		MaxBytes: 1024,
+		Clock: func() time.Time {
+			return time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+		},
+		NewID: func() (string, error) {
+			return "event-id", nil
+		},
+	})
+	book, err := service.UploadBook(context.Background(), validUploadInput(strings.NewReader("%PDF-1.7\nbody")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	book.ProcessingStatus = BookStatusFailed
+	book.ProcessingStage = BookStageFailed
+	book.ProcessingFailureCategory = FailureIndexingTimeout
+	book.ManifestReference = "manifests/book.pb"
+	book.ManifestChecksum = sha256.Sum256([]byte("manifest"))
+	repository.books[book.ID] = book
+
+	reindexed, err := service.ReindexBook(context.Background(), book.ID, "reindex-command", validManager(), "correlation")
+	if err != nil {
+		t.Fatalf("ReindexBook() error = %v", err)
+	}
+	if reindexed.ProcessingStatus != BookStatusReindexing || reindexed.ProcessingStage != BookStageChunksReady ||
+		reindexed.ProcessingFailureCategory != "" {
+		t.Fatalf("reindexed book = %+v", reindexed)
+	}
+}
+
 func TestReindexRejectsUnusableManifestFailures(t *testing.T) {
 	for _, category := range []ProcessingFailureCategory{FailureManifestIntegrity, FailureIncompatibleProfile} {
 		t.Run(string(category), func(t *testing.T) {

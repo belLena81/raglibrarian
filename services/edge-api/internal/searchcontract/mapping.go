@@ -76,6 +76,7 @@ func ResultFromProto(response *retrievalv1.SearchResponse) handler.SearchResult 
 			PageEnd:    document.PageEnd,
 			Score:      document.Score,
 			Evidence:   evidence,
+			Summary:    document.Summary,
 		})
 	}
 	return handler.SearchResult{Query: response.Query, Results: results, Documents: documents}
@@ -92,6 +93,7 @@ func evidenceFromProto(evidence *retrievalv1.Evidence) handler.Evidence {
 		PageEnd:    evidence.PageEnd,
 		Passage:    evidence.Passage,
 		Score:      evidence.Score,
+		Summary:    evidence.Summary,
 	}
 }
 

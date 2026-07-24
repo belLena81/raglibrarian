@@ -78,6 +78,7 @@ func TestQueryReturnsRetrievedEvidenceAndUsesTrustedPrincipal(t *testing.T) {
 			PageEnd:   102,
 			Passage:   "A stored evidence passage.",
 			Score:     0.87,
+			Summary:   "A stored evidence passage.",
 		}},
 		Documents: []handler.DocumentResult{{
 			DocumentID: "book-1:job-1",
@@ -92,6 +93,7 @@ func TestQueryReturnsRetrievedEvidenceAndUsesTrustedPrincipal(t *testing.T) {
 			PageStart:  1,
 			PageEnd:    250,
 			Score:      0.79,
+			Summary:    "A stored evidence passage.",
 			Evidence: []handler.Evidence{{
 				EvidenceID: "evidence-1",
 				ChunkID:    "chunk-1",
@@ -108,6 +110,7 @@ func TestQueryReturnsRetrievedEvidenceAndUsesTrustedPrincipal(t *testing.T) {
 				PageEnd:   102,
 				Passage:   "A stored evidence passage.",
 				Score:     0.87,
+				Summary:   "A stored evidence passage.",
 			}},
 		}},
 	}}
@@ -131,17 +134,18 @@ func TestQueryReturnsRetrievedEvidenceAndUsesTrustedPrincipal(t *testing.T) {
 			"evidence_id":"evidence-1","chunk_id":"chunk-1",
 			"book":{"id":"book-1","title":"Distributed Systems","author":"A. Author","year":2024,"tags":["systems"]},
 			"chapter":"Replication","section":"Quorums","pages":[101,102],
-			"passage":"A stored evidence passage.","score":0.87
+			"passage":"A stored evidence passage.","score":0.87,"summary":"A stored evidence passage."
 		}],
 		"documents":[{
 			"document_id":"book-1:job-1",
 			"book":{"id":"book-1","title":"Distributed Systems","author":"A. Author","year":2024,"tags":["systems"]},
 			"chunk_count":12,"pages":[1,250],"score":0.79,
+			"summary":"A stored evidence passage.",
 			"evidence":[{
 				"evidence_id":"evidence-1","chunk_id":"chunk-1",
 				"book":{"id":"book-1","title":"Distributed Systems","author":"A. Author","year":2024,"tags":["systems"]},
 				"chapter":"Replication","section":"Quorums","pages":[101,102],
-				"passage":"A stored evidence passage.","score":0.87
+				"passage":"A stored evidence passage.","score":0.87,"summary":"A stored evidence passage."
 			}]
 		}]
 	}`, recorder.Body.String())
@@ -172,6 +176,7 @@ func TestQueryAnswerModeReturnsAnswerSegmentsAndTrustedEvidence(t *testing.T) {
 			Results:   []handler.Evidence{{EvidenceID: "evidence-1", Passage: "stored evidence"}},
 			Documents: []handler.DocumentResult{},
 		},
+		Summary: "Grounded answer.",
 		Answer: &handler.GroundedAnswer{Segments: []handler.AnswerSegment{{
 			Text:        "Grounded answer.",
 			EvidenceIDs: []string{"evidence-1"},
@@ -192,6 +197,7 @@ func TestQueryAnswerModeReturnsAnswerSegmentsAndTrustedEvidence(t *testing.T) {
 			"chapter":"","section":"","pages":[0,0],"passage":"stored evidence","score":0
 		}],
 		"documents":[],
+		"summary":"Grounded answer.",
 		"answer":{"segments":[{"text":"Grounded answer.","evidence_ids":["evidence-1"]}]}
 	}`, recorder.Body.String())
 	assert.Equal(t, 1, answer.calls)

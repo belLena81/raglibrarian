@@ -54,8 +54,9 @@ func TestAnswerPropagatesRequestIDDeadlineActorAndMapsResponse(t *testing.T) {
 		return &answerv1.AnswerResponse{
 			Search: &retrievalv1.SearchResponse{
 				Query:   request.Search.Question,
-				Results: []*retrievalv1.Evidence{{EvidenceId: "evidence-1", Passage: "stored passage"}},
+				Results: []*retrievalv1.Evidence{{EvidenceId: "evidence-1", Passage: "stored passage", Summary: "stored passage"}},
 			},
+			Summary: "Grounded.",
 			Answer: &answerv1.GroundedAnswer{Segments: []*answerv1.AnswerSegment{{
 				Text: "Grounded.", EvidenceIds: []string{"evidence-1"},
 			}}},
@@ -72,10 +73,12 @@ func TestAnswerPropagatesRequestIDDeadlineActorAndMapsResponse(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Search.Results, 1)
 	assert.Equal(t, "evidence-1", result.Search.Results[0].EvidenceID)
+	assert.Equal(t, "stored passage", result.Search.Results[0].Summary)
 	require.NotNil(t, result.Answer)
 	require.Len(t, result.Answer.Segments, 1)
 	assert.Equal(t, "Grounded.", result.Answer.Segments[0].Text)
 	assert.Equal(t, []string{"evidence-1"}, result.Answer.Segments[0].EvidenceIDs)
+	assert.Equal(t, "Grounded.", result.Summary)
 }
 
 func TestAnswerMapsFallbackAndStableFailures(t *testing.T) {
@@ -134,7 +137,7 @@ func TestAnswerRejectsInvalidRequestIDBeforeRPC(t *testing.T) {
 
 func TestAnswerNormalizesMissingAnswerAndEvidenceCollections(t *testing.T) {
 	client := New(&answerClientStub{answer: func(context.Context, *answerv1.AnswerRequest, ...grpc.CallOption) (*answerv1.AnswerResponse, error) {
-		return &answerv1.AnswerResponse{Search: &retrievalv1.SearchResponse{Query: "q"}}, nil
+		return &answerv1.AnswerResponse{Search: &retrievalv1.SearchResponse{Query: "q"}, Summary: "summary"}, nil
 	}}, time.Second)
 	ctx := context.WithValue(context.Background(), chimiddleware.RequestIDKey, testRequestID)
 
@@ -144,4 +147,5 @@ func TestAnswerNormalizesMissingAnswerAndEvidenceCollections(t *testing.T) {
 	assert.NotNil(t, result.Search.Results)
 	assert.NotNil(t, result.Search.Documents)
 	assert.Nil(t, result.Answer)
+	assert.Equal(t, "summary", result.Summary)
 }

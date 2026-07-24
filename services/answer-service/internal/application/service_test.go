@@ -64,6 +64,7 @@ type fakeObserver struct{}
 
 func (fakeObserver) Observe(Outcome, time.Duration) {}
 func (fakeObserver) ProviderStarted()               {}
+func (fakeObserver) ProviderResponse(int, int)      {}
 func (fakeObserver) ProviderFinished()              {}
 
 func TestAnswerReturnsValidatedGroundedSegments(t *testing.T) {
@@ -71,7 +72,7 @@ func TestAnswerReturnsValidatedGroundedSegments(t *testing.T) {
 	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: " Grounded answer ", EvidenceIDs: []string{"evidence-1"}}}}
 	service := newTestService(t, retriever, provider, DefaultLimits())
 	result, err := service.Answer(context.Background(), validRequest())
-	if err != nil || result.Answer == nil || result.Answer.Segments[0].Text != "Grounded answer" {
+	if err != nil || result.Answer == nil || result.Answer.Segments[0].Text != "Grounded answer" || result.Summary != "Grounded answer" {
 		t.Fatalf("Answer() = %#v, %v", result, err)
 	}
 }

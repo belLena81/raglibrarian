@@ -102,11 +102,15 @@ jobs:
           AZURE_DEPLOYMENT_NAME: raglibrarian-serverless-${{ github.run_id }}
           AZURE_PARAMETERS_FILE: ${{ vars.AZURE_TEST_PARAMETERS_FILE }}
           AZURE_PROCESSING_MODE: paused
+          RAGLIBRARIAN_SET_WORKER_MODE_COMMAND: ${{ vars.AZURE_SET_WORKER_MODE_COMMAND }}
           AZURE_VERIFY_CONSUMERS_COMMAND: ${{ vars.AZURE_VERIFY_CONSUMERS_COMMAND }}
           AZURE_ACR_LOGIN_SERVER: ${{ vars.AZURE_ACR_LOGIN_SERVER }}
           AZURE_ALLOWED_IMAGE_REPOSITORIES: ${{ vars.AZURE_ALLOWED_IMAGE_REPOSITORIES }}
           AZURE_VERIFY_APPROVED_IMAGE_COMMAND: ${{ vars.AZURE_VERIFY_APPROVED_IMAGE_COMMAND }}
-        run: deploy/azure-test/scripts/transition.sh
+        run: |
+          set -euo pipefail
+          "$RAGLIBRARIAN_SET_WORKER_MODE_COMMAND" paused
+          deploy/azure-test/scripts/transition.sh
       - name: Write sanitized release evidence
         if: always()
         env:
