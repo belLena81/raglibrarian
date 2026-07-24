@@ -42,7 +42,7 @@ func (t *TEI) EmbedDocuments(ctx context.Context, texts []string) ([][]float32, 
 	if len(texts) == 0 || len(texts) > 256 {
 		return nil, errors.New("invalid embedding batch")
 	}
-	const providerBatchSize = 32
+	const providerBatchSize = 16
 	result := make([][]float32, 0, len(texts))
 	for start := 0; start < len(texts); start += providerBatchSize {
 		end := start + providerBatchSize
@@ -94,18 +94,21 @@ func (t *TEI) embed(ctx context.Context, inputs any, expected int) ([][]float32,
 }
 
 func (t *TEI) CheckReady(ctx context.Context) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, t.endpoint+"/health", nil)
-	if err != nil {
-		return errors.New("create embedding readiness request")
+	readinessPaths := []string{"/readyz", "/healthz", "/health"}
+	for _, path := range readinessPaths {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, t.endpoint+path, nil)
+		if err != nil {
+			return errors.New("create embedding readiness request")
+		}
+		response, err := t.client.Do(request) // #nosec G704 -- NewTEI accepts only a validated operator-controlled private endpoint.
+		if err != nil {
+			continue
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumResponseBytes))
+		_ = response.Body.Close()
+		if response.StatusCode == http.StatusOK {
+			return nil
+		}
 	}
-	response, err := t.client.Do(request) // #nosec G704 -- NewTEI accepts only a validated operator-controlled private endpoint.
-	if err != nil {
-		return errors.New("embedding dependency unavailable")
-	}
-	defer func() { _ = response.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumResponseBytes))
-	if response.StatusCode != http.StatusOK {
-		return errors.New("embedding dependency unavailable")
-	}
-	return nil
+	return errors.New("embedding dependency unavailable")
 }

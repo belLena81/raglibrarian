@@ -37,6 +37,11 @@ const (
 	initialReconnectDelay = time.Second
 	maxReconnectDelay     = 30 * time.Second
 	maximumRetryAttempts  = int64(4)
+
+	embeddingReadinessInitialDelay = time.Second
+	embeddingReadinessMaxDelay     = 10 * time.Second
+	maxEmbeddingReadinessAttempts  = 90
+	embeddingReadinessProbeTimeout = 2 * time.Second
 )
 
 var errManifestArtifactRead = errors.New("manifest artifact read failed")
@@ -157,8 +162,44 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if collectionErr != nil {
 		return errors.New("initialize vector collection")
 	}
+	if err := awaitReadiness(ctx, r.embedder.CheckReady, maxEmbeddingReadinessAttempts, embeddingReadinessInitialDelay, embeddingReadinessMaxDelay, embeddingReadinessProbeTimeout); err != nil {
+		return errors.New("wait for embedding service readiness")
+	}
 	go r.serveReadiness(ctx)
 	return r.runBrokerLoop(ctx, r.runBrokerSession, initialReconnectDelay, maxReconnectDelay)
+}
+
+func awaitReadiness(ctx context.Context, check func(context.Context) error, maxAttempts int, initialDelay, maxDelay, probeTimeout time.Duration) error {
+	if check == nil || maxAttempts <= 0 {
+		return errors.New("invalid readiness probe")
+	}
+	delay := initialDelay
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		probeContext, cancel := context.WithTimeout(ctx, probeTimeout)
+		err := check(probeContext)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if attempt == maxAttempts {
+			return err
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay *= 2
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) runBrokerLoop(ctx context.Context, run func(context.Context) error, initialBackoff, maximumBackoff time.Duration) error {
@@ -735,6 +776,9 @@ func (r *Runtime) dispatchOutbox(ctx context.Context, publisher *rabbitmq.Publis
 }
 
 func rejectionReason(err error) string {
+	if application.FailureCategory(err) == domain.FailureEmbeddingUnavailable {
+		return "embedding_unavailable"
+	}
 	switch {
 	case errors.Is(err, application.ErrConflictingEvent):
 		return "conflicting_event"

@@ -164,17 +164,37 @@ type readiness struct {
 	retrievalReadinessRequired bool
 }
 
+type readinessDependencyError struct {
+	dependency string
+	err        error
+}
+
+func (err readinessDependencyError) Error() string {
+	return err.err.Error()
+}
+
+func (err readinessDependencyError) DependencyName() string {
+	return err.dependency
+}
+
+func (err readinessDependencyError) Unwrap() error {
+	return err.err
+}
+
 func (r readiness) CheckReady(ctx context.Context) error {
 	if err := r.identity.CheckReady(ctx); err != nil {
-		return err
+		return readinessDependencyError{dependency: "identity", err: err}
 	}
 	if err := r.catalog.CheckReady(ctx); err != nil {
-		return err
+		return readinessDependencyError{dependency: "catalog", err: err}
 	}
 	if !r.retrievalReadinessRequired {
 		return nil
 	}
-	return r.retrieval.CheckReady(ctx)
+	if err := r.retrieval.CheckReady(ctx); err != nil {
+		return readinessDependencyError{dependency: "retrieval", err: err}
+	}
+	return nil
 }
 
 type pendingWatcher interface {

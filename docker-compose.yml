@@ -596,20 +596,30 @@ services:
       - --auto-truncate
       - "false"
       - --max-client-batch-size
-      - "32"
+      - "${M5_TEI_MAX_CLIENT_BATCH_SIZE:-16}"
+      - --hostname
+      - "${M5_TEI_HOSTNAME:-0.0.0.0}"
       - --port
       - "8080"
+      - --pooling
+      - mean
     volumes:
       - ${M5_MODEL_DIR:-./.dev/models/m5-jina-code-v1}:/data/model:ro
     networks:
       - retrieval-index
     tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=256m
-    mem_limit: ${M5_TEI_MEMORY_LIMIT:-4g}
+      - /tmp:rw,noexec,nosuid,nodev,size=${M5_TEI_TMPFS_SIZE:-256m}
+    mem_limit: ${M5_TEI_MEMORY_LIMIT:-16g}
     cpus: ${M5_TEI_CPU_LIMIT:-4.0}
     pids_limit: 256
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health"]
+      test:
+        - CMD-SHELL
+        - |
+          for path in /readyz /healthz /health; do
+            curl --fail --silent "http://127.0.0.1:8080$$path" >/dev/null 2>&1 && exit 0
+          done
+          exit 1
       interval: 10s
       timeout: 5s
       retries: 30
@@ -655,7 +665,7 @@ services:
       retrieval-qdrant-init:
         condition: service_completed_successfully
       text-embeddings-inference:
-        condition: service_healthy
+        condition: service_started
     pids_limit: 128
     healthcheck:
       test: ["CMD", "/healthcheck"]
@@ -763,7 +773,7 @@ services:
       retrieval-qdrant-init:
         condition: service_completed_successfully
       text-embeddings-inference:
-        condition: service_healthy
+        condition: service_started
     pids_limit: 128
     healthcheck:
       test: ["CMD", "/healthcheck"]

@@ -98,7 +98,7 @@ jq --arg catalog_consume "$catalog_consume_password" --arg ingestion "$ingestion
   ]
 ' "$definitions" > "$updated"
 chmod 400 "$dir"/ingestion_* "$dir"/catalog_ingestion_rabbitmq_uri "$dir"/edge_status_rabbitmq_uri_1 "$dir"/edge_status_rabbitmq_uri_2 "$updated"
-mv "$updated" "$definitions"
+mv -f "$updated" "$definitions"
 trap - EXIT
 unset ingestion_migration_password ingestion_runtime_password ingestion_cleanup_password ingestion_e2e_password ingestion_minio_secret_key ingestion_cleanup_minio_secret_key ingestion_e2e_minio_secret_key catalog_consume_password ingestion_password ingestion_e2e_rabbitmq_password edge_password_1 edge_password_2
 echo "Generated additive M4 development credentials in $dir"

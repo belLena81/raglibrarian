@@ -11,6 +11,7 @@ Create local path configuration and generated credentials without placing
 secret values in `.env`:
 
 ```bash
+make local-reset  # optional if you are migrating an older local baseline
 cp .env.example .env
 make dev-secrets
 make bootstrap-verifier
@@ -19,6 +20,12 @@ make m5-model-bootstrap
 make compose-config
 make stack-up
 ```
+If model bootstrap is blocked by a missing `hf` CLI, run:
+
+```bash
+make local-run-stub
+```
+This keeps all M4/M5/M6 services up in one run using the CI Compose override stubs.
 
 Files under `.dev/secrets` and `.dev/certs` are generated with owner-only
 permissions and ignored by Git. Do not print, copy into issue trackers, or
@@ -30,6 +37,16 @@ domain-separated hash.
 Mailpit is disposable and connected only to the private Compose backend. Its
 inspection UI binds to host loopback at `http://127.0.0.1:8025` by default; set
 `MAILPIT_UI_PORT` to change the local port. It must not be used in production.
+
+To clear all historical local state for a clean baseline:
+
+```bash
+make local-reset
+```
+
+This intentionally removes migration-backed local PostgreSQL/RabbitMQ/Qdrant data
+and regenerated secret/certificate/model artifacts so you redeploy from the
+current implementation only.
 
 ## Migrations and recovery
 

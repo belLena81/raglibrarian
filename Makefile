@@ -4,7 +4,7 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer dev local-run local-stop tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-m5-integration-test m4-m5-m6-integration-test release-local-stack release-local-test m4-worker-recovery-test m4-e2e m4-performance-smoke m4-sse-load m4-soak m5-contract-test m5-contract-only-test m5-contract-ci-test m5-integration-test m5-search-quality-test m5-search-quality-test-real m5-worker-recovery-test m5-e2e m5-performance-smoke m6-contract-test m6-answer-quality-test m6-answer-quality-test-real m6-e2e m6-performance-smoke m6-integration-test m7-e2e m7-integration-test contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down migrate-retrieval-up migrate-retrieval-down infra-up infra-down stack-up m6-stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-m5 dev-secrets-m6 dev-secrets-test m6-dev-config-test m5-model-bootstrap m5-model-bootstrap-test bootstrap-verifier compose-config m5-mode-policy sam-validate sam-package-check sam-m5-validate sam-m5-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-build-ci image-scan image-scan-ci image-scan-images security-check security-check-ci full-gates integration-gates smtp-url
+.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer dev local-run local-run-stub local-stop local-stop-stub local-reset tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-m5-integration-test m4-m5-m6-integration-test release-local-stack release-local-test m4-worker-recovery-test m4-e2e m4-performance-smoke m4-sse-load m4-soak m5-contract-test m5-contract-only-test m5-contract-ci-test m5-integration-test m5-search-quality-test m5-search-quality-test-real m5-worker-recovery-test m5-e2e m5-performance-smoke m6-contract-test m6-answer-quality-test m6-answer-quality-test-real m6-e2e m6-performance-smoke m6-integration-test m7-e2e m7-integration-test contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down migrate-retrieval-up migrate-retrieval-down infra-up infra-down stack-up m6-stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-m5 dev-secrets-m6 dev-secrets-test m6-dev-config-test m5-model-bootstrap m5-model-bootstrap-test bootstrap-verifier compose-config m5-mode-policy sam-validate sam-package-check sam-m5-validate sam-m5-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-build-ci image-scan image-scan-ci image-scan-images security-check security-check-ci full-gates integration-gates smtp-url
 
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
 HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
@@ -167,9 +167,11 @@ stack-up: _require_root
 	@bash ./scripts/check-m4-dev-secrets.sh "$${SECRET_DIR:-.dev/secrets}" || { echo "M4 ingestion development secrets are incomplete; run make dev-secrets for a fresh checkout or scripts/run-local.sh for an additive upgrade"; exit 1; }
 	@bash ./scripts/check-m5-dev-secrets.sh "$${SECRET_DIR:-.dev/secrets}" || { echo "M5 Retrieval development secrets are incomplete; run make dev-secrets for a fresh checkout or make dev-secrets-m5 for an additive upgrade"; exit 1; }
 	@test -r "$${M5_MODEL_DIR:-.dev/models/m5-jina-code-v1}/.revision" || { echo "M5 model cache is missing; run make m5-model-bootstrap"; exit 1; }
+	@bash ./scripts/ensure-m6-dev-cert.sh "$${CERT_DIR:-.dev/certs}"
+	@bash ./scripts/ensure-m6-answer-provider-key.sh "$${SECRET_DIR:-.dev/secrets}"
 	@test -r "$${CERT_DIR:-.dev/certs}/retrieval-service.crt" && test -r "$${CERT_DIR:-.dev/certs}/retrieval-service.key" || { echo "M5 Retrieval certificate is missing; run bash scripts/ensure-m5-dev-cert.sh"; exit 1; }
 	@test -r "$${SECRET_DIR:-.dev/secrets}/identity_bootstrap_verifier" || { echo "bootstrap verifier is missing; run make bootstrap-verifier"; exit 1; }
-	@EDGE_RETRIEVAL_READINESS_REQUIRED=true docker compose --profile m5 up -d --build
+	@EDGE_RETRIEVAL_READINESS_REQUIRED=true docker compose --profile m5 --profile m6 up -d --build
 
 m6-stack-up: _require_root
 	@test -f .env || { echo "M6 requires .env; copy .env.example and configure the provider"; exit 1; }
@@ -188,8 +190,29 @@ dev: stack-up
 local-run: _require_root
 	bash ./scripts/run-local.sh
 
+local-run-stub: _require_root
+	bash ./scripts/run-local-stub.sh
+
 local-stop: _require_root
 	bash ./scripts/stop-local.sh
+
+local-stop-stub: _require_root
+	COMPOSE_PROJECT_NAME=$${COMPOSE_PROJECT_NAME:-raglibrarian-local} docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m5 --profile m6 --profile m6-test down -v --remove-orphans
+
+local-reset: _require_root
+	@rm -f .dev/ui.pid .dev/ui.log
+	@rm -rf .dev/log-pids .dev/certs .dev/secrets
+	@if [ -d .dev/models ]; then \
+		if rm -rf .dev/models 2>/dev/null; then \
+			:; \
+		else \
+			echo "Permission denied cleaning .dev/models. To perform a full cleanup, run:"; \
+			echo "  sudo chown -R $$(id -u):$$(id -g) .dev/models && rm -rf .dev/models"; \
+			echo "Continuing with partial cleanup of other local runtime files."; \
+		fi; \
+	fi
+	docker compose --profile m5 --profile m6 down -v --remove-orphans
+	echo "Local runtime reset complete. Run: make local-run for a fresh local bootstrap."
 
 # ── Tidy ──────────────────────────────────────────────────────────────────────
 tidy: _require_root

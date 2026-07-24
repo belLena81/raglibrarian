@@ -66,7 +66,7 @@ jq --arg edge2 "$edge_password_2" --arg ingestion_e2e "$ingestion_e2e_password" 
   {source:"raglibrarian.ingestion.events.v1",vhost:"/",destination:"catalog.book-processing.v1",destination_type:"queue",routing_key:"ingestion.book.chunks-ready.v1",arguments:{}},
   {source:"raglibrarian.ingestion.events.v1",vhost:"/",destination:"catalog.book-processing.v1",destination_type:"queue",routing_key:"ingestion.book.processing-failed.v1",arguments:{}}
 ])' "$dir/rabbitmq_definitions.json" > "$definitions_tmp"
-mv "$definitions_tmp" "$dir/rabbitmq_definitions.json"
+mv -f "$definitions_tmp" "$dir/rabbitmq_definitions.json"
 chmod 400 "$dir"/catalog_* "$dir"/ingestion_* "$dir"/edge_status_* "$dir"/minio_* "$dir"/rabbitmq_definitions.json "$dir"/rabbitmq.conf
 unset catalog_publish_password catalog_consume_password ingestion_password ingestion_e2e_password edge_password edge_password_2 minio_root_user minio_root_password minio_access_key minio_secret_key ingestion_minio_access_key ingestion_minio_secret_key ingestion_cleanup_minio_access_key ingestion_cleanup_minio_secret_key ingestion_e2e_minio_access_key ingestion_e2e_minio_secret_key
 echo "Generated Catalog development credentials in $dir"

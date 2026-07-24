@@ -50,5 +50,6 @@ jq '
   add_binding({source:"raglibrarian.retrieval.events.dlx.v1",vhost:"/",destination:"catalog.retrieval-terminal.dlq.v1",destination_type:"queue",routing_key:"retrieval.book.index-deleted.v1",arguments:{}})
 ' "$definitions" > "$updated"
 chmod 400 "$updated"
-mv "$updated" "$definitions"
+mv -f "$updated" "$definitions"
+bash ./scripts/canonicalize-m5-rabbitmq-topology.sh "$dir"
 trap - EXIT

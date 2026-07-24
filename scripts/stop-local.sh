@@ -29,4 +29,4 @@ fi
 
 docker compose --profile m5 --profile m6 down
 echo "Local stack stopped. PostgreSQL, MinIO, RabbitMQ, Qdrant, and the host model cache were retained."
-echo "To intentionally reset all local data: docker compose down -v"
+echo "To force a fresh local reset (volumes + .dev artifacts), run: make local-reset"

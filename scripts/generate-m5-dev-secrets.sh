@@ -143,7 +143,8 @@ jq \
 ' "$definitions" > "$updated"
 
 chmod 400 "${files[@]/#/$dir/}" "$updated"
-mv "$updated" "$definitions"
+mv -f "$updated" "$definitions"
+bash ./scripts/canonicalize-m5-rabbitmq-topology.sh "$dir"
 trap - EXIT
 unset retrieval_migration_password retrieval_runtime_password retrieval_search_password retrieval_planner_password retrieval_indexer_password
 unset retrieval_dispatcher_password retrieval_cleanup_password retrieval_e2e_password

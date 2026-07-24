@@ -26,9 +26,28 @@ func (h *HealthHandler) Live(w http.ResponseWriter, _ *http.Request) {
 
 // Ready reports whether the Identity dependency is serving.
 func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
-	if h.readiness.CheckReady(r.Context()) != nil {
-		writeError(w, http.StatusServiceUnavailable, "service unavailable")
+	if err := h.readiness.CheckReady(r.Context()); err != nil {
+		response := map[string]string{
+			"status":  "unavailable",
+			"message": "service unavailable",
+		}
+		if dependency := dependencyName(err); dependency != "" {
+			response["dependency"] = dependency
+		}
+		writeJSON(w, http.StatusServiceUnavailable, response)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+type readinessDependency interface {
+	DependencyName() string
+}
+
+func dependencyName(err error) string {
+	readinessErr, ok := err.(readinessDependency)
+	if !ok {
+		return ""
+	}
+	return readinessErr.DependencyName()
 }

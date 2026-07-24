@@ -106,6 +106,28 @@ bash ./scripts/ensure-m4-dev-secrets.sh "$identity_dir" >/dev/null
 bash ./scripts/ensure-m5-dev-secrets.sh "$identity_dir" >/dev/null
 assert_complete_and_private "$identity_dir"
 
+# Shuffled but semantically valid topologies from older local state should be
+# normalized by the M5 ensure path, so strict-order checks continue to pass.
+reordered_m5_dir="$test_root/reordered-m5-topology"
+mkdir -p "$reordered_m5_dir"
+cp -a "$fresh_dir/." "$reordered_m5_dir/"
+planner_password_before=$(<"$reordered_m5_dir/retrieval_planner_password")
+cleanup_password_before=$(<"$reordered_m5_dir/retrieval_cleanup_password")
+
+tmp_topology=$(mktemp "$reordered_m5_dir/.rabbitmq-reordered.XXXXXX")
+jq '.queues |= reverse | .bindings |= reverse' "$reordered_m5_dir/rabbitmq_definitions.json" > "$tmp_topology"
+mv -f "$tmp_topology" "$reordered_m5_dir/rabbitmq_definitions.json"
+chmod 400 "$reordered_m5_dir/rabbitmq_definitions.json"
+
+bash ./scripts/ensure-m5-dev-secrets.sh "$reordered_m5_dir" >/dev/null
+[[ "$(<"$reordered_m5_dir/retrieval_planner_password")" == "$planner_password_before" &&
+   "$(<"$reordered_m5_dir/retrieval_cleanup_password")" == "$cleanup_password_before" ]] || {
+  echo "M5 role passwords were rotated during shuffled topology recovery" >&2
+  exit 1
+}
+assert_complete_and_private "$reordered_m5_dir"
+unset planner_password_before cleanup_password_before
+
 # Legacy M3-only upgrade: M4 adds its non-database and ingestion credentials
 # first, M5 adds only its absent Retrieval group, and the database helper then
 # adds only the absent Catalog group.

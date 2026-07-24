@@ -30,5 +30,5 @@ jq '
   add_binding({source:"raglibrarian.ingestion.events.v1",vhost:"/",destination:"catalog.book-processing.v1",destination_type:"queue",routing_key:"ingestion.book.artifacts-deleted.v1",arguments:{}})
 ' "$definitions" > "$updated"
 chmod 400 "$updated"
-mv "$updated" "$definitions"
+mv -f "$updated" "$definitions"
 trap - EXIT

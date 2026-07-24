@@ -197,6 +197,7 @@ lint and generate them explicitly after changing a `.proto` contract.
 
 ```bash
 cp .env.example .env
+make local-reset  # optional only if you are cleaning stale local state
 make dev-secrets
 make bootstrap-verifier
 make dev-certs
@@ -205,19 +206,24 @@ make stack-up
 make e2e
 ```
 
-For an existing Identity-only or M3 checkout, use `make local-run`. Its
-additive secret upgrade preserves complete credential groups, generates the
-full M4 Ingestion database set (including host and container E2E DSNs), and
-refuses partial groups rather than overwriting credentials.
-
-`make stack-up` starts the full Compose stack on loopback `:8080`, applies
-Identity migrations with the migration-only role, and then starts Identity
-with its bounded runtime role. A disposable Mailpit SMTP fixture is private to
-the backend network; its inspection UI is loopback-only on `:8025`. `make dev`
-is an alias for this workflow.
+`make local-run` is the standard bootstrap and start path for an existing checkout.
+`stack-up` now starts the current full stack profile set (M4, M5, and M6-capable),
+applies Identity migrations with the migration-only role, and brings up the same
+runtime used for current milestone development at loopback `:8080`.
+A disposable Mailpit SMTP fixture is private to the backend network; its inspection
+UI is loopback-only on `:8025`.
+If you do not yet have the Hugging Face `hf` CLI available, use
+`make local-run-stub` for a full-stack local boot that swaps in the CI-compatible
+TEI/provider stubs and does not fetch model files.
+To stop that stub run, use `make local-stop-stub`.
+`make dev` is an alias for this workflow.
+For a deliberate fresh baseline, run `make local-reset` before `make local-run`.
 For Milestone 5, run `make m5-model-bootstrap` before `make stack-up`; the
 stack preflight verifies the pinned host model cache and refuses to download it
 implicitly.
+If `hf` is not installed locally, bootstrap will use a temporary Docker-based
+download path (`HF_BOOTSTRAP_IMAGE`, default `python:3.12-slim`) and still produce
+the same pinned local cache.
 `make m5-search-quality-test` uses the deterministic TEI-compatible stub so it
 is reliable without a local model cache. To validate the pinned real model,
 run `make m5-search-quality-test-real` after configuring Docker with at least

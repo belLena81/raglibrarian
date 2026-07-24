@@ -9,6 +9,7 @@ fi
 existing=$(find "$dir" -maxdepth 1 -type f -name 'retrieval_*' -print -quit 2>/dev/null || true)
 if [[ -n "$existing" ]]; then
   bash ./scripts/upgrade-m7-rabbitmq-topology.sh "$dir"
+  bash ./scripts/canonicalize-m5-rabbitmq-topology.sh "$dir"
   legacy_files=(
     retrieval_migration_password retrieval_runtime_password retrieval_search_password retrieval_planner_password
     retrieval_indexer_password retrieval_dispatcher_password retrieval_cleanup_password retrieval_e2e_password
@@ -54,7 +55,7 @@ if [[ -n "$existing" ]]; then
     temporary=$(mktemp "$dir/.retrieval-dsn.XXXXXX")
     printf '%s\n' "$value" > "$temporary"
     chmod 400 "$temporary"
-    mv "$temporary" "$path"
+      mv -f "$temporary" "$path"
   }
 
   ensure_derived_dsn retrieval_planner_dsn "postgres://retrieval_planner:$planner_password@postgres:5432/retrieval?sslmode=disable"
