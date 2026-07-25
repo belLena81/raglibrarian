@@ -26,7 +26,7 @@ services:
       - backend
       - cloud-egress
     depends_on: !override
-      identity-migrate:
+      db-bootstrap:
         condition: service_completed_successfully
 
   catalog-service:
@@ -41,7 +41,7 @@ services:
       - catalog-broker
       - cloud-egress
     depends_on: !override
-      catalog-migrate:
+      db-bootstrap:
         condition: service_completed_successfully
 
   ingestion-service:
@@ -57,7 +57,7 @@ services:
       - catalog-broker
       - cloud-egress
     depends_on: !override
-      ingestion-migrate:
+      db-bootstrap:
         condition: service_completed_successfully
 
   retrieval-worker:
@@ -72,7 +72,7 @@ services:
       - retrieval-index
       - cloud-egress
     depends_on: !override
-      retrieval-migrate:
+      db-bootstrap:
         condition: service_completed_successfully
       qdrant:
         condition: service_healthy

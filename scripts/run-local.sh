@@ -229,17 +229,13 @@ if [[ "$compose_wait_mode" == "compose" ]]; then
   compose_exit=$?
 else
   startup_services=(
+    db-bootstrap
     text-embeddings-inference
     qdrant
     rabbitmq
     minio
     mailpit
     postgres
-    identity-db-bootstrap
-    identity-migrate
-    catalog-migrate
-    ingestion-migrate
-    retrieval-migrate
     minio-bootstrap
     catalog-service
     identity-service

@@ -11,6 +11,14 @@
 \set ingestion_runtime_password `cat /run/secrets/ingestion_runtime_password`
 \set ingestion_cleanup_password `cat /run/secrets/ingestion_cleanup_password`
 \set ingestion_e2e_password `cat /run/secrets/ingestion_e2e_password`
+\set retrieval_migration_password `cat /run/secrets/retrieval_migration_password`
+\set retrieval_runtime_password `cat /run/secrets/retrieval_runtime_password`
+\set retrieval_search_password `cat /run/secrets/retrieval_search_password`
+\set retrieval_planner_password `cat /run/secrets/retrieval_planner_password`
+\set retrieval_indexer_password `cat /run/secrets/retrieval_indexer_password`
+\set retrieval_dispatcher_password `cat /run/secrets/retrieval_dispatcher_password`
+\set retrieval_cleanup_password `cat /run/secrets/retrieval_cleanup_password`
+\set retrieval_e2e_password `cat /run/secrets/retrieval_e2e_password`
 
 SELECT format('CREATE ROLE identity_migrator LOGIN PASSWORD %L', :'identity_migration_password')
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'identity_migrator') \gexec
@@ -24,17 +32,9 @@ REVOKE ALL ON DATABASE identity FROM PUBLIC;
 GRANT CONNECT ON DATABASE identity TO identity_runtime;
 
 \connect identity
-
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-CREATE SCHEMA IF NOT EXISTS identity AUTHORIZATION identity_migrator;
-REVOKE ALL ON SCHEMA identity FROM PUBLIC;
-GRANT USAGE ON SCHEMA identity TO identity_runtime;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA identity TO identity_runtime;
-GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA identity TO identity_runtime;
-ALTER DEFAULT PRIVILEGES FOR ROLE identity_migrator IN SCHEMA identity
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO identity_runtime;
-ALTER DEFAULT PRIVILEGES FOR ROLE identity_migrator IN SCHEMA identity
-    GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO identity_runtime;
+SET ROLE identity_migrator;
+\ir /schema/identity/001_identity_schema.up.sql
+RESET ROLE;
 
 \connect raglibrarian_platform
 SELECT format('CREATE ROLE catalog_migrator LOGIN PASSWORD %L', :'catalog_migration_password')
@@ -45,14 +45,11 @@ SELECT 'CREATE DATABASE catalog OWNER catalog_migrator TEMPLATE template0'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'catalog') \gexec
 REVOKE ALL ON DATABASE catalog FROM PUBLIC;
 GRANT CONNECT ON DATABASE catalog TO catalog_runtime;
+
 \connect catalog
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-CREATE SCHEMA IF NOT EXISTS catalog AUTHORIZATION catalog_migrator;
-REVOKE ALL ON SCHEMA catalog FROM PUBLIC;
-GRANT USAGE ON SCHEMA catalog TO catalog_runtime;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA catalog TO catalog_runtime;
-ALTER DEFAULT PRIVILEGES FOR ROLE catalog_migrator IN SCHEMA catalog
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO catalog_runtime;
+SET ROLE catalog_migrator;
+\ir /schema/catalog/001_catalog_schema.up.sql
+RESET ROLE;
 
 \connect raglibrarian_platform
 SELECT format('CREATE ROLE ingestion_migrator LOGIN PASSWORD %L', :'ingestion_migration_password')
@@ -69,19 +66,44 @@ REVOKE ALL ON DATABASE ingestion FROM PUBLIC;
 GRANT CONNECT ON DATABASE ingestion TO ingestion_runtime;
 GRANT CONNECT ON DATABASE ingestion TO ingestion_cleanup;
 GRANT CONNECT ON DATABASE ingestion TO ingestion_e2e;
+
 \connect ingestion
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-CREATE SCHEMA IF NOT EXISTS ingestion AUTHORIZATION ingestion_migrator;
-REVOKE ALL ON SCHEMA ingestion FROM PUBLIC;
-GRANT USAGE ON SCHEMA ingestion TO ingestion_runtime;
-GRANT USAGE ON SCHEMA ingestion TO ingestion_cleanup;
-GRANT USAGE ON SCHEMA ingestion TO ingestion_e2e;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ingestion TO ingestion_runtime;
-GRANT SELECT ON ALL TABLES IN SCHEMA ingestion TO ingestion_e2e;
-ALTER DEFAULT PRIVILEGES FOR ROLE ingestion_migrator IN SCHEMA ingestion
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ingestion_runtime;
-ALTER DEFAULT PRIVILEGES FOR ROLE ingestion_migrator IN SCHEMA ingestion
-    GRANT SELECT ON TABLES TO ingestion_e2e;
+SET ROLE ingestion_migrator;
+\ir /schema/ingestion/001_ingestion_schema.up.sql
+RESET ROLE;
+
+\connect raglibrarian_platform
+SELECT format('CREATE ROLE retrieval_migrator LOGIN PASSWORD %L', :'retrieval_migration_password')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'retrieval_migrator') \gexec
+SELECT format('CREATE ROLE retrieval_runtime LOGIN PASSWORD %L', :'retrieval_runtime_password')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'retrieval_runtime') \gexec
+SELECT format('CREATE ROLE retrieval_search LOGIN PASSWORD %L', :'retrieval_search_password')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'retrieval_search') \gexec
+SELECT format('CREATE ROLE retrieval_planner LOGIN PASSWORD %L', :'retrieval_planner_password')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'retrieval_planner') \gexec
+SELECT format('CREATE ROLE retrieval_indexer LOGIN PASSWORD %L', :'retrieval_indexer_password')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'retrieval_indexer') \gexec
+SELECT format('CREATE ROLE retrieval_dispatcher LOGIN PASSWORD %L', :'retrieval_dispatcher_password')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'retrieval_dispatcher') \gexec
+SELECT format('CREATE ROLE retrieval_cleanup LOGIN PASSWORD %L', :'retrieval_cleanup_password')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'retrieval_cleanup') \gexec
+SELECT format('CREATE ROLE retrieval_e2e LOGIN PASSWORD %L', :'retrieval_e2e_password')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'retrieval_e2e') \gexec
+SELECT 'CREATE DATABASE retrieval OWNER retrieval_migrator TEMPLATE template0'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'retrieval') \gexec
+REVOKE ALL ON DATABASE retrieval FROM PUBLIC;
+GRANT CONNECT ON DATABASE retrieval TO retrieval_runtime;
+GRANT CONNECT ON DATABASE retrieval TO retrieval_search;
+GRANT CONNECT ON DATABASE retrieval TO retrieval_planner;
+GRANT CONNECT ON DATABASE retrieval TO retrieval_indexer;
+GRANT CONNECT ON DATABASE retrieval TO retrieval_dispatcher;
+GRANT CONNECT ON DATABASE retrieval TO retrieval_cleanup;
+GRANT CONNECT ON DATABASE retrieval TO retrieval_e2e;
+
+\connect retrieval
+SET ROLE retrieval_migrator;
+\ir /schema/retrieval/001_retrieval_schema.up.sql
+RESET ROLE;
 
 \unset identity_migration_password
 \unset identity_runtime_password
@@ -91,3 +113,11 @@ ALTER DEFAULT PRIVILEGES FOR ROLE ingestion_migrator IN SCHEMA ingestion
 \unset ingestion_runtime_password
 \unset ingestion_cleanup_password
 \unset ingestion_e2e_password
+\unset retrieval_migration_password
+\unset retrieval_runtime_password
+\unset retrieval_search_password
+\unset retrieval_planner_password
+\unset retrieval_indexer_password
+\unset retrieval_dispatcher_password
+\unset retrieval_cleanup_password
+\unset retrieval_e2e_password

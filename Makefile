@@ -11,7 +11,7 @@ HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
 # 0.69.2 is the vendor-designated unaffected Trivy release after the 2026
 # publishing incident. Do not move this pin without reviewing the advisory.
 TRIVY_IMAGE := aquasec/trivy:0.69.2
-SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-ingestion-lambda:local raglibrarian-ingestion-serverless-job:local raglibrarian-ingestion-dispatcher-job:local raglibrarian-ingestion-cleanup-job:local raglibrarian-retrieval-service:local raglibrarian-retrieval-worker:local raglibrarian-retrieval-serverless-job:local raglibrarian-retrieval-qdrant-init:local raglibrarian-retrieval-planner-lambda:local raglibrarian-retrieval-index-lambda:local raglibrarian-retrieval-dispatcher-job:local raglibrarian-retrieval-cleanup-job:local raglibrarian-answer-service:local raglibrarian-answer-provider-stub:local raglibrarian-web:local
+SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-retrieval-service:local raglibrarian-retrieval-worker:local raglibrarian-answer-service:local
 QDRANT_IMAGE := qdrant/qdrant:v1.18.3
 QDRANT_TRIVY_IGNORE_FILE := security/trivy/qdrant-v1.18.3.ignore.yaml
 M5_TEI_IMAGE := ghcr.io/huggingface/text-embeddings-inference@sha256:cb570aabbfa016b86684f576b5bd72d1ee96cc0b7a00b0ad221b298762b32157
@@ -537,31 +537,37 @@ minio-runtime-test: _require_root
 	MINIO_API_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile minio-runtime-test run --rm catalog-minio-runtime-tests
 
 # ── Database ──────────────────────────────────────────────────────────────────
-# Uses psql directly — no migrate CLI dependency.
-# Identity migrations are applied in lexicographic order (001_, 002_, ...).
 migrate-identity-up: _require_root
-	docker compose run --rm identity-migrate
+	@echo "Per-service migration jobs were removed; use the one-shot db-bootstrap flow." >&2
+	@exit 1
 
 migrate-identity-down: _require_root
-	docker compose run --rm -e MIGRATION_DIRECTION=down identity-migrate
+	@echo "Per-service migration rollback jobs were removed with the create-only schema." >&2
+	@exit 1
 
 migrate-catalog-up: _require_root
-	docker compose run --rm catalog-migrate
+	@echo "Per-service migration jobs were removed; use the one-shot db-bootstrap flow." >&2
+	@exit 1
 
 migrate-catalog-down: _require_root
-	docker compose run --rm -e MIGRATION_DIRECTION=down catalog-migrate
+	@echo "Per-service migration rollback jobs were removed with the create-only schema." >&2
+	@exit 1
 
 migrate-ingestion-up: _require_root
-	docker compose run --rm ingestion-migrate
+	@echo "Per-service migration jobs were removed; use the one-shot db-bootstrap flow." >&2
+	@exit 1
 
 migrate-ingestion-down: _require_root
-	docker compose run --rm -e MIGRATION_DIRECTION=down ingestion-migrate
+	@echo "Per-service migration rollback jobs were removed with the create-only schema." >&2
+	@exit 1
 
 migrate-retrieval-up: _require_root
-	docker compose run --rm retrieval-migrate
+	@echo "Per-service migration jobs were removed; use the one-shot db-bootstrap flow." >&2
+	@exit 1
 
 migrate-retrieval-down: _require_root
-	docker compose run --rm -e MIGRATION_DIRECTION=down retrieval-migrate
+	@echo "Per-service migration rollback jobs were removed with the create-only schema." >&2
+	@exit 1
 
 # ── Infrastructure ────────────────────────────────────────────────────────────
 infra-up: stack-up
@@ -685,21 +691,9 @@ image-build: _require_root
 	docker build --target catalog-runtime --build-arg SERVICE=catalog-service -t raglibrarian-catalog-service:local .
 	docker build --build-arg SERVICE=edge-api -t raglibrarian-edge-api:local .
 	docker build --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/worker -t raglibrarian-ingestion-service:local .
-	docker build --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/lambda -t raglibrarian-ingestion-lambda:local .
-	docker build --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/serverless_job -t raglibrarian-ingestion-serverless-job:local .
-	docker build --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/dispatcher_job -t raglibrarian-ingestion-dispatcher-job:local .
-	docker build --target ingestion-cleanup-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/cleanup_job -t raglibrarian-ingestion-cleanup-job:local .
 	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/server -t raglibrarian-retrieval-service:local .
 	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/worker -t raglibrarian-retrieval-worker:local .
-	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/serverless_job -t raglibrarian-retrieval-serverless-job:local .
-	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/qdrant_init -t raglibrarian-retrieval-qdrant-init:local .
-	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/planner_lambda -t raglibrarian-retrieval-planner-lambda:local .
-	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/index_lambda -t raglibrarian-retrieval-index-lambda:local .
-	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/dispatcher_job -t raglibrarian-retrieval-dispatcher-job:local .
-	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/cleanup_job -t raglibrarian-retrieval-cleanup-job:local .
 	docker build --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/server -t raglibrarian-answer-service:local .
-	docker build --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/provider_stub -t raglibrarian-answer-provider-stub:local .
-	docker build -f deploy/cloud-test/Dockerfile.ui -t raglibrarian-web:local .
 
 image-build-ci: _require_root
 	@set -eu; \
@@ -713,21 +707,9 @@ image-build-ci: _require_root
 	build_ci raglibrarian-catalog-service:local catalog-service --target catalog-runtime --build-arg SERVICE=catalog-service; \
 	build_ci raglibrarian-edge-api:local edge-api --build-arg SERVICE=edge-api; \
 	build_ci raglibrarian-ingestion-service:local ingestion-service --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/worker; \
-	build_ci raglibrarian-ingestion-lambda:local ingestion-lambda --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/lambda; \
-	build_ci raglibrarian-ingestion-serverless-job:local ingestion-serverless-job --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/serverless_job; \
-	build_ci raglibrarian-ingestion-dispatcher-job:local ingestion-dispatcher-job --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/dispatcher_job; \
-	build_ci raglibrarian-ingestion-cleanup-job:local ingestion-cleanup-job --target ingestion-cleanup-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/cleanup_job; \
 	build_ci raglibrarian-retrieval-service:local retrieval-service --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/server; \
 	build_ci raglibrarian-retrieval-worker:local retrieval-worker --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/worker; \
-	build_ci raglibrarian-retrieval-serverless-job:local retrieval-serverless-job --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/serverless_job; \
-	build_ci raglibrarian-retrieval-qdrant-init:local retrieval-qdrant-init --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/qdrant_init; \
-	build_ci raglibrarian-retrieval-planner-lambda:local retrieval-planner-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/planner_lambda; \
-	build_ci raglibrarian-retrieval-index-lambda:local retrieval-index-lambda --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/index_lambda; \
-	build_ci raglibrarian-retrieval-dispatcher-job:local retrieval-dispatcher-job --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/dispatcher_job; \
-	build_ci raglibrarian-retrieval-cleanup-job:local retrieval-cleanup-job --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/cleanup_job; \
-	build_ci raglibrarian-answer-service:local answer-service --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/server; \
-	build_ci raglibrarian-answer-provider-stub:local answer-provider-stub --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/provider_stub; \
-	build_ci raglibrarian-web:local web -f deploy/cloud-test/Dockerfile.ui
+	build_ci raglibrarian-answer-service:local answer-service --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/server
 
 image-scan: image-build image-scan-images
 

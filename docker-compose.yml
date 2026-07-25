@@ -45,7 +45,7 @@ services:
       timeout: 5s
       retries: 10
 
-  identity-db-bootstrap:
+  db-bootstrap:
     <<: *job-hardening
     image: postgres:16.9-alpine
     environment:
@@ -54,8 +54,8 @@ services:
       PGDATABASE: raglibrarian_platform
       PGUSER: raglibrarian_bootstrap
       PGPASSFILE: /run/secrets/postgres_pgpass
-      BOOTSTRAP_SQL_FILE: /bootstrap/core-init.sql
-      BOOTSTRAP_COMPLETE_MESSAGE: Identity, Catalog, and Ingestion database roles and privileges are ready
+      BOOTSTRAP_SQL_FILE: /bootstrap/bootstrap.sql
+      BOOTSTRAP_COMPLETE_MESSAGE: Database roles, schemas, and privileges are ready
     secrets:
       - postgres_pgpass
       - identity_migration_password
@@ -66,30 +66,6 @@ services:
       - ingestion_runtime_password
       - ingestion_cleanup_password
       - ingestion_e2e_password
-    volumes:
-      - ./infra/postgres/core-init.sql:/bootstrap/core-init.sql:ro
-      - ./scripts/run-postgres-bootstrap.sh:/usr/local/bin/run-postgres-bootstrap:ro
-    networks:
-      - backend
-    depends_on:
-      postgres:
-        condition: service_healthy
-    command: ["/usr/local/bin/run-postgres-bootstrap"]
-
-  retrieval-db-bootstrap:
-    <<: *job-hardening
-    profiles: ["m5", "m5-contract-test"]
-    image: postgres:16.9-alpine
-    environment:
-      PGHOST: postgres
-      PGPORT: "5432"
-      PGDATABASE: raglibrarian_platform
-      PGUSER: raglibrarian_bootstrap
-      PGPASSFILE: /run/secrets/postgres_pgpass
-      BOOTSTRAP_SQL_FILE: /bootstrap/retrieval-init.sql
-      BOOTSTRAP_COMPLETE_MESSAGE: Retrieval database roles and privileges are ready
-    secrets:
-      - postgres_pgpass
       - retrieval_migration_password
       - retrieval_runtime_password
       - retrieval_search_password
@@ -99,36 +75,18 @@ services:
       - retrieval_cleanup_password
       - retrieval_e2e_password
     volumes:
-      - ./infra/postgres/retrieval-init.sql:/bootstrap/retrieval-init.sql:ro
+      - ./infra/postgres/bootstrap.sql:/bootstrap/bootstrap.sql:ro
+      - ./services/identity-service/migrations:/schema/identity:ro
+      - ./services/catalog-service/migrations:/schema/catalog:ro
+      - ./services/ingestion-service/migrations:/schema/ingestion:ro
+      - ./services/retrieval-service/migrations:/schema/retrieval:ro
       - ./scripts/run-postgres-bootstrap.sh:/usr/local/bin/run-postgres-bootstrap:ro
     networks:
       - backend
     depends_on:
-      identity-db-bootstrap:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
     command: ["/usr/local/bin/run-postgres-bootstrap"]
-
-  identity-migrate:
-    <<: *job-hardening
-    image: postgres:16.9-alpine
-    environment:
-      PGHOST: postgres
-      PGPORT: "5432"
-      PGDATABASE: identity
-      PGUSER: identity_migrator
-      PGPASSFILE: /run/secrets/identity_migration_pgpass
-      MIGRATION_DIRECTION: up
-    secrets:
-      - identity_migration_pgpass
-    volumes:
-      - ./services/identity-service/migrations:/migrations:ro
-      - ./scripts/run-identity-migrations.sh:/usr/local/bin/run-identity-migrations:ro
-    networks:
-      - backend
-    depends_on:
-      identity-db-bootstrap:
-        condition: service_completed_successfully
-    command: ["/usr/local/bin/run-identity-migrations"]
 
   mailpit:
     image: axllent/mailpit:v1.30.0
@@ -259,7 +217,7 @@ services:
     networks:
       - backend
     depends_on:
-      identity-migrate:
+      db-bootstrap:
         condition: service_completed_successfully
       mailpit:
         condition: service_started
@@ -313,7 +271,7 @@ services:
     expose:
       - "9092"
     depends_on:
-      catalog-migrate:
+      db-bootstrap:
         condition: service_completed_successfully
       minio-bootstrap:
         condition: service_completed_successfully
@@ -386,50 +344,6 @@ services:
       - edge_tls_key
       - edge_status_rabbitmq_uri_2
 
-  catalog-migrate:
-    <<: *job-hardening
-    image: postgres:16.9-alpine
-    environment:
-      PGHOST: postgres
-      PGPORT: "5432"
-      PGDATABASE: catalog
-      PGUSER: catalog_migrator
-      PGPASSFILE: /run/secrets/catalog_migration_pgpass
-      MIGRATION_DIRECTION: up
-    secrets:
-      - catalog_migration_pgpass
-    volumes:
-      - ./services/catalog-service/migrations:/migrations:ro
-      - ./scripts/run-catalog-migrations.sh:/usr/local/bin/run-catalog-migrations:ro
-    networks:
-      - backend
-    depends_on:
-      identity-db-bootstrap:
-        condition: service_completed_successfully
-    command: ["/usr/local/bin/run-catalog-migrations"]
-
-  ingestion-migrate:
-    <<: *job-hardening
-    image: postgres:16.9-alpine
-    environment:
-      PGHOST: postgres
-      PGPORT: "5432"
-      PGDATABASE: ingestion
-      PGUSER: ingestion_migrator
-      PGPASSFILE: /run/secrets/ingestion_migration_pgpass
-      MIGRATION_DIRECTION: up
-    secrets:
-      - ingestion_migration_pgpass
-    volumes:
-      - ./services/ingestion-service/migrations:/migrations:ro
-      - ./scripts/run-ingestion-migrations.sh:/usr/local/bin/run-ingestion-migrations:ro
-    networks:
-      - backend
-    depends_on:
-      identity-db-bootstrap:
-        condition: service_completed_successfully
-    command: ["/usr/local/bin/run-ingestion-migrations"]
-
   ingestion-service:
     <<: *service-hardening
     build:
@@ -481,7 +395,7 @@ services:
         soft: 1024
         hard: 1024
     depends_on:
-      ingestion-migrate:
+      db-bootstrap:
         condition: service_completed_successfully
       minio-bootstrap:
         condition: service_completed_successfully
@@ -493,29 +407,6 @@ services:
       timeout: 4s
       retries: 12
       start_period: 10s
-
-  retrieval-migrate:
-    <<: *job-hardening
-    profiles: ["m5", "m5-contract-test"]
-    image: postgres:16.9-alpine
-    environment:
-      PGHOST: postgres
-      PGPORT: "5432"
-      PGDATABASE: retrieval
-      PGUSER: retrieval_migrator
-      PGPASSFILE: /run/secrets/retrieval_migration_pgpass
-      MIGRATION_DIRECTION: up
-    secrets:
-      - retrieval_migration_pgpass
-    volumes:
-      - ./services/retrieval-service/migrations:/migrations:ro
-      - ./scripts/run-retrieval-migrations.sh:/usr/local/bin/run-retrieval-migrations:ro
-    networks:
-      - backend
-    depends_on:
-      retrieval-db-bootstrap:
-        condition: service_completed_successfully
-    command: ["sh", "/usr/local/bin/run-retrieval-migrations"]
 
   qdrant:
     profiles: ["m5", "m5-contract-test"]
@@ -663,7 +554,7 @@ services:
       - backend
       - retrieval-index
     depends_on:
-      retrieval-migrate:
+      db-bootstrap:
         condition: service_completed_successfully
       qdrant:
         condition: service_healthy
@@ -767,7 +658,7 @@ services:
       - catalog-broker
       - retrieval-index
     depends_on:
-      retrieval-migrate:
+      db-bootstrap:
         condition: service_completed_successfully
       minio-bootstrap:
         condition: service_completed_successfully
