@@ -113,10 +113,11 @@ func (processorChunker) AddPage(string, chunking.Page) ([]domain.Chunk, error) {
 func (processorChunker) Finish(string) ([]domain.Chunk, error) { return nil, nil }
 
 type processorWriter struct {
-	result artifact.Result
-	addErr error
-	aborts int
-	adds   int
+	result      artifact.Result
+	addErr      error
+	finalizeErr error
+	aborts      int
+	adds        int
 }
 
 func (w *processorWriter) Add(context.Context, domain.Chunk) error {
@@ -125,7 +126,7 @@ func (w *processorWriter) Add(context.Context, domain.Chunk) error {
 }
 
 func (w *processorWriter) Finalize(context.Context, uint32) (artifact.Result, error) {
-	return w.result, nil
+	return w.result, w.finalizeErr
 }
 
 func (w *processorWriter) Abort(context.Context) error {
@@ -157,6 +158,26 @@ type processorEvents struct {
 	failed   int
 }
 
+type processorDiagnostics struct {
+	readyPrepared     int
+	completionPersist int
+	completionFailed  int
+	lastReason        string
+	failurePersisted  int
+	lastDetail        string
+}
+
+func (d *processorDiagnostics) ReadyEventPrepared(_, _, _ string)  { d.readyPrepared++ }
+func (d *processorDiagnostics) CompletionPersisted(_, _, _ string) { d.completionPersist++ }
+func (d *processorDiagnostics) CompletionPersistenceFailed(_, _, _, reason string) {
+	d.completionFailed++
+	d.lastReason = reason
+}
+func (d *processorDiagnostics) FailurePersisted(_, _, _, _, detail string) {
+	d.failurePersisted++
+	d.lastDetail = detail
+}
+
 func (e *processorEvents) Started(UploadedEvent, domain.ProcessingJob, time.Time) (OutboxEvent, error) {
 	e.started++
 	return OutboxEvent{ID: "started-1"}, nil
@@ -177,15 +198,18 @@ func (e *processorEvents) ArtifactsDeleted(DeletionEvent, time.Time) (OutboxEven
 }
 
 func TestProcessorCompletesAndTreatsDuplicateAsDurableSuccess(t *testing.T) {
-	processor, repository, writer, events, _ := newTestProcessor(t, processorOptions{})
+	processor, repository, writer, events, diagnostics, _ := newTestProcessor(t, processorOptions{})
 	if err := processor.Process(context.Background(), validProcessorEvent()); err != nil {
 		t.Fatal(err)
 	}
 	if repository.completes != 1 || repository.retries != 0 || repository.fails != 0 || writer.adds != 1 || writer.aborts != 0 || events.ready != 1 {
 		t.Fatalf("unexpected success calls: repo=%#v writer=%#v events=%#v", repository, writer, events)
 	}
+	if diagnostics.readyPrepared != 1 || diagnostics.completionPersist != 1 || diagnostics.completionFailed != 0 {
+		t.Fatalf("unexpected diagnostics: %#v", diagnostics)
+	}
 
-	duplicate, duplicateRepository, duplicateWriter, _, _ := newTestProcessor(t, processorOptions{accepted: boolPointer(false)})
+	duplicate, duplicateRepository, duplicateWriter, _, _, _ := newTestProcessor(t, processorOptions{accepted: boolPointer(false)})
 	if err := duplicate.Process(context.Background(), validProcessorEvent()); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +221,7 @@ func TestProcessorCompletesAndTreatsDuplicateAsDurableSuccess(t *testing.T) {
 func TestProcessorFailsChecksumMismatchWithoutCreatingArtifacts(t *testing.T) {
 	event := validProcessorEvent()
 	event.SourceSHA256 = sha256.Sum256([]byte("different"))
-	processor, repository, writer, _, _ := newTestProcessor(t, processorOptions{})
+	processor, repository, writer, _, _, _ := newTestProcessor(t, processorOptions{})
 	if err := processor.Process(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
@@ -206,14 +230,27 @@ func TestProcessorFailsChecksumMismatchWithoutCreatingArtifacts(t *testing.T) {
 	}
 }
 
+func TestFailureDetailReturnsStageDetail(t *testing.T) {
+	err := stage("artifact_finalize_failed", errors.New("disk full"))
+	if got := FailureDetail(err); got != "artifact_finalize_failed" {
+		t.Fatalf("FailureDetail() = %q", got)
+	}
+	if got := FailureDetail(operational("complete_failed", err)); got != "artifact_finalize_failed" {
+		t.Fatalf("FailureDetail(operational) = %q", got)
+	}
+	if got := FailureDetail(NewDeferredError(time.Now(), err)); got != "artifact_finalize_failed" {
+		t.Fatalf("FailureDetail(deferred) = %q", got)
+	}
+}
+
 func TestProcessorPersistsRetryAndFinalTimeout(t *testing.T) {
-	retrying, retryRepository, retryWriter, _, _ := newTestProcessor(t, processorOptions{sourceErr: errors.New("source unavailable"), maximumAttempts: 2})
+	retrying, retryRepository, retryWriter, _, _, _ := newTestProcessor(t, processorOptions{sourceErr: errors.New("source unavailable"), maximumAttempts: 2})
 	err := retrying.Process(context.Background(), validProcessorEvent())
 	if !errors.Is(err, ErrProcessingDeferred) || retryRepository.retries != 1 || retryRepository.fails != 0 || retryWriter.aborts != 0 {
 		t.Fatalf("retry result: err=%v repo=%#v writer=%#v", err, retryRepository, retryWriter)
 	}
 
-	final, finalRepository, finalWriter, _, _ := newTestProcessor(t, processorOptions{waitForContext: true, maximumAttempts: 1})
+	final, finalRepository, finalWriter, _, _, _ := newTestProcessor(t, processorOptions{waitForContext: true, maximumAttempts: 1})
 	if err = final.Process(context.Background(), validProcessorEvent()); err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +262,7 @@ func TestProcessorPersistsRetryAndFinalTimeout(t *testing.T) {
 func TestProcessorRetriesInternalExtractorFailure(t *testing.T) {
 	invalidExtractor := extractor.NewPoppler("pdfinfo", "pdftotext", extractor.Limits{}, nil)
 	_, extractorErr := invalidExtractor.Extract(context.Background(), "source.pdf", func(extractor.Page) error { return nil })
-	processor, repository, writer, _, _ := newTestProcessor(t, processorOptions{
+	processor, repository, writer, _, _, _ := newTestProcessor(t, processorOptions{
 		extractErr:      extractorErr,
 		maximumAttempts: 2,
 	})
@@ -237,7 +274,7 @@ func TestProcessorRetriesInternalExtractorFailure(t *testing.T) {
 }
 
 func TestProcessorPersistsRetryAfterParentCancellation(t *testing.T) {
-	processor, repository, _, _, _ := newTestProcessor(t, processorOptions{waitForContext: true, maximumAttempts: 2})
+	processor, repository, _, _, _, _ := newTestProcessor(t, processorOptions{waitForContext: true, maximumAttempts: 2})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -248,7 +285,7 @@ func TestProcessorPersistsRetryAfterParentCancellation(t *testing.T) {
 }
 
 func TestProcessorPersistsFailureAfterParentCancellation(t *testing.T) {
-	processor, repository, _, _, _ := newTestProcessor(t, processorOptions{waitForContext: true, maximumAttempts: 1})
+	processor, repository, _, _, _, _ := newTestProcessor(t, processorOptions{waitForContext: true, maximumAttempts: 1})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -280,7 +317,7 @@ func TestProcessorDoesNotRetryStreamingLimitFailures(t *testing.T) {
 			_, extractErr := pdfExtractor.Extract(context.Background(), "source.pdf", func(extractor.Page) error {
 				return test.err
 			})
-			processor, repository, writer, _, _ := newTestProcessor(t, processorOptions{
+			processor, repository, writer, _, _, _ := newTestProcessor(t, processorOptions{
 				extractErr:      extractErr,
 				maximumAttempts: 2,
 			})
@@ -296,7 +333,7 @@ func TestProcessorDoesNotRetryStreamingLimitFailures(t *testing.T) {
 }
 
 func TestProcessorAbortsArtifactsAndRemovesTemporaryInput(t *testing.T) {
-	processor, repository, writer, _, pdfExtractor := newTestProcessor(t, processorOptions{extractErr: errors.New("extractor crashed"), maximumAttempts: 1})
+	processor, repository, writer, _, _, pdfExtractor := newTestProcessor(t, processorOptions{extractErr: errors.New("extractor crashed"), maximumAttempts: 1})
 	if err := processor.Process(context.Background(), validProcessorEvent()); err != nil {
 		t.Fatal(err)
 	}
@@ -310,18 +347,24 @@ func TestProcessorAbortsArtifactsAndRemovesTemporaryInput(t *testing.T) {
 
 func TestProcessorSurfacesRepositoryAndOutboxPersistenceFailures(t *testing.T) {
 	completeFailure := errors.New("commit unavailable")
-	processor, repository, _, _, _ := newTestProcessor(t, processorOptions{completeErr: completeFailure})
+	processor, repository, _, _, diagnostics, _ := newTestProcessor(t, processorOptions{completeErr: completeFailure})
 	err := processor.Process(context.Background(), validProcessorEvent())
 	if !errors.Is(err, completeFailure) || FailureReason(err) != "complete_failed" || repository.completes != 1 {
 		t.Fatalf("completion error = %v reason=%q", err, FailureReason(err))
 	}
+	if diagnostics.readyPrepared != 1 || diagnostics.completionPersist != 0 || diagnostics.completionFailed != 1 || diagnostics.lastReason != "complete_failed" {
+		t.Fatalf("unexpected diagnostics: %#v", diagnostics)
+	}
 
-	processor, repository, writer, events, _ := newTestProcessor(t, processorOptions{readyErr: errors.New("encode ready event")})
+	processor, repository, writer, events, diagnostics, _ := newTestProcessor(t, processorOptions{readyErr: errors.New("encode ready event")})
 	if err = processor.Process(context.Background(), validProcessorEvent()); err != nil {
 		t.Fatal(err)
 	}
 	if events.ready != 1 || events.failed != 1 || repository.fails != 1 || writer.aborts != 0 {
 		t.Fatalf("ready event fallback: repo=%#v writer=%#v events=%#v", repository, writer, events)
+	}
+	if diagnostics.readyPrepared != 0 || diagnostics.completionPersist != 0 || diagnostics.completionFailed != 0 || diagnostics.failurePersisted != 1 || diagnostics.lastDetail != "ready_event_prepare_failed" {
+		t.Fatalf("unexpected diagnostics: %#v", diagnostics)
 	}
 }
 
@@ -373,9 +416,11 @@ type processorOptions struct {
 	maximumAttempts int
 	completeErr     error
 	readyErr        error
+	addErr          error
+	finalizeErr     error
 }
 
-func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *processorRepository, *processorWriter, *processorEvents, *processorExtractor) {
+func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *processorRepository, *processorWriter, *processorEvents, *processorDiagnostics, *processorExtractor) {
 	t.Helper()
 	accepted := true
 	if options.accepted != nil {
@@ -387,8 +432,13 @@ func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *proc
 	}
 	contents := []byte("%PDF-1.7\nsynthetic")
 	repository := &processorRepository{accepted: accepted, completeErr: options.completeErr}
-	writer := &processorWriter{result: artifact.Result{ManifestReference: "books/book-1/source/profile/manifest.pb", ManifestSHA256: sha256.Sum256([]byte("manifest")), ManifestByteSize: 8, PageCount: 1, ChunkCount: 1}}
+	writer := &processorWriter{
+		result:      artifact.Result{ManifestReference: "books/book-1/source/profile/manifest.pb", ManifestSHA256: sha256.Sum256([]byte("manifest")), ManifestByteSize: 8, PageCount: 1, ChunkCount: 1},
+		addErr:      options.addErr,
+		finalizeErr: options.finalizeErr,
+	}
 	events := &processorEvents{readyErr: options.readyErr}
+	diagnostics := &processorDiagnostics{}
 	pdfExtractor := &processorExtractor{err: options.extractErr, waitForCtx: options.waitForContext}
 	extractors, err := NewFormatExtractors(ExtractionAdapter{
 		MediaType: MediaTypePDF,
@@ -416,12 +466,13 @@ func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *proc
 			ProcessingTimeout:     10 * time.Millisecond,
 			JobLease:              31 * time.Second,
 			MaximumAttempts:       maximumAttempts,
+			Diagnostics:           diagnostics,
 		},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return processor, repository, writer, events, pdfExtractor
+	return processor, repository, writer, events, diagnostics, pdfExtractor
 }
 
 func validProcessorEvent() UploadedEvent {

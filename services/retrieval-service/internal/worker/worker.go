@@ -21,8 +21,8 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/embedding"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/rabbitmq"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
-	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/throttle"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/storage"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/throttle"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/transport"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -371,7 +371,7 @@ func (r *Runtime) serveReadiness(ctx context.Context) {
 		_ = server.Shutdown(shutdownContext)
 	}()
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Print("retrieval worker readiness listener stopped")
+		log.Printf("retrieval worker readiness listener stopped: %v", err)
 	}
 }
 
@@ -381,9 +381,12 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 	go func() {
 		defer handlers.Done()
 		defer func() { <-semaphore }()
+		bookID := deliveryBookID(sourceQueue, delivery.Type, delivery.Body)
+		r.logDeliveryReceived(sourceQueue, delivery.Type, delivery.MessageId, bookID, retryAttempt(delivery.Headers))
 		if delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > 256<<10 {
 			r.logRejectedDelivery(sourceQueue, delivery.Type, delivery.ContentType, "invalid_delivery", sanitizeFailureDetail("body constraints"))
 			settleNack(ctx, delivery, false)
+			r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "nack")
 			return
 		}
 		handleContext, cancel := context.WithTimeout(ctx, r.configuration.ServerlessInvocationTimeout)
@@ -391,6 +394,7 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 		cancel()
 		if err == nil {
 			settleAck(ctx, delivery)
+			r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "ack")
 			return
 		}
 		if terminalFailure != nil && application.TerminalIndexingFailure(err) {
@@ -399,33 +403,40 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 			failureCancel()
 			if failureErr == nil {
 				settleAck(ctx, delivery)
+				r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "ack")
 				return
 			}
 			r.logRetry(sourceQueue, "terminal_failure_record_failed", sanitizeFailureDetail(failureErr.Error()))
 			nextAttempt, retry := failureRecordingRetryAttempt(delivery.Headers)
 			if !retry {
 				settleNack(ctx, delivery, false)
+				r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "nack")
 				return
 			}
 			if r.publishRetry(ctx, publisher, sourceQueue, delivery, nextAttempt) == nil {
+				r.logRetryPublished(sourceQueue, delivery.Type, delivery.MessageId, bookID, nextAttempt)
 				settleAck(ctx, delivery)
+				r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "ack")
 				return
 			}
 			r.logRetryPublishFailed(sourceQueue, "retry_publish_failed")
 			if ctx.Err() == nil {
 				settleNack(ctx, delivery, false)
+				r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "nack")
 			}
 			return
 		}
 		if errors.Is(err, application.ErrInvalidEvent) || errors.Is(err, application.ErrConflictingEvent) {
 			r.logRejectedDelivery(sourceQueue, delivery.Type, delivery.ContentType, rejectionReason(err), sanitizeFailureDetail(err.Error()))
 			settleNack(ctx, delivery, false)
+			r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "nack")
 			return
 		}
 		if retryAttempt(delivery.Headers) >= maximumRetryAttempts {
 			if terminalFailure == nil {
 				r.logRejectedDelivery(sourceQueue, delivery.Type, delivery.ContentType, "invalid_event", sanitizeFailureDetail(err.Error()))
 				settleNack(ctx, delivery, false)
+				r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "nack")
 				return
 			}
 			failureContext, failureCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -433,20 +444,25 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 			failureCancel()
 			if failureErr == nil {
 				settleAck(ctx, delivery)
+				r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "ack")
 				return
 			}
 			r.logRejectedDelivery(sourceQueue, delivery.Type, delivery.ContentType, "terminal_failure_record_failed", sanitizeFailureDetail(failureErr.Error()))
 			settleNack(ctx, delivery, false)
+			r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "nack")
 			return
 		}
 		r.logRetry(sourceQueue, rejectionReason(err), sanitizeFailureDetail(err.Error()))
 		if r.publishRetry(ctx, publisher, sourceQueue, delivery, retryAttempt(delivery.Headers)+1) == nil {
+			r.logRetryPublished(sourceQueue, delivery.Type, delivery.MessageId, bookID, retryAttempt(delivery.Headers)+1)
 			settleAck(ctx, delivery)
+			r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "ack")
 			return
 		}
 		r.logRetryPublishFailed(sourceQueue, "retry_publish_failed")
 		if ctx.Err() == nil {
 			settleNack(ctx, delivery, false)
+			r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "nack")
 		}
 	}()
 }
@@ -760,6 +776,40 @@ func retryAttempt(headers amqp091.Table) int64 {
 	return maximumRetryAttempts
 }
 
+func deliveryBookID(queue, eventType string, payload []byte) string {
+	switch queue {
+	case metadataQueue:
+		event, err := transport.DecodeMetadata(payload)
+		if err == nil {
+			return event.BookID
+		}
+	case manifestQueue:
+		event, err := transport.DecodeManifestEnvelope(payload)
+		if err == nil {
+			return event.BookID
+		}
+	case batchQueue:
+		work, err := transport.DecodeBatch(payload)
+		if err == nil {
+			return work.BookID
+		}
+	case lifecycleQueue:
+		if eventType == "catalog.book.reindex-requested.v1" {
+			event, err := transport.DecodeReindex(payload)
+			if err == nil {
+				return event.BookID
+			}
+		}
+		if eventType == "catalog.book.deletion-requested.v1" {
+			event, err := transport.DecodeDeletion(payload)
+			if err == nil {
+				return event.BookID
+			}
+		}
+	}
+	return ""
+}
+
 func (r *Runtime) dispatchOutbox(ctx context.Context, publisher *rabbitmq.Publisher) {
 	records, err := r.repository.PendingOutbox(ctx, 20, time.Now().UTC())
 	if err != nil {
@@ -897,6 +947,24 @@ func (r *Runtime) logRetryPublishFailed(queue, reason string) {
 	}
 }
 
+func (r *Runtime) logDeliveryReceived(queue, eventType, messageID, bookID string, attempt int64) {
+	if r.diagnostic != nil {
+		r.diagnostic.DeliveryReceived(queueOperation(queue), eventType, messageID, bookID, attempt)
+	}
+}
+
+func (r *Runtime) logDeliverySettled(queue, eventType, messageID, bookID, disposition string) {
+	if r.diagnostic != nil {
+		r.diagnostic.DeliverySettled(queueOperation(queue), eventType, messageID, bookID, disposition)
+	}
+}
+
+func (r *Runtime) logRetryPublished(queue, eventType, messageID, bookID string, attempt int64) {
+	if r.diagnostic != nil {
+		r.diagnostic.RetryPublished(queueOperation(queue), eventType, messageID, bookID, attempt)
+	}
+}
+
 func (r *Runtime) logMetadataReceived(bookID string) {
 	if r.diagnostic != nil {
 		r.diagnostic.MetadataReceived(bookID)
@@ -994,4 +1062,12 @@ func randomID() (string, error) {
 
 func LogFailure() {
 	log.Print("retrieval worker stopped because a required dependency was unavailable")
+}
+
+func LogFailureWithError(err error) {
+	if err == nil {
+		LogFailure()
+		return
+	}
+	log.Printf("retrieval worker stopped: reason=runtime_failure error=%v", err)
 }

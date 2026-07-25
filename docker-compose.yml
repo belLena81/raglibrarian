@@ -331,7 +331,7 @@ services:
 
   edge-api-2:
     <<: *edge-api-service
-    profiles: ["m4-ha"]
+    profiles: ["raglibrarian"]
     ports:
       - "127.0.0.1:${EDGE_SECONDARY_PORT:-8081}:8080"
     environment:
@@ -409,7 +409,7 @@ services:
       start_period: 10s
 
   qdrant:
-    profiles: ["m5", "m5-contract-test"]
+    profiles: ["raglibrarian"]
     image: ${M5_QDRANT_IMAGE:-qdrant/qdrant:v1.18.3}
     read_only: true
     user: "0:0"
@@ -433,6 +433,8 @@ services:
       - qdrant_data:/qdrant/storage
     networks:
       - retrieval-index
+    ports:
+      - "127.0.0.1:${QDRANT_HTTP_PORT:-6333}:6333"
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=32m
     pids_limit: 256
@@ -449,7 +451,7 @@ services:
       - DAC_READ_SEARCH
       - SETGID
       - SETUID
-    profiles: ["m5", "m5-contract-test"]
+    profiles: ["raglibrarian"]
     build:
       context: .
       target: retrieval-runtime
@@ -470,7 +472,7 @@ services:
     pids_limit: 128
 
   text-embeddings-inference:
-    profiles: ["m5", "m5-contract-test"]
+    profiles: ["raglibrarian"]
     image: ${M5_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference@sha256:cb570aabbfa016b86684f576b5bd72d1ee96cc0b7a00b0ad221b298762b32157}
     read_only: true
     user: "65532:65532"
@@ -498,6 +500,8 @@ services:
       - ${M5_MODEL_DIR:-./.dev/models/m5-jina-code-v1}:/data/model:ro
     networks:
       - retrieval-index
+    ports:
+      - "127.0.0.1:${M5_TEI_HTTP_PORT:-8082}:8080"
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=${M5_TEI_TMPFS_SIZE:-256m}
     mem_limit: ${M5_TEI_MEMORY_LIMIT:-16g}
@@ -518,7 +522,7 @@ services:
 
   retrieval-service:
     <<: *service-hardening
-    profiles: ["m5", "m5-contract-test"]
+    profiles: ["raglibrarian"]
     build:
       context: .
       target: retrieval-runtime
@@ -530,8 +534,8 @@ services:
       RETRIEVAL_QDRANT_URL: http://qdrant:6333
       RETRIEVAL_QDRANT_API_KEY_FILE: /run/secrets/retrieval_qdrant_read_api_key
       RETRIEVAL_TEI_URL: http://text-embeddings-inference:8080
-      RETRIEVAL_SUMMARY_LLM_BASE_URL: "${ANSWER_LLM_BASE_URL:-}"
-      RETRIEVAL_SUMMARY_LLM_MODEL: "${ANSWER_LLM_MODEL:-}"
+      RETRIEVAL_SUMMARY_LLM_BASE_URL: "${RETRIEVAL_SUMMARY_LLM_BASE_URL:-}"
+      RETRIEVAL_SUMMARY_LLM_MODEL: "${RETRIEVAL_SUMMARY_LLM_MODEL:-}"
       RETRIEVAL_SUMMARY_LLM_API_KEY_FILE: /run/secrets/answer_llm_api_key
       RETRIEVAL_SUMMARY_LLM_CA_FILE: /run/secrets/internal_ca
       RETRIEVAL_INDEX_PROFILE: m7-pdf-epub-v1
@@ -572,7 +576,7 @@ services:
 
   answer-service:
     <<: *service-hardening
-    profiles: ["m6"]
+    profiles: ["raglibrarian"]
     build:
       context: .
       target: service-runtime
@@ -619,7 +623,7 @@ services:
   # Planner/index/dispatcher/cleanup Lambdas exist only in the AWS M5 stack.
   retrieval-worker:
     <<: *service-hardening
-    profiles: ["m5"]
+    profiles: ["raglibrarian"]
     build:
       context: .
       target: retrieval-runtime
@@ -641,6 +645,7 @@ services:
       RETRIEVAL_TEI_URL: http://text-embeddings-inference:8080
       RETRIEVAL_INDEX_PROFILE: m7-pdf-epub-v1
       RETRIEVAL_METRICS_ADDR: "0.0.0.0:9095"
+      RETRIEVAL_SERVERLESS_INVOCATION_TIMEOUT: "${RETRIEVAL_SERVERLESS_INVOCATION_TIMEOUT:-10m}"
       HEALTHCHECK_HTTP_URL: http://127.0.0.1:9095/readyz
       RETRIEVAL_WORK_CONCURRENCY: "${RETRIEVAL_WORK_CONCURRENCY:-1}"
       RUN_AS_UID: "${RUN_AS_UID:-65532}"
@@ -682,7 +687,7 @@ services:
     <<: *job-hardening
     tmpfs:
       - /tmp:rw,exec,nosuid,nodev,size=1g
-    profiles: ["test"]
+    profiles: ["raglibrarian"]
     build:
       context: .
       target: contract-tests
@@ -770,7 +775,7 @@ services:
     <<: *job-hardening
     tmpfs:
       - /tmp:rw,exec,nosuid,nodev,size=1g
-    profiles: ["m5-contract-test"]
+    profiles: ["raglibrarian"]
     build:
       context: .
       target: contract-tests
@@ -799,7 +804,7 @@ services:
     <<: *job-hardening
     tmpfs:
       - /tmp:rw,exec,nosuid,nodev,size=1g
-    profiles: ["m6-test"]
+    profiles: ["raglibrarian"]
     build:
       context: .
       target: contract-tests
@@ -843,7 +848,7 @@ services:
     <<: *job-hardening
     tmpfs:
       - /tmp:rw,exec,nosuid,nodev,size=1g
-    profiles: ["minio-runtime-test"]
+    profiles: ["raglibrarian"]
     build:
       context: .
       target: contract-tests

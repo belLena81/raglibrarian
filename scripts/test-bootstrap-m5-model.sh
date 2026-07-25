@@ -31,3 +31,50 @@ while IFS= read -r -d '' file; do
     exit 1
   }
 done < <(find "$model_dir" -type f -print0)
+
+docker_test_dir="$(mktemp -d)"
+trap 'rm -rf "$temp_dir" "$docker_test_dir"' EXIT
+mkdir -p "$docker_test_dir/bin"
+
+cat > "$docker_test_dir/bin/python3" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod 0755 "$docker_test_dir/bin/python3"
+
+cat > "$docker_test_dir/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+log_file="${DOCKER_LOG_FILE:?}"
+printf '%s\n' "$*" > "$log_file"
+for arg in "$@"; do
+  case "$arg" in
+    *src=*)
+      model_dir="${arg#*src=}"
+      model_dir="${model_dir%%,*}"
+      ;;
+  esac
+done
+mkdir -p "$model_dir/onnx"
+printf 'synthetic config fixture\n' > "$model_dir/config.json"
+printf 'synthetic safetensors fixture\n' > "$model_dir/model.safetensors"
+printf 'synthetic onnx fixture\n' > "$model_dir/onnx/model.onnx"
+cat >/dev/null
+exit 0
+EOF
+chmod 0755 "$docker_test_dir/bin/docker"
+
+docker_log_file="$docker_test_dir/docker-argv"
+HF_TOKEN=hf_test_token HF_ENDPOINT=https://hf.example.internal M5_MODEL_DIR="$docker_test_dir/model" DOCKER_LOG_FILE="$docker_log_file" PATH="$docker_test_dir/bin:/usr/bin:/bin" bash "$repo_root/scripts/bootstrap-m5-model.sh" || {
+  echo "bootstrap script failed in docker fallback test" >&2
+  exit 1
+}
+
+grep -F -- '-e HF_TOKEN=hf_test_token' "$docker_log_file" >/dev/null || {
+  echo "docker fallback did not forward HF_TOKEN" >&2
+  exit 1
+}
+
+grep -F -- '-e HF_ENDPOINT=https://hf.example.internal' "$docker_log_file" >/dev/null || {
+  echo "docker fallback did not forward HF_ENDPOINT" >&2
+  exit 1
+}

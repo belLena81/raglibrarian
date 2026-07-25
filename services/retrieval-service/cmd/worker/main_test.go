@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"strings"
 	"testing"
 
 	"github.com/belLena81/raglibrarian/pkg/logger"
 	"github.com/belLena81/raglibrarian/pkg/process"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/diagnostic"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/worker"
 	"go.uber.org/zap"
 )
 
@@ -90,5 +94,22 @@ func TestRunStopsWhenPrivilegeDropFails(t *testing.T) {
 	err := run(context.Background(), logger.Must("retrieval-worker-test"))
 	if !errors.Is(err, dropErr) {
 		t.Fatalf("run() error = %v, want %v", err, dropErr)
+	}
+}
+
+func TestLogFailureWithErrorIncludesUnderlyingError(t *testing.T) {
+	var output bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(previous)
+
+	worker.LogFailureWithError(errors.New("qdrant unavailable"))
+
+	got := output.String()
+	if !strings.Contains(got, "retrieval worker stopped: reason=runtime_failure") {
+		t.Fatalf("log output = %q", got)
+	}
+	if !strings.Contains(got, "qdrant unavailable") {
+		t.Fatalf("log output = %q", got)
 	}
 }

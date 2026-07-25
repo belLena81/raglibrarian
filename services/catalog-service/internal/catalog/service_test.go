@@ -533,6 +533,53 @@ func TestGetBookIgnoresPreviewFailures(t *testing.T) {
 	}
 }
 
+func TestGetBookDropsOversizedPreview(t *testing.T) {
+	repository := NewMemoryRepository()
+	objects := NewMemoryObjectStore()
+	service := NewServiceWithOptions(repository, objects, ServiceOptions{
+		MaxBytes: 1024,
+		PreviewBook: func(_ context.Context, _ Book, _ OriginalObjectStore) (string, error) {
+			return strings.Repeat("a", maxPreviewBytes+1), nil
+		},
+	})
+	book, err := service.UploadBook(context.Background(), validUploadInput(strings.NewReader("%PDF-1.7\nbody")))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	retrieved, err := service.GetBook(context.Background(), book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retrieved.Preview != "" {
+		t.Fatalf("preview = %q, want empty fallback", retrieved.Preview)
+	}
+}
+
+func TestGetBookIgnoresPreviewTimeout(t *testing.T) {
+	repository := NewMemoryRepository()
+	objects := NewMemoryObjectStore()
+	service := NewServiceWithOptions(repository, objects, ServiceOptions{
+		MaxBytes: 1024,
+		PreviewBook: func(ctx context.Context, _ Book, _ OriginalObjectStore) (string, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
+		},
+	})
+	book, err := service.UploadBook(context.Background(), validUploadInput(strings.NewReader("%PDF-1.7\nbody")))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	retrieved, err := service.GetBook(context.Background(), book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retrieved.Preview != "" {
+		t.Fatalf("preview = %q, want empty fallback", retrieved.Preview)
+	}
+}
+
 func TestListBooksRejectsMalformedCursorAsPagination(t *testing.T) {
 	service := NewService(NewMemoryRepository(), NewMemoryObjectStore(), 1024)
 	_, _, err := service.ListBooks(context.Background(), 25, "not-a-cursor")

@@ -18,6 +18,7 @@ const (
 	maxQueryAuthorLength   = 256
 	defaultQueryLimit      = 5
 	maxQueryLimit          = 20
+	minimumEvidenceScore   = 0.6
 )
 
 var (
@@ -320,6 +321,7 @@ type documentResponse struct {
 }
 
 func queryResponseFrom(result SearchResult) queryResponse {
+	result = visibleQueryResult(result)
 	results := make([]evidenceResponse, 0, len(result.Results))
 	for _, evidence := range result.Results {
 		results = append(results, evidenceResponseFrom(evidence))
@@ -337,6 +339,7 @@ func queryResponseFrom(result SearchResult) queryResponse {
 }
 
 func queryResponseFromAnswer(result AnswerResult) queryResponse {
+	result.Search = visibleQueryResult(result.Search)
 	response := queryResponseFrom(result.Search)
 	response.Summary = result.Summary
 	if result.Answer == nil {
@@ -365,4 +368,30 @@ func evidenceResponseFrom(evidence Evidence) evidenceResponse {
 		Score:      evidence.Score,
 		Summary:    evidence.Summary,
 	}
+}
+
+func visibleQueryResult(result SearchResult) SearchResult {
+	results := make([]Evidence, 0, len(result.Results))
+	for _, evidence := range result.Results {
+		if evidence.Score >= minimumEvidenceScore {
+			results = append(results, evidence)
+		}
+	}
+	documents := make([]DocumentResult, 0, len(result.Documents))
+	for _, document := range result.Documents {
+		evidence := make([]Evidence, 0, len(document.Evidence))
+		for _, value := range document.Evidence {
+			if value.Score >= minimumEvidenceScore {
+				evidence = append(evidence, value)
+			}
+		}
+		if len(evidence) == 0 {
+			continue
+		}
+		document.Evidence = evidence
+		documents = append(documents, document)
+	}
+	result.Results = results
+	result.Documents = documents
+	return result
 }

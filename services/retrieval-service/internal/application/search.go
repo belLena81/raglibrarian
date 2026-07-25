@@ -72,6 +72,13 @@ type Searcher struct {
 	summaryProvider SummaryProvider
 }
 
+type SummaryRequest struct {
+	Question string
+	Passage  string
+}
+
+const minimumVisibleScore = 0.6
+
 func NewSearcher(embedder QueryEmbedder, store EvidenceStore, visibility IndexVisibility) (*Searcher, error) {
 	if embedder == nil || store == nil || visibility == nil {
 		return nil, errors.New("invalid searcher configuration")
@@ -117,17 +124,19 @@ func (s *Searcher) searchVisibleEvidence(ctx context.Context, query domain.Searc
 		if err != nil {
 			return nil, errors.New("search evidence")
 		}
+		candidateCount := len(candidates)
+		candidates = filterVisibleEvidence(candidates)
 		visible, err := s.visibility.FilterIndexed(ctx, candidates)
 		if err != nil {
 			return nil, errors.New("validate index visibility")
 		}
 		results = append(results, visible...)
-		if len(candidates) < candidateLimit {
+		if candidateCount < candidateLimit {
 			break
 		}
 	}
 	results = trimEvidence(results, query.Limit())
-	s.populateEvidenceSummaries(ctx, results)
+	s.populateEvidenceSummaries(ctx, query.Question(), results)
 	return results, nil
 }
 
@@ -139,6 +148,7 @@ func (s *Searcher) searchVisibleDocuments(ctx context.Context, query domain.Sear
 		if err != nil {
 			return nil, errors.New("search documents")
 		}
+		page.Documents = filterVisibleDocuments(page.Documents)
 		visible, err := s.visibility.FilterIndexedDocuments(ctx, page.Documents)
 		if err != nil {
 			return nil, errors.New("validate document visibility")
@@ -149,11 +159,11 @@ func (s *Searcher) searchVisibleDocuments(ctx context.Context, query domain.Sear
 		}
 	}
 	results = trimDocuments(results, query.Limit())
-	s.populateDocumentSummaries(ctx, results)
+	s.populateDocumentSummaries(ctx, query.Question(), results)
 	return results, nil
 }
 
-func (s *Searcher) populateEvidenceSummaries(ctx context.Context, results []Evidence) {
+func (s *Searcher) populateEvidenceSummaries(ctx context.Context, question string, results []Evidence) {
 	if len(results) == 0 {
 		return
 	}
@@ -162,14 +172,14 @@ func (s *Searcher) populateEvidenceSummaries(ctx context.Context, results []Evid
 	for index := range results {
 		index := index
 		group.Go(func() error {
-			results[index].Summary = s.summarizeEvidence(groupContext, results[index])
+			results[index].Summary = s.summarizeEvidence(groupContext, question, results[index])
 			return nil
 		})
 	}
 	_ = group.Wait()
 }
 
-func (s *Searcher) populateDocumentSummaries(ctx context.Context, results []DocumentResult) {
+func (s *Searcher) populateDocumentSummaries(ctx context.Context, question string, results []DocumentResult) {
 	if len(results) == 0 {
 		return
 	}
@@ -179,9 +189,9 @@ func (s *Searcher) populateDocumentSummaries(ctx context.Context, results []Docu
 		index := index
 		group.Go(func() error {
 			for evidenceIndex := range results[index].Evidence {
-				results[index].Evidence[evidenceIndex].Summary = s.summarizeEvidence(groupContext, results[index].Evidence[evidenceIndex])
+				results[index].Evidence[evidenceIndex].Summary = s.summarizeEvidence(groupContext, question, results[index].Evidence[evidenceIndex])
 			}
-			results[index].Summary = s.summarizeDocument(groupContext, results[index])
+			results[index].Summary = s.summarizeDocument(groupContext, question, results[index])
 			return nil
 		})
 	}
@@ -217,34 +227,61 @@ func trimDocuments(values []DocumentResult, limit int) []DocumentResult {
 	return values[:limit]
 }
 
-func (s *Searcher) summarizeEvidence(ctx context.Context, value Evidence) string {
-	return s.summarizeText(ctx, value.Passage)
+func filterVisibleEvidence(values []Evidence) []Evidence {
+	results := make([]Evidence, 0, len(values))
+	for _, value := range values {
+		if value.Score < minimumVisibleScore {
+			continue
+		}
+		results = append(results, value)
+	}
+	return results
 }
 
-func (s *Searcher) summarizeDocument(ctx context.Context, value DocumentResult) string {
+func filterVisibleDocuments(values []DocumentResult) []DocumentResult {
+	results := make([]DocumentResult, 0, len(values))
+	for _, value := range values {
+		value.Evidence = filterVisibleEvidence(value.Evidence)
+		if len(value.Evidence) == 0 {
+			continue
+		}
+		results = append(results, value)
+	}
+	return results
+}
+
+func (s *Searcher) summarizeEvidence(ctx context.Context, question string, value Evidence) string {
+	return s.summarizeText(ctx, SummaryRequest{Question: question, Passage: value.Passage})
+}
+
+func (s *Searcher) summarizeDocument(ctx context.Context, question string, value DocumentResult) string {
 	input := normalizeDocumentSummaryInput(value)
 	if input == "" {
 		return ""
 	}
-	return s.summarizeText(ctx, input)
+	return s.summarizeText(ctx, SummaryRequest{Question: question, Passage: input})
 }
 
-func (s *Searcher) summarizeText(ctx context.Context, value string) string {
-	normalized := normalizeSummaryInput(value)
-	if normalized == "" {
+func (s *Searcher) summarizeText(ctx context.Context, request SummaryRequest) string {
+	normalizedPassage := normalizeSummaryInput(request.Passage)
+	if normalizedPassage == "" {
 		return ""
+	}
+	normalizedQuestion := normalizeSummaryInput(request.Question)
+	if normalizedQuestion == "" {
+		normalizedQuestion = request.Question
 	}
 	if s.summaryProvider != nil {
 		summaryContext, cancel := context.WithTimeout(ctx, summaryProviderTimeout)
 		defer cancel()
-		summary, err := s.summaryProvider.Summarize(summaryContext, normalized)
+		summary, err := s.summaryProvider.Summarize(summaryContext, SummaryRequest{Question: normalizedQuestion, Passage: normalizedPassage})
 		if err == nil {
 			if sanitized := normalizeProviderSummary(summary); sanitized != "" {
 				return sanitized
 			}
 		}
 	}
-	return summarizeText(normalized)
+	return summarizeText(normalizedPassage)
 }
 
 func normalizeSummaryInput(value string) string {
@@ -317,7 +354,7 @@ func firstSentenceMatch(value string) string {
 }
 
 type SummaryProvider interface {
-	Summarize(context.Context, string) (string, error)
+	Summarize(context.Context, SummaryRequest) (string, error)
 }
 
-const summaryProviderTimeout = 2 * time.Second
+const summaryProviderTimeout = 4*time.Minute + 30*time.Second

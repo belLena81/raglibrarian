@@ -58,7 +58,7 @@ func New(configuration config.Config) (*App, error) {
 	if err != nil {
 		return nil, errors.New("configure provider transport")
 	}
-	limit, err := throttle.New(configuration.LLMRequestsPerSecond)
+	limit, err := throttle.NewPerMinute(configuration.LLMRequestsPerMinute)
 	if err != nil {
 		return nil, errors.New("configure provider throttle")
 	}

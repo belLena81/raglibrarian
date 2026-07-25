@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -99,6 +100,57 @@ func TestTEILogsHTTPStatusFailures(t *testing.T) {
 	}
 	if fields["reason_detail"] != "{\"error\":\"overloaded\"}" {
 		t.Fatalf("reason_detail = %#v", fields["reason_detail"])
+	}
+}
+
+func TestTEIEmbedDocumentsBatchesEightInputsAndPreservesOrder(t *testing.T) {
+	requests := make([][]string, 0, 2)
+	client, err := NewTEI("https://tei.example", &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		var body struct {
+			Inputs   []string `json:"inputs"`
+			Truncate bool     `json:"truncate"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requests = append(requests, append([]string(nil), body.Inputs...))
+		vectors := make([][]float32, 0, len(body.Inputs))
+		for _, input := range body.Inputs {
+			vector := make([]float32, domain.EmbeddingDimensions)
+			vector[0] = float32(len(input))
+			vectors = append(vectors, vector)
+		}
+		payload, err := json.Marshal(vectors)
+		if err != nil {
+			t.Fatalf("marshal response: %v", err)
+		}
+		return httpResponse(http.StatusOK, string(payload)), nil
+	})}, zap.NewNop(), nil)
+	if err != nil {
+		t.Fatalf("NewTEI() error = %v", err)
+	}
+
+	inputs := []string{"1", "22", "333", "4444", "55555", "666666", "7777777", "88888888", "999999999"}
+	vectors, err := client.EmbedDocuments(context.Background(), inputs)
+	if err != nil {
+		t.Fatalf("EmbedDocuments() error = %v", err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if !slices.Equal(requests[0], inputs[:8]) {
+		t.Fatalf("first request = %#v, want %#v", requests[0], inputs[:8])
+	}
+	if !slices.Equal(requests[1], inputs[8:]) {
+		t.Fatalf("second request = %#v, want %#v", requests[1], inputs[8:])
+	}
+	if len(vectors) != len(inputs) {
+		t.Fatalf("vector count = %d, want %d", len(vectors), len(inputs))
+	}
+	for index, input := range inputs {
+		if got := vectors[index][0]; got != float32(len(input)) {
+			t.Fatalf("vector[%d][0] = %v, want %d", index, got, len(input))
+		}
 	}
 }
 

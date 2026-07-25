@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os/exec"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/domain"
@@ -35,6 +36,8 @@ const (
 	EPUBParserExitResourceLimit = 126
 	EPUBParserExitInternal      = 127
 )
+
+var epubFailureTokenCleaner = regexp.MustCompile(`[^a-z0-9]+`)
 
 // EPUBArchiveLimits bounds every attacker-controlled archive dimension before
 // extraction. The parser binary has an additional OS resource sandbox.
@@ -456,6 +459,96 @@ func EPUBParserExitCode(err error) int {
 	}
 }
 
+// EPUBParserFailureDetail maps a categorized parser failure to a bounded token
+// suitable for stderr or diagnostics. Callers may safely surface the token.
+func EPUBParserFailureDetail(err error) (string, bool) {
+	var categorized *categorizedError
+	if !errors.As(err, &categorized) {
+		return "", false
+	}
+	switch categorized.category {
+	case domain.FailureMalformedDocument:
+		return "epub_parser_malformed", true
+	case domain.FailureResourceLimitExceeded:
+		return "epub_parser_resource_limit", true
+	case domain.FailureInternalProcessing:
+		if detail, ok := commandFailureDetail(categorized.cause); ok {
+			switch detail {
+			case "epub_parser_panic", "epub_parser_invalid_args", "epub_parser_output_failed",
+				"epub_parser_invalid_limits", "epub_parser_invalid_entry_limits", "epub_parser_invalid_configuration",
+				"epub_parser_invalid_output", "epub_parser_trailing_output", "epub_parser_invalid_location",
+				"epub_parser_xml_nesting", "epub_parser_xhtml_invalid", "epub_parser_xhtml_unsafe",
+				"epub_parser_text_limit", "epub_parser_exit_125", "epub_parser_exit_126", "epub_parser_exit_127":
+				return detail, true
+			}
+		}
+		if categorized.cause == nil {
+			return "epub_parser_internal", true
+		}
+		switch strings.TrimSpace(categorized.cause.Error()) {
+		case "invalid EPUB limits":
+			return "epub_parser_invalid_limits", true
+		case "invalid EPUB entry limits":
+			return "epub_parser_invalid_entry_limits", true
+		case "invalid EPUB extractor configuration":
+			return "epub_parser_invalid_configuration", true
+		case "invalid EPUB parser output":
+			return "epub_parser_invalid_output", true
+		case "trailing EPUB parser output":
+			return "epub_parser_trailing_output", true
+		case "invalid EPUB parser location":
+			return "epub_parser_invalid_location", true
+		case "invalid EPUB XML nesting":
+			return "epub_parser_xml_nesting", true
+		case "invalid EPUB XHTML document":
+			return "epub_parser_xhtml_invalid", true
+		case "unsafe EPUB XHTML":
+			return "epub_parser_xhtml_unsafe", true
+		case "EPUB text limit exceeded":
+			return "epub_parser_text_limit", true
+		default:
+			return internalEPUBFailureDetail(categorized.cause), true
+		}
+	default:
+		return "", false
+	}
+}
+
+func internalEPUBFailureDetail(err error) string {
+	const prefix = "epub_parser_internal"
+	if err == nil {
+		return prefix
+	}
+	var commandErr *commandError
+	if errors.As(err, &commandErr) {
+		if errors.Is(commandErr.cause, exec.ErrNotFound) {
+			return "epub_parser_exec_not_found"
+		}
+		var exitErr *exec.ExitError
+		if errors.As(commandErr.cause, &exitErr) {
+			if exitErr.ExitCode() == 2 {
+				return "epub_parser_invalid_args"
+			}
+			return fmt.Sprintf("epub_parser_exec_exit_%d", exitErr.ExitCode())
+		}
+		return "epub_parser_exec_failed"
+	}
+	fragment := strings.ToLower(strings.TrimSpace(err.Error()))
+	fragment = epubFailureTokenCleaner.ReplaceAllString(fragment, "_")
+	fragment = strings.Trim(fragment, "_")
+	if fragment == "" {
+		return prefix
+	}
+	if len(fragment) > 32 {
+		fragment = fragment[:32]
+		fragment = strings.TrimRight(fragment, "_")
+	}
+	if fragment == "" {
+		return prefix
+	}
+	return prefix + "_" + fragment
+}
+
 type epubOutputHeader struct {
 	SchemaVersion string `json:"schema_version"`
 	LocationCount uint32 `json:"location_count"`
@@ -504,7 +597,7 @@ func (e *EPUB) Extract(ctx context.Context, sourcePath string, consume func(Page
 	maximumOutput := e.limits.MaximumExtractedBytes + int64(e.limits.MaximumPages)*128 + 1024
 	output, err := e.runner.Run(ctx, e.parserPath, []string{sourcePath}, maximumOutput)
 	if err != nil {
-		return DocumentInfo{}, classifyEPUBCommandError(ctx, err)
+		return DocumentInfo{}, detailedFailure("epub_parser_failed", classifyEPUBCommandError(ctx, err))
 	}
 	reader := bufio.NewReaderSize(bytes.NewReader(output), 64<<10)
 	decoder := json.NewDecoder(reader)

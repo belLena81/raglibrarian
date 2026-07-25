@@ -19,6 +19,7 @@ import (
 )
 
 const maximumResponseBytes = 8 << 20
+const providerBatchSize = 8
 
 type TEI struct {
 	endpoint string
@@ -47,7 +48,6 @@ func (t *TEI) EmbedDocuments(ctx context.Context, texts []string) ([][]float32, 
 	if len(texts) == 0 || len(texts) > 256 {
 		return nil, errors.New("invalid embedding batch")
 	}
-	const providerBatchSize = 16
 	result := make([][]float32, 0, len(texts))
 	for start := 0; start < len(texts); start += providerBatchSize {
 		end := start + providerBatchSize

@@ -104,6 +104,45 @@ func (r *Recorder) RetryPublishFailed(queue, reason string) {
 	r.log.Warn("retrieval.retry.publish_failed", zap.String("operation", queue), zap.String("reason_code", reason))
 }
 
+func (r *Recorder) DeliveryReceived(queue, eventType, messageID, bookID string, attempt int64) {
+	fields := []zap.Field{
+		zap.String("operation", queue),
+		zap.String("event_type", eventType),
+		zap.String("message_id", messageID),
+		zap.Int64("attempt", attempt),
+	}
+	if bookID != "" {
+		fields = append(fields, zap.String("book_id", bookID))
+	}
+	r.log.Info("retrieval.delivery.received", fields...)
+}
+
+func (r *Recorder) DeliverySettled(queue, eventType, messageID, bookID, disposition string) {
+	fields := []zap.Field{
+		zap.String("operation", queue),
+		zap.String("event_type", eventType),
+		zap.String("message_id", messageID),
+		zap.String("disposition", disposition),
+	}
+	if bookID != "" {
+		fields = append(fields, zap.String("book_id", bookID))
+	}
+	r.log.Info("retrieval.delivery.settled", fields...)
+}
+
+func (r *Recorder) RetryPublished(queue, eventType, messageID, bookID string, attempt int64) {
+	fields := []zap.Field{
+		zap.String("operation", queue),
+		zap.String("event_type", eventType),
+		zap.String("message_id", messageID),
+		zap.Int64("attempt", attempt),
+	}
+	if bookID != "" {
+		fields = append(fields, zap.String("book_id", bookID))
+	}
+	r.log.Info("retrieval.retry.published", fields...)
+}
+
 func (r *Recorder) OutboxPublished() {
 	r.log.Info("retrieval.outbox.published")
 }

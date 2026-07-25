@@ -171,85 +171,7 @@ case "$compose_wait_mode" in
 esac
 echo "Using compose wait mode: $compose_wait_mode"
 
-compose_cmd() {
-  M5_MODEL_DIR="$M5_MODEL_DIR" docker compose --profile m5 --profile m6 "$@"
-}
-
-compose_service_id() {
-  local service="$1"
-
-  compose_cmd ps -q "$service" 2>/dev/null || true
-}
-
-wait_for_service_healthy() {
-  local service="$1"
-  local timeout="${2:-$compose_wait_timeout}"
-  local label="${3:-$service}"
-  local container_id status health exit_code elapsed
-
-  for elapsed in $(seq 1 "$timeout"); do
-    container_id="$(compose_service_id "$service")"
-    if [[ -z "$container_id" ]]; then
-      sleep 1
-      continue
-    fi
-
-    status="$(docker inspect --format '{{.State.Status}}' "$container_id" 2>/dev/null || true)"
-    health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{end}}' "$container_id" 2>/dev/null || true)"
-    exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container_id" 2>/dev/null || true)"
-
-    if [[ "$health" == "healthy" ]]; then
-      return 0
-    fi
-    if [[ "$status" == "exited" ]]; then
-      echo "$label exited before becoming healthy (exit code ${exit_code:-unknown})."
-      return 1
-    fi
-
-    if (( elapsed % 10 == 0 )); then
-      echo "Waiting for $label to become healthy: ${elapsed}s/${timeout}s"
-    fi
-    sleep 1
-  done
-
-  echo "Timed out waiting for $label to become healthy after ${timeout}s."
-  return 1
-}
-
-wait_for_service_completed_successfully() {
-  local service="$1"
-  local timeout="${2:-$compose_wait_timeout}"
-  local label="${3:-$service}"
-  local container_id status exit_code elapsed
-
-  for elapsed in $(seq 1 "$timeout"); do
-    container_id="$(compose_service_id "$service")"
-    if [[ -z "$container_id" ]]; then
-      sleep 1
-      continue
-    fi
-
-    status="$(docker inspect --format '{{.State.Status}}' "$container_id" 2>/dev/null || true)"
-    exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container_id" 2>/dev/null || true)"
-
-    if [[ "$status" == "exited" ]]; then
-      if [[ "${exit_code:-1}" == "0" ]]; then
-        return 0
-      fi
-      echo "$label failed with exit code ${exit_code:-unknown}."
-      docker compose --profile m5 --profile m6 logs --no-color --tail 120 "$service" 2>/dev/null || true
-      return 1
-    fi
-
-    if (( elapsed % 10 == 0 )); then
-      echo "Waiting for $label to complete successfully: ${elapsed}s/${timeout}s"
-    fi
-    sleep 1
-  done
-
-  echo "Timed out waiting for $label to complete successfully after ${timeout}s."
-  return 1
-}
+. "$root_dir/scripts/run-local-lib.sh"
 
 prune_dead_pid_file() {
   local pid_file="$1"
@@ -276,7 +198,7 @@ prune_dead_pid_dir() {
 
 print_tei_debug() {
   local tei_container_id
-  tei_container_id="$(docker compose --profile m5 --profile m6 ps -q text-embeddings-inference || true)"
+  tei_container_id="$(docker compose --profile raglibrarian ps -q text-embeddings-inference || true)"
   if [[ -z "$tei_container_id" ]]; then
     echo "No text-embeddings-inference container was found yet."
     return
@@ -291,38 +213,19 @@ print_tei_debug() {
 
 report_dependency_status() {
   echo "---- compose status ----"
-  docker compose --profile m5 --profile m6 ps || true
+  docker compose --profile raglibrarian ps || true
   echo "---- tei state ----"
-  docker compose --profile m5 --profile m6 ps text-embeddings-inference || true
+  docker compose --profile raglibrarian ps text-embeddings-inference || true
   echo "---- edge-api state ----"
-  docker compose --profile m5 --profile m6 ps edge-api || true
-  if docker compose --profile m5 --profile m6 ps text-embeddings-inference | tail -n +3 | grep -q "health: starting"; then
+  docker compose --profile raglibrarian ps edge-api || true
+  if docker compose --profile raglibrarian ps text-embeddings-inference | tail -n +3 | grep -q "health: starting"; then
     echo "text-embeddings-inference is still warming up."
   fi
-  if docker compose --profile m5 --profile m6 ps text-embeddings-inference | tail -n +3 | grep -Eq "Restarting|Restarted|Exit|Exited|unhealthy|starting"; then
+  if docker compose --profile raglibrarian ps text-embeddings-inference | tail -n +3 | grep -Eq "Restarting|Restarted|Exit|Exited|unhealthy|starting"; then
     echo "Text-embeddings-inference appears unhealthy/restarting. Last logs:"
-    docker compose --profile m5 --profile m6 logs --no-color --tail 160 text-embeddings-inference 2>/dev/null || true
+    docker compose --profile raglibrarian logs --no-color --tail 160 text-embeddings-inference 2>/dev/null || true
     print_tei_debug
   fi
-}
-
-check_tei_failure_exit() {
-  local tei_container_id tei_status tei_exit_code
-
-  tei_container_id="$(docker compose --profile m5 --profile m6 ps -q text-embeddings-inference || true)"
-  if [[ -z "$tei_container_id" ]]; then
-    return 1
-  fi
-
-  tei_status="$(docker inspect --format '{{.State.Status}}' "$tei_container_id" 2>/dev/null || true)"
-  tei_exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$tei_container_id" 2>/dev/null || true)"
-  if [[ "$tei_status" == "exited" && "${tei_exit_code:-0}" != "0" ]]; then
-    echo "text-embeddings-inference exited during startup (exit code ${tei_exit_code})."
-    echo "Recent logs:"
-    docker compose --profile m5 --profile m6 logs --no-color --tail 200 text-embeddings-inference 2>/dev/null || true
-    return 0
-  fi
-  return 1
 }
 
 set +e
@@ -448,14 +351,14 @@ fi
 if (( compose_exit != 0 )); then
   echo "Compose startup failed with exit code $compose_exit."
   echo "Service status:"
-  docker compose --profile m5 --profile m6 ps
+  docker compose --profile raglibrarian ps
   echo "Recent logs from text-embeddings-inference (if running):"
-  docker compose --profile m5 --profile m6 logs --no-color --tail 200 text-embeddings-inference 2>/dev/null || true
+  docker compose --profile raglibrarian logs --no-color --tail 200 text-embeddings-inference 2>/dev/null || true
   print_tei_debug
   echo "Recent logs from retrieval-service (if running):"
-  docker compose --profile m5 --profile m6 logs --no-color --tail 200 retrieval-service 2>/dev/null || true
+  docker compose --profile raglibrarian logs --no-color --tail 200 retrieval-service 2>/dev/null || true
   echo "Recent logs from edge-api (if running):"
-  docker compose --profile m5 --profile m6 logs --no-color --tail 120 edge-api 2>/dev/null || true
+  docker compose --profile raglibrarian logs --no-color --tail 120 edge-api 2>/dev/null || true
   if [[ "${M5_STRICT_COMPOSE_WAIT:-false}" == "true" ]]; then
     exit 1
   fi
@@ -491,13 +394,13 @@ for attempt in $(seq 1 "$max_wait"); do
     echo "Backend readiness timed out after ${max_wait}s."
     print_readyz_snapshot
     echo "Service status:"
-    docker compose --profile m5 --profile m6 ps
+    docker compose --profile raglibrarian ps
     echo "Recent logs from text-embeddings-inference:"
-    docker compose --profile m5 --profile m6 logs --no-color --tail 120 text-embeddings-inference 2>/dev/null || true
+    docker compose --profile raglibrarian logs --no-color --tail 120 text-embeddings-inference 2>/dev/null || true
     echo "Recent logs from edge-api:"
-    docker compose --profile m5 --profile m6 logs --no-color --tail 120 edge-api 2>/dev/null || true
+    docker compose --profile raglibrarian logs --no-color --tail 120 edge-api 2>/dev/null || true
     echo "Recent logs from retrieval-service:"
-    docker compose --profile m5 --profile m6 logs --no-color --tail 120 retrieval-service 2>/dev/null || true
+    docker compose --profile raglibrarian logs --no-color --tail 120 retrieval-service 2>/dev/null || true
     break
   fi
 done
@@ -513,13 +416,13 @@ fi
 
 if (( compose_exit != 0 )); then
   echo "---- failed/restarting services ----"
-  docker compose --profile m5 --profile m6 ps | awk 'NR>2 && $0 !~ /(Up|Exit 0|Created|running)/ {print}'
+  docker compose --profile raglibrarian ps | awk 'NR>2 && $0 !~ /(Up|Exit 0|Created|running)/ {print}'
   echo "Service status:"
-  docker compose --profile m5 --profile m6 ps
+  docker compose --profile raglibrarian ps
   echo "Recent logs from text-embeddings-inference (if running):"
-  docker compose --profile m5 --profile m6 logs --no-color --tail 120 text-embeddings-inference 2>/dev/null || true
+  docker compose --profile raglibrarian logs --no-color --tail 120 text-embeddings-inference 2>/dev/null || true
   echo "Recent logs from edge-api (if running):"
-  docker compose --profile m5 --profile m6 logs --no-color --tail 120 edge-api 2>/dev/null || true
+  docker compose --profile raglibrarian logs --no-color --tail 120 edge-api 2>/dev/null || true
   echo "Continuing; check logs for failing dependency and fix before retry."
 else
   echo "Backend ready: http://127.0.0.1:8080"
@@ -538,7 +441,7 @@ for service in edge-api identity-service catalog-service ingestion-service retri
   fi
 
   rm -f "$service_pid_file"
-  nohup docker compose --profile m5 --profile m6 logs --no-color --follow "$service" >>"$service_log_file" 2>&1 &
+  nohup docker compose --profile raglibrarian logs --no-color --follow "$service" >>"$service_log_file" 2>&1 &
   echo "$!" >"$service_pid_file"
 done
 
@@ -586,8 +489,8 @@ fi
 
 if (( compose_exit != 0 )); then
   echo "Backend is not ready yet. If this persists, run:"
-  echo "  docker compose --profile m5 --profile m6 ps text-embeddings-inference"
-  echo "  docker compose --profile m5 --profile m6 logs -f --tail 200 text-embeddings-inference"
+  echo "  docker compose --profile raglibrarian ps text-embeddings-inference"
+  echo "  docker compose --profile raglibrarian logs -f --tail 200 text-embeddings-inference"
   echo "You can also run: curl -i http://127.0.0.1:8080/readyz"
 else
   echo "Backend ready: http://127.0.0.1:8080"
@@ -605,5 +508,5 @@ if [[ "$bootstrap_status" == "existing" ]]; then
   echo "Bootstrap verifier file (existing): $bootstrap_verifier_file"
 fi
 echo "Backend logs:  $root_dir/_logs/{edge-api,identity-service,catalog-service,ingestion-service,retrieval-service,retrieval-worker,answer-service}/service.log"
-echo "Stop backend with: docker compose down --profile m5 --profile m6"
+echo "Stop backend with: docker compose down --profile raglibrarian"
 echo "Stop local stack:  bash ./scripts/stop-local.sh"

@@ -85,8 +85,21 @@ fi
 
 run_hf_download() {
   local bootstrap_script
+  local -a docker_env_args=()
   bootstrap_script="$(mktemp)"
   trap 'rm -f "$bootstrap_script"' RETURN
+
+  add_docker_env_arg() {
+    local name="$1"
+    local value="$2"
+    if [[ -n "$value" ]]; then
+      docker_env_args+=("-e" "$name=$value")
+    fi
+  }
+
+  add_docker_env_arg HF_TOKEN "${HF_TOKEN:-}"
+  add_docker_env_arg HF_ENDPOINT "${HF_ENDPOINT:-}"
+  add_docker_env_arg HUGGING_FACE_HUB_TOKEN "${HUGGING_FACE_HUB_TOKEN:-}"
 
   cat > "$bootstrap_script" <<'PY'
 import os
@@ -161,6 +174,7 @@ PY
   cat "$bootstrap_script" | docker run --rm -i \
     --user "$(id -u):$(id -g)" \
     --mount type=bind,src="$(readlink -f "$model_dir")",dst=/data/model \
+    "${docker_env_args[@]}" \
     -e HF_BOOTSTRAP_REVISION="$revision" \
     -e HF_BOOTSTRAP_MODEL_DIR=/data/model \
     -e HF_HUB_CACHE=/tmp/huggingface \

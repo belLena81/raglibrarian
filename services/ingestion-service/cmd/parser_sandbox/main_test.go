@@ -49,6 +49,14 @@ func TestLandlockAccessFSMasksRightsByABI(t *testing.T) {
 	}
 }
 
+func TestParserSandboxLimitsDoNotRestrictProcessCount(t *testing.T) {
+	for _, limit := range parserSandboxLimits() {
+		if limit.resource == unix.RLIMIT_NPROC {
+			t.Fatal("parser sandbox still limits process count")
+		}
+	}
+}
+
 func TestNegotiatedLandlockAccessPropagatesABIQueryFailure(t *testing.T) {
 	want := errors.New("Landlock ABI query failed")
 	_, err := negotiatedLandlockAccess(func() (uintptr, error) {
@@ -65,28 +73,88 @@ func TestValidatedCommandAllowsOnlyFixedPopplerShapeAndRegularTemporarySource(t 
 	if err := os.WriteFile(source, []byte("synthetic"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := validatedCommand([]string{"/usr/bin/pdfinfo", source}); err != nil {
+	if _, _, _, err := validatedCommand([]string{defaultPDFInfoPath, source}); err != nil {
 		t.Fatalf("pdfinfo command rejected: %v", err)
 	}
-	if _, _, _, err := validatedCommand([]string{"/usr/bin/pdftotext", "-layout", "-enc", "UTF-8", source, "-"}); err != nil {
+	if _, _, _, err := validatedCommand([]string{defaultPDFToTextPath, "-layout", "-enc", "UTF-8", source, "-"}); err != nil {
 		t.Fatalf("pdftotext command rejected: %v", err)
 	}
 	epubSource := filepath.Join(directory, "source.epub")
 	if err := os.WriteFile(epubSource, []byte("synthetic"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := validatedCommand([]string{"/usr/local/bin/epub-parser", epubSource}); err != nil {
+	if _, _, _, err := validatedCommand([]string{defaultEPUBParserPath, epubSource}); err != nil {
 		t.Fatalf("EPUB parser command rejected: %v", err)
 	}
 	for _, arguments := range [][]string{
 		{"/bin/sh", source},
-		{"/usr/bin/pdfinfo", "/a/b"},
-		{"/usr/bin/pdfinfo", "/etc/passwd"},
-		{"/usr/bin/pdftotext", source, "-"},
-		{"/usr/local/bin/epub-parser", epubSource, "extra"},
+		{defaultPDFInfoPath, "/a/b"},
+		{defaultPDFInfoPath, "/etc/passwd"},
+		{defaultPDFToTextPath, source, "-"},
+		{defaultEPUBParserPath, epubSource, "extra"},
 	} {
 		if _, _, _, err := validatedCommand(arguments); err == nil {
 			t.Fatalf("unsafe command accepted: %q", arguments)
+		}
+	}
+}
+
+func TestValidatedCommandAcceptsConfiguredParserPaths(t *testing.T) {
+	t.Setenv("PARSER_SANDBOX_PDFINFO_PATH", "/opt/tools/pdfinfo")
+	t.Setenv("PARSER_SANDBOX_PDFTOTEXT_PATH", "/opt/tools/pdftotext")
+	t.Setenv("PARSER_SANDBOX_EPUB_PARSER_PATH", "/work/bin/epub-parser")
+
+	directory := t.TempDir()
+	source := filepath.Join(directory, "source.pdf")
+	if err := os.WriteFile(source, []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := validatedCommand([]string{"/opt/tools/pdfinfo", source}); err != nil {
+		t.Fatalf("configured pdfinfo command rejected: %v", err)
+	}
+	if _, _, _, err := validatedCommand([]string{"/opt/tools/pdftotext", "-layout", "-enc", "UTF-8", source, "-"}); err != nil {
+		t.Fatalf("configured pdftotext command rejected: %v", err)
+	}
+	epubSource := filepath.Join(directory, "source.epub")
+	if err := os.WriteFile(epubSource, []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := validatedCommand([]string{"/work/bin/epub-parser", epubSource}); err != nil {
+		t.Fatalf("configured EPUB parser command rejected: %v", err)
+	}
+}
+
+func TestParserSandboxEnvironmentIncludesEPUBSourcePath(t *testing.T) {
+	environment := parserSandboxEnvironment("/tmp/source.epub")
+	if !containsEnvironmentValue(environment, "LANG=C.UTF-8") {
+		t.Fatalf("environment missing LANG entry: %#v", environment)
+	}
+	if !containsEnvironmentValue(environment, "EPUB_PARSER_SOURCE_PATH=/tmp/source.epub") {
+		t.Fatalf("environment missing EPUB source entry: %#v", environment)
+	}
+}
+
+func TestParserSandboxEnvironmentOmitsEmptyEPUBSourcePath(t *testing.T) {
+	environment := parserSandboxEnvironment("")
+	if containsEnvironmentValue(environment, "EPUB_PARSER_SOURCE_PATH=") {
+		t.Fatalf("environment unexpectedly exposed empty EPUB source: %#v", environment)
+	}
+}
+
+func TestFilesystemPolicyRulesIncludeDynamicLoaderPaths(t *testing.T) {
+	rules := filesystemPolicyRules("/bin/parser", "/tmp/source.pdf", unix.LANDLOCK_ACCESS_FS_READ_FILE, unix.LANDLOCK_ACCESS_FS_READ_FILE|unix.LANDLOCK_ACCESS_FS_READ_DIR)
+	paths := make(map[string]struct{}, len(rules))
+	for _, rule := range rules {
+		paths[rule.path] = struct{}{}
+	}
+	for _, path := range []string{
+		"/lib64/ld-linux-x86-64.so.2",
+		"/lib/ld-linux-aarch64.so.1",
+		"/lib/ld-musl-x86_64.so.1",
+		"/lib/ld-musl-aarch64.so.1",
+	} {
+		if _, ok := paths[path]; !ok {
+			t.Fatalf("filesystem policy missing loader path %q", path)
 		}
 	}
 }
@@ -128,4 +196,13 @@ func TestFilesystemPolicyAllowsOnlySelectedSource(t *testing.T) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("Landlock helper failed: %v: %s", err, output)
 	}
+}
+
+func containsEnvironmentValue(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

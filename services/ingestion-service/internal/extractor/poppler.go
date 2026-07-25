@@ -6,8 +6,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -70,6 +73,41 @@ func FailureCategory(err error) (domain.FailureCategory, bool) {
 	return "", false
 }
 
+func FailureDetail(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "extract_timeout", true
+	}
+	var detailed *detailedError
+	if errors.As(err, &detailed) {
+		if detail, ok := commandFailureDetail(detailed.cause); ok {
+			switch detail {
+			case "parser_sandbox_failed", "extract_timeout", "epub_parser_panic", "epub_parser_output_failed",
+				"epub_parser_invalid_limits", "epub_parser_invalid_entry_limits", "epub_parser_invalid_configuration",
+				"epub_parser_invalid_output", "epub_parser_trailing_output", "epub_parser_invalid_location",
+				"epub_parser_xml_nesting", "epub_parser_xhtml_invalid", "epub_parser_xhtml_unsafe",
+				"epub_parser_text_limit", "epub_parser_exit_125", "epub_parser_exit_126", "epub_parser_exit_127":
+				return detail, true
+			case "parser_command_failed":
+				return specificCommandFailureDetail(detailed.detail), true
+			}
+		}
+		if detailed.detail == "epub_parser_failed" {
+			if detail, ok := epubFailureDetail(detailed.cause); ok {
+				return detail, true
+			}
+		}
+		return detailed.detail, true
+	}
+	var target *categorizedError
+	if errors.As(err, &target) {
+		return commandFailureDetail(target.cause)
+	}
+	return commandFailureDetail(err)
+}
+
 type Poppler struct {
 	pdfInfoPath string
 	pdfTextPath string
@@ -90,7 +128,7 @@ func (p *Poppler) Extract(ctx context.Context, sourcePath string, consume func(P
 	}
 	preflight, err := p.runner.Run(ctx, p.pdfInfoPath, []string{sourcePath}, 64<<10)
 	if err != nil {
-		return DocumentInfo{}, classifyCommandError(ctx, err)
+		return DocumentInfo{}, detailedFailure("pdfinfo_failed", classifyCommandError(ctx, err))
 	}
 	info, err := p.parseInfo(preflight)
 	if err != nil {
@@ -99,13 +137,13 @@ func (p *Poppler) Extract(ctx context.Context, sourcePath string, consume func(P
 	args := []string{"-layout", "-enc", "UTF-8", sourcePath, "-"}
 	if streamer, ok := p.runner.(pageStreamer); ok {
 		if err = streamer.StreamPages(ctx, p.pdfTextPath, args, p.limits, info.PageCount, consume); err != nil {
-			return DocumentInfo{}, classifyStreamError(ctx, err)
+			return DocumentInfo{}, detailedFailure("pdftotext_failed", classifyStreamError(ctx, err))
 		}
 		return info, nil
 	}
 	output, err := p.runner.Run(ctx, p.pdfTextPath, args, p.limits.MaximumExtractedBytes+int64(info.PageCount))
 	if err != nil {
-		return DocumentInfo{}, classifyCommandError(ctx, err)
+		return DocumentInfo{}, detailedFailure("pdftotext_failed", classifyCommandError(ctx, err))
 	}
 	if int64(len(output)) > p.limits.MaximumExtractedBytes+int64(info.PageCount) {
 		return DocumentInfo{}, &categorizedError{category: domain.FailureResourceLimitExceeded}
@@ -140,6 +178,21 @@ func classifyStreamError(ctx context.Context, err error) error {
 		return err
 	}
 	return classifyCommandError(ctx, err)
+}
+
+type detailedError struct {
+	detail string
+	cause  error
+}
+
+func (e *detailedError) Error() string { return e.detail }
+func (e *detailedError) Unwrap() error { return e.cause }
+
+func detailedFailure(detail string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &detailedError{detail: detail, cause: err}
 }
 
 func (p *Poppler) parseInfo(output []byte) (DocumentInfo, error) {
@@ -207,6 +260,115 @@ func classifyCommandError(ctx context.Context, err error) error {
 	return &categorizedError{category: domain.FailureInternalProcessing, cause: err}
 }
 
+func commandFailureDetail(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	var commandErr *commandError
+	if errors.As(err, &commandErr) {
+		if detail, ok := commandStderrFailureDetail(commandErr.stderr); ok {
+			return detail, true
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "extract_timeout", true
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return "parser_sandbox_failed", true
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		switch exitErr.ExitCode() {
+		case 2:
+			return "epub_parser_invalid_args", true
+		case 122, 123:
+			return "parser_sandbox_failed", true
+		case 124:
+			return "parser_command_failed", true
+		case 125, 126, 127:
+			return commandExitDetail(exitErr.ExitCode()), true
+		}
+	}
+	return "", false
+}
+
+func commandStderrFailureDetail(stderr []byte) (string, bool) {
+	switch {
+	case bytes.Contains(stderr, []byte("epub_parser_panic")):
+		return "epub_parser_panic", true
+	case bytes.Contains(stderr, []byte("epub_parser_invalid_args")):
+		return "epub_parser_invalid_args", true
+	case bytes.Contains(stderr, []byte("epub_parser_output_failed")):
+		return "epub_parser_output_failed", true
+	case bytes.Contains(stderr, []byte("epub_parser_invalid_limits")):
+		return "epub_parser_invalid_limits", true
+	case bytes.Contains(stderr, []byte("epub_parser_invalid_entry_limits")):
+		return "epub_parser_invalid_entry_limits", true
+	case bytes.Contains(stderr, []byte("epub_parser_invalid_configuration")):
+		return "epub_parser_invalid_configuration", true
+	case bytes.Contains(stderr, []byte("epub_parser_invalid_output")):
+		return "epub_parser_invalid_output", true
+	case bytes.Contains(stderr, []byte("epub_parser_trailing_output")):
+		return "epub_parser_trailing_output", true
+	case bytes.Contains(stderr, []byte("epub_parser_invalid_location")):
+		return "epub_parser_invalid_location", true
+	case bytes.Contains(stderr, []byte("epub_parser_xml_nesting")):
+		return "epub_parser_xml_nesting", true
+	case bytes.Contains(stderr, []byte("epub_parser_xhtml_invalid")):
+		return "epub_parser_xhtml_invalid", true
+	case bytes.Contains(stderr, []byte("epub_parser_xhtml_unsafe")):
+		return "epub_parser_xhtml_unsafe", true
+	case bytes.Contains(stderr, []byte("epub_parser_text_limit")):
+		return "epub_parser_text_limit", true
+	default:
+		return "", false
+	}
+}
+
+func commandExitDetail(code int) string {
+	return fmt.Sprintf("epub_parser_exit_%d", code)
+}
+
+func specificCommandFailureDetail(detail string) string {
+	switch detail {
+	case "pdfinfo_failed":
+		return "pdfinfo_exec_failed"
+	case "pdftotext_failed":
+		return "pdftotext_exec_failed"
+	case "epub_parser_failed":
+		return "epub_parser_exec_failed"
+	default:
+		return detail
+	}
+}
+
+func epubFailureDetail(err error) (string, bool) {
+	var categorized *categorizedError
+	if !errors.As(err, &categorized) {
+		return "", false
+	}
+	switch categorized.category {
+	case domain.FailureMalformedDocument:
+		return "epub_parser_malformed", true
+	case domain.FailureResourceLimitExceeded:
+		return "epub_parser_resource_limit", true
+	case domain.FailureInternalProcessing:
+		if detail, ok := commandFailureDetail(categorized.cause); ok {
+			switch detail {
+			case "epub_parser_panic", "epub_parser_output_failed",
+				"epub_parser_invalid_limits", "epub_parser_invalid_entry_limits", "epub_parser_invalid_configuration",
+				"epub_parser_invalid_output", "epub_parser_trailing_output", "epub_parser_invalid_location",
+				"epub_parser_xml_nesting", "epub_parser_xhtml_invalid", "epub_parser_xhtml_unsafe",
+				"epub_parser_text_limit", "epub_parser_exit_125", "epub_parser_exit_126", "epub_parser_exit_127":
+				return detail, true
+			}
+		}
+		return internalEPUBFailureDetail(categorized.cause), true
+	default:
+		return "", false
+	}
+}
+
 func hasIncorrectPasswordDiagnostic(err error) bool {
 	var commandErr *commandError
 	return errors.As(err, &commandErr) && bytes.Contains(commandErr.stderr, []byte("Incorrect password"))
@@ -219,7 +381,7 @@ func VerifySandbox(ctx context.Context) error {
 }
 
 func verifySandbox(ctx context.Context, runner Runner) error {
-	if _, err := runner.Run(ctx, "/parser-sandbox", []string{"--landlock-preflight"}, 1); err != nil {
+	if _, err := runner.Run(ctx, parserSandboxPath(), []string{"--landlock-preflight"}, 1); err != nil {
 		return ErrSandboxUnavailable
 	}
 	return nil
@@ -241,7 +403,14 @@ func (runner SandboxedExecRunner) StreamPages(ctx context.Context, path string, 
 }
 
 func sandboxCommand(path string, args []string) (string, []string) {
-	return "/parser-sandbox", append([]string{path}, args...)
+	return parserSandboxPath(), append([]string{path}, args...)
+}
+
+func parserSandboxPath() string {
+	if value := strings.TrimSpace(os.Getenv("PARSER_SANDBOX_PATH")); value != "" {
+		return value
+	}
+	return "/parser-sandbox"
 }
 
 func (ExecRunner) StreamPages(ctx context.Context, path string, args []string, limits Limits, expectedPages uint32, consume func(Page) error) error {
@@ -343,12 +512,87 @@ func (ExecRunner) Run(ctx context.Context, path string, args []string, maximumOu
 		return syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 	}
 	if err := command.Run(); err != nil {
+		traceCommandFailure(path, args, stderr.Bytes(), err)
 		return nil, newCommandError(err, stderr.Bytes())
 	}
 	if stdout.exceeded {
 		return stdout.Bytes(), &categorizedError{category: domain.FailureResourceLimitExceeded}
 	}
 	return stdout.Bytes(), nil
+}
+
+func traceCommandFailure(path string, args []string, stderr []byte, err error) {
+	if os.Getenv("INGESTION_COMMAND_FAILURE_TRACE") == "" {
+		return
+	}
+	if !traceableCommandFailure(path, stderr, err) {
+		return
+	}
+	_, _ = fmt.Fprintln(os.Stderr, "ingestion command failure trace")
+	_, _ = fmt.Fprintf(os.Stderr, "command=%s argc=%d stderr_detail=%s\n", filepathBase(path), len(args), traceCommandFailureDetail(stderr, err))
+	if len(stderr) > 0 {
+		_, _ = fmt.Fprintln(os.Stderr, "command stderr begin")
+		_, _ = os.Stderr.Write(boundTrace(stderr, 4<<10))
+		if len(stderr) > 4<<10 {
+			_, _ = fmt.Fprintln(os.Stderr, "command stderr truncated")
+		}
+		_, _ = fmt.Fprintln(os.Stderr, "command stderr end")
+	}
+	_, _ = os.Stderr.Write(boundStackTrace(debug.Stack(), 4<<10))
+}
+
+func traceableCommandFailure(path string, stderr []byte, err error) bool {
+	if path == "" || err == nil {
+		return false
+	}
+	if bytes.Contains(stderr, []byte("epub_parser_invalid_args")) || bytes.Contains(stderr, []byte("epub_parser_panic")) {
+		return true
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
+		return true
+	}
+	return false
+}
+
+func traceCommandFailureDetail(stderr []byte, err error) string {
+	switch {
+	case bytes.Contains(stderr, []byte("epub_parser_invalid_args")):
+		return "epub_parser_invalid_args"
+	case bytes.Contains(stderr, []byte("epub_parser_panic")):
+		return "epub_parser_panic"
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return fmt.Sprintf("exit_%d", exitErr.ExitCode())
+	}
+	return "unknown"
+}
+
+func boundStackTrace(stack []byte, maximum int) []byte {
+	if len(stack) <= maximum {
+		return stack
+	}
+	return append(stack[:maximum], '\n')
+}
+
+func boundTrace(value []byte, maximum int) []byte {
+	if len(value) <= maximum {
+		return value
+	}
+	return append(value[:maximum], '\n')
+}
+
+func filepathBase(path string) string {
+	if path == "" {
+		return ""
+	}
+	for index := len(path) - 1; index >= 0; index-- {
+		if path[index] == '/' {
+			return path[index+1:]
+		}
+	}
+	return path
 }
 
 func newCommandError(cause error, stderr []byte) error {

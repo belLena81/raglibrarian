@@ -72,7 +72,7 @@ type Limits struct {
 func DefaultLimits() Limits {
 	return Limits{MaximumEvidence: 8, MaximumContextBytes: 32 << 10, MaximumEvidenceBytes: 8 << 10, MaximumSegments: 8,
 		MaximumAnswerBytes: 8 << 10, MaximumCitations: 8, MaximumOutputTokens: 768, ProviderConcurrency: 4,
-		RequestTimeout: 8 * time.Second, RetrievalTimeout: 3 * time.Second, ProviderTimeout: 4 * time.Second}
+		RequestTimeout: 5 * time.Minute, RetrievalTimeout: 4*time.Minute + 45*time.Second, ProviderTimeout: 4*time.Minute + 30*time.Second}
 }
 
 type Service struct {

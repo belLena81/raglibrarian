@@ -144,7 +144,7 @@ func (h *BooksHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal, _ := middleware.PrincipalFromContext(r.Context())
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
 	defer cancel()
 	page, err := h.catalog.ListBooks(ctx, size, r.URL.Query().Get("page_token"), catalogActor(principal))
 	if err != nil {

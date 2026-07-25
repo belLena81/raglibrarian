@@ -54,9 +54,9 @@ fi
 bash ./scripts/ensure-m6-dev-cert.sh "$cert_dir"
 
 compose_project="${COMPOSE_PROJECT_NAME:-raglibrarian-local}"
-docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m5 --profile m6 --profile m6-test config --quiet
+docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian config --quiet
 COMPOSE_PROJECT_NAME="$compose_project" \
-	docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m5 --profile m6 --profile m6-test up -d --build --wait --wait-timeout 300
+	docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian up -d --build --wait --wait-timeout 300
 
 if [[ ! -d ui/node_modules ]]; then
 	npm --prefix ui ci
@@ -76,5 +76,5 @@ wait_for_backend
 
 echo "Backend ready: http://127.0.0.1:8080"
 echo "Mailpit:       http://127.0.0.1:${MAILPIT_UI_PORT:-8025}"
-echo "Compose down (all profiles): COMPOSE_PROJECT_NAME=$compose_project docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m5 --profile m6 --profile m6-test down -v --remove-orphans"
-echo "Backend logs:  docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m5 --profile m6 --profile m6-test logs -f"
+echo "Compose down (all profiles): COMPOSE_PROJECT_NAME=$compose_project docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian down -v --remove-orphans"
+echo "Backend logs:  docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian logs -f"

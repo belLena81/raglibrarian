@@ -4,6 +4,8 @@ set -euo pipefail
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root_dir"
 
+bash ./scripts/stop-local-host-services.sh
+
 ui_pid_file=.dev/ui.pid
 if [[ -r "$ui_pid_file" ]]; then
 	ui_pid="$(cat "$ui_pid_file")"
@@ -27,6 +29,6 @@ if [[ -d "$log_pid_dir" ]]; then
 	rmdir "$log_pid_dir" 2>/dev/null || true
 fi
 
-docker compose --profile m5 --profile m6 down
+docker compose --profile raglibrarian down
 echo "Local stack stopped. PostgreSQL, MinIO, RabbitMQ, Qdrant, and the host model cache were retained."
 echo "To force a fresh local reset (volumes + .dev artifacts), run: make local-reset"

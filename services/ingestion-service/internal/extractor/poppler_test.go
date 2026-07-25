@@ -59,6 +59,7 @@ func TestClassifySandboxSetupFailures(t *testing.T) {
 		{code: "122", expected: domain.FailureDependencyUnavailable},
 		{code: "123", expected: domain.FailureDependencyUnavailable},
 		{code: "124", expected: domain.FailureDependencyUnavailable},
+		{code: "2", expected: domain.FailureInternalProcessing},
 		{code: "1", expected: domain.FailureMalformedDocument},
 		{code: "99", expected: domain.FailureInternalProcessing},
 	}
@@ -71,6 +72,61 @@ func TestClassifySandboxSetupFailures(t *testing.T) {
 				t.Fatalf("expected %q, got %q", test.expected, category)
 			}
 		})
+	}
+}
+
+func TestFailureDetailMapsExtractorCommandStages(t *testing.T) {
+	detail, ok := FailureDetail(detailedFailure("pdfinfo_failed", classifyCommandError(context.Background(), exec.ErrNotFound)))
+	if !ok || detail != "parser_sandbox_failed" {
+		t.Fatalf("FailureDetail(pdfinfo) = %q, %t", detail, ok)
+	}
+
+	commandErr := exec.Command("sh", "-c", "exit 124").Run() // #nosec G204 -- fixed synthetic test input.
+	detail, ok = FailureDetail(detailedFailure("pdfinfo_failed", classifyCommandError(context.Background(), commandErr)))
+	if !ok || detail != "pdfinfo_exec_failed" {
+		t.Fatalf("FailureDetail(pdfinfo command) = %q, %t", detail, ok)
+	}
+
+	detail, ok = FailureDetail(detailedFailure("pdftotext_failed", &categorizedError{category: domain.FailureInternalProcessing, cause: errors.New("other")}))
+	if !ok || detail != "pdftotext_failed" {
+		t.Fatalf("FailureDetail(pdftotext) = %q, %t", detail, ok)
+	}
+}
+
+func TestFailureDetailPreservesEPUBParserCommandTokens(t *testing.T) {
+	err := detailedFailure("epub_parser_failed", epubFailure(domain.FailureInternalProcessing, &commandError{
+		cause:  errors.New("exit status 1"),
+		stderr: []byte("epub_parser_panic\n"),
+	}))
+	detail, ok := FailureDetail(err)
+	if !ok || detail != "epub_parser_panic" {
+		t.Fatalf("FailureDetail(epub parser) = %q, %t", detail, ok)
+	}
+}
+
+func TestFailureDetailUsesBoundedFallbackForUnknownEPUBParserInternals(t *testing.T) {
+	err := detailedFailure("epub_parser_failed", epubFailure(domain.FailureInternalProcessing, errors.New("unexpected parser state: /tmp/books/secret.epub")))
+	detail, ok := FailureDetail(err)
+	if !ok || detail != "epub_parser_internal_unexpected_parser_state_tmp_book" {
+		t.Fatalf("FailureDetail(epub parser fallback) = %q, %t", detail, ok)
+	}
+}
+
+func TestFailureDetailMapsEPUBParserCommandErrorToExecFailure(t *testing.T) {
+	exitErr := exec.Command("sh", "-c", "exit 1").Run() // #nosec G204 -- fixed synthetic test input.
+	err := detailedFailure("epub_parser_failed", epubFailure(domain.FailureInternalProcessing, &commandError{cause: exitErr}))
+	detail, ok := FailureDetail(err)
+	if !ok || detail != "epub_parser_exec_exit_1" {
+		t.Fatalf("FailureDetail(epub parser command error) = %q, %t", detail, ok)
+	}
+}
+
+func TestFailureDetailMapsEPUBParserExitTwoToInvalidArgs(t *testing.T) {
+	exitErr := exec.Command("sh", "-c", "exit 2").Run() // #nosec G204 -- fixed synthetic test input.
+	err := detailedFailure("epub_parser_failed", epubFailure(domain.FailureInternalProcessing, &commandError{cause: exitErr}))
+	detail, ok := FailureDetail(err)
+	if !ok || detail != "epub_parser_invalid_args" {
+		t.Fatalf("FailureDetail(epub parser exit 2) = %q, %t", detail, ok)
 	}
 }
 

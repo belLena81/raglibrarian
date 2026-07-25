@@ -74,11 +74,11 @@ func (c *activityCore) Write(entry zapcore.Entry, fields []zapcore.Field) error 
 	if entry.Caller.Defined {
 		caller = filepath.Base(entry.Caller.File) + fmt.Sprintf(":%d", entry.Caller.Line)
 	}
-	message := logLine(entry.Message, 4096)
+	message := humanizeMessage(logLine(entry.Message, 4096))
 	if suffix := safeFieldSuffix(append(append([]zapcore.Field(nil), c.fields...), fields...)); suffix != "" {
 		message += suffix
 	}
-	line := fmt.Sprintf("%s %-5s %s: %s\n", entry.Time.UTC().Format("2006-01-02T15:04:05.000Z"), strings.ToUpper(entry.Level.String()), caller, humanizeMessage(message))
+	line := fmt.Sprintf("%s %-5s %s: %s\n", entry.Time.UTC().Format("2006-01-02T15:04:05.000Z"), strings.ToUpper(entry.Level.String()), caller, message)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_, err := io.WriteString(c.writer, line)
@@ -91,8 +91,9 @@ func humanizeMessage(message string) string {
 
 var allowedFieldNames = map[string]struct{}{
 	"request_id": {}, "method": {}, "route": {}, "route_template": {}, "status": {}, "outcome": {}, "duration": {}, "duration_ms": {},
-	"response_bytes": {}, "operation": {}, "queue": {}, "event_type": {}, "content_type": {}, "code": {}, "grpc_code": {}, "stage": {}, "reason": {}, "reason_code": {}, "reason_detail": {}, "error_code": {},
-	"stack_fingerprint": {}, "actor_id": {}, "book_id": {}, "checksum_sha256": {}, "byte_size": {}, "tag_count": {}, "page_size": {}, "result_count": {}, "role": {}, "account_status": {},
+	"request_bytes": {}, "response_bytes": {}, "operation": {}, "queue": {}, "event_type": {}, "content_type": {}, "code": {}, "grpc_code": {}, "stage": {}, "reason": {}, "reason_code": {}, "reason_detail": {}, "error_code": {},
+	"stack_fingerprint": {}, "stack_trace": {}, "actor_id": {}, "book_id": {}, "checksum_sha256": {}, "request_url": {}, "request_path": {}, "request_model": {}, "request_body_sha256": {},
+	"request_body_preview": {}, "response_body_sha256": {}, "response_body_preview": {}, "byte_size": {}, "tag_count": {}, "page_size": {}, "result_count": {}, "role": {}, "account_status": {},
 	"segment_count": {}, "summary_length": {},
 }
 
@@ -155,6 +156,12 @@ func validDiagnosticField(key string, fieldType zapcore.FieldType, value string)
 	if key == "reason_detail" {
 		return fieldType == zapcore.StringType && len(value) <= 256 && value != "" && !strings.ContainsAny(value, "=\t\r\n")
 	}
+	if key == "stack_trace" || key == "request_body_preview" || key == "response_body_preview" {
+		return fieldType == zapcore.StringType && len(value) <= 1024 && value != "" && !strings.ContainsAny(value, "=\t\r\n")
+	}
+	if key == "request_body_sha256" || key == "response_body_sha256" || key == "checksum_sha256" {
+		return fieldType == zapcore.StringType && checksumPattern.MatchString(value)
+	}
 	if len(value) > 256 || value == "" || strings.ContainsAny(value, " =\t\r\n") {
 		return false
 	}
@@ -167,7 +174,7 @@ func validDiagnosticField(key string, fieldType zapcore.FieldType, value string)
 		return fieldType == zapcore.StringType && routePattern.MatchString(value)
 	case "status":
 		return integerField(fieldType) && parseBoundedInt(value, 100, 599)
-	case "duration", "duration_ms", "response_bytes":
+	case "duration", "duration_ms", "request_bytes", "response_bytes":
 		return integerField(fieldType) && parseBoundedInt(value, 0, 1<<53-1)
 	case "queue":
 		return fieldType == zapcore.StringType && allowedDiagnosticValue("operation", value)
@@ -175,10 +182,10 @@ func validDiagnosticField(key string, fieldType zapcore.FieldType, value string)
 		return fieldType == zapcore.StringType && len(value) > 0 && len(value) <= 256 && !strings.ContainsAny(value, "=\t\r\n")
 	case "stack_fingerprint":
 		return fieldType == zapcore.StringType && fingerprintPattern.MatchString(value)
+	case "request_url", "request_path", "request_model":
+		return fieldType == zapcore.StringType && len(value) <= 256 && !strings.ContainsAny(value, "=\t\r\n")
 	case "actor_id", "book_id":
 		return fieldType == zapcore.StringType && opaqueIDPattern.MatchString(value)
-	case "checksum_sha256":
-		return fieldType == zapcore.StringType && checksumPattern.MatchString(value)
 	case "byte_size", "tag_count", "page_size", "result_count":
 		return integerField(fieldType) && parseBoundedInt(value, 0, 1<<53-1)
 	case "segment_count", "summary_length":

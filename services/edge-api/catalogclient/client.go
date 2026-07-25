@@ -117,7 +117,7 @@ func (c *Client) GetBook(ctx context.Context, id string, actor handler.CatalogAc
 	if err != nil {
 		return handler.Book{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
 	response, err := c.service.GetBook(ctx, &catalogv1.GetBookRequest{BookId: id, Actor: actorProto(actor)})
 	if err != nil {

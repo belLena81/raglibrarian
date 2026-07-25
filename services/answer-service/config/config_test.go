@@ -20,8 +20,8 @@ func TestLoadDefaultsFreeTierProviderRateLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if configuration.LLMRequestsPerSecond != 1 {
-		t.Fatalf("LLMRequestsPerSecond = %d, want 1", configuration.LLMRequestsPerSecond)
+	if configuration.LLMRequestsPerMinute != 15 {
+		t.Fatalf("LLMRequestsPerMinute = %d, want 15", configuration.LLMRequestsPerMinute)
 	}
 }
 

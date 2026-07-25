@@ -34,8 +34,8 @@ func TestNewEnforcesAnswerDeadlineBudget(t *testing.T) {
 		return &answerv1.AnswerResponse{}, nil
 	}}
 
-	assert.NotPanics(t, func() { New(service, 25*time.Second) })
-	assert.Panics(t, func() { New(service, 26*time.Second) })
+	assert.NotPanics(t, func() { New(service, 5*time.Minute) })
+	assert.Panics(t, func() { New(service, 5*time.Minute+time.Second) })
 }
 
 func TestAnswerPropagatesRequestIDDeadlineActorAndMapsResponse(t *testing.T) {
@@ -43,7 +43,7 @@ func TestAnswerPropagatesRequestIDDeadlineActorAndMapsResponse(t *testing.T) {
 	stub.answer = func(ctx context.Context, request *answerv1.AnswerRequest, _ ...grpc.CallOption) (*answerv1.AnswerResponse, error) {
 		deadline, ok := ctx.Deadline()
 		require.True(t, ok)
-		assert.LessOrEqual(t, time.Until(deadline), 8*time.Second)
+		assert.LessOrEqual(t, time.Until(deadline), 5*time.Minute)
 		metadata, ok := grpcmetadata.FromOutgoingContext(ctx)
 		require.True(t, ok)
 		assert.Equal(t, []string{testRequestID}, metadata.Get("x-request-id"))

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -212,6 +213,35 @@ func TestQdrantEnsureCollectionRepairsIndexesForExistingCollection(t *testing.T)
 	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
 	if err := store.EnsureCollection(context.Background()); err != nil || requests != 9 {
 		t.Fatalf("EnsureCollection() requests=%d error=%v", requests, err)
+	}
+}
+
+func TestQdrantEnsureCollectionRejectsIncompatibleExistingCollection(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) *http.Response {
+		requests++
+		return response(http.StatusOK, `{"result":{"config":{"metadata":{"raglibrarian_index_profile_digest":"different"},"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
+	})}
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+
+	err := store.EnsureCollection(context.Background())
+	if !errors.Is(err, ErrIncompatibleVectorCollection) {
+		t.Fatalf("EnsureCollection() error = %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("EnsureCollection() requests = %d, want 1", requests)
+	}
+}
+
+func TestQdrantCheckReadyDistinguishesMissingCollection(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) *http.Response {
+		return response(http.StatusNotFound, `{}`)
+	})}
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+
+	err := store.CheckReady(context.Background())
+	if !errors.Is(err, ErrMissingVectorCollection) {
+		t.Fatalf("CheckReady() error = %v", err)
 	}
 }
 

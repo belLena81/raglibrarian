@@ -25,6 +25,8 @@ import (
 const (
 	ChunkSize       = 64 << 10
 	DefaultMaxBytes = 25 << 20
+	maxPreviewBytes = 1 << 20
+	previewTimeout  = 2 * time.Second
 )
 
 var (
@@ -386,7 +388,10 @@ func (s *Service) GetBook(ctx context.Context, id string) (Book, error) {
 		return Book{}, err
 	}
 	if s.previewBook != nil && book.ObjectReference != "" && book.ProcessingStatus != BookStatusDeleted {
-		if preview, previewErr := s.previewBook(ctx, book, s.objects); previewErr == nil {
+		previewContext, cancel := context.WithTimeout(ctx, previewTimeout)
+		preview, previewErr := s.previewBook(previewContext, book, s.objects)
+		cancel()
+		if previewErr == nil && len(preview) <= maxPreviewBytes {
 			book.Preview = preview
 		}
 	}

@@ -40,7 +40,7 @@ func TestLoadParsesExplicitSecurityConfiguration(t *testing.T) {
 	assert.Equal(t, 65532, cfg.RunAs.UID)
 	assert.Equal(t, "retrieval-service:50054", cfg.RetrievalAddress)
 	assert.Equal(t, "answer-service:50055", cfg.AnswerAddress)
-	assert.Equal(t, 8*time.Second, cfg.AnswerDeadline)
+	assert.Equal(t, 5*time.Minute, cfg.AnswerDeadline)
 	assert.Equal(t, 10, cfg.AnswerRateLimit)
 	assert.Equal(t, time.Minute, cfg.AnswerRateWindow)
 	assert.True(t, cfg.RetrievalReadinessRequired)
@@ -93,12 +93,12 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 
 func TestLoadAcceptsMaximumAnswerDeadline(t *testing.T) {
 	setRequired(t)
-	t.Setenv("EDGE_ANSWER_DEADLINE", "25s")
+	t.Setenv("EDGE_ANSWER_DEADLINE", "5m")
 
 	cfg, err := config.Load()
 
 	require.NoError(t, err)
-	assert.Equal(t, 25*time.Second, cfg.AnswerDeadline)
+	assert.Equal(t, 5*time.Minute, cfg.AnswerDeadline)
 }
 
 func TestLoadRejectsInvalidSecurityConfiguration(t *testing.T) {
@@ -180,7 +180,7 @@ func TestLoadClassifiesConfigurationFailures(t *testing.T) {
 		{
 			name: "answer deadline exceeds bound",
 			configure: func(t *testing.T) {
-				t.Setenv("EDGE_ANSWER_DEADLINE", "26s")
+				t.Setenv("EDGE_ANSWER_DEADLINE", "6m")
 			},
 			expected: config.ErrQueryLimitConfiguration,
 		},

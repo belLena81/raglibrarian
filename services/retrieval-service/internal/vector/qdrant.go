@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -22,6 +23,12 @@ const (
 	maximumEvidenceBatchResponseBytes = 8 << 20
 	collectionProfileDigestKey        = "raglibrarian_index_profile_digest"
 	collectionSchemaDigestKey         = "raglibrarian_collection_schema_digest"
+)
+
+var (
+	ErrVectorDependencyUnavailable  = errors.New("vector dependency unavailable")
+	ErrMissingVectorCollection      = errors.New("missing vector collection")
+	ErrIncompatibleVectorCollection = errors.New("incompatible vector collection")
 )
 
 type Qdrant struct {
@@ -284,11 +291,14 @@ func (q *Qdrant) CheckReady(ctx context.Context) error {
 	}
 	response, err := q.client.Do(request) // #nosec G704 -- NewQdrant accepts only a validated operator-controlled endpoint.
 	if err != nil {
-		return errors.New("vector dependency unavailable")
+		return fmt.Errorf("%w", ErrVectorDependencyUnavailable)
 	}
 	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("%w", ErrMissingVectorCollection)
+	}
 	if response.StatusCode != http.StatusOK {
-		return errors.New("vector dependency unavailable")
+		return fmt.Errorf("%w", ErrVectorDependencyUnavailable)
 	}
 	var description struct {
 		Result struct {
@@ -304,7 +314,7 @@ func (q *Qdrant) CheckReady(ctx context.Context) error {
 		} `json:"result"`
 	}
 	if err = json.NewDecoder(io.LimitReader(response.Body, maximumQdrantResponseBytes)).Decode(&description); err != nil {
-		return errors.New("incompatible vector collection")
+		return fmt.Errorf("%w", ErrIncompatibleVectorCollection)
 	}
 	profileDigest, hasLegacyProfile := description.Result.Config.Metadata[collectionProfileDigestKey].(string)
 	schemaDigest, hasSchemaDigest := description.Result.Config.Metadata[collectionSchemaDigestKey].(string)
@@ -314,7 +324,7 @@ func (q *Qdrant) CheckReady(ctx context.Context) error {
 	}
 	if description.Result.Config.Params.Vectors.Size != domain.EmbeddingDimensions || !strings.EqualFold(description.Result.Config.Params.Vectors.Distance, "cosine") ||
 		!compatibleMetadata {
-		return errors.New("incompatible vector collection")
+		return fmt.Errorf("%w", ErrIncompatibleVectorCollection)
 	}
 	return nil
 }
@@ -325,6 +335,8 @@ func (q *Qdrant) EnsureCollection(ctx context.Context) error {
 			return err
 		}
 		return q.ensurePayloadIndexes(ctx)
+	} else if !errors.Is(err, ErrMissingVectorCollection) {
+		return err
 	}
 	body, _ := json.Marshal(map[string]any{
 		"vectors": map[string]any{"size": domain.EmbeddingDimensions, "distance": "Cosine"},

@@ -16,7 +16,7 @@ import (
 	"github.com/belLena81/raglibrarian/services/edge-api/internal/searchcontract"
 )
 
-const maxAnswerDeadline = 25 * time.Second
+const maxAnswerDeadline = 5 * time.Minute
 
 // Client translates Edge query requests to the versioned Answer contract.
 type Client struct {

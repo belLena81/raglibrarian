@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"google.golang.org/grpc"
@@ -276,5 +277,28 @@ func TestCatalogReadsRejectInvalidInternalRequestIDBeforeRPC(t *testing.T) {
 	}
 	if listCalls != 0 || getCalls != 0 {
 		t.Fatalf("Catalog read calls = list %d, get %d; want zero", listCalls, getCalls)
+	}
+}
+
+func TestGetBookUsesSixSecondDeadline(t *testing.T) {
+	service := &catalogClientStub{
+		get: func(ctx context.Context, _ *catalogv1.GetBookRequest, _ ...grpc.CallOption) (*catalogv1.GetBookResponse, error) {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatal("GetBook context missing deadline")
+			}
+			remaining := time.Until(deadline)
+			if remaining > 6*time.Second || remaining < 5*time.Second {
+				t.Fatalf("deadline remaining = %v, want about 6s", remaining)
+			}
+			return &catalogv1.GetBookResponse{Book: &catalogv1.Book{Id: "book-id"}}, nil
+		},
+	}
+	ctx := context.WithValue(context.Background(), chimiddleware.RequestIDKey, testRequestID)
+
+	_, err := New(service).GetBook(ctx, "AAAAAAAAAAAAAAAAAAAAAA", handler.CatalogActor{})
+
+	if err != nil {
+		t.Fatalf("GetBook() error = %v", err)
 	}
 }

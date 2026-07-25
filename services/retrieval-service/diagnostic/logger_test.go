@@ -29,7 +29,7 @@ func TestRetrievalWorkflowLogsRetainSafeFields(t *testing.T) {
 	assert.Contains(t, value, "book_id=book-2")
 	assert.Contains(t, value, "reason_detail=embedding dependency status 503")
 	assert.Contains(t, value, "queue=batch_queue")
-	assert.Contains(t, value, "event_type=retrieval index-batch v1")
+	assert.Contains(t, value, "event_type=retrieval.index-batch.v1")
 	assert.Contains(t, value, "content_type=application/x-protobuf")
 	assert.Contains(t, value, "reason_detail=unexpected event type")
 	assert.Contains(t, value, "operation=batch_queue")

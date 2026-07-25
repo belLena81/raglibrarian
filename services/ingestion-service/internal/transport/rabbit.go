@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/belLena81/raglibrarian/services/ingestion-service/diagnostic"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/repository"
 	"github.com/rabbitmq/amqp091-go"
@@ -234,13 +235,14 @@ type OutboxWorker struct {
 	interval   time.Duration
 	lease      time.Duration
 	now        func() time.Time
+	logger     *diagnostic.Logger
 }
 
-func NewOutboxWorker(repo *repository.Postgres, publisher Publisher, exchange string, interval time.Duration) (*OutboxWorker, error) {
+func NewOutboxWorker(repo *repository.Postgres, publisher Publisher, exchange string, interval time.Duration, logger *diagnostic.Logger) (*OutboxWorker, error) {
 	if repo == nil || publisher == nil || exchange == "" || interval <= 0 {
 		return nil, errors.New("invalid outbox worker")
 	}
-	return &OutboxWorker{repository: repo, publisher: publisher, exchange: exchange, interval: interval, lease: 30 * time.Second, now: time.Now}, nil
+	return &OutboxWorker{repository: repo, publisher: publisher, exchange: exchange, interval: interval, lease: 30 * time.Second, now: time.Now, logger: logger}, nil
 }
 
 func (w *OutboxWorker) Run(ctx context.Context) error {
@@ -285,10 +287,22 @@ func (w *OutboxWorker) publishBatch(ctx context.Context) (bool, error) {
 		cancel()
 		if err != nil {
 			_ = w.repository.RetryOutbox(ctx, event.ID, now, event.Attempts)
+			if w.logger != nil {
+				w.logger.OutboxDeferred(event.ID, event.AggregateID, event.Type, "publish_failed")
+			}
 			return published, err
 		}
+		if w.logger != nil {
+			w.logger.OutboxPublished(event.ID, event.AggregateID, event.Type)
+		}
 		if err = w.repository.MarkPublished(ctx, event.ID, now); err != nil {
+			if w.logger != nil {
+				w.logger.OutboxDeferred(event.ID, event.AggregateID, event.Type, "mark_published_failed")
+			}
 			return published, err
+		}
+		if w.logger != nil {
+			w.logger.OutboxMarkedPublished(event.ID, event.AggregateID, event.Type)
 		}
 	}
 	retries, err := w.repository.ClaimRetryDispatches(ctx, now, w.lease)

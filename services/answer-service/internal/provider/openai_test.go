@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -93,7 +94,7 @@ func TestNewOpenAIBuildsChatCompletionsEndpointFromAPIBase(t *testing.T) {
 		{name: "prefixed v1", baseURL: "https://provider/openai/v1", expectedPath: "/openai/v1/chat/completions"},
 		{name: "openrouter root", baseURL: "https://openrouter.ai/", expectedPath: "/api/v1/chat/completions"},
 		{name: "openrouter api v1", baseURL: "https://openrouter.ai/api/v1", expectedPath: "/api/v1/chat/completions"},
-		} {
+	} {
 		t.Run(test.name, func(t *testing.T) {
 			adapter, err := NewOpenAI(test.baseURL, "model", "key", client, nil)
 			if err != nil {
@@ -115,14 +116,14 @@ func TestOpenAIRejectsRedirectUnknownAndDuplicateCandidateFields(t *testing.T) {
 		{status: http.StatusOK, body: `{"choices":[{"message":{"content":"{\"segments\":[],\"unknown\":true}"}}]}`},
 		{status: http.StatusOK, body: `{"choices":[{"message":{"content":"{\"segments\":[],\"segments\":[]}"}}]}`},
 	}
-		for index, fixture := range responses {
-			adapter, err := NewOpenAI("https://provider", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-				return &http.Response{
+	for index, fixture := range responses {
+		adapter, err := NewOpenAI("https://provider", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
 				StatusCode: fixture.status,
 				Header:     http.Header{"Content-Type": []string{"application/json"}},
 				Body:       io.NopCloser(strings.NewReader(fixture.body)),
 			}, nil
-			})}, nil)
+		})}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -130,6 +131,46 @@ func TestOpenAIRejectsRedirectUnknownAndDuplicateCandidateFields(t *testing.T) {
 		if err == nil {
 			t.Fatalf("case %d unexpectedly passed", index)
 		}
+	}
+}
+
+func TestOpenAIReportsSanitizedInvalidProviderResponseDetails(t *testing.T) {
+	tests := []struct {
+		name   string
+		body   string
+		detail string
+	}{
+		{name: "duplicate fields", body: `{"choices":[{"message":{"content":"x","content":"y"}}]}`, detail: "duplicate_object_fields"},
+		{name: "choice count", body: `{"choices":[]}`, detail: "unexpected_choices_count_0"},
+		{name: "json shape", body: `{"choices":[{"message":{"content":"{\"segments\":[]}"}}]}`, detail: "candidate_json_shape_invalid"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			adapter, err := NewOpenAI("https://provider", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(test.body)),
+				}, nil
+			})}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = adapter.Generate(context.Background(), application.ProviderRequest{Question: "q", Evidence: []domain.ContextEvidence{{EvidenceID: "e", Passage: "p"}}, MaxTokens: 10})
+			if err == nil {
+				t.Fatal("Generate() error = nil, want invalid provider response")
+			}
+			var providerErr interface {
+				ReasonCode() string
+				ReasonDetail() string
+			}
+			if !errors.As(err, &providerErr) {
+				t.Fatalf("error = %T, want providerError", err)
+			}
+			if providerErr.ReasonCode() != "invalid_provider_response" || providerErr.ReasonDetail() != test.detail {
+				t.Fatalf("reason = %s detail = %s", providerErr.ReasonCode(), providerErr.ReasonDetail())
+			}
+		})
 	}
 }
 

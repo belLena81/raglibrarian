@@ -22,7 +22,7 @@ type Config struct {
 	RetrievalDNSName string
 	LLMBaseURL       string
 	LLMModel         string
-	LLMRequestsPerSecond int
+	LLMRequestsPerMinute int
 	LLMAPIKeyFile    string
 	LLMCAFile        string
 	TLS              internaltls.Files
@@ -42,9 +42,9 @@ func Load() (Config, error) {
 	maximumCitations, citationErr := positiveInteger("ANSWER_MAX_CITATIONS_PER_SEGMENT", defaults.MaximumCitations, 1, 64)
 	maximumTokens, tokenErr := positiveInteger("ANSWER_MAX_OUTPUT_TOKENS", defaults.MaximumOutputTokens, 1, 8192)
 	concurrency, concurrencyErr := positiveInteger("ANSWER_PROVIDER_CONCURRENCY", defaults.ProviderConcurrency, 1, 64)
-	requestTimeout, requestErr := duration("ANSWER_REQUEST_TIMEOUT", defaults.RequestTimeout, 100*time.Millisecond, 30*time.Second)
-	retrievalTimeout, retrievalErr := duration("ANSWER_RETRIEVAL_TIMEOUT", defaults.RetrievalTimeout, 100*time.Millisecond, 15*time.Second)
-	providerTimeout, providerErr := duration("ANSWER_PROVIDER_TIMEOUT", defaults.ProviderTimeout, 100*time.Millisecond, 20*time.Second)
+	requestTimeout, requestErr := duration("ANSWER_REQUEST_TIMEOUT", defaults.RequestTimeout, 100*time.Millisecond, 5*time.Minute)
+	retrievalTimeout, retrievalErr := duration("ANSWER_RETRIEVAL_TIMEOUT", defaults.RetrievalTimeout, 100*time.Millisecond, 5*time.Minute)
+	providerTimeout, providerErr := duration("ANSWER_PROVIDER_TIMEOUT", defaults.ProviderTimeout, 100*time.Millisecond, 5*time.Minute)
 	configuration := Config{
 		GRPCAddress: os.Getenv("ANSWER_GRPC_ADDR"), MetricsAddress: os.Getenv("ANSWER_METRICS_ADDR"), RetrievalAddress: os.Getenv("ANSWER_RETRIEVAL_GRPC_ADDR"),
 		RetrievalDNSName: os.Getenv("ANSWER_RETRIEVAL_TLS_SERVER_NAME"), LLMBaseURL: os.Getenv("ANSWER_LLM_BASE_URL"), LLMModel: os.Getenv("ANSWER_LLM_MODEL"),
@@ -54,7 +54,7 @@ func Load() (Config, error) {
 			MaximumEvidenceBytes: maximumItem, MaximumSegments: maximumSegments, MaximumAnswerBytes: maximumAnswer, MaximumCitations: maximumCitations,
 			MaximumOutputTokens: maximumTokens, ProviderConcurrency: concurrency, RequestTimeout: requestTimeout, RetrievalTimeout: retrievalTimeout, ProviderTimeout: providerTimeout},
 	}
-	configuration.LLMRequestsPerSecond = providerRequestsPerSecond("ANSWER_PROVIDER_REQUESTS_PER_SECOND", configuration.LLMModel)
+	configuration.LLMRequestsPerMinute = providerRequestsPerMinute("ANSWER_PROVIDER_REQUESTS_PER_MINUTE", configuration.LLMModel)
 	if configuration.RetrievalDNSName == "" {
 		configuration.RetrievalDNSName = "retrieval-service"
 	}
@@ -116,7 +116,7 @@ func validProviderURL(value string) bool {
 	return err == nil && len(value) <= 2048 && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
-func providerRequestsPerSecond(key, model string) int {
+func providerRequestsPerMinute(key, model string) int {
 	value := os.Getenv(key)
 	if value != "" {
 		parsed, err := strconv.Atoi(value)
@@ -126,7 +126,7 @@ func providerRequestsPerSecond(key, model string) int {
 		return parsed
 	}
 	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(model)), ":free") {
-		return 1
+		return 15
 	}
 	return 0
 }

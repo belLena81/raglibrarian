@@ -70,7 +70,7 @@ func NewDispatcher(ctx context.Context, cfg config.DispatcherConfig) (*Dispatche
 		return nil, errors.New("database unavailable")
 	}
 	publisher := transport.NewReconnectingPublisher(cfg.RabbitURI)
-	outbox, err := transport.NewOutboxWorker(repository.NewPostgres(pool), publisher, cfg.ResultExchange, cfg.OutboxInterval)
+	outbox, err := transport.NewOutboxWorker(repository.NewPostgres(pool), publisher, cfg.ResultExchange, cfg.OutboxInterval, diagnostic.New(nil))
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -217,6 +217,7 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	}
 	repo := repository.NewPostgres(pool)
 	recorder := &metrics.Recorder{}
+	diagnosticsLogger := diagnostic.New(nil)
 	pdfExtractor := extractor.NewPoppler(
 		cfg.PDFInfoPath,
 		cfg.PDFTextPath,
@@ -271,6 +272,7 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 			JobLease:              cfg.JobLease,
 			MaximumAttempts:       cfg.MaximumAttempts,
 			Observer:              recorder,
+			Diagnostics:           diagnosticsLogger,
 		},
 	)
 	if err != nil {
@@ -278,7 +280,7 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		return nil, err
 	}
 	publisher := transport.NewReconnectingPublisher(cfg.RabbitURI)
-	outbox, err := transport.NewOutboxWorker(repo, publisher, cfg.ResultExchange, cfg.OutboxInterval)
+	outbox, err := transport.NewOutboxWorker(repo, publisher, cfg.ResultExchange, cfg.OutboxInterval, diagnosticsLogger)
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -296,7 +298,7 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		Publisher:    publisher,
 		Cleaner:      cleaner,
 		Metrics:      recorder,
-		Diagnostics:  diagnostic.New(nil),
+		Diagnostics:  diagnosticsLogger,
 		pool:         pool,
 		publisher:    publisher,
 		storageProbe: storageProbe,
@@ -329,10 +331,16 @@ func (r *Runtime) Process(ctx context.Context, event application.UploadedEvent) 
 	}
 	if errors.Is(err, application.ErrProcessingDeferred) {
 		r.Metrics.Deferred()
+		retryAt := time.Time{}
+		var deferred application.DeferredError
+		if errors.As(err, &deferred) {
+			retryAt = deferred.RetryAt
+		}
+		r.Diagnostics.ProcessingDeferred(event.EventID, event.BookID, application.FailureReason(err), application.FailureDetail(err), retryAt)
 		return err
 	}
 	r.Metrics.Failed()
-	r.Diagnostics.ProcessingFailed(event.EventID, event.BookID, application.FailureReason(err))
+	r.Diagnostics.ProcessingFailed(event.EventID, event.BookID, application.FailureReason(err), application.FailureDetail(err))
 	return err
 }
 

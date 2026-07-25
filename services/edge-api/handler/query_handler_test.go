@@ -168,12 +168,47 @@ func TestQueryReturnsSuccessfulEmptyEvidence(t *testing.T) {
 	assert.JSONEq(t, `{"query":"unrelated","results":[],"documents":[]}`, recorder.Body.String())
 }
 
+func TestQueryFiltersLowScoringEvidenceBeforeSerializing(t *testing.T) {
+	retrieval := &retrievalStub{result: handler.SearchResult{
+		Query: "replication",
+		Results: []handler.Evidence{
+			{EvidenceID: "low", Score: 0.59, Passage: "too weak"},
+			{EvidenceID: "high", Score: 0.6, Passage: "just enough"},
+		},
+		Documents: []handler.DocumentResult{{
+			DocumentID: "doc-low",
+			Score:      0.93,
+			Evidence:   []handler.Evidence{{EvidenceID: "low-doc", Score: 0.59, Passage: "too weak"}},
+		}, {
+			DocumentID: "doc-high",
+			Score:      0.91,
+			Evidence:   []handler.Evidence{{EvidenceID: "high-doc", Score: 0.6, Passage: "just enough"}},
+		}},
+	}}
+	h := handler.NewQueryHandler(retrieval)
+	recorder := httptest.NewRecorder()
+
+	h.Query(recorder, authenticatedQueryRequest(`{"question":"replication"}`))
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.JSONEq(t, `{
+		"query":"replication",
+		"results":[{"evidence_id":"high","chunk_id":"","book":{"id":"","title":"","author":"","year":0,"tags":null},"chapter":"","section":"","pages":[0,0],"passage":"just enough","score":0.6}],
+		"documents":[{
+			"document_id":"doc-high",
+			"book":{"id":"","title":"","author":"","year":0,"tags":null},
+			"chunk_count":0,"pages":[0,0],"score":0.91,
+			"evidence":[{"evidence_id":"high-doc","chunk_id":"","book":{"id":"","title":"","author":"","year":0,"tags":null},"chapter":"","section":"","pages":[0,0],"passage":"just enough","score":0.6}]
+		}]
+	}`, recorder.Body.String())
+}
+
 func TestQueryAnswerModeReturnsAnswerSegmentsAndTrustedEvidence(t *testing.T) {
 	retrieval := &retrievalStub{}
 	answer := &answerStub{result: handler.AnswerResult{
 		Search: handler.SearchResult{
 			Query:     "How?",
-			Results:   []handler.Evidence{{EvidenceID: "evidence-1", Passage: "stored evidence"}},
+			Results:   []handler.Evidence{{EvidenceID: "evidence-1", Passage: "stored evidence", Score: 0.8}},
 			Documents: []handler.DocumentResult{},
 		},
 		Summary: "Grounded answer.",
@@ -194,7 +229,7 @@ func TestQueryAnswerModeReturnsAnswerSegmentsAndTrustedEvidence(t *testing.T) {
 		"results":[{
 			"evidence_id":"evidence-1","chunk_id":"",
 			"book":{"id":"","title":"","author":"","year":0,"tags":null},
-			"chapter":"","section":"","pages":[0,0],"passage":"stored evidence","score":0
+			"chapter":"","section":"","pages":[0,0],"passage":"stored evidence","score":0.8
 		}],
 		"documents":[],
 		"summary":"Grounded answer.",

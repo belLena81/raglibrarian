@@ -77,7 +77,7 @@ func (s *Server) Search(parent context.Context, request *retrievalv1.SearchReque
 			filters.YearTo = &value
 		}
 	}
-	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 25*time.Second)
 	defer cancel()
 	results, err := s.search.Search(ctx, actor, domain.SearchQueryInput{Question: request.Question, Filters: filters, Limit: int(request.Limit)})
 	if err != nil {

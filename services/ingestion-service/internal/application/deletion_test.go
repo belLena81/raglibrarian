@@ -18,7 +18,7 @@ func TestDeletionEventValidateRequiresCatalogCommandIdentity(t *testing.T) {
 }
 
 func TestProcessDeletionPersistsFenceBeforeAcknowledgement(t *testing.T) {
-	processor, repository, _, _, _ := newTestProcessor(t, processorOptions{})
+	processor, repository, _, _, _, _ := newTestProcessor(t, processorOptions{})
 	event := validDeletionEvent()
 	if err := processor.ProcessDeletion(context.Background(), event); err != nil {
 		t.Fatalf("process deletion: %v", err)

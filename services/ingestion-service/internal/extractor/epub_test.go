@@ -330,6 +330,9 @@ func TestEPUBAdapterMapsParserOutputAndSanitizesFailure(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "private") {
 		t.Fatalf("unsanitized adapter error = %v", err)
 	}
+	if detail, ok := FailureDetail(err); !ok || detail != "epub_parser_internal_private_epub_parser_diagnostic" {
+		t.Fatalf("FailureDetail() = %q, %t", detail, ok)
+	}
 }
 
 func TestEPUBParserExitProtocolPreservesFailureCategories(t *testing.T) {
@@ -356,6 +359,82 @@ func TestEPUBParserExitProtocolPreservesFailureCategories(t *testing.T) {
 				t.Fatalf("classification exposed command diagnostics: %v", classified)
 			}
 		})
+	}
+}
+
+func TestFailureDetailMapsEPUBParserStderrTokens(t *testing.T) {
+	err := detailedFailure("epub_parser_failed", &commandError{cause: errors.New("exit status 1"), stderr: []byte("epub_parser_panic\n")})
+	if detail, ok := FailureDetail(err); !ok || detail != "epub_parser_panic" {
+		t.Fatalf("FailureDetail() = %q, %t", detail, ok)
+	}
+	err = detailedFailure("epub_parser_failed", &commandError{cause: errors.New("exit status 1"), stderr: []byte("epub_parser_output_failed\n")})
+	if detail, ok := FailureDetail(err); !ok || detail != "epub_parser_output_failed" {
+		t.Fatalf("FailureDetail() = %q, %t", detail, ok)
+	}
+}
+
+func TestFailureDetailMapsEPUBParserExitCodes(t *testing.T) {
+	err := detailedFailure("epub_parser_failed", classifyEPUBCommandError(context.Background(), exec.Command("sh", "-c", "exit 127").Run())) // #nosec G204 -- fixed synthetic test input.
+	if detail, ok := FailureDetail(err); !ok || detail != "epub_parser_exit_127" {
+		t.Fatalf("FailureDetail() = %q, %t", detail, ok)
+	}
+}
+
+func TestEPUBParserFailureDetailMapsInternalCauses(t *testing.T) {
+	tests := map[string]string{
+		"invalid EPUB limits":                  "epub_parser_invalid_limits",
+		"invalid EPUB entry limits":            "epub_parser_invalid_entry_limits",
+		"invalid EPUB extractor configuration": "epub_parser_invalid_configuration",
+		"invalid EPUB XHTML document":          "epub_parser_xhtml_invalid",
+	}
+	for cause, expected := range tests {
+		t.Run(expected, func(t *testing.T) {
+			detail, ok := EPUBParserFailureDetail(epubFailure(domain.FailureInternalProcessing, errors.New(cause)))
+			if !ok || detail != expected {
+				t.Fatalf("EPUBParserFailureDetail() = %q, %t", detail, ok)
+			}
+		})
+	}
+}
+
+func TestEPUBParserFailureDetailPreservesCommandTokens(t *testing.T) {
+	err := epubFailure(domain.FailureInternalProcessing, &commandError{
+		cause:  errors.New("exit status 1"),
+		stderr: []byte("epub_parser_panic\n"),
+	})
+	detail, ok := EPUBParserFailureDetail(err)
+	if !ok || detail != "epub_parser_panic" {
+		t.Fatalf("EPUBParserFailureDetail() = %q, %t", detail, ok)
+	}
+}
+
+func TestEPUBParserFailureDetailUsesBoundedFallbackForUnknownInternalCauses(t *testing.T) {
+	detail, ok := EPUBParserFailureDetail(epubFailure(domain.FailureInternalProcessing, errors.New("unexpected parser state: /tmp/books/secret.epub")))
+	if !ok || detail != "epub_parser_internal_unexpected_parser_state_tmp_book" {
+		t.Fatalf("EPUBParserFailureDetail() = %q, %t", detail, ok)
+	}
+}
+
+func TestEPUBParserFailureDetailMapsCommandErrorToExecFailure(t *testing.T) {
+	err := exec.Command("sh", "-c", "exit 1").Run() // #nosec G204 -- fixed synthetic test input.
+	detail, ok := EPUBParserFailureDetail(epubFailure(domain.FailureInternalProcessing, &commandError{cause: err}))
+	if !ok || detail != "epub_parser_exec_exit_1" {
+		t.Fatalf("EPUBParserFailureDetail() = %q, %t", detail, ok)
+	}
+}
+
+func TestEPUBParserFailureDetailMapsExitTwoToInvalidArgs(t *testing.T) {
+	err := exec.Command("sh", "-c", "exit 2").Run() // #nosec G204 -- fixed synthetic test input.
+	detail, ok := EPUBParserFailureDetail(epubFailure(domain.FailureInternalProcessing, &commandError{cause: err}))
+	if !ok || detail != "epub_parser_invalid_args" {
+		t.Fatalf("EPUBParserFailureDetail() = %q, %t", detail, ok)
+	}
+}
+
+func TestEPUBParserFailureDetailMapsMissingCommandToExecNotFound(t *testing.T) {
+	detail, ok := EPUBParserFailureDetail(epubFailure(domain.FailureInternalProcessing, &commandError{cause: exec.ErrNotFound}))
+	if !ok || detail != "epub_parser_exec_not_found" {
+		t.Fatalf("EPUBParserFailureDetail() = %q, %t", detail, ok)
 	}
 }
 

@@ -21,9 +21,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, logger); err != nil && !errors.Is(err, context.Canceled) {
-		logger.Error("ingestion worker stopped", "reason", "runtime_failure")
+		logRunError(logger, err)
 		os.Exit(1)
 	}
+}
+
+func logRunError(logger *slog.Logger, err error) {
+	logger.Error("ingestion worker stopped", "reason", "runtime_failure", "error", err)
 }
 
 func run(ctx context.Context, logger *slog.Logger) error {

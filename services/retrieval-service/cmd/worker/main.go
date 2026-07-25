@@ -30,7 +30,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, logger.Must("retrieval-worker")); err != nil {
-		worker.LogFailure()
+		worker.LogFailureWithError(err)
 		os.Exit(1)
 	}
 }

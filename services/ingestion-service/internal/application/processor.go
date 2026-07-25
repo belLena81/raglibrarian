@@ -53,11 +53,45 @@ func FailureReason(err error) string {
 	return "processing_error"
 }
 
-type DeferredError struct{ RetryAt time.Time }
+// FailureDetail returns an allowlisted stage-level diagnostic detail.
+func FailureDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	var target operationalError
+	if errors.As(err, &target) {
+		return FailureDetail(target.cause)
+	}
+	var deferred DeferredError
+	if errors.As(err, &deferred) {
+		return FailureDetail(deferred.Cause)
+	}
+	var staged stagedError
+	if errors.As(err, &staged) {
+		return staged.detail
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "processing_timeout"
+	}
+	return ""
+}
 
-func (e DeferredError) Error() string          { return ErrProcessingDeferred.Error() }
-func (e DeferredError) Is(target error) bool   { return target == ErrProcessingDeferred }
-func NewDeferredError(retryAt time.Time) error { return DeferredError{RetryAt: retryAt} }
+type DeferredError struct {
+	RetryAt time.Time
+	Cause   error
+}
+
+func (e DeferredError) Error() string        { return ErrProcessingDeferred.Error() }
+func (e DeferredError) Is(target error) bool { return target == ErrProcessingDeferred }
+func (e DeferredError) Unwrap() error        { return e.Cause }
+
+func NewDeferredError(retryAt time.Time, cause ...error) error {
+	var wrapped error
+	if len(cause) > 0 {
+		wrapped = cause[0]
+	}
+	return DeferredError{RetryAt: retryAt, Cause: wrapped}
+}
 
 type UploadedEvent struct {
 	EventID, BookID, ObjectReference, MediaType, CorrelationID, CausationID, Producer, SchemaVersion, IdempotencyKey string
@@ -167,6 +201,7 @@ type Config struct {
 	JobLease              time.Duration
 	MaximumAttempts       int
 	Observer              PhaseObserver
+	Diagnostics           ProcessorDiagnostics
 }
 
 type ProcessingPhase uint8
@@ -186,17 +221,47 @@ type noopObserver struct{}
 
 func (noopObserver) ObservePhase(ProcessingPhase, time.Duration) {}
 
+type ProcessorDiagnostics interface {
+	ReadyEventPrepared(eventID, bookID, readyEventID string)
+	CompletionPersisted(eventID, bookID, readyEventID string)
+	CompletionPersistenceFailed(eventID, bookID, readyEventID, reason string)
+	FailurePersisted(eventID, bookID, failedEventID, category, detail string)
+}
+
+type noopDiagnostics struct{}
+
+func (noopDiagnostics) ReadyEventPrepared(string, string, string)                  {}
+func (noopDiagnostics) CompletionPersisted(string, string, string)                 {}
+func (noopDiagnostics) CompletionPersistenceFailed(string, string, string, string) {}
+func (noopDiagnostics) FailurePersisted(string, string, string, string, string)    {}
+
 type Processor struct {
-	repository Repository
-	sources    SourceReader
-	extractors ExtractorSelector
-	factory    Factory
-	events     EventFactory
-	newID      IDGenerator
-	now        Clock
-	workerID   string
-	config     Config
-	observer   PhaseObserver
+	repository  Repository
+	sources     SourceReader
+	extractors  ExtractorSelector
+	factory     Factory
+	events      EventFactory
+	newID       IDGenerator
+	now         Clock
+	workerID    string
+	config      Config
+	observer    PhaseObserver
+	diagnostics ProcessorDiagnostics
+}
+
+type stagedError struct {
+	detail string
+	cause  error
+}
+
+func (e stagedError) Error() string { return e.detail }
+func (e stagedError) Unwrap() error { return e.cause }
+
+func stage(detail string, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return stagedError{detail: detail, cause: cause}
 }
 
 func NewProcessor(repository Repository, sources SourceReader, extractors ExtractorSelector, factory Factory, events EventFactory, newID IDGenerator, now Clock, workerID string, config Config) (*Processor, error) {
@@ -207,7 +272,11 @@ func NewProcessor(repository Repository, sources SourceReader, extractors Extrac
 	if observer == nil {
 		observer = noopObserver{}
 	}
-	return &Processor{repository: repository, sources: sources, extractors: extractors, factory: factory, events: events, newID: newID, now: now, workerID: workerID, config: config, observer: observer}, nil
+	diagnostics := config.Diagnostics
+	if diagnostics == nil {
+		diagnostics = noopDiagnostics{}
+	}
+	return &Processor{repository: repository, sources: sources, extractors: extractors, factory: factory, events: events, newID: newID, now: now, workerID: workerID, config: config, observer: observer, diagnostics: diagnostics}, nil
 }
 
 func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
@@ -259,14 +328,21 @@ func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
 		if readyErr != nil {
 			persistCtx, persistCancel := persistenceContext(parent)
 			defer persistCancel()
-			return p.persistFailure(persistCtx, event, &job, claim, domain.FailureInternalProcessing)
+			return p.persistFailure(persistCtx, event, &job, claim, domain.FailureInternalProcessing, "ready_event_prepare_failed")
 		}
+		p.diagnostics.ReadyEventPrepared(event.EventID, event.BookID, ready.ID)
 		if err = job.Complete(p.workerID, result.ManifestReference, result.ManifestSHA256, result.ManifestByteSize, p.now().UTC()); err != nil {
 			return err
 		}
 		persistCtx, persistCancel := persistenceContext(parent)
 		defer persistCancel()
-		return operational("complete_failed", p.repository.Complete(persistCtx, job, claim, result, ready))
+		if err = p.repository.Complete(persistCtx, job, claim, result, ready); err != nil {
+			err = operational("complete_failed", err)
+			p.diagnostics.CompletionPersistenceFailed(event.EventID, event.BookID, ready.ID, FailureReason(err))
+			return err
+		}
+		p.diagnostics.CompletionPersisted(event.EventID, event.BookID, ready.ID)
+		return nil
 	}
 	category, permanent := classify(processErr, ctx)
 	if !permanent && job.Attempts() < p.config.MaximumAttempts {
@@ -279,11 +355,11 @@ func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
 		if err = p.repository.Retry(persistCtx, job, claim); err != nil {
 			return err
 		}
-		return NewDeferredError(retryAt)
+		return NewDeferredError(retryAt, processErr)
 	}
 	persistCtx, persistCancel := persistenceContext(parent)
 	defer persistCancel()
-	return p.persistFailure(persistCtx, event, &job, claim, category)
+	return p.persistFailure(persistCtx, event, &job, claim, category, FailureDetail(processErr))
 }
 
 func persistenceContext(parent context.Context) (context.Context, context.CancelFunc) {
@@ -295,11 +371,11 @@ func persistenceContext(parent context.Context) (context.Context, context.Cancel
 
 func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, adapter ExtractionAdapter, generatedAt time.Time) (artifact.Result, error) {
 	if err := ensureTemporaryCapacity(p.config.TemporaryDirectory, p.config.MaximumTemporaryBytes); err != nil {
-		return artifact.Result{}, categorized(domain.FailureResourceLimitExceeded)
+		return artifact.Result{}, stage("temporary_capacity_unavailable", categorized(domain.FailureResourceLimitExceeded))
 	}
 	invocationDir, err := os.MkdirTemp(p.config.TemporaryDirectory, "ingestion-")
 	if err != nil {
-		return artifact.Result{}, errors.New("temporary storage unavailable")
+		return artifact.Result{}, stage("temporary_directory_unavailable", err)
 	}
 	_ = os.Chmod(invocationDir, 0o700) // #nosec G302 -- directories require execute permission and remain owner-only.
 	defer func() { _ = os.RemoveAll(invocationDir) }()
@@ -312,13 +388,13 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, ada
 	}
 	chunker, err := p.factory.NewChunker()
 	if err != nil {
-		return artifact.Result{}, err
+		return artifact.Result{}, stage("chunker_unavailable", err)
 	}
 	// Job creation is the immutable processing acceptance time. Using it keeps
 	// manifest bytes stable when an upload succeeded but the DB commit did not.
 	writer, err := p.factory.NewArtifactWriter(event, generatedAt)
 	if err != nil {
-		return artifact.Result{}, err
+		return artifact.Result{}, stage("artifact_writer_unavailable", err)
 	}
 	committed := false
 	defer func() {
@@ -333,11 +409,11 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, ada
 	info, err := adapter.Extractor.Extract(ctx, sourcePath, func(page extractor.Page) error {
 		chunks, chunkErr := chunker.AddPage(event.BookID, chunking.Page{Number: page.Number, Text: page.Text})
 		if chunkErr != nil {
-			return chunkErr
+			return stage("chunk_page_failed", chunkErr)
 		}
 		for _, value := range chunks {
 			if chunkErr = writer.Add(ctx, value); chunkErr != nil {
-				return chunkErr
+				return stage("artifact_add_failed", chunkErr)
 			}
 			chunkCount++
 		}
@@ -345,21 +421,21 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, ada
 	})
 	if err != nil {
 		p.observer.ObservePhase(PhaseExtractChunk, p.now().Sub(extractStarted))
-		return artifact.Result{}, err
+		return artifact.Result{}, stage(extractorFailureDetail(err), err)
 	}
 	remaining, err := chunker.Finish(event.BookID)
 	if err != nil {
-		return artifact.Result{}, err
+		return artifact.Result{}, stage("chunk_finalize_failed", err)
 	}
 	for _, value := range remaining {
 		if err = writer.Add(ctx, value); err != nil {
-			return artifact.Result{}, err
+			return artifact.Result{}, stage("artifact_add_failed", err)
 		}
 		chunkCount++
 	}
 	p.observer.ObservePhase(PhaseExtractChunk, p.now().Sub(extractStarted))
 	if chunkCount == 0 {
-		return artifact.Result{}, categorized(domain.FailureNoExtractableText)
+		return artifact.Result{}, stage("no_extractable_text", categorized(domain.FailureNoExtractableText))
 	}
 	finalizeStarted := p.now()
 	result, err := writer.Finalize(ctx, info.PageCount)
@@ -367,7 +443,7 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, ada
 	if err == nil {
 		committed = true
 	}
-	return result, err
+	return result, stage("artifact_finalize_failed", err)
 }
 
 func ensureTemporaryCapacity(directory string, required int64) error {
@@ -385,29 +461,29 @@ func ensureTemporaryCapacity(directory string, required int64) error {
 func (p *Processor) download(ctx context.Context, event UploadedEvent, path string) error {
 	reader, size, err := p.sources.Open(ctx, event.ObjectReference)
 	if err != nil {
-		return categorized(domain.FailureDependencyUnavailable)
+		return stage("source_open_failed", categorized(domain.FailureDependencyUnavailable))
 	}
 	defer func() { _ = reader.Close() }()
 	if size != event.ByteSize || size > p.config.MaximumSourceBytes {
-		return categorized(domain.FailureSourceIntegrityMismatch)
+		return stage("source_size_mismatch", categorized(domain.FailureSourceIntegrityMismatch))
 	}
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- path is inside a fresh private invocation directory.
 	if err != nil {
-		return categorized(domain.FailureDependencyUnavailable)
+		return stage("source_file_create_failed", categorized(domain.FailureDependencyUnavailable))
 	}
 	hash := sha256.New()
 	written, copyErr := io.Copy(io.MultiWriter(file, hash), io.LimitReader(reader, event.ByteSize+1))
 	closeErr := file.Close()
 	if copyErr != nil || closeErr != nil {
-		return categorized(domain.FailureDependencyUnavailable)
+		return stage("source_copy_failed", categorized(domain.FailureDependencyUnavailable))
 	}
 	if written != event.ByteSize || written > p.config.MaximumSourceBytes || !equalBytes(hash.Sum(nil), event.SourceSHA256[:]) {
-		return categorized(domain.FailureSourceIntegrityMismatch)
+		return stage("source_checksum_mismatch", categorized(domain.FailureSourceIntegrityMismatch))
 	}
 	return nil
 }
 
-func (p *Processor) persistFailure(ctx context.Context, event UploadedEvent, job *domain.ProcessingJob, claim ClaimToken, category domain.FailureCategory) error {
+func (p *Processor) persistFailure(ctx context.Context, event UploadedEvent, job *domain.ProcessingJob, claim ClaimToken, category domain.FailureCategory, detail string) error {
 	now := p.now().UTC()
 	failed, err := p.events.Failed(event, *job, category, now)
 	if err != nil {
@@ -416,7 +492,11 @@ func (p *Processor) persistFailure(ctx context.Context, event UploadedEvent, job
 	if err = job.Fail(p.workerID, category, now); err != nil {
 		return err
 	}
-	return operational("fail_persistence_failed", p.repository.Fail(ctx, *job, claim, failed))
+	if err = p.repository.Fail(ctx, *job, claim, failed); err != nil {
+		return operational("fail_persistence_failed", err)
+	}
+	p.diagnostics.FailurePersisted(event.EventID, event.BookID, failed.ID, string(category), detail)
+	return nil
 }
 
 type processingError struct{ category domain.FailureCategory }
@@ -439,6 +519,13 @@ func classify(err error, ctx context.Context) (domain.FailureCategory, bool) {
 		return typed.category, permanentProcessingFailure(typed.category)
 	}
 	return domain.FailureInternalProcessing, false
+}
+
+func extractorFailureDetail(err error) string {
+	if detail, ok := extractor.FailureDetail(err); ok {
+		return detail
+	}
+	return "extract_failed"
 }
 
 func permanentProcessingFailure(category domain.FailureCategory) bool {

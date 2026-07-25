@@ -16,8 +16,8 @@ import (
 	"os"
 	"path"
 	"strings"
-	"unicode/utf8"
 	"time"
+	"unicode/utf8"
 
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/domain"
@@ -142,23 +142,37 @@ func (p *OpenAI) Generate(ctx context.Context, input application.ProviderRequest
 		return nil, &providerError{code: fmt.Sprintf("provider_http_status_%d", response.StatusCode), detail: detail, err: fmt.Errorf("provider returned HTTP status %d", response.StatusCode)}
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maximumProviderResponseBytes+1))
-	if err != nil || len(body) > maximumProviderResponseBytes || !utf8.Valid(body) {
-		return nil, &providerError{code: "invalid_provider_response", err: errors.New("invalid provider response")}
+	if err != nil {
+		return nil, &providerError{code: "invalid_provider_response", detail: "response_read_failed", err: errors.New("invalid provider response")}
+	}
+	if len(body) > maximumProviderResponseBytes {
+		return nil, &providerError{code: "invalid_provider_response", detail: "response_too_large", err: errors.New("invalid provider response")}
+	}
+	if !utf8.Valid(body) {
+		return nil, &providerError{code: "invalid_provider_response", detail: "response_not_utf8", err: errors.New("invalid provider response")}
 	}
 	if err = rejectDuplicateObjectFields(body); err != nil {
-		return nil, &providerError{code: "invalid_provider_response", err: err}
+		return nil, &providerError{code: "invalid_provider_response", detail: "duplicate_object_fields", err: err}
 	}
 	var envelope chatResponse
-	if err = decodeOne(body, &envelope, false); err != nil || len(envelope.Choices) != 1 || len(envelope.Choices[0].Message.Content) > maximumCandidateBytes ||
-		strings.ContainsRune(envelope.Choices[0].Message.Content, utf8.RuneError) {
-		return nil, &providerError{code: "invalid_provider_response", err: errors.New("invalid provider response")}
+	if err = decodeOne(body, &envelope, false); err != nil {
+		return nil, &providerError{code: "invalid_provider_response", detail: "response_decode_failed", err: errors.New("invalid provider response")}
+	}
+	if len(envelope.Choices) != 1 {
+		return nil, &providerError{code: "invalid_provider_response", detail: fmt.Sprintf("unexpected_choices_count_%d", len(envelope.Choices)), err: errors.New("invalid provider response")}
+	}
+	if len(envelope.Choices[0].Message.Content) > maximumCandidateBytes {
+		return nil, &providerError{code: "invalid_provider_response", detail: "candidate_too_large", err: errors.New("invalid provider response")}
+	}
+	if strings.ContainsRune(envelope.Choices[0].Message.Content, utf8.RuneError) {
+		return nil, &providerError{code: "invalid_provider_response", detail: "candidate_invalid_utf8", err: errors.New("invalid provider response")}
 	}
 	content := []byte(envelope.Choices[0].Message.Content)
 	if segments, ok := parseCandidateSegments(content); ok {
 		return segments, nil
 	}
 	if looksLikeJSON(content) {
-		return nil, &providerError{code: "invalid_provider_response", err: errors.New("invalid provider response")}
+		return nil, &providerError{code: "invalid_provider_response", detail: "candidate_json_shape_invalid", err: errors.New("invalid provider response")}
 	}
 	return fallbackPlainTextSegments(content, input.Evidence), nil
 }

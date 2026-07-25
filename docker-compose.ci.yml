@@ -45,7 +45,7 @@ services:
         condition: service_healthy
 
   llm-provider-stub:
-    profiles: ["m6-test"]
+    profiles: ["raglibrarian"]
     build:
       context: .
       target: service-runtime

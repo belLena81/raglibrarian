@@ -16,13 +16,21 @@ type Limiter struct {
 }
 
 func New(requestsPerSecond int) (*Limiter, error) {
-	if requestsPerSecond < 0 || requestsPerSecond > maximumRequestsPerSecond {
+	return newLimiter(time.Second, requestsPerSecond)
+}
+
+func NewPerMinute(requestsPerMinute int) (*Limiter, error) {
+	return newLimiter(time.Minute, requestsPerMinute)
+}
+
+func newLimiter(window time.Duration, requests int) (*Limiter, error) {
+	if requests < 0 || requests > maximumRequestsPerSecond {
 		return nil, errors.New("invalid rate limit")
 	}
-	if requestsPerSecond == 0 {
+	if requests == 0 {
 		return nil, nil
 	}
-	interval := time.Second / time.Duration(requestsPerSecond)
+	interval := window / time.Duration(requests)
 	if interval < time.Nanosecond {
 		interval = time.Nanosecond
 	}

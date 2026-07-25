@@ -41,7 +41,7 @@ func main() {
 		log.Print("retrieval server could not load transport credentials")
 		os.Exit(1)
 	}
-	httpClient := &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	httpClient := &http.Client{Timeout: 25 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	teiLimiter, err := throttle.New(configuration.TEIRequestsPerSecond)
 	if err != nil {
 		log.Print("retrieval server could not configure embedding throttle")
@@ -170,19 +170,31 @@ func configureSummaryProvider(configuration config.Config, serviceLogger *zap.Lo
 	}
 	apiKey, err := readSecret(configuration.SummaryLLMAPIKeyFile)
 	if err != nil {
-		return nil, err
+		if serviceLogger != nil {
+			serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "api_key_unavailable"))
+		}
+		return nil, nil
 	}
 	httpClient, err := provider.NewHTTPClient(configuration.SummaryLLMCAFile)
 	if err != nil {
-		return nil, err
+		if serviceLogger != nil {
+			serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "transport_unavailable"))
+		}
+		return nil, nil
 	}
-	limit, err := throttle.New(configuration.SummaryLLMRequestsPerSecond)
+	limit, err := throttle.NewPerMinute(configuration.SummaryLLMRequestsPerMinute)
 	if err != nil {
-		return nil, err
+		if serviceLogger != nil {
+			serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "rate_limit_invalid"))
+		}
+		return nil, nil
 	}
 	summaryProvider, err := provider.NewOpenAI(configuration.SummaryLLMBaseURL, configuration.SummaryLLMModel, apiKey, httpClient, serviceLogger, limit)
 	if err != nil {
-		return nil, err
+		if serviceLogger != nil {
+			serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "configuration_invalid"))
+		}
+		return nil, nil
 	}
 	return summaryProvider, nil
 }

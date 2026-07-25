@@ -12,10 +12,13 @@ import (
 
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/diagnostic"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
 	"github.com/rabbitmq/amqp091-go"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -347,11 +350,12 @@ func TestHandleDeadLettersExhaustedRetryWhenFailureRecordingFails(t *testing.T) 
 func TestHandleRetriesManifestReadFailureBelowBudget(t *testing.T) {
 	acknowledger := &stubAcknowledger{}
 	publisher := &stubRetryPublisher{}
-	delivery := amqp091.Delivery{Acknowledger: acknowledger, DeliveryTag: 1, ContentType: "application/x-protobuf", Body: validWorkerManifestPayload(t), Headers: amqp091.Table{"x-retry-attempt": int64(1)}}
+	delivery := amqp091.Delivery{Acknowledger: acknowledger, DeliveryTag: 1, MessageId: "message-1", Type: "ingestion.book.chunks-ready.v1", ContentType: "application/x-protobuf", Body: validWorkerManifestPayload(t), Headers: amqp091.Table{"x-retry-attempt": int64(1)}}
 	semaphore := make(chan struct{}, 1)
 	var handlers sync.WaitGroup
 	recorder := &stubManifestFailureRecorder{}
-	runtime := &Runtime{objects: stubObjectStore{readErr: errors.New("artifact exceeds limit")}, manifestFails: recorder}
+	logs, observed := observer.New(zap.InfoLevel)
+	runtime := &Runtime{objects: stubObjectStore{readErr: errors.New("artifact exceeds limit")}, manifestFails: recorder, diagnostic: diagnostic.New(zap.New(logs))}
 
 	runtime.handle(context.Background(), semaphore, &handlers, publisher, manifestQueue, delivery, runtime.handleManifest, runtime.failManifestArtifactRead)
 	handlers.Wait()
@@ -364,6 +368,14 @@ func TestHandleRetriesManifestReadFailureBelowBudget(t *testing.T) {
 	}
 	if recorder.calls != 0 {
 		t.Fatalf("terminal manifest failures = %d, want 0", recorder.calls)
+	}
+	entries := observed.FilterMessage("retrieval.retry.published").All()
+	if len(entries) != 1 {
+		t.Fatalf("retry published log count = %d, want 1", len(entries))
+	}
+	fields := entries[0].ContextMap()
+	if fields["operation"] != queueOperation(manifestQueue) || fields["message_id"] != "message-1" || fields["book_id"] != "book-1" || fields["attempt"] != int64(2) {
+		t.Fatalf("retry published fields = %#v", fields)
 	}
 }
 

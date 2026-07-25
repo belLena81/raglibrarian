@@ -17,6 +17,12 @@ import (
 
 const landlockPreflightArgument = "--landlock-preflight"
 
+const (
+	defaultPDFInfoPath    = "/usr/bin/pdfinfo"
+	defaultPDFToTextPath  = "/usr/bin/pdftotext"
+	defaultEPUBParserPath = "/usr/local/bin/epub-parser"
+)
+
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == landlockPreflightArgument {
 		if preflightFilesystemPolicy() != nil {
@@ -26,6 +32,7 @@ func main() {
 	}
 	path, arguments, sourcePath, err := validatedCommand(os.Args[1:])
 	if err != nil {
+		traceParserSandboxValidationFailure(os.Args[1:], err)
 		os.Exit(120)
 	}
 	if applyLimits() != nil {
@@ -37,7 +44,8 @@ func main() {
 	if applySeccomp() != nil {
 		os.Exit(123)
 	}
-	if err = syscall.Exec(path, append([]string{path}, arguments...), []string{"LANG=C.UTF-8"}); err != nil { // #nosec G204 G702 -- path and argv match the fixed Poppler allowlist above.
+	traceParserSandboxExec(path, arguments, sourcePath)
+	if err = syscall.Exec(path, append([]string{path}, arguments...), parserSandboxEnvironment(sourcePath)); err != nil { // #nosec G204 G702 -- path and argv match the fixed Poppler allowlist above.
 		os.Exit(124)
 	}
 }
@@ -50,17 +58,17 @@ func validatedCommand(arguments []string) (string, []string, string, error) {
 	commandArguments := arguments[1:]
 	var sourcePath string
 	switch path {
-	case "/usr/bin/pdfinfo":
+	case parserSandboxPDFInfoPath():
 		if len(commandArguments) != 1 {
 			return "", nil, "", errors.New("invalid pdfinfo command")
 		}
 		sourcePath = commandArguments[0]
-	case "/usr/bin/pdftotext":
+	case parserSandboxPDFToTextPath():
 		if len(commandArguments) != 5 || commandArguments[0] != "-layout" || commandArguments[1] != "-enc" || commandArguments[2] != "UTF-8" || commandArguments[4] != "-" {
 			return "", nil, "", errors.New("invalid pdftotext command")
 		}
 		sourcePath = commandArguments[3]
-	case "/usr/local/bin/epub-parser":
+	case parserSandboxEPUBParserPath():
 		if len(commandArguments) != 1 {
 			return "", nil, "", errors.New("invalid EPUB parser command")
 		}
@@ -79,6 +87,52 @@ func validatedCommand(arguments []string) (string, []string, string, error) {
 	return path, commandArguments, cleaned, nil
 }
 
+func parserSandboxPDFInfoPath() string {
+	return parserSandboxPathEnv("PARSER_SANDBOX_PDFINFO_PATH", defaultPDFInfoPath)
+}
+
+func parserSandboxPDFToTextPath() string {
+	return parserSandboxPathEnv("PARSER_SANDBOX_PDFTOTEXT_PATH", defaultPDFToTextPath)
+}
+
+func parserSandboxEPUBParserPath() string {
+	return parserSandboxPathEnv("PARSER_SANDBOX_EPUB_PARSER_PATH", defaultEPUBParserPath)
+}
+
+func parserSandboxPathEnv(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func parserSandboxEnvironment(sourcePath string) []string {
+	environment := []string{"LANG=C.UTF-8"}
+	if value := strings.TrimSpace(os.Getenv("INGESTION_COMMAND_FAILURE_TRACE")); value != "" {
+		environment = append(environment, "INGESTION_COMMAND_FAILURE_TRACE="+value)
+	}
+	if sourcePath != "" {
+		environment = append(environment, "EPUB_PARSER_SOURCE_PATH="+sourcePath)
+	}
+	return environment
+}
+
+func traceParserSandboxExec(path string, arguments []string, sourcePath string) {
+	if strings.TrimSpace(os.Getenv("INGESTION_COMMAND_FAILURE_TRACE")) == "" {
+		return
+	}
+	_, _ = fmt.Fprintln(os.Stderr, "parser_sandbox_exec_trace")
+	_, _ = fmt.Fprintf(os.Stderr, "path=%s argc=%d source=%s env_source=%t\n", path, len(arguments), sourcePath, strings.TrimSpace(sourcePath) != "")
+}
+
+func traceParserSandboxValidationFailure(arguments []string, err error) {
+	if strings.TrimSpace(os.Getenv("INGESTION_COMMAND_FAILURE_TRACE")) == "" {
+		return
+	}
+	_, _ = fmt.Fprintln(os.Stderr, "parser_sandbox_validation_trace")
+	_, _ = fmt.Fprintf(os.Stderr, "argc=%d error=%s\n", len(arguments), err.Error())
+}
+
 // applyFilesystemPolicy installs a fail-closed Landlock allowlist. The parser
 // can read exactly its source file and Poppler's runtime data, and can execute
 // only the selected Poppler binary. In particular, /tmp siblings, /proc and
@@ -92,13 +146,28 @@ func applyFilesystemPolicy(executablePath, sourcePath string) error {
 
 	readFile := uint64(unix.LANDLOCK_ACCESS_FS_READ_FILE)
 	readTree := readFile | unix.LANDLOCK_ACCESS_FS_READ_DIR
-	rules := []struct {
+	rules := filesystemPolicyRules(executablePath, sourcePath, readFile, readTree)
+	for _, rule := range rules {
+		if err = addLandlockPathRule(ruleset, rule.path, rule.access); err != nil {
+			return err
+		}
+	}
+	return restrictWithLandlock(ruleset)
+}
+
+func filesystemPolicyRules(executablePath, sourcePath string, readFile, readTree uint64) []struct {
+	path   string
+	access uint64
+} {
+	return []struct {
 		path   string
 		access uint64
 	}{
 		{executablePath, readFile | unix.LANDLOCK_ACCESS_FS_EXECUTE},
 		{"/lib/ld-musl-x86_64.so.1", readFile | unix.LANDLOCK_ACCESS_FS_EXECUTE},
 		{"/lib/ld-musl-aarch64.so.1", readFile | unix.LANDLOCK_ACCESS_FS_EXECUTE},
+		{"/lib64/ld-linux-x86-64.so.2", readFile | unix.LANDLOCK_ACCESS_FS_EXECUTE},
+		{"/lib/ld-linux-aarch64.so.1", readFile | unix.LANDLOCK_ACCESS_FS_EXECUTE},
 		{sourcePath, readFile},
 		{"/lib", readTree},
 		{"/usr/lib", readTree},
@@ -109,12 +178,6 @@ func applyFilesystemPolicy(executablePath, sourcePath string) error {
 		{"/var/cache/fontconfig", readTree},
 		{"/dev/null", readFile | unix.LANDLOCK_ACCESS_FS_WRITE_FILE},
 	}
-	for _, rule := range rules {
-		if err = addLandlockPathRule(ruleset, rule.path, rule.access); err != nil {
-			return err
-		}
-	}
-	return restrictWithLandlock(ruleset)
 }
 
 func preflightFilesystemPolicy() error {
@@ -218,23 +281,29 @@ func addLandlockPathRule(ruleset uintptr, path string, access uint64) error {
 }
 
 func applyLimits() error {
-	limits := []struct {
-		resource int
-		value    uint64
-	}{
-		{unix.RLIMIT_CPU, 60},
-		{unix.RLIMIT_AS, 805306368},
-		{unix.RLIMIT_NOFILE, 64},
-		{unix.RLIMIT_NPROC, 32},
-		{unix.RLIMIT_CORE, 0},
-		{unix.RLIMIT_FSIZE, 67108864},
-	}
+	limits := parserSandboxLimits()
 	for _, limit := range limits {
 		if err := unix.Setrlimit(limit.resource, &unix.Rlimit{Cur: limit.value, Max: limit.value}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func parserSandboxLimits() []struct {
+	resource int
+	value    uint64
+} {
+	return []struct {
+		resource int
+		value    uint64
+	}{
+		{unix.RLIMIT_CPU, 60},
+		{unix.RLIMIT_AS, 805306368},
+		{unix.RLIMIT_NOFILE, 64},
+		{unix.RLIMIT_CORE, 0},
+		{unix.RLIMIT_FSIZE, 67108864},
+	}
 }
 
 func applySeccomp() error {

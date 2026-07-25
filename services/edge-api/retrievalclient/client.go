@@ -21,7 +21,7 @@ var (
 	ErrUnavailable = errors.New("retrieval unavailable")
 )
 
-const searchDeadline = 10 * time.Second
+const searchDeadline = 5 * time.Minute
 
 // Client translates Edge search requests to the versioned Retrieval contract.
 type Client struct {

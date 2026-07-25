@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 
-	"go.uber.org/zap"
+	"github.com/belLena81/raglibrarian/pkg/logger"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/throttle"
+	"go.uber.org/zap"
 )
 
 func TestOpenAIGenerateSummarizesText(t *testing.T) {
@@ -29,14 +32,14 @@ func TestOpenAIGenerateSummarizesText(t *testing.T) {
 		t.Fatalf("NewOpenAI() error = %v", err)
 	}
 
-	summary, err := adapter.Summarize(context.Background(), "  Deterministic retries keep search stable.  ")
+	summary, err := adapter.Summarize(context.Background(), application.SummaryRequest{Question: "How do retries help?", Passage: "  Deterministic retries keep search stable.  "})
 	if err != nil {
 		t.Fatalf("Summarize() error = %v", err)
 	}
 	if summary != "concise summary" {
 		t.Fatalf("Summarize() = %q, want concise summary", summary)
 	}
-	if requestPath != "/api/v1/chat/completions" || requestModel != "test-model" || !strings.Contains(requestContent, "Deterministic retries keep search stable.") {
+	if requestPath != "/api/v1/chat/completions" || requestModel != "test-model" || !strings.Contains(requestContent, "How do retries help?") || !strings.Contains(requestContent, "Deterministic retries keep search stable.") {
 		t.Fatalf("unexpected request: path=%q model=%q content=%q", requestPath, requestModel, requestContent)
 	}
 }
@@ -77,6 +80,56 @@ func TestNewOpenAIRejectsInvalidConfiguration(t *testing.T) {
 	}
 	if _, err := NewOpenAI("https://provider", "model", " ", client, zap.NewNop(), nil); err == nil {
 		t.Fatal("NewOpenAI accepted an empty API key")
+	}
+}
+
+func TestOpenAIRequestFailureLogsDiagnostics(t *testing.T) {
+	var output strings.Builder
+	log, err := logger.NewWithWriter(&output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit, err := throttle.New(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := NewOpenAI("https://openrouter.ai/", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/api/v1/chat/completions" {
+			t.Fatalf("request.URL.Path = %q", request.URL.Path)
+		}
+		return httpResponse(http.StatusUnauthorized, `{"error":{"message":"Missing Authentication header","code":401}}`), nil
+	})}, log, limit)
+	if err != nil {
+		t.Fatalf("NewOpenAI() error = %v", err)
+	}
+
+	_, err = adapter.Summarize(context.Background(), application.SummaryRequest{
+		Question: "How do retries help?",
+		Passage:  "Deterministic retries keep search stable.",
+	})
+	if err == nil {
+		t.Fatal("Summarize() error = nil, want provider failure")
+	}
+
+	value := output.String()
+	assertContains := func(substr string) {
+		t.Helper()
+		if !strings.Contains(value, substr) {
+			t.Fatalf("log output %q does not contain %q", value, substr)
+		}
+	}
+	assertContains("retrieval summary request failed")
+	assertContains("reason_code=provider_http_status_401")
+	assertContains("request_model=test-model")
+	assertContains("request_url=https://openrouter.ai/api/v1/chat/completions")
+	assertContains("request_path=/api/v1/chat/completions")
+	assertContains("request_body_preview={\"model\":\"test-model\"")
+	assertContains("response_body_preview={\"error\":{\"message\":\"Missing Authentication header\",\"code\":401}}")
+	if !regexp.MustCompile(`request_body_sha256=[0-9a-f]{64}`).MatchString(value) {
+		t.Fatalf("log output %q does not contain a request body digest", value)
+	}
+	if !regexp.MustCompile(`stack_trace=.*openai\.go`).MatchString(value) {
+		t.Fatalf("log output %q does not contain a compact stack trace", value)
 	}
 }
 

@@ -3,6 +3,7 @@ package retrievalgrpc
 import (
 	"context"
 	"testing"
+	"time"
 
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
@@ -36,11 +37,34 @@ func TestSearchSanitizesAuthorizationFailure(t *testing.T) {
 	}
 }
 
+func TestSearchAppliesTwentyFiveSecondDeadline(t *testing.T) {
+	service := &stubSearchService{search: func(ctx context.Context, _ domain.Actor, _ domain.SearchQueryInput) (application.SearchResult, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("search context missing deadline")
+		}
+		remaining := time.Until(deadline)
+		if remaining > 25*time.Second || remaining < 20*time.Second {
+			t.Fatalf("deadline remaining = %v, want about 25s", remaining)
+		}
+		return application.SearchResult{}, nil
+	}}
+	server := NewServer(service, zap.NewNop())
+
+	if _, err := server.Search(context.Background(), &retrievalv1.SearchRequest{Question: "replication"}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+}
+
 type stubSearchService struct {
 	result application.SearchResult
 	err    error
+	search func(context.Context, domain.Actor, domain.SearchQueryInput) (application.SearchResult, error)
 }
 
-func (s *stubSearchService) Search(_ context.Context, _ domain.Actor, _ domain.SearchQueryInput) (application.SearchResult, error) {
+func (s *stubSearchService) Search(ctx context.Context, actor domain.Actor, input domain.SearchQueryInput) (application.SearchResult, error) {
+	if s.search != nil {
+		return s.search(ctx, actor, input)
+	}
 	return s.result, s.err
 }

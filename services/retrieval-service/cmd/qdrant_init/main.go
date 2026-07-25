@@ -36,7 +36,7 @@ func main() {
 		},
 	}
 	if err := run(ctx, os.Getenv, os.ReadFile, client); err != nil {
-		log.Print("retrieval qdrant initializer failed")
+		log.Printf("retrieval qdrant initializer failed: %v", err)
 		os.Exit(1)
 	}
 }
@@ -69,6 +69,9 @@ func ensureCollection(ctx context.Context, store collectionEnsurer) error {
 	for {
 		if err := store.EnsureCollection(ctx); err != nil {
 			lastErr = err
+			if !errors.Is(err, vector.ErrVectorDependencyUnavailable) {
+				return fmt.Errorf("ensure qdrant collection: %w", err)
+			}
 		} else {
 			return nil
 		}

@@ -49,8 +49,8 @@ compose_config="$({
 	ANSWER_LLM_API_KEY_PATH="$secret_dir/answer_llm_test_api_key" \
 	ANSWER_LLM_BASE_URL= \
 	ANSWER_LLM_MODEL= \
-	docker compose -f docker-compose.yml -f docker-compose.ci.yml \
-		--profile m4-ha --profile m5 --profile m6 --profile m6-test config --no-env-resolution --format json
+		docker compose -f docker-compose.yml -f docker-compose.ci.yml \
+		--profile raglibrarian config --no-env-resolution --format json
 })"
 printf '%s' "$compose_config" | jq -e '
 	.services["llm-provider-stub"].user == null and
@@ -59,6 +59,8 @@ printf '%s' "$compose_config" | jq -e '
 	.services["llm-provider-stub"].environment.RUN_AS_GID == "65532" and
 	.services["llm-provider-stub"].healthcheck.test == ["CMD", "/healthcheck"] and
 	.services["answer-service"].depends_on["llm-provider-stub"].condition == "service_healthy" and
+	.services["retrieval-service"].environment.RETRIEVAL_SUMMARY_LLM_BASE_URL == "" and
+	.services["retrieval-service"].environment.RETRIEVAL_SUMMARY_LLM_MODEL == "" and
 	.services["edge-api"].environment.EDGE_ANSWER_RATE_LIMIT == "30" and
 	.services["edge-api-2"].environment.EDGE_ANSWER_RATE_LIMIT == "30"
 ' >/dev/null || {

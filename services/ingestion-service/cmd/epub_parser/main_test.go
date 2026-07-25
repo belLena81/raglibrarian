@@ -4,8 +4,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/extractor"
@@ -28,6 +30,86 @@ func TestRunReturnsMalformedProtocolCodeWithoutOutput(t *testing.T) {
 	}
 }
 
+func TestRunMarksInvalidArgumentCountWithToken(t *testing.T) {
+	originalStderr := os.Stderr
+	reading, writing, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = writing
+	t.Cleanup(func() { os.Stderr = originalStderr })
+	t.Cleanup(func() { _ = reading.Close() })
+
+	code := run(nil, &bytes.Buffer{})
+
+	if code != 2 {
+		t.Fatalf("run() code = %d, want 2", code)
+	}
+	_ = writing.Close()
+	contents, readErr := io.ReadAll(reading)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(contents), "epub_parser_invalid_args") {
+		t.Fatalf("run() stderr = %q, want invalid-args token", string(contents))
+	}
+}
+
+func TestRunFallsBackToEPUBParserSourcePathEnvironment(t *testing.T) {
+	sourcePath := writeParserTestEPUB(t)
+	t.Setenv("EPUB_PARSER_SOURCE_PATH", sourcePath)
+	var output bytes.Buffer
+
+	code := run(nil, &output)
+
+	if code != 0 {
+		t.Fatalf("run() code = %d, want 0", code)
+	}
+	if output.Len() == 0 {
+		t.Fatal("run() produced no parser output")
+	}
+}
+
+func TestRunRejectsMissingArgumentsAndSourceEnvironment(t *testing.T) {
+	t.Setenv("EPUB_PARSER_SOURCE_PATH", "")
+	originalStderr := os.Stderr
+	reading, writing, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = writing
+	t.Cleanup(func() { os.Stderr = originalStderr })
+	t.Cleanup(func() { _ = reading.Close() })
+
+	code := run(nil, &bytes.Buffer{})
+
+	if code != 2 {
+		t.Fatalf("run() code = %d, want 2", code)
+	}
+	_ = writing.Close()
+	contents, readErr := io.ReadAll(reading)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(contents), "epub_parser_invalid_args") {
+		t.Fatalf("run() stderr = %q, want invalid-args token", string(contents))
+	}
+}
+
+func TestRunIgnoresLeadingExtraneousArguments(t *testing.T) {
+	sourcePath := writeParserTestEPUB(t)
+	var output bytes.Buffer
+
+	code := run([]string{"ignored", sourcePath}, &output)
+
+	if code != 0 {
+		t.Fatalf("run() code = %d, want 0", code)
+	}
+	if output.Len() == 0 {
+		t.Fatal("run() produced no parser output")
+	}
+}
+
 func TestRunClassifiesOutputFailureAsInternalWithoutDiagnostics(t *testing.T) {
 	sourcePath := writeParserTestEPUB(t)
 
@@ -38,10 +120,42 @@ func TestRunClassifiesOutputFailureAsInternalWithoutDiagnostics(t *testing.T) {
 	}
 }
 
+func TestRunRecoversFromPanicAndWritesBoundedToken(t *testing.T) {
+	sourcePath := writeParserTestEPUB(t)
+	originalStderr := os.Stderr
+	reading, writing, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = writing
+	t.Cleanup(func() { os.Stderr = originalStderr })
+	t.Cleanup(func() { _ = reading.Close() })
+
+	code := run([]string{sourcePath}, panicWriter{})
+
+	_ = writing.Close()
+	contents, readErr := io.ReadAll(reading)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if code != extractor.EPUBParserExitInternal {
+		t.Fatalf("run() code = %d, want %d", code, extractor.EPUBParserExitInternal)
+	}
+	if !strings.Contains(string(contents), "epub_parser_panic") {
+		t.Fatalf("run() stderr = %q, want panic token", string(contents))
+	}
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) {
 	return 0, errors.New("private output failure")
+}
+
+type panicWriter struct{}
+
+func (panicWriter) Write([]byte) (int, error) {
+	panic("private parser panic")
 }
 
 func writeParserTestEPUB(t *testing.T) string {

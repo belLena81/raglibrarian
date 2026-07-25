@@ -30,7 +30,7 @@ func TestSearcherReturnsRankedEvidence(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{
 		results:   []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Replication keeps copies.", Score: 0.91}},
-		documents: []DocumentResult{{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", ChunkCount: 10, Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "Replication keeps copies."}}}},
+		documents: []DocumentResult{{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", ChunkCount: 10, Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "Replication keeps copies.", Score: 0.91}}}},
 	}
 	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
 	if err != nil {
@@ -53,15 +53,15 @@ func TestSearcherUsesProviderSummariesAndFallsBack(t *testing.T) {
 		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Deterministic retries keep search stable.", Score: 0.91}},
 		documents: []DocumentResult{{
 			DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", ChunkCount: 1,
-			Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "Deterministic retries keep search stable."}},
+			Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "Deterministic retries keep search stable.", Score: 0.91}},
 		}},
 	}
 	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
-	provider := &stubSummaryProvider{response: func(value string) string {
-		return "summary: " + strings.TrimSpace(value)
+	provider := &stubSummaryProvider{response: func(value SummaryRequest) string {
+		return "summary: " + strings.TrimSpace(value.Question) + " | " + strings.TrimSpace(value.Passage)
 	}}
 	searcher.SetSummaryProvider(provider)
 
@@ -69,15 +69,18 @@ func TestSearcherUsesProviderSummariesAndFallsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
-	if len(result.Evidence) != 1 || result.Evidence[0].Summary != "summary: Deterministic retries keep search stable." {
+	if len(result.Evidence) != 1 || result.Evidence[0].Summary != "summary: replication | Deterministic retries keep search stable." {
 		t.Fatalf("provider-backed evidence summary missing: %#v", result.Evidence)
 	}
-	if len(result.Documents) != 1 || result.Documents[0].Summary != "summary: Deterministic retries keep search stable." || len(result.Documents[0].Evidence) != 1 ||
-		result.Documents[0].Evidence[0].Summary != "summary: Deterministic retries keep search stable." {
+	if len(result.Documents) != 1 || result.Documents[0].Summary != "summary: replication | Deterministic retries keep search stable." || len(result.Documents[0].Evidence) != 1 ||
+		result.Documents[0].Evidence[0].Summary != "summary: replication | Deterministic retries keep search stable." {
 		t.Fatalf("provider-backed document summary missing: %#v", result.Documents)
 	}
 	if provider.calls() != 3 {
 		t.Fatalf("provider calls = %d, want 3", provider.calls())
+	}
+	if len(provider.requests) != 3 || provider.requests[0].Question != "replication" || provider.requests[0].Passage != "Deterministic retries keep search stable." {
+		t.Fatalf("provider requests missing question/passage: %#v", provider.requests)
 	}
 
 	searcher.SetSummaryProvider(&stubSummaryProvider{err: errors.New("provider failed")})
@@ -90,13 +93,51 @@ func TestSearcherUsesProviderSummariesAndFallsBack(t *testing.T) {
 	}
 }
 
+func TestSearcherFiltersLowScoringEvidenceBeforeReturningResults(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{
+		resultsByPage: [][]Evidence{
+			{
+				{EvidenceID: "low-1", JobID: "job-low-1", BookID: "book-low", Passage: "low evidence", Score: 0.59},
+				{EvidenceID: "low-2", JobID: "job-low-2", BookID: "book-low", Passage: "low evidence", Score: 0.58},
+			},
+			{
+				{EvidenceID: "high-1", JobID: "job-high-1", BookID: "book-high", Passage: "high evidence", Score: 0.60},
+			},
+		},
+		documentsByPage: [][]DocumentResult{
+			{
+				{DocumentID: "doc-low", JobID: "job-low-1", BookID: "book-low", ChunkCount: 1, Score: 0.93, Evidence: []Evidence{{EvidenceID: "low-1", Passage: "low evidence", Score: 0.59}, {EvidenceID: "low-2", Passage: "low evidence", Score: 0.58}}},
+			},
+			{
+				{DocumentID: "doc-high", JobID: "job-high-1", BookID: "book-high", ChunkCount: 1, Score: 0.91, Evidence: []Evidence{{EvidenceID: "high-1", Passage: "high evidence", Score: 0.60}}},
+			},
+		},
+	}
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	if err != nil {
+		t.Fatalf("NewSearcher() error = %v", err)
+	}
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 1})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "high-1" || result.Evidence[0].Score < minimumVisibleScore {
+		t.Fatalf("low-scoring evidence was not filtered: %#v", result.Evidence)
+	}
+	if len(result.Documents) != 1 || result.Documents[0].DocumentID != "doc-high" || len(result.Documents[0].Evidence) != 1 || result.Documents[0].Evidence[0].EvidenceID != "high-1" {
+		t.Fatalf("low-scoring document evidence was not filtered: %#v", result.Documents)
+	}
+}
+
 func TestSearcherSkipsEmptyPassagesForSummaries(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{
 		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Passage: "   ", Score: 0.91}},
 		documents: []DocumentResult{{
 			DocumentID: "document-1", JobID: "job-1", BookID: "book-1", ChunkCount: 1,
-			Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "   "}},
+			Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "   ", Score: 0.91}},
 		}},
 	}
 	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
@@ -123,8 +164,8 @@ func TestSearcherBackfillsAfterVisibilityFiltering(t *testing.T) {
 	store := &stubEvidenceStore{
 		resultsByPage: [][]Evidence{
 			{
-				{EvidenceID: "pending-1", JobID: "pending-1", BookID: "book-pending", Passage: "not visible", Score: 0.99},
-				{EvidenceID: "pending-2", JobID: "pending-2", BookID: "book-pending", Passage: "not visible", Score: 0.98},
+				{EvidenceID: "pending-1", JobID: "pending-1", BookID: "book-pending", Passage: "not visible", Score: 0.59},
+				{EvidenceID: "pending-2", JobID: "pending-2", BookID: "book-pending", Passage: "not visible", Score: 0.58},
 			},
 			{
 				{EvidenceID: "visible-1", JobID: "indexed-1", BookID: "book-1", Passage: "visible one", Score: 0.80},
@@ -133,12 +174,12 @@ func TestSearcherBackfillsAfterVisibilityFiltering(t *testing.T) {
 		},
 		documentsByPage: [][]DocumentResult{
 			{
-				{DocumentID: "pending-document-1", JobID: "pending-1", BookID: "book-pending", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "pending-1"}}},
-				{DocumentID: "pending-document-2", JobID: "pending-2", BookID: "book-pending", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "pending-2"}}},
+				{DocumentID: "pending-document-1", JobID: "pending-1", BookID: "book-pending", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "pending-1", Score: 0.99}}},
+				{DocumentID: "pending-document-2", JobID: "pending-2", BookID: "book-pending", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "pending-2", Score: 0.98}}},
 			},
 			{
-				{DocumentID: "visible-document-1", JobID: "indexed-1", BookID: "book-1", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "visible-1", Passage: "visible one"}}},
-				{DocumentID: "visible-document-2", JobID: "indexed-2", BookID: "book-2", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "visible-2", Passage: "visible two"}}},
+				{DocumentID: "visible-document-1", JobID: "indexed-1", BookID: "book-1", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "visible-1", Passage: "visible one", Score: 0.80}}},
+				{DocumentID: "visible-document-2", JobID: "indexed-2", BookID: "book-2", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "visible-2", Passage: "visible two", Score: 0.79}}},
 			},
 		},
 	}
@@ -168,7 +209,7 @@ func TestSearcherContinuesDocumentPaginationAfterHydrationDropsCandidates(t *tes
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{documentPages: []DocumentPage{
 		{Exhausted: false},
-		{Documents: []DocumentResult{{DocumentID: "document-2", JobID: "job-2", BookID: "book-2", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "evidence-2"}}}}, Exhausted: true},
+		{Documents: []DocumentResult{{DocumentID: "document-2", JobID: "job-2", BookID: "book-2", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "evidence-2", Score: 0.8}}}}, Exhausted: true},
 	}}
 	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
 	if err != nil {
@@ -288,14 +329,14 @@ func (v filteringVisibility) FilterIndexedDocuments(_ context.Context, values []
 
 type stubSummaryProvider struct {
 	mu       sync.Mutex
-	inputs   []string
-	response func(string) string
+	requests []SummaryRequest
+	response func(SummaryRequest) string
 	err      error
 }
 
-func (s *stubSummaryProvider) Summarize(_ context.Context, value string) (string, error) {
+func (s *stubSummaryProvider) Summarize(_ context.Context, value SummaryRequest) (string, error) {
 	s.mu.Lock()
-	s.inputs = append(s.inputs, value)
+	s.requests = append(s.requests, value)
 	response := s.response
 	err := s.err
 	s.mu.Unlock()
@@ -303,7 +344,7 @@ func (s *stubSummaryProvider) Summarize(_ context.Context, value string) (string
 		return "", err
 	}
 	if response == nil {
-		return value, nil
+		return value.Passage, nil
 	}
 	return response(value), nil
 }
@@ -311,5 +352,5 @@ func (s *stubSummaryProvider) Summarize(_ context.Context, value string) (string
 func (s *stubSummaryProvider) calls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.inputs)
+	return len(s.requests)
 }

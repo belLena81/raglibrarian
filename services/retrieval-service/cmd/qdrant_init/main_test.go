@@ -14,6 +14,7 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/process"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
 )
 
 func TestRunCreatesMissingQdrantCollection(t *testing.T) {
@@ -187,6 +188,18 @@ func TestRunDropsPrivilegesBeforeCreatingQdrantClient(t *testing.T) {
 	}
 }
 
+func TestEnsureCollectionStopsOnNonRetryableError(t *testing.T) {
+	store := &stubCollectionEnsurer{err: vector.ErrIncompatibleVectorCollection}
+
+	err := ensureCollection(context.Background(), store)
+	if !errors.Is(err, vector.ErrIncompatibleVectorCollection) {
+		t.Fatalf("ensureCollection() error = %v", err)
+	}
+	if store.calls != 1 {
+		t.Fatalf("ensureCollection() calls = %d, want 1", store.calls)
+	}
+}
+
 func TestLoadConfigRejectsIncompleteInitializerConfiguration(t *testing.T) {
 	if _, err := loadConfig(env(map[string]string{"RETRIEVAL_QDRANT_API_KEY_FILE": "/secret"})); err == nil {
 		t.Fatalf("loadConfig() accepted missing Qdrant URL")
@@ -264,6 +277,16 @@ func supportedProfileDigestHex() string {
 func supportedCollectionSchemaDigestHex() string {
 	digest := domain.CollectionSchemaDigest()
 	return hex.EncodeToString(digest[:])
+}
+
+type stubCollectionEnsurer struct {
+	calls int
+	err   error
+}
+
+func (stub *stubCollectionEnsurer) EnsureCollection(context.Context) error {
+	stub.calls++
+	return stub.err
 }
 
 func assertCollectionMetadataRequest(t *testing.T, request *http.Request) {
