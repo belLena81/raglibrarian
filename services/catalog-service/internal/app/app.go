@@ -91,8 +91,9 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	bookRepository := repository.NewPostgresBookRepository(pool, wakeOutbox)
 	objects := repository.NewMinIOObjectStore(minioClient, cfg.MinIOBucket)
 	service := catalog.NewServiceWithOptions(bookRepository, objects, catalog.ServiceOptions{
-		MaxBytes:          cfg.MaxUploadBytes,
-		UploadConcurrency: cfg.UploadConcurrency,
+		MaxBytes:           cfg.MaxUploadBytes,
+		UploadConcurrency:  cfg.UploadConcurrency,
+		PreviewConcurrency: cfg.PreviewConcurrency,
 	})
 	catalogv1.RegisterCatalogServiceServer(server, cataloggrpc.NewServer(service, diagnostics, readiness))
 	healthServer := health.NewServer()

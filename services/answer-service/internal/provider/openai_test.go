@@ -28,6 +28,10 @@ func TestOpenAIGeneratesStrictStructuredSegments(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
+		format, ok := body["response_format"].(map[string]any)
+		if !ok || format["type"] != "json_object" {
+			t.Fatalf("response_format = %#v, want json_object", body["response_format"])
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},

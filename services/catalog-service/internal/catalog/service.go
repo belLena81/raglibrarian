@@ -107,17 +107,19 @@ type Service struct {
 	newID       func() (string, error)
 	maxBytes    int64
 	uploads     chan struct{}
+	preview     chan struct{}
 	previewBook func(context.Context, Book, OriginalObjectStore) (string, error)
 }
 
 // ServiceOptions supplies bounded runtime dependencies without exposing
 // transport or storage implementation details to Catalog's application logic.
 type ServiceOptions struct {
-	MaxBytes          int64
-	UploadConcurrency int
-	Clock             func() time.Time
-	NewID             func() (string, error)
-	PreviewBook       func(context.Context, Book, OriginalObjectStore) (string, error)
+	MaxBytes           int64
+	UploadConcurrency  int
+	PreviewConcurrency int
+	Clock              func() time.Time
+	NewID              func() (string, error)
+	PreviewBook        func(context.Context, Book, OriginalObjectStore) (string, error)
 }
 
 func NewService(repository BookRepository, objects OriginalObjectStore, maxBytes int64) *Service {
@@ -130,6 +132,9 @@ func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStor
 	}
 	if options.UploadConcurrency <= 0 {
 		options.UploadConcurrency = 2
+	}
+	if options.PreviewConcurrency <= 0 {
+		options.PreviewConcurrency = 2
 	}
 	if options.Clock == nil {
 		options.Clock = func() time.Time { return time.Now().UTC() }
@@ -146,6 +151,7 @@ func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStor
 		now:         options.Clock,
 		maxBytes:    options.MaxBytes,
 		uploads:     make(chan struct{}, options.UploadConcurrency),
+		preview:     make(chan struct{}, options.PreviewConcurrency),
 		newID:       options.NewID,
 		previewBook: options.PreviewBook,
 	}
@@ -388,6 +394,12 @@ func (s *Service) GetBook(ctx context.Context, id string) (Book, error) {
 		return Book{}, err
 	}
 	if s.previewBook != nil && book.ObjectReference != "" && book.ProcessingStatus != BookStatusDeleted {
+		select {
+		case s.preview <- struct{}{}:
+			defer func() { <-s.preview }()
+		default:
+			return book, nil
+		}
 		previewContext, cancel := context.WithTimeout(ctx, previewTimeout)
 		preview, previewErr := s.previewBook(previewContext, book, s.objects)
 		cancel()

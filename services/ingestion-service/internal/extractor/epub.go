@@ -401,7 +401,7 @@ func extractEPUBXHTML(contents []byte, maximum int64) (string, error) {
 
 func standardEPUBHTMLDoctype(value xml.Directive) bool {
 	fields := strings.Fields(string(value))
-	return len(fields) == 2 && strings.EqualFold(fields[0], "DOCTYPE") && strings.EqualFold(fields[1], "html")
+	return len(fields) >= 2 && strings.EqualFold(fields[0], "DOCTYPE") && strings.EqualFold(fields[1], "html")
 }
 
 func appendEPUBText(output *strings.Builder, value string, maximum int64) {

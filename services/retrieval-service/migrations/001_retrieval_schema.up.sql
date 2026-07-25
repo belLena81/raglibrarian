@@ -54,8 +54,8 @@ CREATE TABLE IF NOT EXISTS retrieval.index_jobs (
     vector_cleanup_pending       BOOLEAN     NOT NULL DEFAULT FALSE,
     vector_cleanup_attempts      INTEGER     NOT NULL DEFAULT 0 CHECK (vector_cleanup_attempts >= 0),
     vector_cleanup_next_attempt_at TIMESTAMPTZ,
-    CONSTRAINT index_jobs_book_id_source_sha256_manifest_sha256_profile_digest_key
-        UNIQUE (book_id, source_sha256, manifest_sha256, profile_digest)
+    CONSTRAINT index_jobs_book_id_source_sha256_manifest_sha256_profile_digest_lifecycle_version_key
+        UNIQUE (book_id, source_sha256, manifest_sha256, profile_digest, lifecycle_version)
 );
 
 CREATE TABLE IF NOT EXISTS retrieval.document_embedding_accumulators (

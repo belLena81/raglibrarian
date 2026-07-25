@@ -30,6 +30,7 @@ type Config struct {
 	RetrievalRabbitURI string
 	MaxUploadBytes     int64
 	UploadConcurrency  int
+	PreviewConcurrency int
 	MetricsAddress     string
 	ReconcileInterval  time.Duration
 	OrphanGracePeriod  time.Duration
@@ -113,6 +114,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	previewConcurrency, err := boundedInt("CATALOG_PREVIEW_CONCURRENCY", 2, 16)
+	if err != nil {
+		return Config{}, err
+	}
 	metricsAddress, err := privateMetricsAddress(optional("CATALOG_METRICS_ADDR", "127.0.0.1:9092"))
 	if err != nil {
 		return Config{}, err
@@ -125,7 +130,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{Address: optional("CATALOG_GRPC_ADDR", ":50052"), DSN: dsn, MinIOEndpoint: endpoint, MinIOAccessKey: minioAccessKey, MinIOSecretKey: minioSecretKey, MinIOBucket: bucket, MinIOInsecure: minioInsecure, MinIOCAFile: minioCAFile, RabbitURI: rabbitURI, IngestionRabbitURI: ingestionRabbitURI, RetrievalRabbitURI: retrievalRabbitURI, MaxUploadBytes: maxUploadBytes, UploadConcurrency: uploadConcurrency, MetricsAddress: metricsAddress, ReconcileInterval: reconcileInterval, OrphanGracePeriod: orphanGracePeriod, TLS: internaltls.Files{CA: ca, Certificate: cert, Key: key}, RunAs: process.Identity{UID: uid, GID: gid}}, nil
+	return Config{Address: optional("CATALOG_GRPC_ADDR", ":50052"), DSN: dsn, MinIOEndpoint: endpoint, MinIOAccessKey: minioAccessKey, MinIOSecretKey: minioSecretKey, MinIOBucket: bucket, MinIOInsecure: minioInsecure, MinIOCAFile: minioCAFile, RabbitURI: rabbitURI, IngestionRabbitURI: ingestionRabbitURI, RetrievalRabbitURI: retrievalRabbitURI, MaxUploadBytes: maxUploadBytes, UploadConcurrency: uploadConcurrency, PreviewConcurrency: previewConcurrency, MetricsAddress: metricsAddress, ReconcileInterval: reconcileInterval, OrphanGracePeriod: orphanGracePeriod, TLS: internaltls.Files{CA: ca, Certificate: cert, Key: key}, RunAs: process.Identity{UID: uid, GID: gid}}, nil
 }
 
 func strictBool(key string, fallback bool) (bool, error) {

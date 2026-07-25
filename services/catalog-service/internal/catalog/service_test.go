@@ -580,6 +580,76 @@ func TestGetBookIgnoresPreviewTimeout(t *testing.T) {
 	}
 }
 
+func TestGetBookBoundsPreviewConcurrency(t *testing.T) {
+	repository := NewMemoryRepository()
+	objects := NewMemoryObjectStore()
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var calls atomic.Int32
+	service := NewServiceWithOptions(repository, objects, ServiceOptions{
+		MaxBytes:           1024,
+		PreviewConcurrency: 1,
+		PreviewBook: func(ctx context.Context, _ Book, _ OriginalObjectStore) (string, error) {
+			calls.Add(1)
+			started <- struct{}{}
+			select {
+			case <-release:
+				return "data:application/pdf;base64,ZmFrZQ==", nil
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		},
+	})
+	book, err := service.UploadBook(context.Background(), validUploadInput(strings.NewReader("%PDF-1.7\nbody")))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := service.GetBook(context.Background(), book.ID)
+		firstDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first preview did not start")
+	}
+
+	secondDone := make(chan error, 1)
+	var second Book
+	go func() {
+		second, err = service.GetBook(context.Background(), book.ID)
+		secondDone <- err
+	}()
+	select {
+	case err = <-secondDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("second preview request blocked instead of being bounded")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("preview calls = %d, want 1 while saturated", calls.Load())
+	}
+	if second.Preview != "" {
+		t.Fatalf("second preview = %q, want empty fallback while saturated", second.Preview)
+	}
+	close(release)
+	select {
+	case err = <-firstDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first preview did not complete")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("preview calls = %d, want 1", calls.Load())
+	}
+}
+
 func TestListBooksRejectsMalformedCursorAsPagination(t *testing.T) {
 	service := NewService(NewMemoryRepository(), NewMemoryObjectStore(), 1024)
 	_, _, err := service.ListBooks(context.Background(), 25, "not-a-cursor")

@@ -19,6 +19,10 @@ func TestCatalogBounds(t *testing.T) {
 	if _, err := boundedInt("CATALOG_UPLOAD_CONCURRENCY", 2, 16); err == nil {
 		t.Fatal("expected concurrency error")
 	}
+	t.Setenv("CATALOG_PREVIEW_CONCURRENCY", "3")
+	if value, err := boundedInt("CATALOG_PREVIEW_CONCURRENCY", 2, 16); err != nil || value != 3 {
+		t.Fatalf("preview concurrency = %d, err = %v", value, err)
+	}
 }
 
 func TestPrivateMetricsAddress(t *testing.T) {
