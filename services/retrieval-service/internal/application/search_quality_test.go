@@ -17,6 +17,7 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/embedding"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
+	"go.uber.org/zap"
 )
 
 func TestSearchQualityBenchmark(t *testing.T) {
@@ -57,7 +58,7 @@ func newQualityEmbedder(t *testing.T) *embedding.TEI {
 		t.Skip("RETRIEVAL_TEI_URL is required for the configured-provider M5 search quality benchmark")
 	}
 	client := &http.Client{Timeout: 30 * time.Second}
-	embedder, err := embedding.NewTEI(teiURL, client)
+	embedder, err := embedding.NewTEI(teiURL, client, zap.NewNop(), nil)
 	if err != nil {
 		t.Fatalf("NewTEI() error = %v", err)
 	}

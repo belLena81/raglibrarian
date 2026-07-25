@@ -120,6 +120,64 @@ func TestReplayRecoveryTerminalFailureAndVisibilityUseDurableState(t *testing.T)
 	}
 }
 
+func TestBeginBatchRollsBackEarlierWritesWhenOutboxInsertFails(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository := NewPostgres(pool)
+	suffix := randomIntegrationID(t)
+	bookID, jobID, batchID := "atomic-book-"+suffix, "atomic-job-"+suffix, "atomic-batch-"+suffix
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	work := validIntegrationBatchWork(bookID, jobID, batchID, now)
+	payloadDigest := integrationDigest(4)
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.metadata_facts(book_id,event_id,payload_digest,source_sha256,title,author,publication_year,tags,correlation_id,causation_id,occurred_at)
+		VALUES($1,$2,$3,$4,'Atomic systems','Retrieval integration',2026,'{}',$5,$6,$7)`,
+		bookID, "metadata-"+suffix, payloadDigest[:], work.SourceSHA256[:], work.CorrelationID, work.CausationID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertManifestFact(t, ctx, pool, bookID, work.SourceSHA256, work.ManifestSHA256, work.CorrelationID, work.CausationID, now, manifestForWork(work))
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.outbox
+		(event_id,event_type,aggregate_id,payload,occurred_at,next_attempt_at)
+		VALUES($1,'retrieval.index-batch.requested.v1',$2,'seeded duplicate',$3,$3)`,
+		batchID+":requested", jobID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.outbox WHERE aggregate_id=$1`, jobID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_batches WHERE job_id=$1`, jobID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE id=$1`, jobID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.book_lifecycle WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.manifest_facts WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
+	})
+
+	if _, accepted, beginErr := repository.BeginBatch(ctx, work); accepted || beginErr == nil {
+		t.Fatalf("BeginBatch() accepted=%v error=%v", accepted, beginErr)
+	}
+	var jobCount, batchCount, lifecycleCount int
+	if err = pool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM retrieval.index_jobs WHERE id=$1),
+		(SELECT count(*) FROM retrieval.index_batches WHERE job_id=$1),
+		(SELECT count(*) FROM retrieval.book_lifecycle WHERE book_id=$2)`, jobID, bookID).
+		Scan(&jobCount, &batchCount, &lifecycleCount); err != nil {
+		t.Fatalf("read rolled back retrieval projection: %v", err)
+	}
+	if jobCount != 0 || batchCount != 0 || lifecycleCount != 0 {
+		t.Fatalf("rolled back counts job=%d batch=%d lifecycle=%d", jobCount, batchCount, lifecycleCount)
+	}
+}
+
 func TestBeginBatchRejectsTamperedManifestBounds(t *testing.T) {
 	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
 		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")

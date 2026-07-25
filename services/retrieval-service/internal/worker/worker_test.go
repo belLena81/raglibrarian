@@ -84,6 +84,9 @@ func TestRejectionReasonMapsFailureCategoryAndCommonErrors(t *testing.T) {
 	if got := rejectionReason(application.Failure(domain.FailureEmbeddingUnavailable, errors.New("tei unavailable"))); got != "embedding_unavailable" {
 		t.Fatalf("rejectionReason() = %q, want %q", got, "embedding_unavailable")
 	}
+	if got := rejectionReason(application.Failure(domain.FailureIndexingTimeout, errors.New("tei timeout"))); got != "indexing_timeout" {
+		t.Fatalf("rejectionReason() = %q, want %q", got, "indexing_timeout")
+	}
 	if got := rejectionReason(application.ErrConflictingEvent); got != "conflicting_event" {
 		t.Fatalf("rejectionReason() = %q, want %q", got, "conflicting_event")
 	}

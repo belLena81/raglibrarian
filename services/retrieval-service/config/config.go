@@ -19,12 +19,14 @@ type Config struct {
 	GRPCAddress          string
 	MetricsAddress       string
 	TEIURL               string
+	TEIRequestsPerSecond int
 	QdrantURL            string
 	QdrantCollection     string
 	QdrantAPIKeyFile     string
 	PostgresDSNFile      string
 	SummaryLLMBaseURL    string
 	SummaryLLMModel      string
+	SummaryLLMRequestsPerSecond int
 	SummaryLLMAPIKeyFile string
 	SummaryLLMCAFile     string
 	TLS                  internaltls.Files
@@ -36,6 +38,7 @@ type WorkerConfig struct {
 	MinIOEndpoint, MinIOAccessKey, MinIOSecretKey, ArtifactBucket string
 	MinIOInsecure                                                 bool
 	TEIURL, QdrantURL, QdrantCollection, QdrantAPIKey             string
+	TEIRequestsPerSecond                                          int
 	MetricsAddress                                                string
 	ServerlessInvocationTimeout                                   time.Duration
 	Concurrency                                                   int
@@ -62,6 +65,8 @@ func Load() (Config, error) {
 		TLS:              internaltls.Files{CA: os.Getenv("RETRIEVAL_TLS_CA_FILE"), Certificate: os.Getenv("RETRIEVAL_TLS_CERT_FILE"), Key: os.Getenv("RETRIEVAL_TLS_KEY_FILE")},
 		RunAs:            process.Identity{UID: uid, GID: gid},
 	}
+	configuration.SummaryLLMRequestsPerSecond = providerRequestsPerSecond("RETRIEVAL_SUMMARY_LLM_REQUESTS_PER_SECOND", configuration.SummaryLLMModel)
+	configuration.TEIRequestsPerSecond = nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000)
 	if configuration.GRPCAddress == "" || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
 		configuration.PostgresDSNFile == "" || configuration.QdrantAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || uidErr != nil || gidErr != nil ||
@@ -139,6 +144,7 @@ func LoadWorker() (WorkerConfig, error) {
 	configuration := WorkerConfig{DSN: dsn, ConsumerRabbitURI: consumerURI, PublisherRabbitURI: publisherURI,
 		MinIOEndpoint: os.Getenv("RETRIEVAL_MINIO_ENDPOINT"), MinIOAccessKey: accessKey, MinIOSecretKey: secretKey, ArtifactBucket: os.Getenv("RETRIEVAL_ARTIFACT_BUCKET"), MinIOInsecure: minioInsecure,
 		TEIURL: os.Getenv("RETRIEVAL_TEI_URL"), QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: "evidence_v2", QdrantAPIKey: qdrantAPIKey,
+		TEIRequestsPerSecond: nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000),
 		MetricsAddress: os.Getenv("RETRIEVAL_METRICS_ADDR"), ServerlessInvocationTimeout: serverlessInvocationTimeout, Concurrency: concurrency, RunAs: process.Identity{UID: uid, GID: gid}}
 	if uidErr != nil || gidErr != nil || concurrencyErr != nil || concurrency > 16 || insecureErr != nil || timeoutErr != nil || configuration.MinIOEndpoint == "" ||
 		configuration.ArtifactBucket == "" || configuration.MetricsAddress == "" || !privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) {
@@ -181,6 +187,33 @@ func privateServiceURL(value string) bool {
 func validProviderURL(value string) bool {
 	parsed, err := url.Parse(value)
 	return err == nil && len(value) <= 2048 && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
+}
+
+func providerRequestsPerSecond(key, model string) int {
+	value := os.Getenv(key)
+	if value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 || parsed > 1000 {
+			return 0
+		}
+		return parsed
+	}
+	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(model)), ":free") {
+		return 1
+	}
+	return 0
+}
+
+func nonNegativeInteger(key string, fallback, maximum int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 || parsed > maximum {
+		return fallback
+	}
+	return parsed
 }
 
 // ValidateServerlessBrokerURI restricts short-lived jobs to private AMQPS.

@@ -9,17 +9,22 @@ import (
 	"testing"
 
 	"go.uber.org/zap"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/throttle"
 )
 
 func TestOpenAIGenerateSummarizesText(t *testing.T) {
 	var requestPath string
 	var requestModel string
 	var requestContent string
+	limit, err := throttle.New(0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	adapter, err := NewOpenAI("https://openrouter.ai/", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		requestPath = request.URL.Path
 		requestModel, requestContent = decodeSummaryRequest(t, request.Body)
 		return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":" concise summary "}}]}`), nil
-	})}, zap.NewNop())
+	})}, zap.NewNop(), limit)
 	if err != nil {
 		t.Fatalf("NewOpenAI() error = %v", err)
 	}
@@ -51,7 +56,7 @@ func TestOpenAIChatCompletionPathNormalization(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			adapter, err := NewOpenAI(test.baseURL, "model", "key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 				return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":"summary"}}]}`), nil
-			})}, zap.NewNop())
+			})}, zap.NewNop(), nil)
 			if err != nil {
 				t.Fatalf("NewOpenAI() error = %v", err)
 			}
@@ -64,13 +69,13 @@ func TestOpenAIChatCompletionPathNormalization(t *testing.T) {
 
 func TestNewOpenAIRejectsInvalidConfiguration(t *testing.T) {
 	client := &http.Client{}
-	if _, err := NewOpenAI("http://provider", "model", "key", client, zap.NewNop()); err == nil {
+	if _, err := NewOpenAI("http://provider", "model", "key", client, zap.NewNop(), nil); err == nil {
 		t.Fatal("NewOpenAI accepted a non-HTTPS base URL")
 	}
-	if _, err := NewOpenAI("https://provider", " ", "key", client, zap.NewNop()); err == nil {
+	if _, err := NewOpenAI("https://provider", " ", "key", client, zap.NewNop(), nil); err == nil {
 		t.Fatal("NewOpenAI accepted an empty model")
 	}
-	if _, err := NewOpenAI("https://provider", "model", " ", client, zap.NewNop()); err == nil {
+	if _, err := NewOpenAI("https://provider", "model", " ", client, zap.NewNop(), nil); err == nil {
 		t.Fatal("NewOpenAI accepted an empty API key")
 	}
 }

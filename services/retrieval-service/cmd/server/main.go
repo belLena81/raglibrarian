@@ -22,6 +22,7 @@ import (
 	retrievalgrpc "github.com/belLena81/raglibrarian/services/retrieval-service/internal/grpc"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/provider"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/throttle"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
@@ -41,7 +42,12 @@ func main() {
 		os.Exit(1)
 	}
 	httpClient := &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
-	embedder, err := embedding.NewTEI(configuration.TEIURL, httpClient)
+	teiLimiter, err := throttle.New(configuration.TEIRequestsPerSecond)
+	if err != nil {
+		log.Print("retrieval server could not configure embedding throttle")
+		os.Exit(1)
+	}
+	embedder, err := embedding.NewTEI(configuration.TEIURL, httpClient, serviceLogger, teiLimiter)
 	if err != nil {
 		log.Print("retrieval server could not configure embedding dependency")
 		os.Exit(1)
@@ -95,7 +101,7 @@ func main() {
 			DNSNames: []string{"edge-api", "answer-service"},
 		})),
 	)
-	retrievalv1.RegisterRetrievalServiceServer(server, retrievalgrpc.NewServer(searcher, embedder, store, records))
+	retrievalv1.RegisterRetrievalServiceServer(server, retrievalgrpc.NewServer(searcher, serviceLogger, embedder, store, records))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if configuration.MetricsAddress != "" {
@@ -170,7 +176,11 @@ func configureSummaryProvider(configuration config.Config, serviceLogger *zap.Lo
 	if err != nil {
 		return nil, err
 	}
-	summaryProvider, err := provider.NewOpenAI(configuration.SummaryLLMBaseURL, configuration.SummaryLLMModel, apiKey, httpClient, serviceLogger)
+	limit, err := throttle.New(configuration.SummaryLLMRequestsPerSecond)
+	if err != nil {
+		return nil, err
+	}
+	summaryProvider, err := provider.NewOpenAI(configuration.SummaryLLMBaseURL, configuration.SummaryLLMModel, apiKey, httpClient, serviceLogger, limit)
 	if err != nil {
 		return nil, err
 	}

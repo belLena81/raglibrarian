@@ -17,8 +17,11 @@ import (
 	"path"
 	"strings"
 	"unicode/utf8"
+	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/throttle"
 )
 
 const (
@@ -32,9 +35,10 @@ type OpenAI struct {
 	apiKey   string
 	client   *http.Client
 	log      *zap.Logger
+	limit    *throttle.Limiter
 }
 
-func NewOpenAI(baseURL, model, apiKey string, client *http.Client, log *zap.Logger) (*OpenAI, error) {
+func NewOpenAI(baseURL, model, apiKey string, client *http.Client, log *zap.Logger, limit *throttle.Limiter) (*OpenAI, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || len(baseURL) > 2048 || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
 		strings.TrimSpace(model) == "" || len(model) > 256 || strings.ContainsAny(model, "\r\n") || strings.TrimSpace(apiKey) == "" || strings.ContainsAny(apiKey, "\r\n") || client == nil {
@@ -42,7 +46,7 @@ func NewOpenAI(baseURL, model, apiKey string, client *http.Client, log *zap.Logg
 	}
 	endpoint := *parsed
 	endpoint.Path = openAIChatCompletionsPath(parsed.Host, parsed.Path)
-	return &OpenAI{endpoint: &endpoint, model: model, apiKey: apiKey, client: client, log: log}, nil
+	return &OpenAI{endpoint: &endpoint, model: model, apiKey: apiKey, client: client, log: log, limit: limit}, nil
 }
 
 func openAIChatCompletionsPath(host, basePath string) string {
@@ -106,6 +110,11 @@ func (p *OpenAI) Summarize(ctx context.Context, passage string) (string, error) 
 	if normalized == "" {
 		return "", nil
 	}
+	if wait, err := p.wait(ctx); err != nil {
+		return "", p.failure("provider_rate_limited", "throttle", sanitizeProviderDetail(wait.String()), err)
+	} else if wait > 0 && p.log != nil {
+		p.log.Info("retrieval.summary.provider.throttled", zap.Int64("wait_ms", wait.Milliseconds()))
+	}
 	if p.log != nil {
 		p.log.Info("retrieval.summary.provider.request")
 	}
@@ -164,6 +173,13 @@ func (p *OpenAI) Summarize(ctx context.Context, passage string) (string, error) 
 		p.log.Info("retrieval.summary.provider.response", zap.Int("summary_length", utf8.RuneCountInString(summary)))
 	}
 	return summary, nil
+}
+
+func (p *OpenAI) wait(ctx context.Context) (time.Duration, error) {
+	if p.limit == nil {
+		return 0, nil
+	}
+	return p.limit.Wait(ctx)
 }
 
 func (p *OpenAI) failure(code, stage, detail string, err error) error {

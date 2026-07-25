@@ -13,6 +13,18 @@ func TestLoadUsesSecureBoundedDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultsFreeTierProviderRateLimit(t *testing.T) {
+	setRequiredEnvironment(t)
+	t.Setenv("ANSWER_LLM_MODEL", "inclusionai/ling-3.0-flash:free")
+	configuration, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuration.LLMRequestsPerSecond != 1 {
+		t.Fatalf("LLMRequestsPerSecond = %d, want 1", configuration.LLMRequestsPerSecond)
+	}
+}
+
 func TestLoadRejectsInsecureProviderAndInvalidBounds(t *testing.T) {
 	setRequiredEnvironment(t)
 	t.Setenv("ANSWER_LLM_BASE_URL", "http://provider")

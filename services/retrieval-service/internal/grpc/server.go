@@ -10,6 +10,7 @@ import (
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -21,14 +22,15 @@ type SearchService interface {
 type Server struct {
 	retrievalv1.UnimplementedRetrievalServiceServer
 	search    SearchService
+	log       *zap.Logger
 	readiness []interface{ CheckReady(context.Context) error }
 }
 
-func NewServer(search SearchService, readiness ...interface{ CheckReady(context.Context) error }) *Server {
+func NewServer(search SearchService, log *zap.Logger, readiness ...interface{ CheckReady(context.Context) error }) *Server {
 	if search == nil {
 		panic("retrievalgrpc: search service is required")
 	}
-	return &Server{search: search, readiness: readiness}
+	return &Server{search: search, log: log, readiness: readiness}
 }
 
 func (s *Server) Check(ctx context.Context, _ *retrievalv1.CheckRequest) (*retrievalv1.CheckResponse, error) {
@@ -48,6 +50,15 @@ func (s *Server) Check(ctx context.Context, _ *retrievalv1.CheckRequest) (*retri
 func (s *Server) Search(parent context.Context, request *retrievalv1.SearchRequest) (*retrievalv1.SearchResponse, error) {
 	if request == nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid search")
+	}
+	started := time.Now()
+	if s.log != nil {
+		s.log.Info("retrieval.query.received",
+			zap.Int("question_length", len(request.Question)),
+			zap.Uint32("limit", request.Limit),
+			zap.String("actor_role", actorRole(request.Actor)),
+			zap.String("actor_status", actorStatus(request.Actor)),
+		)
 	}
 	actor := domain.Actor{}
 	if request.Actor != nil {
@@ -70,6 +81,12 @@ func (s *Server) Search(parent context.Context, request *retrievalv1.SearchReque
 	defer cancel()
 	results, err := s.search.Search(ctx, actor, domain.SearchQueryInput{Question: request.Question, Filters: filters, Limit: int(request.Limit)})
 	if err != nil {
+		if s.log != nil {
+			s.log.Warn("retrieval.query.failed",
+				zap.String("reason_code", errorReason(err)),
+				zap.Int64("duration_ms", time.Since(started).Milliseconds()),
+			)
+		}
 		return nil, mapError(err)
 	}
 	response := &retrievalv1.SearchResponse{Query: request.Question, Results: make([]*retrievalv1.Evidence, 0, len(results.Evidence)), Documents: make([]*retrievalv1.DocumentResult, 0, len(results.Documents))}
@@ -96,7 +113,28 @@ func (s *Server) Search(parent context.Context, request *retrievalv1.SearchReque
 			Book:       &retrievalv1.BookMetadata{BookId: result.BookID, Title: result.Title, Author: result.Author, Year: int32(result.Year), Tags: append([]string(nil), result.Tags...), MediaType: result.MediaType}, // #nosec G115 -- range checked above.
 			ChunkCount: result.ChunkCount, PageStart: result.PageStart, PageEnd: result.PageEnd, Score: result.Score, Evidence: evidence, Summary: result.Summary})
 	}
+	if s.log != nil {
+		s.log.Info("retrieval.query.completed",
+			zap.Int("evidence_count", len(response.Results)),
+			zap.Int("document_count", len(response.Documents)),
+			zap.Int64("duration_ms", time.Since(started).Milliseconds()),
+		)
+	}
 	return response, nil
+}
+
+func actorRole(actor *retrievalv1.Actor) string {
+	if actor == nil {
+		return ""
+	}
+	return actor.Role
+}
+
+func actorStatus(actor *retrievalv1.Actor) string {
+	if actor == nil {
+		return ""
+	}
+	return actor.Status
 }
 
 func evidenceToProto(result application.Evidence) (*retrievalv1.Evidence, error) {
@@ -120,5 +158,20 @@ func mapError(err error) error {
 		return status.Error(codes.DeadlineExceeded, "search deadline exceeded")
 	default:
 		return status.Error(codes.Unavailable, "retrieval unavailable")
+	}
+}
+
+func errorReason(err error) string {
+	switch {
+	case errors.Is(err, application.ErrSearchForbidden):
+		return "search_forbidden"
+	case errors.Is(err, domain.ErrInvalidSearchQuery):
+		return "invalid_search"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	default:
+		return "retrieval_unavailable"
 	}
 }

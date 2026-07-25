@@ -49,6 +49,30 @@ func (r *Recorder) BatchCompleted(bookID string) {
 	r.log.Info("retrieval.batch.completed", zap.String("book_id", bookID))
 }
 
+func (r *Recorder) BatchFailed(bookID, reason, detail string) {
+	fields := []zap.Field{
+		zap.String("book_id", bookID),
+		zap.String("reason_code", reason),
+	}
+	if detail != "" {
+		fields = append(fields, zap.String("reason_detail", detail))
+	}
+	r.log.Warn("retrieval.batch.failed", fields...)
+}
+
+func (r *Recorder) Rejected(queue, eventType, contentType, reason, detail string) {
+	fields := []zap.Field{
+		zap.String("queue", queue),
+		zap.String("event_type", eventType),
+		zap.String("content_type", contentType),
+		zap.String("reason_code", reason),
+	}
+	if detail != "" {
+		fields = append(fields, zap.String("reason_detail", detail))
+	}
+	r.log.Warn("retrieval.batch.rejected", fields...)
+}
+
 func (r *Recorder) BatchRejected(reason string) {
 	r.log.Warn("retrieval.batch.rejected", zap.String("reason_code", reason))
 }
@@ -61,7 +85,18 @@ func (r *Recorder) VectorDeactivateFailed(bookID string) {
 	r.log.Warn("retrieval.vector.deactivate_failed", zap.String("book_id", bookID), zap.String("reason_code", "vector_deactivate_failed"))
 }
 
-func (r *Recorder) RetryScheduled(queue, reason string) {
+func (r *Recorder) RetryScheduled(queue, reason, detail string) {
+	fields := []zap.Field{
+		zap.String("operation", queue),
+		zap.String("reason_code", reason),
+	}
+	if detail != "" {
+		fields = append(fields, zap.String("reason_detail", detail))
+	}
+	r.log.Warn("retrieval.retry.scheduled", fields...)
+}
+
+func (r *Recorder) RetryScheduledLegacy(queue, reason string) {
 	r.log.Warn("retrieval.retry.scheduled", zap.String("operation", queue), zap.String("reason_code", reason))
 }
 

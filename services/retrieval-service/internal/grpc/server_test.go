@@ -7,6 +7,7 @@ import (
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -17,7 +18,7 @@ func TestSearchMapsAuthorizedRequestAndEvidence(t *testing.T) {
 		Documents: []application.DocumentResult{{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB,
 			ChunkCount: 2, PageStart: 1, PageEnd: 3, Score: .7, Summary: "Evidence", Evidence: []application.Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB, Passage: "Evidence", Summary: "Evidence"}}}},
 	}}
-	server := NewServer(service)
+	server := NewServer(service, zap.NewNop())
 	response, err := server.Search(context.Background(), &retrievalv1.SearchRequest{Question: "replication", Limit: 2,
 		Actor: &retrievalv1.Actor{UserId: "user-1", Role: "reader", Status: "active"}})
 	if err != nil || len(response.Results) != 1 || response.Results[0].Book.BookId != "book-1" ||
@@ -28,7 +29,7 @@ func TestSearchMapsAuthorizedRequestAndEvidence(t *testing.T) {
 }
 
 func TestSearchSanitizesAuthorizationFailure(t *testing.T) {
-	server := NewServer(&stubSearchService{err: application.ErrSearchForbidden})
+	server := NewServer(&stubSearchService{err: application.ErrSearchForbidden}, zap.NewNop())
 	_, err := server.Search(context.Background(), &retrievalv1.SearchRequest{Question: "secret", Actor: &retrievalv1.Actor{UserId: "user-1", Role: "reader", Status: "pending"}})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("Search() code = %v", status.Code(err))

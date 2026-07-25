@@ -9,6 +9,7 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/process"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/diagnostic"
+	"go.uber.org/zap"
 )
 
 type stubRuntime struct {
@@ -46,7 +47,7 @@ func TestRunDropsPrivilegesBeforeRuntimeConstruction(t *testing.T) {
 		steps = append(steps, "drop")
 		return nil
 	}
-	newRuntime = func(context.Context, config.WorkerConfig, *diagnostic.Recorder) (runtime, error) {
+	newRuntime = func(context.Context, config.WorkerConfig, *diagnostic.Recorder, *zap.Logger) (runtime, error) {
 		steps = append(steps, "new")
 		return runtimeValue, nil
 	}
@@ -81,7 +82,7 @@ func TestRunStopsWhenPrivilegeDropFails(t *testing.T) {
 	dropPrivileges = func(process.Identity) error {
 		return dropErr
 	}
-	newRuntime = func(context.Context, config.WorkerConfig, *diagnostic.Recorder) (runtime, error) {
+	newRuntime = func(context.Context, config.WorkerConfig, *diagnostic.Recorder, *zap.Logger) (runtime, error) {
 		t.Fatal("newRuntime() should not be called after privilege-drop failure")
 		return nil, nil
 	}

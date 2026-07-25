@@ -31,12 +31,12 @@ func FailureCategory(err error) domain.FailureCategory {
 	if err == nil {
 		return domain.FailureInternalIndexing
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return domain.FailureIndexingTimeout
-	}
 	var typed failureError
 	if errors.As(err, &typed) {
 		return typed.category
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return domain.FailureIndexingTimeout
 	}
 	return domain.FailureInternalIndexing
 }

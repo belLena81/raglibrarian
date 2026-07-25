@@ -124,6 +124,71 @@ func TestFinalDeletionAcknowledgementEmitsAtomicStatusProjection(t *testing.T) {
 	}
 }
 
+func TestCreateRollsBackBookWhenOutboxInsertFails(t *testing.T) {
+	if os.Getenv("CATALOG_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set CATALOG_POSTGRES_INTEGRATION=true inside the Compose test network")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, readCatalogIntegrationSecret(t, "CATALOG_POSTGRES_DSN_FILE"))
+	if err != nil {
+		t.Fatalf("connect catalog database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	id := randomIntegrationID(t)
+	bookID := "atomic-book-" + id
+	bookEventID := "atomic-book-uploaded-" + id
+	statusEventID := "atomic-book-status-" + id
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	checksum := sha256.Sum256([]byte("atomic book " + id))
+	book := catalog.Book{
+		ID:                  bookID,
+		Metadata:            catalog.BookMetadata{Title: "Atomic fixture", Author: "Catalog integration", Year: 2026, Tags: []string{"atomic"}},
+		ProcessingStatus:    catalog.BookStatusPending,
+		CreatedAt:           now,
+		ObjectReference:     "originals/" + bookID + ".pdf",
+		Checksum:            checksum,
+		ByteSize:            1,
+		MediaType:           "application/pdf",
+		ActorID:             "integration-test",
+		ProcessingStage:     catalog.BookStageQueued,
+		ProcessingUpdatedAt: now,
+		ProcessingVersion:   1,
+		LifecycleVersion:    1,
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO catalog.outbox
+		(event_id,event_type,aggregate_id,sequence,payload,occurred_at,next_attempt_at,published_at)
+		VALUES ($1,'catalog.book.processing-status-changed.v1',$2,1,$3,$4,$4,$4)`,
+		statusEventID, bookID, []byte("existing status event"), now)
+	if err != nil {
+		t.Fatalf("seed duplicate status event: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.outbox WHERE event_id=ANY($1)", []string{bookEventID, statusEventID})
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.books WHERE id=$1", bookID)
+	})
+
+	repository := NewPostgresBookRepository(pool)
+	err = repository.Create(ctx, book,
+		catalog.OutboxEvent{ID: bookEventID, Type: "catalog.book.uploaded.v1", AggregateID: bookID, Sequence: 0, Payload: []byte("upload"), OccurredAt: now},
+		catalog.OutboxEvent{ID: statusEventID, Type: "catalog.book.processing-status-changed.v1", AggregateID: bookID, Sequence: 1, Payload: []byte("status"), OccurredAt: now},
+	)
+	if err == nil {
+		t.Fatal("Create() unexpectedly succeeded")
+	}
+	var bookCount int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM catalog.books WHERE id=$1`, bookID).Scan(&bookCount); err != nil {
+		t.Fatalf("read rolled back book: %v", err)
+	}
+	if bookCount != 0 {
+		t.Fatalf("book count = %d, want 0 after rollback", bookCount)
+	}
+}
+
 func TestApplyRetrievalTerminalEventIsAtomicAndIdempotent(t *testing.T) {
 	if os.Getenv("CATALOG_POSTGRES_INTEGRATION") != "true" {
 		t.Skip("set CATALOG_POSTGRES_INTEGRATION=true inside the Compose test network")

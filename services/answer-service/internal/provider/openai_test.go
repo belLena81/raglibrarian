@@ -11,9 +11,14 @@ import (
 
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/domain"
+	"github.com/belLena81/raglibrarian/services/answer-service/internal/throttle"
 )
 
 func TestOpenAIGeneratesStrictStructuredSegments(t *testing.T) {
+	limit, err := throttle.New(0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	adapter, err := NewOpenAI("https://provider", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Path != "/v1/chat/completions" || request.Header.Get("Authorization") != "Bearer synthetic-key" {
 			t.Errorf("unexpected request path or authorization")
@@ -27,7 +32,7 @@ func TestOpenAIGeneratesStrictStructuredSegments(t *testing.T) {
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"{\"segments\":[{\"text\":\"answer\",\"evidence_ids\":[\"e-1\"]}]}"}}]}`)),
 		}, nil
-	})})
+	})}, limit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,6 +43,10 @@ func TestOpenAIGeneratesStrictStructuredSegments(t *testing.T) {
 }
 
 func TestOpenAIAcceptsPlainTextCandidateContent(t *testing.T) {
+	limit, err := throttle.New(0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Path != "/api/v1/chat/completions" {
 			t.Fatalf("unexpected request path %q", request.URL.Path)
@@ -48,7 +57,7 @@ func TestOpenAIAcceptsPlainTextCandidateContent(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"Use w, b, and dd to move and edit quickly."}}]}`)),
 		}, nil
 	})}
-	adapter, err := NewOpenAI("https://openrouter.ai/", "model", "synthetic-key", client)
+	adapter, err := NewOpenAI("https://openrouter.ai/", "model", "synthetic-key", client, limit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,9 +93,9 @@ func TestNewOpenAIBuildsChatCompletionsEndpointFromAPIBase(t *testing.T) {
 		{name: "prefixed v1", baseURL: "https://provider/openai/v1", expectedPath: "/openai/v1/chat/completions"},
 		{name: "openrouter root", baseURL: "https://openrouter.ai/", expectedPath: "/api/v1/chat/completions"},
 		{name: "openrouter api v1", baseURL: "https://openrouter.ai/api/v1", expectedPath: "/api/v1/chat/completions"},
-	} {
+		} {
 		t.Run(test.name, func(t *testing.T) {
-			adapter, err := NewOpenAI(test.baseURL, "model", "key", client)
+			adapter, err := NewOpenAI(test.baseURL, "model", "key", client, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -106,14 +115,14 @@ func TestOpenAIRejectsRedirectUnknownAndDuplicateCandidateFields(t *testing.T) {
 		{status: http.StatusOK, body: `{"choices":[{"message":{"content":"{\"segments\":[],\"unknown\":true}"}}]}`},
 		{status: http.StatusOK, body: `{"choices":[{"message":{"content":"{\"segments\":[],\"segments\":[]}"}}]}`},
 	}
-	for index, fixture := range responses {
-		adapter, err := NewOpenAI("https://provider", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-			return &http.Response{
+		for index, fixture := range responses {
+			adapter, err := NewOpenAI("https://provider", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
 				StatusCode: fixture.status,
 				Header:     http.Header{"Content-Type": []string{"application/json"}},
 				Body:       io.NopCloser(strings.NewReader(fixture.body)),
 			}, nil
-		})})
+			})}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -133,20 +142,20 @@ func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, erro
 func TestNewOpenAIRequiresHTTPSAndFixedConfiguration(t *testing.T) {
 	client := &http.Client{}
 	for _, baseURL := range []string{"http://provider", "https://user:pass@provider", "https://provider?key=value", "https://provider#fragment"} {
-		if _, err := NewOpenAI(baseURL, "model", "key", client); err == nil {
+		if _, err := NewOpenAI(baseURL, "model", "key", client, nil); err == nil {
 			t.Fatalf("base URL %q accepted", baseURL)
 		}
 	}
-	if _, err := NewOpenAI("https://provider", "model\nother", "key", client); err == nil {
+	if _, err := NewOpenAI("https://provider", "model\nother", "key", client, nil); err == nil {
 		t.Fatal("multiline model accepted")
 	}
-	if _, err := NewOpenAI("https://provider", "model", strings.Repeat(" ", 2), client); err == nil {
+	if _, err := NewOpenAI("https://provider", "model", strings.Repeat(" ", 2), client, nil); err == nil {
 		t.Fatal("empty key accepted")
 	}
-	if _, err := NewOpenAI("https://provider", strings.Repeat("m", 257), "key", client); err == nil {
+	if _, err := NewOpenAI("https://provider", strings.Repeat("m", 257), "key", client, nil); err == nil {
 		t.Fatal("oversized model accepted")
 	}
-	if _, err := NewOpenAI("https://provider/"+strings.Repeat("p", 2048), "model", "key", client); err == nil {
+	if _, err := NewOpenAI("https://provider/"+strings.Repeat("p", 2048), "model", "key", client, nil); err == nil {
 		t.Fatal("oversized provider URL accepted")
 	}
 }

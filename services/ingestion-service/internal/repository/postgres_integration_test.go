@@ -267,6 +267,85 @@ func TestDeletionBarrierWaitsForActiveLeaseAndCleanupRoleCanFinalize(t *testing.
 	}
 }
 
+func TestAcceptRollsBackEarlierWritesWhenOutboxInsertFails(t *testing.T) {
+	if os.Getenv("INGESTION_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set INGESTION_POSTGRES_INTEGRATION=true inside the Compose test network")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, readIngestionIntegrationSecret(t, "INGESTION_POSTGRES_DSN_FILE"))
+	if err != nil {
+		t.Fatalf("connect ingestion database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	suffix := randomRepositoryIntegrationID(t)
+	bookID := "atomic-book-" + suffix
+	jobID := "atomic-job-" + suffix
+	eventID := "atomic-event-" + suffix
+	startedID := "atomic-started-" + suffix
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sourceSHA256 := [32]byte{1}
+	configDigest := [32]byte{2}
+	proposed, err := domain.NewProcessingJob(jobID, bookID, sourceSHA256, hex.EncodeToString(configDigest[:]), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := application.UploadedEvent{
+		EventID:           eventID,
+		BookID:            bookID,
+		ObjectReference:   "originals/" + bookID + ".pdf",
+		MediaType:         "application/pdf",
+		CorrelationID:     "correlation-" + suffix,
+		CausationID:       "cause-" + suffix,
+		Producer:          "catalog-service",
+		SchemaVersion:     "v1",
+		IdempotencyKey:    bookID,
+		SourceSHA256:      sourceSHA256,
+		ByteSize:          1,
+		LifecycleVersion:  1,
+		OccurredAt:        now,
+		Payload:           []byte("upload"),
+		ExtractionVersion: "poppler-layout-v1",
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO ingestion.outbox
+		(event_id,event_type,aggregate_id,aggregate_sequence,payload,occurred_at,next_attempt_at)
+		VALUES($1,'ingestion.book.processing-started.v1',$2,1,'seeded duplicate',$3,$3)`,
+		startedID, jobID, now)
+	if err != nil {
+		t.Fatalf("seed duplicate started event: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM ingestion.outbox WHERE event_id=$1", startedID)
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM ingestion.artifact_sets WHERE job_id=$1", jobID)
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM ingestion.jobs WHERE id=$1", jobID)
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM ingestion.inbox WHERE event_id=$1", eventID)
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM ingestion.lifecycle_fences WHERE book_id=$1", bookID)
+	})
+
+	accepted, _, acceptErr := NewPostgres(pool).Accept(ctx, event, sourceSHA256, proposed, application.OutboxEvent{
+		ID: startedID, Type: "ingestion.book.processing-started.v1", Payload: []byte("started"), OccurredAt: now,
+	})
+	if acceptErr == nil || accepted.ID() != proposed.ID() {
+		t.Fatalf("Accept() accepted=%+v error=%v", accepted, acceptErr)
+	}
+	var inboxCount, jobCount, artifactCount, fenceCount int
+	if err = pool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM ingestion.inbox WHERE event_id=$1),
+		(SELECT count(*) FROM ingestion.jobs WHERE id=$2),
+		(SELECT count(*) FROM ingestion.artifact_sets WHERE job_id=$2),
+		(SELECT count(*) FROM ingestion.lifecycle_fences WHERE book_id=$3)`,
+		eventID, jobID, bookID).Scan(&inboxCount, &jobCount, &artifactCount, &fenceCount); err != nil {
+		t.Fatalf("read rolled back ingestion projection: %v", err)
+	}
+	if inboxCount != 0 || jobCount != 0 || artifactCount != 0 || fenceCount != 0 {
+		t.Fatalf("rolled back counts inbox=%d jobs=%d artifacts=%d fences=%d", inboxCount, jobCount, artifactCount, fenceCount)
+	}
+}
+
 func readIngestionIntegrationSecret(t *testing.T, key string) string {
 	t.Helper()
 	path := os.Getenv(key)

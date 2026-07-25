@@ -20,8 +20,8 @@ type runtime interface {
 
 var (
 	loadWorkerConfig = config.LoadWorker
-	newRuntime       = func(ctx context.Context, configuration config.WorkerConfig, recorder *diagnostic.Recorder) (runtime, error) {
-		return worker.New(ctx, configuration, recorder)
+	newRuntime       = func(ctx context.Context, configuration config.WorkerConfig, recorder *diagnostic.Recorder, log *zap.Logger) (runtime, error) {
+		return worker.New(ctx, configuration, recorder, log)
 	}
 	dropPrivileges = process.DropPrivileges
 )
@@ -43,7 +43,7 @@ func run(ctx context.Context, log *zap.Logger) error {
 	if err = dropPrivileges(configuration.RunAs); err != nil {
 		return err
 	}
-	runtimeValue, err := newRuntime(ctx, configuration, diagnostic.New(log))
+	runtimeValue, err := newRuntime(ctx, configuration, diagnostic.New(log), log)
 	if err != nil {
 		return err
 	}

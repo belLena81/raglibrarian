@@ -91,7 +91,7 @@ func humanizeMessage(message string) string {
 
 var allowedFieldNames = map[string]struct{}{
 	"request_id": {}, "method": {}, "route": {}, "route_template": {}, "status": {}, "outcome": {}, "duration": {}, "duration_ms": {},
-	"response_bytes": {}, "operation": {}, "code": {}, "grpc_code": {}, "stage": {}, "reason": {}, "reason_code": {}, "reason_detail": {}, "error_code": {},
+	"response_bytes": {}, "operation": {}, "queue": {}, "event_type": {}, "content_type": {}, "code": {}, "grpc_code": {}, "stage": {}, "reason": {}, "reason_code": {}, "reason_detail": {}, "error_code": {},
 	"stack_fingerprint": {}, "actor_id": {}, "book_id": {}, "checksum_sha256": {}, "byte_size": {}, "tag_count": {}, "page_size": {}, "result_count": {}, "role": {}, "account_status": {},
 	"segment_count": {}, "summary_length": {},
 }
@@ -169,6 +169,10 @@ func validDiagnosticField(key string, fieldType zapcore.FieldType, value string)
 		return integerField(fieldType) && parseBoundedInt(value, 100, 599)
 	case "duration", "duration_ms", "response_bytes":
 		return integerField(fieldType) && parseBoundedInt(value, 0, 1<<53-1)
+	case "queue":
+		return fieldType == zapcore.StringType && allowedDiagnosticValue("operation", value)
+	case "event_type", "content_type":
+		return fieldType == zapcore.StringType && len(value) > 0 && len(value) <= 256 && !strings.ContainsAny(value, "=\t\r\n")
 	case "stack_fingerprint":
 		return fieldType == zapcore.StringType && fingerprintPattern.MatchString(value)
 	case "actor_id", "book_id":

@@ -20,6 +20,7 @@ import (
 	answergrpc "github.com/belLena81/raglibrarian/services/answer-service/internal/grpc"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/metrics"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/provider"
+	"github.com/belLena81/raglibrarian/services/answer-service/internal/throttle"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/retrieval"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -57,7 +58,11 @@ func New(configuration config.Config) (*App, error) {
 	if err != nil {
 		return nil, errors.New("configure provider transport")
 	}
-	providerAdapter, err := provider.NewOpenAI(configuration.LLMBaseURL, configuration.LLMModel, apiKey, httpClient)
+	limit, err := throttle.New(configuration.LLMRequestsPerSecond)
+	if err != nil {
+		return nil, errors.New("configure provider throttle")
+	}
+	providerAdapter, err := provider.NewOpenAI(configuration.LLMBaseURL, configuration.LLMModel, apiKey, httpClient, limit)
 	if err != nil {
 		return nil, errors.New("configure provider")
 	}

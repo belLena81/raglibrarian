@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,11 +21,13 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/embedding"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/rabbitmq"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/throttle"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/storage"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/transport"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rabbitmq/amqp091-go"
+	"go.uber.org/zap"
 )
 
 const (
@@ -91,13 +94,14 @@ type Runtime struct {
 	embedder      *embedding.TEI
 	vector        vectorRuntime
 	diagnostic    *diagnostic.Recorder
+	log           *zap.Logger
 }
 
 type retryPublisher interface {
 	Publish(context.Context, string, string, amqp091.Publishing) error
 }
 
-func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagnostic.Recorder) (*Runtime, error) {
+func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagnostic.Recorder, log *zap.Logger) (*Runtime, error) {
 	pool, err := pgxpool.New(ctx, configuration.DSN)
 	if err != nil {
 		return nil, errors.New("configure retrieval database")
@@ -120,7 +124,12 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 		return nil, err
 	}
 	httpClient := &http.Client{Timeout: 90 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
-	embedder, err := embedding.NewTEI(configuration.TEIURL, httpClient)
+	teiLimiter, err := throttle.New(configuration.TEIRequestsPerSecond)
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	embedder, err := embedding.NewTEI(configuration.TEIURL, httpClient, log, teiLimiter)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -145,7 +154,7 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 		pool.Close()
 		return nil, err
 	}
-	return &Runtime{configuration: configuration, pool: pool, repository: records, manifestFails: records, batchFails: records, vectorJobs: records, objects: objects, planner: planner, indexer: indexer, lifecycle: lifecycle, embedder: embedder, vector: index, diagnostic: recorder}, nil
+	return &Runtime{configuration: configuration, pool: pool, repository: records, manifestFails: records, batchFails: records, vectorJobs: records, objects: objects, planner: planner, indexer: indexer, lifecycle: lifecycle, embedder: embedder, vector: index, diagnostic: recorder, log: log}, nil
 }
 
 // Close releases resources owned by a one-message runtime.
@@ -373,7 +382,7 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 		defer handlers.Done()
 		defer func() { <-semaphore }()
 		if delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > 256<<10 {
-			r.logRejected(sourceQueue, "invalid_delivery")
+			r.logRejectedDelivery(sourceQueue, delivery.Type, delivery.ContentType, "invalid_delivery", sanitizeFailureDetail("body constraints"))
 			settleNack(ctx, delivery, false)
 			return
 		}
@@ -392,7 +401,7 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 				settleAck(ctx, delivery)
 				return
 			}
-			r.logRetry(sourceQueue, "terminal_failure_record_failed")
+			r.logRetry(sourceQueue, "terminal_failure_record_failed", sanitizeFailureDetail(failureErr.Error()))
 			nextAttempt, retry := failureRecordingRetryAttempt(delivery.Headers)
 			if !retry {
 				settleNack(ctx, delivery, false)
@@ -409,13 +418,13 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 			return
 		}
 		if errors.Is(err, application.ErrInvalidEvent) || errors.Is(err, application.ErrConflictingEvent) {
-			r.logRejected(sourceQueue, rejectionReason(err))
+			r.logRejectedDelivery(sourceQueue, delivery.Type, delivery.ContentType, rejectionReason(err), sanitizeFailureDetail(err.Error()))
 			settleNack(ctx, delivery, false)
 			return
 		}
 		if retryAttempt(delivery.Headers) >= maximumRetryAttempts {
 			if terminalFailure == nil {
-				r.logRejected(sourceQueue, "invalid_event")
+				r.logRejectedDelivery(sourceQueue, delivery.Type, delivery.ContentType, "invalid_event", sanitizeFailureDetail(err.Error()))
 				settleNack(ctx, delivery, false)
 				return
 			}
@@ -426,11 +435,11 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 				settleAck(ctx, delivery)
 				return
 			}
-			r.logRejected(sourceQueue, "terminal_failure_record_failed")
+			r.logRejectedDelivery(sourceQueue, delivery.Type, delivery.ContentType, "terminal_failure_record_failed", sanitizeFailureDetail(failureErr.Error()))
 			settleNack(ctx, delivery, false)
 			return
 		}
-		r.logRetry(sourceQueue, rejectionReason(err))
+		r.logRetry(sourceQueue, rejectionReason(err), sanitizeFailureDetail(err.Error()))
 		if r.publishRetry(ctx, publisher, sourceQueue, delivery, retryAttempt(delivery.Headers)+1) == nil {
 			settleAck(ctx, delivery)
 			return
@@ -604,6 +613,7 @@ func (r *Runtime) handleBatch(ctx context.Context, payload []byte) error {
 	}
 	r.logBatchReceived(work.BookID)
 	if err = r.indexer.Process(ctx, work); err != nil {
+		r.logBatchFailed(work.BookID, rejectionReason(err), sanitizeFailureDetail(err.Error()))
 		return err
 	}
 	r.logBatchCompleted(work.BookID)
@@ -780,6 +790,8 @@ func rejectionReason(err error) string {
 		return "embedding_unavailable"
 	}
 	switch {
+	case application.FailureCategory(err) == domain.FailureIndexingTimeout:
+		return "indexing_timeout"
 	case errors.Is(err, application.ErrConflictingEvent):
 		return "conflicting_event"
 	case errors.Is(err, application.ErrInvalidEvent):
@@ -787,6 +799,33 @@ func rejectionReason(err error) string {
 	default:
 		return "unknown_failure"
 	}
+}
+
+func (r *Runtime) logRejectedDelivery(queue, eventType, contentType, reason, detail string) {
+	if r.diagnostic == nil {
+		return
+	}
+	switch queue {
+	case metadataQueue:
+		r.diagnostic.Rejected(queueOperation(queue), eventType, contentType, reason, detail)
+	case manifestQueue:
+		r.diagnostic.Rejected(queueOperation(queue), eventType, contentType, reason, detail)
+	case batchQueue:
+		r.diagnostic.Rejected(queueOperation(queue), eventType, contentType, reason, detail)
+	case lifecycleQueue:
+		r.diagnostic.Rejected(queueOperation(queue), eventType, contentType, reason, detail)
+	}
+}
+
+func sanitizeFailureDetail(value string) string {
+	value = strings.TrimSpace(strings.Join(strings.Fields(value), " "))
+	if value == "" {
+		return ""
+	}
+	if len([]rune(value)) > 160 {
+		value = string([]rune(value)[:160])
+	}
+	return value
 }
 
 func reasonFromCategory(category domain.FailureCategory) string {
@@ -843,21 +882,12 @@ func (r *Runtime) logRejected(queue, reason string) {
 	if r.diagnostic == nil {
 		return
 	}
-	switch queue {
-	case metadataQueue:
-		r.diagnostic.MetadataRejected(reason)
-	case manifestQueue:
-		r.diagnostic.ManifestRejected(reason)
-	case batchQueue:
-		r.diagnostic.BatchRejected(reason)
-	case lifecycleQueue:
-		r.diagnostic.BatchRejected(reason)
-	}
+	r.diagnostic.Rejected(queueOperation(queue), "", "", reason, "")
 }
 
-func (r *Runtime) logRetry(queue, reason string) {
+func (r *Runtime) logRetry(queue, reason, detail string) {
 	if r.diagnostic != nil {
-		r.diagnostic.RetryScheduled(queueOperation(queue), reason)
+		r.diagnostic.RetryScheduled(queueOperation(queue), reason, detail)
 	}
 }
 
@@ -906,6 +936,12 @@ func (r *Runtime) logBatchReceived(bookID string) {
 func (r *Runtime) logBatchCompleted(bookID string) {
 	if r.diagnostic != nil {
 		r.diagnostic.BatchCompleted(bookID)
+	}
+}
+
+func (r *Runtime) logBatchFailed(bookID, reason, detail string) {
+	if r.diagnostic != nil {
+		r.diagnostic.BatchFailed(bookID, reason, detail)
 	}
 }
 

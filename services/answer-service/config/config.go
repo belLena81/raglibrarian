@@ -22,6 +22,7 @@ type Config struct {
 	RetrievalDNSName string
 	LLMBaseURL       string
 	LLMModel         string
+	LLMRequestsPerSecond int
 	LLMAPIKeyFile    string
 	LLMCAFile        string
 	TLS              internaltls.Files
@@ -53,6 +54,7 @@ func Load() (Config, error) {
 			MaximumEvidenceBytes: maximumItem, MaximumSegments: maximumSegments, MaximumAnswerBytes: maximumAnswer, MaximumCitations: maximumCitations,
 			MaximumOutputTokens: maximumTokens, ProviderConcurrency: concurrency, RequestTimeout: requestTimeout, RetrievalTimeout: retrievalTimeout, ProviderTimeout: providerTimeout},
 	}
+	configuration.LLMRequestsPerSecond = providerRequestsPerSecond("ANSWER_PROVIDER_REQUESTS_PER_SECOND", configuration.LLMModel)
 	if configuration.RetrievalDNSName == "" {
 		configuration.RetrievalDNSName = "retrieval-service"
 	}
@@ -112,4 +114,19 @@ func validServiceAddress(value string) bool {
 func validProviderURL(value string) bool {
 	parsed, err := url.Parse(value)
 	return err == nil && len(value) <= 2048 && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
+}
+
+func providerRequestsPerSecond(key, model string) int {
+	value := os.Getenv(key)
+	if value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 || parsed > 1000 {
+			return 0
+		}
+		return parsed
+	}
+	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(model)), ":free") {
+		return 1
+	}
+	return 0
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rabbitmq/amqp091-go"
+	"go.uber.org/zap"
 )
 
 type Secret struct {
@@ -197,7 +198,7 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 		return nil, err
 	}
 	httpClient := &http.Client{Timeout: 90 * time.Second, CheckRedirect: rejectRedirect}
-	embedder, err := embedding.NewTEI(secret.TEIURL, httpClient)
+	embedder, err := embedding.NewTEI(secret.TEIURL, httpClient, zap.NewNop(), nil)
 	if err != nil {
 		pool.Close()
 		return nil, err

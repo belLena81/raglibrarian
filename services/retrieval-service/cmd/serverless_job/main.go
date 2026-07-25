@@ -47,7 +47,8 @@ func run(ctx context.Context) error {
 	}
 	invocationContext, invocationCancel := context.WithTimeout(ctx, cfg.ServerlessInvocationTimeout)
 	defer invocationCancel()
-	runtime, err := worker.New(invocationContext, cfg, diagnostic.New(logger.Must("retrieval-serverless-job")))
+	serviceLogger := logger.Must("retrieval-serverless-job")
+	runtime, err := worker.New(invocationContext, cfg, diagnostic.New(serviceLogger), serviceLogger)
 	if err != nil {
 		return err
 	}
