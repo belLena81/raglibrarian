@@ -682,7 +682,7 @@ dockerfile-lint: _require_root
 
 image-build: _require_root
 	docker build --build-arg SERVICE=identity-service -t raglibrarian-identity-service:local .
-	docker build --build-arg SERVICE=catalog-service -t raglibrarian-catalog-service:local .
+	docker build --target catalog-runtime --build-arg SERVICE=catalog-service -t raglibrarian-catalog-service:local .
 	docker build --build-arg SERVICE=edge-api -t raglibrarian-edge-api:local .
 	docker build --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/worker -t raglibrarian-ingestion-service:local .
 	docker build --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/lambda -t raglibrarian-ingestion-lambda:local .
@@ -710,7 +710,7 @@ image-build-ci: _require_root
 		docker buildx build --load --cache-from "type=gha,scope=$$scope" --cache-to "type=gha,mode=max,scope=$$scope" "$$@" -t "$$image" .; \
 	}; \
 	build_ci raglibrarian-identity-service:local identity-service --build-arg SERVICE=identity-service; \
-	build_ci raglibrarian-catalog-service:local catalog-service --build-arg SERVICE=catalog-service; \
+	build_ci raglibrarian-catalog-service:local catalog-service --target catalog-runtime --build-arg SERVICE=catalog-service; \
 	build_ci raglibrarian-edge-api:local edge-api --build-arg SERVICE=edge-api; \
 	build_ci raglibrarian-ingestion-service:local ingestion-service --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/worker; \
 	build_ci raglibrarian-ingestion-lambda:local ingestion-lambda --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/lambda; \

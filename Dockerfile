@@ -70,6 +70,17 @@ FROM ingestion-runtime AS ingestion-cleanup-runtime
 USER 65532:65532
 ENTRYPOINT ["/service"]
 
+FROM alpine:3.22 AS catalog-runtime
+# hadolint ignore=DL3018
+RUN apk add --no-cache ca-certificates poppler-utils
+COPY --from=builder /bin/service /service
+COPY --from=builder /bin/healthcheck /healthcheck
+# The process reads root-owned Compose secrets, then drops permanently to the
+# configured numeric runtime identity before opening its private listeners.
+# hadolint ignore=DL3002
+USER root:root
+ENTRYPOINT ["/service"]
+
 FROM gcr.io/distroless/static:nonroot AS retrieval-runtime
 COPY --from=builder /bin/service /service
 COPY --from=builder /bin/healthcheck /healthcheck

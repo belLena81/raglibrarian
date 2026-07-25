@@ -271,7 +271,7 @@ services:
 
   catalog-service:
     <<: *service-hardening
-    build: { context: ., args: { SERVICE: catalog-service } }
+    build: { context: ., target: catalog-runtime, args: { SERVICE: catalog-service } }
     environment:
       CATALOG_GRPC_ADDR: ":50052"
       CATALOG_METRICS_ADDR: "0.0.0.0:9092"
@@ -639,6 +639,10 @@ services:
       RETRIEVAL_QDRANT_URL: http://qdrant:6333
       RETRIEVAL_QDRANT_API_KEY_FILE: /run/secrets/retrieval_qdrant_read_api_key
       RETRIEVAL_TEI_URL: http://text-embeddings-inference:8080
+      RETRIEVAL_SUMMARY_LLM_BASE_URL: "${ANSWER_LLM_BASE_URL:-}"
+      RETRIEVAL_SUMMARY_LLM_MODEL: "${ANSWER_LLM_MODEL:-}"
+      RETRIEVAL_SUMMARY_LLM_API_KEY_FILE: /run/secrets/answer_llm_api_key
+      RETRIEVAL_SUMMARY_LLM_CA_FILE: /run/secrets/internal_ca
       RETRIEVAL_INDEX_PROFILE: m7-pdf-epub-v1
       RETRIEVAL_GRPC_ADDR: "0.0.0.0:50054"
       RETRIEVAL_METRICS_ADDR: "0.0.0.0:9094"
@@ -651,6 +655,7 @@ services:
     secrets:
       - retrieval_search_dsn
       - retrieval_qdrant_read_api_key
+      - answer_llm_api_key
       - internal_ca
       - retrieval_tls_cert
       - retrieval_tls_key

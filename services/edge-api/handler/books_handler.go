@@ -48,6 +48,7 @@ type Book struct {
 	MediaType                 string    `json:"media_type"`
 	LifecycleVersion          int64     `json:"lifecycle_version"`
 	CanReindex                bool      `json:"can_reindex"`
+	Preview                   string    `json:"preview,omitempty"`
 	CreatedAt                 time.Time `json:"created_at"`
 }
 type BookPage struct {

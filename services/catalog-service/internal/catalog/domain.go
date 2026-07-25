@@ -127,6 +127,7 @@ type Book struct {
 	Checksum                  [32]byte
 	ByteSize                  int64
 	MediaType                 string
+	Preview                   string
 	ActorID                   string
 	ProcessingStage           BookProcessingStage
 	ProcessingFailureCategory ProcessingFailureCategory

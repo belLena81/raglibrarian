@@ -180,7 +180,7 @@ func fromProto(book *catalogv1.Book) handler.Book {
 		ProcessingStatus: book.ProcessingStatus, ProcessingStage: book.ProcessingStage,
 		ProcessingFailureCategory: book.ProcessingFailureCategory, ProcessingUpdatedAt: processingUpdatedAt,
 		ProcessingVersion: book.ProcessingVersion, MediaType: book.MediaType,
-		LifecycleVersion: book.LifecycleVersion, CanReindex: book.CanReindex, CreatedAt: createdAt,
+		LifecycleVersion: book.LifecycleVersion, CanReindex: book.CanReindex, Preview: book.Preview, CreatedAt: createdAt,
 	}
 }
 func mapError(err error) error {

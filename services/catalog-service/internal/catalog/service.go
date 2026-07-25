@@ -80,6 +80,7 @@ type LifecycleRepository interface {
 type OriginalObjectStore interface {
 	Put(context.Context, string, io.Reader) (ObjectReceipt, error)
 	Delete(context.Context, string) error
+	Get(context.Context, string) (io.ReadCloser, error)
 }
 
 // ObjectReceipt is the server-confirmed result of storing an original.
@@ -98,12 +99,13 @@ type OutboxEvent struct {
 
 // Service coordinates validation, private object storage and atomic persistence.
 type Service struct {
-	repository BookRepository
-	objects    OriginalObjectStore
-	now        func() time.Time
-	newID      func() (string, error)
-	maxBytes   int64
-	uploads    chan struct{}
+	repository  BookRepository
+	objects     OriginalObjectStore
+	now         func() time.Time
+	newID       func() (string, error)
+	maxBytes    int64
+	uploads     chan struct{}
+	previewBook func(context.Context, Book, OriginalObjectStore) (string, error)
 }
 
 // ServiceOptions supplies bounded runtime dependencies without exposing
@@ -113,6 +115,7 @@ type ServiceOptions struct {
 	UploadConcurrency int
 	Clock             func() time.Time
 	NewID             func() (string, error)
+	PreviewBook       func(context.Context, Book, OriginalObjectStore) (string, error)
 }
 
 func NewService(repository BookRepository, objects OriginalObjectStore, maxBytes int64) *Service {
@@ -132,7 +135,18 @@ func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStor
 	if options.NewID == nil {
 		options.NewID = generatedID
 	}
-	return &Service{repository: repository, objects: objects, now: options.Clock, maxBytes: options.MaxBytes, uploads: make(chan struct{}, options.UploadConcurrency), newID: options.NewID}
+	if options.PreviewBook == nil {
+		options.PreviewBook = defaultPreviewBook
+	}
+	return &Service{
+		repository:  repository,
+		objects:     objects,
+		now:         options.Clock,
+		maxBytes:    options.MaxBytes,
+		uploads:     make(chan struct{}, options.UploadConcurrency),
+		newID:       options.NewID,
+		previewBook: options.PreviewBook,
+	}
 }
 
 func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, error) {
@@ -367,7 +381,16 @@ func (s *Service) GetBook(ctx context.Context, id string) (Book, error) {
 	if id == "" {
 		return Book{}, ErrNotFound
 	}
-	return s.repository.Get(ctx, id)
+	book, err := s.repository.Get(ctx, id)
+	if err != nil {
+		return Book{}, err
+	}
+	if s.previewBook != nil && book.ObjectReference != "" && book.ProcessingStatus != BookStatusDeleted {
+		if preview, previewErr := s.previewBook(ctx, book, s.objects); previewErr == nil {
+			book.Preview = preview
+		}
+	}
+	return book, nil
 }
 
 type boundedBookReader struct {
@@ -634,4 +657,12 @@ func (s *MemoryObjectStore) Put(_ context.Context, key string, reader io.Reader)
 func (s *MemoryObjectStore) Delete(_ context.Context, key string) error {
 	delete(s.objects, key)
 	return nil
+}
+
+func (s *MemoryObjectStore) Get(_ context.Context, key string) (io.ReadCloser, error) {
+	data, ok := s.objects[key]
+	if !ok {
+		return nil, ErrObjectStorageUnavailable
+	}
+	return io.NopCloser(bytes.NewReader(append([]byte(nil), data...))), nil
 }

@@ -235,7 +235,7 @@ func bookProto(book catalog.Book) *catalogv1.Book {
 		CreatedAt: timestamppb.New(book.CreatedAt), ProcessingStage: string(book.ProcessingStage),
 		ProcessingFailureCategory: string(book.ProcessingFailureCategory),
 		ProcessingUpdatedAt:       timestamppb.New(book.ProcessingUpdatedAt), ProcessingVersion: book.ProcessingVersion,
-		MediaType: book.MediaType, LifecycleVersion: book.LifecycleVersion, CanReindex: book.CanReindex(),
+		MediaType: book.MediaType, LifecycleVersion: book.LifecycleVersion, CanReindex: book.CanReindex(), Preview: book.Preview,
 	}
 }
 

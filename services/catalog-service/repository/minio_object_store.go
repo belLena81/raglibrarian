@@ -78,6 +78,21 @@ func (s *MinIOObjectStore) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+func (s *MinIOObjectStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	object, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get original: %w", catalog.ErrObjectStorageUnavailable)
+	}
+	if _, err = object.Stat(); err != nil {
+		_ = object.Close()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("get original: %w", catalog.ErrObjectStorageUnavailable)
+	}
+	return object, nil
+}
+
 func (s *MinIOObjectStore) ListCompleted(ctx context.Context, prefix, cursor string, limit int) ([]catalog.StoredObject, string, error) {
 	if prefix != "originals/" || limit < 1 || limit > 100 {
 		return nil, "", errors.New("invalid reconciliation listing boundary")

@@ -89,6 +89,7 @@ message Book {
   string media_type = 12;
   int64 lifecycle_version = 13;
   bool can_reindex = 14;
+  string preview = 15;
 }
 
 // Actor is asserted by the authenticated Edge service, never by a browser.

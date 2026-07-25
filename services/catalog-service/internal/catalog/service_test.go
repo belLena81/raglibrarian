@@ -470,6 +470,10 @@ func (s *receiptMismatchObjectStore) Delete(ctx context.Context, key string) err
 	return s.objects.Delete(ctx, key)
 }
 
+func (s *receiptMismatchObjectStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	return s.objects.Get(ctx, key)
+}
+
 type unavailableObjectStore struct{ deleted bool }
 
 func (s *unavailableObjectStore) Put(context.Context, string, io.Reader) (ObjectReceipt, error) {
@@ -479,6 +483,54 @@ func (s *unavailableObjectStore) Put(context.Context, string, io.Reader) (Object
 func (s *unavailableObjectStore) Delete(context.Context, string) error {
 	s.deleted = true
 	return nil
+}
+
+func (s *unavailableObjectStore) Get(context.Context, string) (io.ReadCloser, error) {
+	return nil, ErrObjectStorageUnavailable
+}
+
+func TestGetBookIncludesPreviewFromConfiguredExtractor(t *testing.T) {
+	repository := NewMemoryRepository()
+	objects := NewMemoryObjectStore()
+	service := NewServiceWithOptions(repository, objects, ServiceOptions{
+		MaxBytes: 1024,
+		PreviewBook: func(_ context.Context, book Book, _ OriginalObjectStore) (string, error) {
+			return "data:application/pdf;base64,ZmFrZQ==", nil
+		},
+	})
+	book, err := service.UploadBook(context.Background(), validUploadInput(strings.NewReader("%PDF-1.7\nbody")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	retrieved, err := service.GetBook(context.Background(), book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retrieved.Preview == "" || retrieved.Preview != "data:application/pdf;base64,ZmFrZQ==" {
+		t.Fatalf("preview = %q", retrieved.Preview)
+	}
+}
+
+func TestGetBookIgnoresPreviewFailures(t *testing.T) {
+	repository := NewMemoryRepository()
+	objects := NewMemoryObjectStore()
+	service := NewServiceWithOptions(repository, objects, ServiceOptions{
+		MaxBytes: 1024,
+		PreviewBook: func(_ context.Context, book Book, _ OriginalObjectStore) (string, error) {
+			return "", errors.New("preview unavailable")
+		},
+	})
+	book, err := service.UploadBook(context.Background(), validUploadInput(strings.NewReader("%PDF-1.7\nbody")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	retrieved, err := service.GetBook(context.Background(), book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retrieved.Preview != "" {
+		t.Fatalf("preview = %q, want empty fallback", retrieved.Preview)
+	}
 }
 
 func TestListBooksRejectsMalformedCursorAsPagination(t *testing.T) {
