@@ -153,9 +153,8 @@ M5_REPAIR_MODEL_CACHE="${M5_REPAIR_MODEL_CACHE:-true}" \
 	bash ./scripts/bootstrap-m5-model.sh
 
 M5_MODEL_DIR="$M5_MODEL_DIR" make compose-config
-compose_exit=0
 compose_wait_timeout="${M5_COMPOSE_WAIT_TIMEOUT:-300}"
-compose_wait_mode="${M5_COMPOSE_WAIT_MODE:-manual}"
+compose_wait_mode="${M5_COMPOSE_WAIT_MODE:-compose}"
 compose_wait_mode="${compose_wait_mode,,}"
 compose_wait_mode="${compose_wait_mode//[[:space:]]/}"
 case "$compose_wait_mode" in
@@ -163,14 +162,117 @@ case "$compose_wait_mode" in
     :
     ;;
   "")
-    compose_wait_mode="manual"
+    compose_wait_mode="compose"
     ;;
   *)
-    echo "Unknown M5_COMPOSE_WAIT_MODE=${compose_wait_mode}; defaulting to manual."
-    compose_wait_mode="manual"
+    echo "Unknown M5_COMPOSE_WAIT_MODE=${compose_wait_mode}; defaulting to compose."
+    compose_wait_mode="compose"
     ;;
 esac
 echo "Using compose wait mode: $compose_wait_mode"
+
+compose_cmd() {
+  M5_MODEL_DIR="$M5_MODEL_DIR" docker compose --profile m5 --profile m6 "$@"
+}
+
+compose_service_id() {
+  local service="$1"
+
+  compose_cmd ps -q "$service" 2>/dev/null || true
+}
+
+wait_for_service_healthy() {
+  local service="$1"
+  local timeout="${2:-$compose_wait_timeout}"
+  local label="${3:-$service}"
+  local container_id status health exit_code elapsed
+
+  for elapsed in $(seq 1 "$timeout"); do
+    container_id="$(compose_service_id "$service")"
+    if [[ -z "$container_id" ]]; then
+      sleep 1
+      continue
+    fi
+
+    status="$(docker inspect --format '{{.State.Status}}' "$container_id" 2>/dev/null || true)"
+    health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{end}}' "$container_id" 2>/dev/null || true)"
+    exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container_id" 2>/dev/null || true)"
+
+    if [[ "$health" == "healthy" ]]; then
+      return 0
+    fi
+    if [[ "$status" == "exited" ]]; then
+      echo "$label exited before becoming healthy (exit code ${exit_code:-unknown})."
+      return 1
+    fi
+
+    if (( elapsed % 10 == 0 )); then
+      echo "Waiting for $label to become healthy: ${elapsed}s/${timeout}s"
+    fi
+    sleep 1
+  done
+
+  echo "Timed out waiting for $label to become healthy after ${timeout}s."
+  return 1
+}
+
+wait_for_service_completed_successfully() {
+  local service="$1"
+  local timeout="${2:-$compose_wait_timeout}"
+  local label="${3:-$service}"
+  local container_id status exit_code elapsed
+
+  for elapsed in $(seq 1 "$timeout"); do
+    container_id="$(compose_service_id "$service")"
+    if [[ -z "$container_id" ]]; then
+      sleep 1
+      continue
+    fi
+
+    status="$(docker inspect --format '{{.State.Status}}' "$container_id" 2>/dev/null || true)"
+    exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container_id" 2>/dev/null || true)"
+
+    if [[ "$status" == "exited" ]]; then
+      if [[ "${exit_code:-1}" == "0" ]]; then
+        return 0
+      fi
+      echo "$label failed with exit code ${exit_code:-unknown}."
+      docker compose --profile m5 --profile m6 logs --no-color --tail 120 "$service" 2>/dev/null || true
+      return 1
+    fi
+
+    if (( elapsed % 10 == 0 )); then
+      echo "Waiting for $label to complete successfully: ${elapsed}s/${timeout}s"
+    fi
+    sleep 1
+  done
+
+  echo "Timed out waiting for $label to complete successfully after ${timeout}s."
+  return 1
+}
+
+prune_dead_pid_file() {
+  local pid_file="$1"
+  local pid
+
+  [[ -r "$pid_file" ]] || return 0
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  if [[ ! "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$pid_file"
+  fi
+}
+
+prune_dead_pid_dir() {
+  local pid_dir="$1"
+  local pid_file
+
+  [[ -d "$pid_dir" ]] || return 0
+  shopt -s nullglob
+  for pid_file in "$pid_dir"/*.pid; do
+    prune_dead_pid_file "$pid_file"
+  done
+  shopt -u nullglob
+}
 
 print_tei_debug() {
   local tei_container_id
@@ -224,48 +326,124 @@ check_tei_failure_exit() {
 }
 
 set +e
-if [[ "$compose_wait_mode" == "compose" ]]; then
-  M5_MODEL_DIR="$M5_MODEL_DIR" docker compose --profile m5 --profile m6 up -d --build --wait --wait-timeout "$compose_wait_timeout"
-  compose_exit=$?
-else
-  startup_services=(
-    db-bootstrap
-    text-embeddings-inference
-    qdrant
-    rabbitmq
-    minio
-    mailpit
-    postgres
-    minio-bootstrap
-    catalog-service
-    identity-service
-    ingestion-service
-    retrieval-qdrant-init
-    retrieval-service
-    retrieval-worker
-    answer-service
-    edge-api
-  )
+compose_exit=0
+prune_dead_pid_dir .dev/log-pids
 
-  M5_MODEL_DIR="$M5_MODEL_DIR" docker compose --profile m5 --profile m6 build
-  compose_exit=0
-  for startup_service in "${startup_services[@]}"; do
-    compose_args=(up -d)
-    if [[ "$startup_service" == "answer-service" ]]; then
-      compose_args+=(--no-deps)
-    fi
-    compose_args+=("$startup_service")
-    M5_MODEL_DIR="$M5_MODEL_DIR" docker compose --profile m5 --profile m6 "${compose_args[@]}"
-    if [[ $? -ne 0 ]]; then
-      compose_exit=1
-      break
-    fi
-    if (( M5_SERVICE_STARTUP_DELAY > 0 )); then
-      sleep "$M5_SERVICE_STARTUP_DELAY"
-    fi
-  done
-fi
+M5_MODEL_DIR="$M5_MODEL_DIR" compose_cmd up -d \
+  postgres \
+  db-bootstrap \
+  minio \
+  minio-bootstrap \
+  rabbitmq \
+  qdrant \
+  text-embeddings-inference \
+  mailpit
+compose_exit=$?
 set -e
+
+if (( compose_exit == 0 )); then
+  if ! wait_for_service_completed_successfully db-bootstrap "$compose_wait_timeout" "db-bootstrap"; then
+    compose_exit=1
+  fi
+fi
+if (( compose_exit == 0 )); then
+  if ! wait_for_service_healthy minio "$compose_wait_timeout" "minio"; then
+    compose_exit=1
+  fi
+fi
+if (( compose_exit == 0 )); then
+  if ! wait_for_service_completed_successfully minio-bootstrap "$compose_wait_timeout" "minio-bootstrap"; then
+    compose_exit=1
+  fi
+fi
+if (( compose_exit == 0 )); then
+  if ! wait_for_service_healthy rabbitmq "$compose_wait_timeout" "rabbitmq"; then
+    compose_exit=1
+  fi
+fi
+if (( compose_exit == 0 )); then
+  if ! wait_for_service_healthy qdrant "$compose_wait_timeout" "qdrant"; then
+    compose_exit=1
+  fi
+fi
+if (( compose_exit == 0 )); then
+  if ! wait_for_service_healthy text-embeddings-inference "$compose_wait_timeout" "text-embeddings-inference"; then
+    compose_exit=1
+  fi
+fi
+
+if (( compose_exit == 0 )); then
+  if [[ "$compose_wait_mode" == "manual" ]]; then
+    report_dependency_status
+  fi
+
+  M5_MODEL_DIR="$M5_MODEL_DIR" compose_cmd up -d --no-deps \
+    identity-service \
+    catalog-service \
+    ingestion-service
+  compose_exit=$?
+fi
+if (( compose_exit == 0 )); then
+  if ! wait_for_service_healthy identity-service "$compose_wait_timeout" "identity-service"; then
+    compose_exit=1
+  fi
+fi
+if (( compose_exit == 0 )); then
+  if ! wait_for_service_healthy catalog-service "$compose_wait_timeout" "catalog-service"; then
+    compose_exit=1
+  fi
+fi
+if (( compose_exit == 0 )); then
+  if ! wait_for_service_healthy ingestion-service "$compose_wait_timeout" "ingestion-service"; then
+    compose_exit=1
+  fi
+fi
+
+if (( compose_exit == 0 )); then
+  if ! M5_MODEL_DIR="$M5_MODEL_DIR" compose_cmd up -d --no-deps retrieval-qdrant-init; then
+    compose_exit=1
+  fi
+fi
+if (( compose_exit == 0 )); then
+  if ! wait_for_service_completed_successfully retrieval-qdrant-init "$compose_wait_timeout" "retrieval-qdrant-init"; then
+    compose_exit=1
+  fi
+fi
+
+if (( compose_exit == 0 )); then
+  M5_MODEL_DIR="$M5_MODEL_DIR" compose_cmd up -d --no-deps retrieval-service retrieval-worker
+  compose_exit=$?
+fi
+if (( compose_exit == 0 )); then
+  if ! wait_for_service_healthy retrieval-service "$compose_wait_timeout" "retrieval-service"; then
+    compose_exit=1
+  fi
+fi
+if (( compose_exit == 0 )); then
+  if ! wait_for_service_healthy retrieval-worker "$compose_wait_timeout" "retrieval-worker"; then
+    compose_exit=1
+  fi
+fi
+
+if (( compose_exit == 0 )); then
+  M5_MODEL_DIR="$M5_MODEL_DIR" compose_cmd up -d --no-deps answer-service
+  compose_exit=$?
+fi
+if (( compose_exit == 0 )); then
+  if ! wait_for_service_healthy answer-service "$compose_wait_timeout" "answer-service"; then
+    compose_exit=1
+  fi
+fi
+
+if (( compose_exit == 0 )); then
+  M5_MODEL_DIR="$M5_MODEL_DIR" compose_cmd up -d --no-deps edge-api
+  compose_exit=$?
+fi
+if (( compose_exit == 0 )); then
+  if ! wait_for_service_healthy edge-api "$compose_wait_timeout" "edge-api"; then
+    compose_exit=1
+  fi
+fi
 
 if (( compose_exit != 0 )); then
   echo "Compose startup failed with exit code $compose_exit."
@@ -401,7 +579,7 @@ if [[ "$regenerate_bootstrap_code" == true ]]; then
   echo "Creating a replacement local admin bootstrap verifier (interactive)."
   echo "The one-time bootstrap code is printed below; store it now."
   make bootstrap-verifier
-  docker compose up -d --force-recreate identity-service
+  docker compose up -d --no-deps --force-recreate identity-service
   wait_for_backend
   bootstrap_status="created"
 fi
