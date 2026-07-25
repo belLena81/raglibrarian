@@ -35,7 +35,7 @@ func TestSearchMapsRequestResponseMetadataAndDeadline(t *testing.T) {
 	stub.search = func(ctx context.Context, request *retrievalv1.SearchRequest, _ ...grpc.CallOption) (*retrievalv1.SearchResponse, error) {
 		deadline, ok := ctx.Deadline()
 		require.True(t, ok)
-		assert.LessOrEqual(t, time.Until(deadline), 3*time.Second)
+		assert.LessOrEqual(t, time.Until(deadline), 10*time.Second)
 		metadata, ok := grpcmetadata.FromOutgoingContext(ctx)
 		require.True(t, ok)
 		assert.Equal(t, []string{testRequestID}, metadata.Get("x-request-id"))

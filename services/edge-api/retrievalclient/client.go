@@ -21,6 +21,8 @@ var (
 	ErrUnavailable = errors.New("retrieval unavailable")
 )
 
+const searchDeadline = 10 * time.Second
+
 // Client translates Edge search requests to the versioned Retrieval contract.
 type Client struct {
 	service retrievalv1.RetrievalServiceClient
@@ -55,7 +57,7 @@ func (c *Client) Search(ctx context.Context, request handler.SearchRequest) (han
 	metadata = metadata.Copy()
 	metadata.Set("x-request-id", requestID)
 	ctx = grpcmetadata.NewOutgoingContext(ctx, metadata)
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, searchDeadline)
 	defer cancel()
 
 	response, err := c.service.Search(ctx, searchcontract.RequestToProto(request, requestID))
