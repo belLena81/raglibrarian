@@ -1,6 +1,6 @@
 CREATE SCHEMA IF NOT EXISTS identity AUTHORIZATION identity_migrator;
 
-CREATE TABLE identity.users (
+CREATE TABLE IF NOT EXISTS identity.users (
     id                TEXT        PRIMARY KEY,
     display_name      TEXT,
     email             TEXT,
@@ -43,19 +43,19 @@ CREATE TABLE identity.users (
     )
 );
 
-CREATE UNIQUE INDEX users_single_admin_idx
+CREATE UNIQUE INDEX IF NOT EXISTS users_single_admin_idx
     ON identity.users ((role))
     WHERE role = 'admin';
 
-CREATE UNIQUE INDEX users_email_fingerprint_role_idx
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_fingerprint_role_idx
     ON identity.users (email_fingerprint, role)
     WHERE email_fingerprint IS NOT NULL;
 
-CREATE INDEX users_pending_librarians_idx
+CREATE INDEX IF NOT EXISTS users_pending_librarians_idx
     ON identity.users (created_at, id)
     WHERE role = 'librarian' AND status = 'pending';
 
-CREATE TABLE identity.sessions (
+CREATE TABLE IF NOT EXISTS identity.sessions (
     id           UUID        PRIMARY KEY,
     user_id      TEXT        NOT NULL REFERENCES identity.users(id) ON DELETE CASCADE,
     family_id    UUID        NOT NULL,
@@ -65,14 +65,14 @@ CREATE TABLE identity.sessions (
     last_used_at TIMESTAMPTZ NOT NULL
 );
 
-CREATE INDEX sessions_active_user_idx
+CREATE INDEX IF NOT EXISTS sessions_active_user_idx
     ON identity.sessions (user_id, expires_at)
     WHERE revoked_at IS NULL;
 
-CREATE INDEX sessions_family_idx
+CREATE INDEX IF NOT EXISTS sessions_family_idx
     ON identity.sessions (family_id);
 
-CREATE TABLE identity.refresh_tokens (
+CREATE TABLE IF NOT EXISTS identity.refresh_tokens (
     id             UUID        PRIMARY KEY,
     session_id     UUID        NOT NULL REFERENCES identity.sessions(id) ON DELETE CASCADE,
     token_hash     BYTEA       NOT NULL UNIQUE,
@@ -82,11 +82,11 @@ CREATE TABLE identity.refresh_tokens (
     created_at     TIMESTAMPTZ NOT NULL
 );
 
-CREATE INDEX refresh_tokens_active_hash_idx
+CREATE INDEX IF NOT EXISTS refresh_tokens_active_hash_idx
     ON identity.refresh_tokens (token_hash)
     WHERE consumed_at IS NULL;
 
-CREATE TABLE identity.registration_verifications (
+CREATE TABLE IF NOT EXISTS identity.registration_verifications (
     id                UUID        PRIMARY KEY,
     token_hash        BYTEA       NOT NULL UNIQUE CHECK (octet_length(token_hash) = 32),
     display_name      TEXT        NOT NULL,
@@ -103,15 +103,15 @@ CREATE TABLE identity.registration_verifications (
         CHECK (email = lower(btrim(email)))
 );
 
-CREATE UNIQUE INDEX registration_verifications_pending_email_idx
+CREATE UNIQUE INDEX IF NOT EXISTS registration_verifications_pending_email_idx
     ON identity.registration_verifications (email_fingerprint)
     WHERE consumed_at IS NULL;
 
-CREATE INDEX registration_verifications_expiry_idx
+CREATE INDEX IF NOT EXISTS registration_verifications_expiry_idx
     ON identity.registration_verifications (expires_at)
     WHERE consumed_at IS NULL;
 
-CREATE TABLE identity.password_reset_challenges (
+CREATE TABLE IF NOT EXISTS identity.password_reset_challenges (
     email_fingerprint BYTEA       PRIMARY KEY,
     code_hash         BYTEA       NOT NULL,
     expires_at        TIMESTAMPTZ NOT NULL,
@@ -123,10 +123,10 @@ CREATE TABLE identity.password_reset_challenges (
     created_at        TIMESTAMPTZ NOT NULL
 );
 
-CREATE INDEX password_reset_challenges_expiry_idx
+CREATE INDEX IF NOT EXISTS password_reset_challenges_expiry_idx
     ON identity.password_reset_challenges (expires_at);
 
-CREATE TABLE identity.email_outbox (
+CREATE TABLE IF NOT EXISTS identity.email_outbox (
     id              UUID        PRIMARY KEY,
     message_type    TEXT        NOT NULL CHECK (message_type IN ('verify_registration', 'password_reset_code')),
     key_id          TEXT        NOT NULL,
@@ -144,7 +144,7 @@ CREATE TABLE identity.email_outbox (
     )
 );
 
-CREATE INDEX email_outbox_delivery_idx
+CREATE INDEX IF NOT EXISTS email_outbox_delivery_idx
     ON identity.email_outbox (next_attempt_at, created_at)
     WHERE delivered_at IS NULL AND attempts < 10;
 
@@ -184,10 +184,21 @@ BEGIN
 END
 $function$;
 
-CREATE TRIGGER protect_user_review_fields
-BEFORE UPDATE ON identity.users
-FOR EACH ROW
-EXECUTE FUNCTION identity.protect_user_review_fields();
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'protect_user_review_fields'
+          AND tgrelid = 'identity.users'::regclass
+    ) THEN
+        CREATE TRIGGER protect_user_review_fields
+        BEFORE UPDATE ON identity.users
+        FOR EACH ROW
+        EXECUTE FUNCTION identity.protect_user_review_fields();
+    END IF;
+END
+$$;
 
 CREATE OR REPLACE FUNCTION identity.notify_pending_librarians_changed()
 RETURNS trigger
@@ -206,10 +217,21 @@ BEGIN
 END
 $function$;
 
-CREATE TRIGGER notify_pending_librarians_changed
-AFTER INSERT OR UPDATE OF status ON identity.users
-FOR EACH ROW
-EXECUTE FUNCTION identity.notify_pending_librarians_changed();
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'notify_pending_librarians_changed'
+          AND tgrelid = 'identity.users'::regclass
+    ) THEN
+        CREATE TRIGGER notify_pending_librarians_changed
+        AFTER INSERT OR UPDATE OF status ON identity.users
+        FOR EACH ROW
+        EXECUTE FUNCTION identity.notify_pending_librarians_changed();
+    END IF;
+END
+$$;
 
 GRANT USAGE ON SCHEMA identity TO identity_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA identity TO identity_runtime;

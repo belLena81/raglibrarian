@@ -1,6 +1,6 @@
 CREATE SCHEMA IF NOT EXISTS catalog AUTHORIZATION catalog_migrator;
 
-CREATE TABLE catalog.books (
+CREATE TABLE IF NOT EXISTS catalog.books (
     id                        TEXT        PRIMARY KEY,
     title                     TEXT,
     author                    TEXT,
@@ -53,10 +53,10 @@ CREATE TABLE catalog.books (
     )
 );
 
-CREATE INDEX books_created_at_id_idx
+CREATE INDEX IF NOT EXISTS books_created_at_id_idx
     ON catalog.books (created_at, id);
 
-CREATE TABLE catalog.outbox (
+CREATE TABLE IF NOT EXISTS catalog.outbox (
     event_id       TEXT        PRIMARY KEY,
     event_type     TEXT        NOT NULL CHECK (event_type IN (
         'catalog.book.uploaded.v1',
@@ -76,14 +76,14 @@ CREATE TABLE catalog.outbox (
     CONSTRAINT outbox_sequence_check CHECK (sequence >= 0)
 );
 
-CREATE UNIQUE INDEX outbox_aggregate_sequence_idx
+CREATE UNIQUE INDEX IF NOT EXISTS outbox_aggregate_sequence_idx
     ON catalog.outbox (aggregate_id, sequence);
 
-CREATE INDEX outbox_pending_idx ON catalog.outbox
+CREATE INDEX IF NOT EXISTS outbox_pending_idx ON catalog.outbox
     (next_attempt_at, occurred_at, aggregate_id, sequence, event_id)
     WHERE published_at IS NULL;
 
-CREATE TABLE catalog.processing_inbox (
+CREATE TABLE IF NOT EXISTS catalog.processing_inbox (
     event_id      TEXT        PRIMARY KEY,
     event_type    TEXT        NOT NULL CHECK (event_type IN (
         'ingestion.book.processing-started.v1',
@@ -96,7 +96,7 @@ CREATE TABLE catalog.processing_inbox (
     processed_at  TIMESTAMPTZ NOT NULL
 );
 
-CREATE TABLE catalog.lifecycle_commands (
+CREATE TABLE IF NOT EXISTS catalog.lifecycle_commands (
     command_id         TEXT        PRIMARY KEY,
     book_id            TEXT        NOT NULL REFERENCES catalog.books(id),
     command_type       TEXT        NOT NULL CHECK (command_type IN ('reindex', 'delete')),
@@ -107,7 +107,7 @@ CREATE TABLE catalog.lifecycle_commands (
     UNIQUE (book_id, lifecycle_version)
 );
 
-CREATE TABLE catalog.lifecycle_inbox (
+CREATE TABLE IF NOT EXISTS catalog.lifecycle_inbox (
     event_id      TEXT        PRIMARY KEY,
     event_type    TEXT        NOT NULL CHECK (event_type IN (
         'ingestion.book.artifacts-deleted.v1',

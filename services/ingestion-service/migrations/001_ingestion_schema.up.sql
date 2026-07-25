@@ -1,6 +1,6 @@
 CREATE SCHEMA IF NOT EXISTS ingestion AUTHORIZATION ingestion_migrator;
 
-CREATE TABLE ingestion.inbox (
+CREATE TABLE IF NOT EXISTS ingestion.inbox (
     event_id                TEXT        PRIMARY KEY,
     payload_digest          BYTEA       NOT NULL CHECK (octet_length(payload_digest) = 32),
     payload                 BYTEA       NOT NULL CHECK (octet_length(payload) BETWEEN 1 AND 262144),
@@ -13,7 +13,7 @@ CREATE TABLE ingestion.inbox (
     UNIQUE (business_key)
 );
 
-CREATE TABLE ingestion.jobs (
+CREATE TABLE IF NOT EXISTS ingestion.jobs (
     id                      TEXT        PRIMARY KEY,
     book_id                 TEXT        NOT NULL,
     source_sha256           BYTEA       NOT NULL CHECK (octet_length(source_sha256) = 32),
@@ -36,15 +36,15 @@ CREATE TABLE ingestion.jobs (
     UNIQUE (book_id, source_sha256, processing_config_digest)
 );
 
-CREATE INDEX jobs_due_idx
+CREATE INDEX IF NOT EXISTS jobs_due_idx
     ON ingestion.jobs (next_attempt_at, id)
     WHERE state = 'retrying';
 
-CREATE INDEX jobs_lease_idx
+CREATE INDEX IF NOT EXISTS jobs_lease_idx
     ON ingestion.jobs (lease_expires_at, id)
     WHERE state = 'processing';
 
-CREATE TABLE ingestion.retry_dispatches (
+CREATE TABLE IF NOT EXISTS ingestion.retry_dispatches (
     job_id         TEXT        NOT NULL REFERENCES ingestion.jobs(id) ON DELETE CASCADE,
     attempt        INTEGER     NOT NULL CHECK (attempt > 0),
     event_id       TEXT        NOT NULL,
@@ -57,18 +57,18 @@ CREATE TABLE ingestion.retry_dispatches (
     PRIMARY KEY (job_id, attempt)
 );
 
-CREATE INDEX retry_dispatches_pending_idx
+CREATE INDEX IF NOT EXISTS retry_dispatches_pending_idx
     ON ingestion.retry_dispatches (next_attempt_at, job_id, attempt)
     WHERE published_at IS NULL;
 
-CREATE TABLE ingestion.lifecycle_fences (
+CREATE TABLE IF NOT EXISTS ingestion.lifecycle_fences (
     book_id           TEXT        PRIMARY KEY,
     lifecycle_version BIGINT      NOT NULL CHECK (lifecycle_version > 0),
     deleted           BOOLEAN     NOT NULL,
     updated_at        TIMESTAMPTZ NOT NULL
 );
 
-CREATE TABLE ingestion.deletion_inbox (
+CREATE TABLE IF NOT EXISTS ingestion.deletion_inbox (
     event_id          TEXT        PRIMARY KEY,
     book_id           TEXT        NOT NULL,
     command_id        TEXT        NOT NULL UNIQUE,
@@ -83,7 +83,7 @@ CREATE TABLE ingestion.deletion_inbox (
     UNIQUE (book_id, lifecycle_version)
 );
 
-CREATE TABLE ingestion.artifact_sets (
+CREATE TABLE IF NOT EXISTS ingestion.artifact_sets (
     job_id                    TEXT        PRIMARY KEY REFERENCES ingestion.jobs(id) ON DELETE CASCADE,
     prefix                    TEXT        NOT NULL UNIQUE,
     manifest_reference        TEXT UNIQUE,
@@ -104,11 +104,11 @@ CREATE TABLE ingestion.artifact_sets (
         FOREIGN KEY (deletion_event_id) REFERENCES ingestion.deletion_inbox(event_id)
 );
 
-CREATE INDEX artifact_sets_deletion_pending_idx
+CREATE INDEX IF NOT EXISTS artifact_sets_deletion_pending_idx
     ON ingestion.artifact_sets (deletion_event_id, cleanup_after, job_id)
     WHERE deletion_event_id IS NOT NULL AND deletion_cleanup_completed_at IS NULL;
 
-CREATE TABLE ingestion.outbox (
+CREATE TABLE IF NOT EXISTS ingestion.outbox (
     event_id          TEXT        PRIMARY KEY,
     event_type        TEXT        NOT NULL CHECK (event_type IN (
         'ingestion.book.processing-started.v1',
@@ -127,7 +127,7 @@ CREATE TABLE ingestion.outbox (
     UNIQUE (aggregate_id, aggregate_sequence)
 );
 
-CREATE INDEX ingestion_outbox_pending_idx
+CREATE INDEX IF NOT EXISTS ingestion_outbox_pending_idx
     ON ingestion.outbox (next_attempt_at, aggregate_id, aggregate_sequence)
     WHERE published_at IS NULL;
 

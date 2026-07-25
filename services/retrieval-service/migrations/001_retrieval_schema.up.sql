@@ -1,6 +1,6 @@
 CREATE SCHEMA IF NOT EXISTS retrieval AUTHORIZATION retrieval_migrator;
 
-CREATE TABLE retrieval.metadata_facts (
+CREATE TABLE IF NOT EXISTS retrieval.metadata_facts (
     book_id          TEXT        PRIMARY KEY,
     event_id         TEXT        NOT NULL UNIQUE,
     payload_digest   BYTEA       NOT NULL CHECK (octet_length(payload_digest) = 32),
@@ -17,7 +17,7 @@ CREATE TABLE retrieval.metadata_facts (
         CHECK (media_type IN ('application/pdf', 'application/epub+zip'))
 );
 
-CREATE TABLE retrieval.manifest_facts (
+CREATE TABLE IF NOT EXISTS retrieval.manifest_facts (
     book_id            TEXT        PRIMARY KEY,
     event_id           TEXT        NOT NULL UNIQUE,
     payload_digest     BYTEA       NOT NULL CHECK (octet_length(payload_digest) = 32),
@@ -33,7 +33,7 @@ CREATE TABLE retrieval.manifest_facts (
     failure_recorded_at TIMESTAMPTZ
 );
 
-CREATE TABLE retrieval.index_jobs (
+CREATE TABLE IF NOT EXISTS retrieval.index_jobs (
     id                           TEXT        PRIMARY KEY,
     book_id                      TEXT        NOT NULL REFERENCES retrieval.metadata_facts(book_id),
     source_sha256                BYTEA       NOT NULL CHECK (octet_length(source_sha256) = 32),
@@ -56,14 +56,14 @@ CREATE TABLE retrieval.index_jobs (
         UNIQUE (book_id, source_sha256, manifest_sha256, profile_digest)
 );
 
-CREATE TABLE retrieval.document_embedding_accumulators (
+CREATE TABLE IF NOT EXISTS retrieval.document_embedding_accumulators (
     job_id       TEXT        PRIMARY KEY REFERENCES retrieval.index_jobs(id) ON DELETE CASCADE,
     vector_sum   REAL[]      NOT NULL CHECK (array_length(vector_sum, 1) = 768),
     chunk_count  INTEGER     NOT NULL CHECK (chunk_count > 0),
     updated_at   TIMESTAMPTZ NOT NULL
 );
 
-CREATE TABLE retrieval.documents (
+CREATE TABLE IF NOT EXISTS retrieval.documents (
     document_id        TEXT        PRIMARY KEY,
     job_id             TEXT        NOT NULL UNIQUE REFERENCES retrieval.index_jobs(id) ON DELETE CASCADE,
     book_id            TEXT        NOT NULL,
@@ -80,7 +80,7 @@ CREATE TABLE retrieval.documents (
         CHECK (media_type IN ('application/pdf', 'application/epub+zip'))
 );
 
-CREATE TABLE retrieval.index_batches (
+CREATE TABLE IF NOT EXISTS retrieval.index_batches (
     id                   TEXT        PRIMARY KEY,
     job_id               TEXT        NOT NULL REFERENCES retrieval.index_jobs(id) ON DELETE CASCADE,
     shard_reference      TEXT        NOT NULL,
@@ -97,7 +97,7 @@ CREATE TABLE retrieval.index_batches (
     UNIQUE (job_id, shard_reference)
 );
 
-CREATE TABLE retrieval.evidence (
+CREATE TABLE IF NOT EXISTS retrieval.evidence (
     evidence_id      TEXT        PRIMARY KEY,
     chunk_id         TEXT        NOT NULL,
     job_id           TEXT        NOT NULL REFERENCES retrieval.index_jobs(id) ON DELETE CASCADE,
@@ -118,7 +118,7 @@ CREATE TABLE retrieval.evidence (
     UNIQUE (job_id, chunk_id)
 );
 
-CREATE TABLE retrieval.book_lifecycle (
+CREATE TABLE IF NOT EXISTS retrieval.book_lifecycle (
     book_id                   TEXT        PRIMARY KEY REFERENCES retrieval.metadata_facts(book_id),
     lifecycle_version         BIGINT      NOT NULL CHECK (lifecycle_version >= 1),
     state                     TEXT        NOT NULL CHECK (state IN ('active','reindexing','deleting','deleted')),
@@ -134,11 +134,11 @@ CREATE TABLE retrieval.book_lifecycle (
     updated_at                TIMESTAMPTZ NOT NULL
 );
 
-CREATE INDEX retrieval_book_lifecycle_cleanup_idx
+CREATE INDEX IF NOT EXISTS retrieval_book_lifecycle_cleanup_idx
     ON retrieval.book_lifecycle (cleanup_next_attempt_at)
     WHERE cleanup_pending;
 
-CREATE TABLE retrieval.outbox (
+CREATE TABLE IF NOT EXISTS retrieval.outbox (
     event_id        TEXT        PRIMARY KEY,
     event_type      TEXT        NOT NULL,
     aggregate_id    TEXT        NOT NULL,
@@ -149,11 +149,11 @@ CREATE TABLE retrieval.outbox (
     next_attempt_at TIMESTAMPTZ NOT NULL
 );
 
-CREATE INDEX retrieval_outbox_pending_idx
+CREATE INDEX IF NOT EXISTS retrieval_outbox_pending_idx
     ON retrieval.outbox (next_attempt_at)
     WHERE published_at IS NULL;
 
-CREATE INDEX retrieval_index_jobs_vector_cleanup_idx
+CREATE INDEX IF NOT EXISTS retrieval_index_jobs_vector_cleanup_idx
     ON retrieval.index_jobs (vector_cleanup_next_attempt_at)
     WHERE vector_cleanup_pending;
 
