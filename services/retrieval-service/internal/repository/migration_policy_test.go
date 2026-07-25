@@ -7,12 +7,12 @@ import (
 )
 
 func TestRetrievalSchemaIsCreateOnly(t *testing.T) {
-	contents := readMigration(t, "../../migrations/001_retrieval_schema.up.sql")
+	contents := strings.Join(strings.Fields(readMigration(t, "../../migrations/001_retrieval_schema.up.sql")), " ")
 
 	for _, fragment := range []string{
-		"CREATE TABLE retrieval.book_lifecycle",
-		"CREATE INDEX retrieval_book_lifecycle_cleanup_idx",
-		"CREATE INDEX retrieval_index_jobs_vector_cleanup_idx",
+		"CREATE TABLE IF NOT EXISTS retrieval.book_lifecycle",
+		"CREATE INDEX IF NOT EXISTS retrieval_book_lifecycle_cleanup_idx",
+		"CREATE INDEX IF NOT EXISTS retrieval_index_jobs_vector_cleanup_idx",
 		"GRANT SELECT, INSERT, UPDATE ON retrieval.book_lifecycle TO retrieval_runtime;",
 		"GRANT SELECT, UPDATE ON retrieval.index_batches, retrieval.outbox TO retrieval_cleanup;",
 		"GRANT INSERT (event_id,event_type,aggregate_id,payload,occurred_at,next_attempt_at) ON retrieval.outbox TO retrieval_cleanup;",

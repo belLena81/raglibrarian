@@ -76,10 +76,10 @@ func TestSearcherUsesProviderSummariesAndFallsBack(t *testing.T) {
 		result.Documents[0].Evidence[0].Summary != "summary: replication | Deterministic retries keep search stable." {
 		t.Fatalf("provider-backed document summary missing: %#v", result.Documents)
 	}
-	if provider.calls() != 3 {
-		t.Fatalf("provider calls = %d, want 3", provider.calls())
+	if provider.calls() != 1 {
+		t.Fatalf("provider calls = %d, want 1", provider.calls())
 	}
-	if len(provider.requests) != 3 || provider.requests[0].Question != "replication" || provider.requests[0].Passage != "Deterministic retries keep search stable." {
+	if len(provider.requests) != 1 || provider.requests[0].Question != "replication" || provider.requests[0].Passage != "Deterministic retries keep search stable." {
 		t.Fatalf("provider requests missing question/passage: %#v", provider.requests)
 	}
 
@@ -90,6 +90,57 @@ func TestSearcherUsesProviderSummariesAndFallsBack(t *testing.T) {
 	}
 	if len(fallback.Evidence) != 1 || fallback.Evidence[0].Summary != "Deterministic retries keep search stable." || len(fallback.Documents) != 1 || fallback.Documents[0].Summary != "Deterministic retries keep search stable." {
 		t.Fatalf("local fallback summary missing: %#v", fallback)
+	}
+}
+
+func TestSearcherCapsProviderSummaryCallsPerSearch(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	results := make([]Evidence, 0, 5)
+	documents := make([]DocumentResult, 0, 5)
+	for index := 0; index < 5; index++ {
+		evidenceID := strings.Join([]string{"evidence", string(rune('a' + index))}, "-")
+		passage := strings.Join([]string{"evidence", string(rune('a' + index)), "passage"}, " ")
+		results = append(results, Evidence{
+			EvidenceID: evidenceID,
+			JobID:      "job-" + evidenceID,
+			BookID:     "book-" + evidenceID,
+			Title:      "Systems",
+			Passage:    passage,
+			Score:      0.91,
+		})
+		documentID := strings.Join([]string{"document", string(rune('a' + index))}, "-")
+		docPassage := strings.Join([]string{"document", string(rune('a' + index)), "passage"}, " ")
+		documents = append(documents, DocumentResult{
+			DocumentID: documentID,
+			JobID:      "job-" + documentID,
+			BookID:     "book-" + documentID,
+			Title:      "Systems",
+			ChunkCount: 1,
+			Evidence:   []Evidence{{EvidenceID: evidenceID + "-doc", Passage: docPassage, Score: 0.91}},
+		})
+	}
+	store := &stubEvidenceStore{
+		results:   results,
+		documents: documents,
+	}
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	if err != nil {
+		t.Fatalf("NewSearcher() error = %v", err)
+	}
+	provider := &stubSummaryProvider{response: func(value SummaryRequest) string {
+		return "summary: " + strings.TrimSpace(value.Passage)
+	}}
+	searcher.SetSummaryProvider(provider)
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 5})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Evidence) != 5 || len(result.Documents) != 5 {
+		t.Fatalf("unexpected result counts: %#v", result)
+	}
+	if provider.calls() != 4 {
+		t.Fatalf("provider calls = %d, want 4", provider.calls())
 	}
 }
 

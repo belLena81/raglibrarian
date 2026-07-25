@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
 	"google.golang.org/grpc"
@@ -43,6 +44,11 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	defer cancel()
 	if err = pool.Ping(pingCtx); err != nil {
 		return fmt.Errorf("database unavailable: %w", err)
+	}
+	// Fresh-launch bootstrap only: reject old persistent schemas instead of
+	// silently continuing with a partially compatible table layout.
+	if err = validateCatalogSchema(pingCtx, pool); err != nil {
+		return err
 	}
 	minioClient, minioTransport, err := newMinIOClient(cfg)
 	if err != nil {
@@ -203,4 +209,67 @@ func (r catalogReadiness) CheckReady(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+type catalogSchemaQuerier interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+var errStaleCatalogSchema = errors.New("catalog schema is stale; recreate the database")
+
+func validateCatalogSchema(ctx context.Context, querier catalogSchemaQuerier) error {
+	var (
+		booksTableExists        bool
+		lifecycleCommandsExists bool
+		lifecycleInboxExists    bool
+		processingInboxExists   bool
+		lifecycleVersionExists  bool
+		originalDeletedExists   bool
+		artifactsDeletedExists  bool
+		indexDeletedExists      bool
+	)
+	err := querier.QueryRow(ctx, `
+		SELECT
+			to_regclass('catalog.books') IS NOT NULL,
+			to_regclass('catalog.lifecycle_commands') IS NOT NULL,
+			to_regclass('catalog.lifecycle_inbox') IS NOT NULL,
+			to_regclass('catalog.processing_inbox') IS NOT NULL,
+			EXISTS (
+				SELECT 1
+				FROM information_schema.columns
+				WHERE table_schema = 'catalog' AND table_name = 'books' AND column_name = 'lifecycle_version'
+			),
+			EXISTS (
+				SELECT 1
+				FROM information_schema.columns
+				WHERE table_schema = 'catalog' AND table_name = 'books' AND column_name = 'original_deleted'
+			),
+			EXISTS (
+				SELECT 1
+				FROM information_schema.columns
+				WHERE table_schema = 'catalog' AND table_name = 'books' AND column_name = 'artifacts_deleted'
+			),
+			EXISTS (
+				SELECT 1
+				FROM information_schema.columns
+				WHERE table_schema = 'catalog' AND table_name = 'books' AND column_name = 'index_deleted'
+			)
+	`).Scan(
+		&booksTableExists,
+		&lifecycleCommandsExists,
+		&lifecycleInboxExists,
+		&processingInboxExists,
+		&lifecycleVersionExists,
+		&originalDeletedExists,
+		&artifactsDeletedExists,
+		&indexDeletedExists,
+	)
+	if err != nil {
+		return fmt.Errorf("catalog schema validation: %w", err)
+	}
+	if booksTableExists && lifecycleCommandsExists && lifecycleInboxExists && processingInboxExists &&
+		lifecycleVersionExists && originalDeletedExists && artifactsDeletedExists && indexDeletedExists {
+		return nil
+	}
+	return errStaleCatalogSchema
 }

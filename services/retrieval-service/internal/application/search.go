@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -15,6 +16,7 @@ import (
 var ErrSearchForbidden = errors.New("search forbidden")
 
 const maximumSearchCandidates = domain.MaximumResultLimit * 5
+const maximumSearchSummaryProviderCalls = 4
 
 // Evidence is Retrieval's controlled local chunk projection returned to an authorized caller.
 type Evidence struct {
@@ -94,6 +96,7 @@ func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.
 	if !actor.CanSearch() {
 		return SearchResult{}, ErrSearchForbidden
 	}
+	summaryCache := newSearchSummaryCache(maximumSearchSummaryProviderCalls)
 	query, err := domain.NewSearchQuery(input)
 	if err != nil {
 		return SearchResult{}, err
@@ -105,18 +108,18 @@ func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.
 	if len(vector) != domain.EmbeddingDimensions {
 		return SearchResult{}, errors.New("invalid embedding dimensions")
 	}
-	results, err := s.searchVisibleEvidence(ctx, query, vector)
+	results, err := s.searchVisibleEvidence(ctx, query, vector, summaryCache)
 	if err != nil {
 		return SearchResult{}, err
 	}
-	documents, err := s.searchVisibleDocuments(ctx, query, vector)
+	documents, err := s.searchVisibleDocuments(ctx, query, vector, summaryCache)
 	if err != nil {
 		return SearchResult{}, err
 	}
 	return SearchResult{Evidence: results, Documents: documents}, nil
 }
 
-func (s *Searcher) searchVisibleEvidence(ctx context.Context, query domain.SearchQuery, vector []float32) ([]Evidence, error) {
+func (s *Searcher) searchVisibleEvidence(ctx context.Context, query domain.SearchQuery, vector []float32, summaryCache *searchSummaryCache) ([]Evidence, error) {
 	results := make([]Evidence, 0, query.Limit())
 	for offset, pageLimit := 0, searchPageLimit(query.Limit()); len(results) < query.Limit() && offset < maximumSearchCandidates; offset += pageLimit {
 		candidateLimit := searchCandidateLimit(pageLimit, offset)
@@ -136,11 +139,11 @@ func (s *Searcher) searchVisibleEvidence(ctx context.Context, query domain.Searc
 		}
 	}
 	results = trimEvidence(results, query.Limit())
-	s.populateEvidenceSummaries(ctx, query.Question(), results)
+	s.populateEvidenceSummaries(ctx, query.Question(), results, summaryCache)
 	return results, nil
 }
 
-func (s *Searcher) searchVisibleDocuments(ctx context.Context, query domain.SearchQuery, vector []float32) ([]DocumentResult, error) {
+func (s *Searcher) searchVisibleDocuments(ctx context.Context, query domain.SearchQuery, vector []float32, summaryCache *searchSummaryCache) ([]DocumentResult, error) {
 	results := make([]DocumentResult, 0, query.Limit())
 	for offset, pageLimit := 0, searchPageLimit(query.Limit()); len(results) < query.Limit() && offset < maximumSearchCandidates; offset += pageLimit {
 		candidateLimit := searchCandidateLimit(pageLimit, offset)
@@ -159,11 +162,11 @@ func (s *Searcher) searchVisibleDocuments(ctx context.Context, query domain.Sear
 		}
 	}
 	results = trimDocuments(results, query.Limit())
-	s.populateDocumentSummaries(ctx, query.Question(), results)
+	s.populateDocumentSummaries(ctx, query.Question(), results, summaryCache)
 	return results, nil
 }
 
-func (s *Searcher) populateEvidenceSummaries(ctx context.Context, question string, results []Evidence) {
+func (s *Searcher) populateEvidenceSummaries(ctx context.Context, question string, results []Evidence, summaryCache *searchSummaryCache) {
 	if len(results) == 0 {
 		return
 	}
@@ -172,14 +175,14 @@ func (s *Searcher) populateEvidenceSummaries(ctx context.Context, question strin
 	for index := range results {
 		index := index
 		group.Go(func() error {
-			results[index].Summary = s.summarizeEvidence(groupContext, question, results[index])
+			results[index].Summary = s.summarizeEvidence(groupContext, question, results[index], summaryCache)
 			return nil
 		})
 	}
 	_ = group.Wait()
 }
 
-func (s *Searcher) populateDocumentSummaries(ctx context.Context, question string, results []DocumentResult) {
+func (s *Searcher) populateDocumentSummaries(ctx context.Context, question string, results []DocumentResult, summaryCache *searchSummaryCache) {
 	if len(results) == 0 {
 		return
 	}
@@ -189,9 +192,9 @@ func (s *Searcher) populateDocumentSummaries(ctx context.Context, question strin
 		index := index
 		group.Go(func() error {
 			for evidenceIndex := range results[index].Evidence {
-				results[index].Evidence[evidenceIndex].Summary = s.summarizeEvidence(groupContext, question, results[index].Evidence[evidenceIndex])
+				results[index].Evidence[evidenceIndex].Summary = s.summarizeEvidence(groupContext, question, results[index].Evidence[evidenceIndex], summaryCache)
 			}
-			results[index].Summary = s.summarizeDocument(groupContext, question, results[index])
+			results[index].Summary = s.summarizeDocument(groupContext, question, results[index], summaryCache)
 			return nil
 		})
 	}
@@ -250,38 +253,23 @@ func filterVisibleDocuments(values []DocumentResult) []DocumentResult {
 	return results
 }
 
-func (s *Searcher) summarizeEvidence(ctx context.Context, question string, value Evidence) string {
-	return s.summarizeText(ctx, SummaryRequest{Question: question, Passage: value.Passage})
+func (s *Searcher) summarizeEvidence(ctx context.Context, question string, value Evidence, summaryCache *searchSummaryCache) string {
+	return s.summarizeText(ctx, SummaryRequest{Question: question, Passage: value.Passage}, summaryCache)
 }
 
-func (s *Searcher) summarizeDocument(ctx context.Context, question string, value DocumentResult) string {
+func (s *Searcher) summarizeDocument(ctx context.Context, question string, value DocumentResult, summaryCache *searchSummaryCache) string {
 	input := normalizeDocumentSummaryInput(value)
 	if input == "" {
 		return ""
 	}
-	return s.summarizeText(ctx, SummaryRequest{Question: question, Passage: input})
+	return s.summarizeText(ctx, SummaryRequest{Question: question, Passage: input}, summaryCache)
 }
 
-func (s *Searcher) summarizeText(ctx context.Context, request SummaryRequest) string {
-	normalizedPassage := normalizeSummaryInput(request.Passage)
-	if normalizedPassage == "" {
-		return ""
+func (s *Searcher) summarizeText(ctx context.Context, request SummaryRequest, summaryCache *searchSummaryCache) string {
+	if summaryCache == nil {
+		return summarizeText(normalizeSummaryInput(request.Passage))
 	}
-	normalizedQuestion := normalizeSummaryInput(request.Question)
-	if normalizedQuestion == "" {
-		normalizedQuestion = request.Question
-	}
-	if s.summaryProvider != nil {
-		summaryContext, cancel := context.WithTimeout(ctx, summaryProviderTimeout)
-		defer cancel()
-		summary, err := s.summaryProvider.Summarize(summaryContext, SummaryRequest{Question: normalizedQuestion, Passage: normalizedPassage})
-		if err == nil {
-			if sanitized := normalizeProviderSummary(summary); sanitized != "" {
-				return sanitized
-			}
-		}
-	}
-	return summarizeText(normalizedPassage)
+	return summaryCache.summarize(ctx, s.summaryProvider, request)
 }
 
 func normalizeSummaryInput(value string) string {
@@ -340,6 +328,65 @@ func summarizeText(value string) string {
 	}
 	runes := []rune(firstSentence)
 	return strings.TrimSpace(string(runes[:maximumSummaryRunes-1])) + "…"
+}
+
+type searchSummaryCache struct {
+	mu        sync.Mutex
+	remaining int
+	entries   map[string]*searchSummaryEntry
+}
+
+type searchSummaryEntry struct {
+	ready   chan struct{}
+	summary string
+}
+
+func newSearchSummaryCache(limit int) *searchSummaryCache {
+	return &searchSummaryCache{remaining: limit, entries: make(map[string]*searchSummaryEntry)}
+}
+
+func (c *searchSummaryCache) summarize(ctx context.Context, provider SummaryProvider, request SummaryRequest) string {
+	normalizedPassage := normalizeSummaryInput(request.Passage)
+	if normalizedPassage == "" {
+		return ""
+	}
+	normalizedQuestion := normalizeSummaryInput(request.Question)
+	if normalizedQuestion == "" {
+		normalizedQuestion = request.Question
+	}
+	key := normalizedQuestion + "\x00" + normalizedPassage
+
+	c.mu.Lock()
+	if entry, ok := c.entries[key]; ok {
+		ready := entry.ready
+		c.mu.Unlock()
+		<-ready
+		return entry.summary
+	}
+	entry := &searchSummaryEntry{ready: make(chan struct{})}
+	c.entries[key] = entry
+	useProvider := provider != nil && c.remaining > 0
+	if useProvider {
+		c.remaining--
+	}
+	c.mu.Unlock()
+
+	summary := summarizeText(normalizedPassage)
+	if useProvider {
+		summaryContext, cancel := context.WithTimeout(ctx, summaryProviderTimeout)
+		defer cancel()
+		if providerSummary, err := provider.Summarize(summaryContext, SummaryRequest{Question: normalizedQuestion, Passage: normalizedPassage}); err == nil {
+			if sanitized := normalizeProviderSummary(providerSummary); sanitized != "" {
+				summary = sanitized
+			}
+		}
+	}
+
+	c.mu.Lock()
+	entry.summary = summary
+	close(entry.ready)
+	c.mu.Unlock()
+	return summary
 }
 
 func firstSentenceMatch(value string) string {

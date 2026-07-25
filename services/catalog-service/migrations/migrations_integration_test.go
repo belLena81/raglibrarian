@@ -8,13 +8,13 @@ import (
 	"testing"
 )
 
-func TestCatalogSchemaIsCreateOnly(t *testing.T) {
+func TestCatalogMigrationsRebuildCleanly(t *testing.T) {
 	contents := readMigration(t, "001_catalog_schema.up.sql")
 
 	for _, fragment := range []string{
-		"CREATE TABLE catalog.lifecycle_commands",
-		"CREATE TABLE catalog.lifecycle_inbox",
-		"CREATE TABLE catalog.processing_inbox",
+		"CREATE TABLE IF NOT EXISTS catalog.lifecycle_commands",
+		"CREATE TABLE IF NOT EXISTS catalog.lifecycle_inbox",
+		"CREATE TABLE IF NOT EXISTS catalog.processing_inbox",
 		"books_tombstone_shape_check",
 		"outbox_aggregate_sequence_idx",
 		"catalog.book.uploaded.v1",

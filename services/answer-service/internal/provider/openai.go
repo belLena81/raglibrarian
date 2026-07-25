@@ -30,14 +30,15 @@ const (
 )
 
 type OpenAI struct {
-	endpoint *url.URL
-	model    string
-	apiKey   string
-	client   *http.Client
-	limit    *throttle.Limiter
+	endpoint     *url.URL
+	model        string
+	apiKey       string
+	client       *http.Client
+	limit        *throttle.Limiter
+	logErrorBody bool
 }
 
-func NewOpenAI(baseURL, model, apiKey string, client *http.Client, limit *throttle.Limiter) (*OpenAI, error) {
+func NewOpenAI(baseURL, model, apiKey string, client *http.Client, limit *throttle.Limiter, logErrorBody bool) (*OpenAI, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || len(baseURL) > 2048 || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
 		strings.TrimSpace(model) == "" || len(model) > 256 || strings.ContainsAny(model, "\r\n") || strings.TrimSpace(apiKey) == "" || strings.ContainsAny(apiKey, "\r\n") || client == nil {
@@ -45,7 +46,7 @@ func NewOpenAI(baseURL, model, apiKey string, client *http.Client, limit *thrott
 	}
 	endpoint := *parsed
 	endpoint.Path = openAIChatCompletionsPath(parsed.Host, parsed.Path)
-	return &OpenAI{endpoint: &endpoint, model: model, apiKey: apiKey, client: client, limit: limit}, nil
+	return &OpenAI{endpoint: &endpoint, model: model, apiKey: apiKey, client: client, limit: limit, logErrorBody: logErrorBody}, nil
 }
 
 func openAIChatCompletionsPath(host, basePath string) string {
@@ -135,9 +136,13 @@ func (p *OpenAI) Generate(ctx context.Context, input application.ProviderRequest
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, maximumProviderResponseBytes+1))
-		detail := sanitizeProviderDetail(string(body))
-		if detail == "" {
-			detail = sanitizeProviderDetail(response.Status)
+		detail := fmt.Sprintf("provider_http_status_%d", response.StatusCode)
+		if p.logErrorBody {
+			if preview := sanitizeProviderDetail(string(body)); preview != "" {
+				detail = preview
+			} else if preview = sanitizeProviderDetail(response.Status); preview != "" {
+				detail = preview
+			}
 		}
 		return nil, &providerError{code: fmt.Sprintf("provider_http_status_%d", response.StatusCode), detail: detail, err: fmt.Errorf("provider returned HTTP status %d", response.StatusCode)}
 	}
@@ -174,7 +179,7 @@ func (p *OpenAI) Generate(ctx context.Context, input application.ProviderRequest
 	if looksLikeJSON(content) {
 		return nil, &providerError{code: "invalid_provider_response", detail: "candidate_json_shape_invalid", err: errors.New("invalid provider response")}
 	}
-	return fallbackPlainTextSegments(content, input.Evidence), nil
+	return nil, &providerError{code: "invalid_provider_response", detail: "candidate_plain_text_response", err: errors.New("invalid provider response")}
 }
 
 func (p *OpenAI) wait(ctx context.Context) (time.Duration, error) {
@@ -227,18 +232,6 @@ func classifyProviderRequestError(err error) string {
 	default:
 		return "provider_transport_error"
 	}
-}
-
-func fallbackPlainTextSegments(content []byte, evidence []domain.ContextEvidence) []domain.AnswerSegment {
-	text := strings.TrimSpace(strings.Join(strings.Fields(string(content)), " "))
-	if text == "" {
-		return nil
-	}
-	if utf8.RuneCountInString(text) > maximumCandidateBytes {
-		runes := []rune(text)
-		text = strings.TrimSpace(string(runes[:maximumCandidateBytes]))
-	}
-	return []domain.AnswerSegment{{Text: text, EvidenceIDs: fallbackEvidenceIDs(evidence)}}
 }
 
 func looksLikeJSON(content []byte) bool {

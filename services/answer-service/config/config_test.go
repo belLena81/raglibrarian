@@ -23,6 +23,21 @@ func TestLoadDefaultsFreeTierProviderRateLimit(t *testing.T) {
 	if configuration.LLMRequestsPerMinute != 15 {
 		t.Fatalf("LLMRequestsPerMinute = %d, want 15", configuration.LLMRequestsPerMinute)
 	}
+	if configuration.LogProviderErrorBody {
+		t.Fatal("LogProviderErrorBody = true, want false")
+	}
+}
+
+func TestLoadEnablesProviderErrorBodyLoggingFlag(t *testing.T) {
+	setRequiredEnvironment(t)
+	t.Setenv("ANSWER_PROVIDER_LOG_ERROR_BODY", "true")
+	configuration, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !configuration.LogProviderErrorBody {
+		t.Fatal("LogProviderErrorBody = false, want true")
+	}
 }
 
 func TestLoadRejectsInsecureProviderAndInvalidBounds(t *testing.T) {
@@ -35,6 +50,21 @@ func TestLoadRejectsInsecureProviderAndInvalidBounds(t *testing.T) {
 	t.Setenv("ANSWER_MAX_EVIDENCE_BYTES", "65536")
 	if _, err := Load(); err == nil {
 		t.Fatal("per-item limit larger than context accepted")
+	}
+	setRequiredEnvironment(t)
+	t.Setenv("ANSWER_PROVIDER_REQUESTS_PER_MINUTE", "-1")
+	if _, err := Load(); err == nil {
+		t.Fatal("negative provider rate limit accepted")
+	}
+	setRequiredEnvironment(t)
+	t.Setenv("ANSWER_PROVIDER_REQUESTS_PER_MINUTE", "1001")
+	if _, err := Load(); err == nil {
+		t.Fatal("oversized provider rate limit accepted")
+	}
+	setRequiredEnvironment(t)
+	t.Setenv("ANSWER_PROVIDER_REQUESTS_PER_MINUTE", "maybe")
+	if _, err := Load(); err == nil {
+		t.Fatal("malformed provider rate limit accepted")
 	}
 }
 

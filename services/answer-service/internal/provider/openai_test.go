@@ -33,7 +33,7 @@ func TestOpenAIGeneratesStrictStructuredSegments(t *testing.T) {
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"{\"segments\":[{\"text\":\"answer\",\"evidence_ids\":[\"e-1\"]}]}"}}]}`)),
 		}, nil
-	})}, limit)
+	})}, limit, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestOpenAIGeneratesStrictStructuredSegments(t *testing.T) {
 	}
 }
 
-func TestOpenAIAcceptsPlainTextCandidateContent(t *testing.T) {
+func TestOpenAIRejectsPlainTextCandidateContent(t *testing.T) {
 	limit, err := throttle.New(0)
 	if err != nil {
 		t.Fatal(err)
@@ -58,26 +58,70 @@ func TestOpenAIAcceptsPlainTextCandidateContent(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"Use w, b, and dd to move and edit quickly."}}]}`)),
 		}, nil
 	})}
-	adapter, err := NewOpenAI("https://openrouter.ai/", "model", "synthetic-key", client, limit)
+	adapter, err := NewOpenAI("https://openrouter.ai/", "model", "synthetic-key", client, limit, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	segments, err := adapter.Generate(context.Background(), application.ProviderRequest{
+	_, err = adapter.Generate(context.Background(), application.ProviderRequest{
 		Question:  "vim shortcuts",
 		Evidence:  []domain.ContextEvidence{{EvidenceID: "e-1", Passage: "passage 1"}, {EvidenceID: "e-2", Passage: "passage 2"}},
 		MaxTokens: 10,
 	})
+	if err == nil {
+		t.Fatal("Generate() error = nil, want invalid provider response")
+	}
+	var providerErr interface {
+		ReasonCode() string
+		ReasonDetail() string
+	}
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("error = %T, want providerError", err)
+	}
+	if providerErr.ReasonCode() != "invalid_provider_response" || providerErr.ReasonDetail() != "candidate_plain_text_response" {
+		t.Fatalf("reason = %s detail = %s", providerErr.ReasonCode(), providerErr.ReasonDetail())
+	}
+}
+
+func TestOpenAIReportsProviderErrorBodyOnlyWhenEnabled(t *testing.T) {
+	limit, err := throttle.New(0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(segments) != 1 {
-		t.Fatalf("len(segments) = %d, want 1", len(segments))
-	}
-	if segments[0].Text != "Use w, b, and dd to move and edit quickly." {
-		t.Fatalf("segment text = %q", segments[0].Text)
-	}
-	if got, want := strings.Join(segments[0].EvidenceIDs, ","), "e-1,e-2"; got != want {
-		t.Fatalf("segment evidence IDs = %q, want %q", got, want)
+	client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`upstream failed`)),
+		}, nil
+	})}
+	for _, test := range []struct {
+		name         string
+		logErrorBody bool
+		wantDetail   string
+	}{
+		{name: "disabled", logErrorBody: false, wantDetail: "provider_http_status_502"},
+		{name: "enabled", logErrorBody: true, wantDetail: "upstream failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			adapter, err := NewOpenAI("https://provider", "test-model", "synthetic-key", client, limit, test.logErrorBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = adapter.Generate(context.Background(), application.ProviderRequest{Question: "q", Evidence: []domain.ContextEvidence{{EvidenceID: "e", Passage: "p"}}, MaxTokens: 10})
+			if err == nil {
+				t.Fatal("Generate() error = nil, want provider error")
+			}
+			var providerErr interface {
+				ReasonCode() string
+				ReasonDetail() string
+			}
+			if !errors.As(err, &providerErr) {
+				t.Fatalf("error = %T, want providerError", err)
+			}
+			if providerErr.ReasonCode() != "provider_http_status_502" || providerErr.ReasonDetail() != test.wantDetail {
+				t.Fatalf("reason = %s detail = %s", providerErr.ReasonCode(), providerErr.ReasonDetail())
+			}
+		})
 	}
 }
 
@@ -96,7 +140,7 @@ func TestNewOpenAIBuildsChatCompletionsEndpointFromAPIBase(t *testing.T) {
 		{name: "openrouter api v1", baseURL: "https://openrouter.ai/api/v1", expectedPath: "/api/v1/chat/completions"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			adapter, err := NewOpenAI(test.baseURL, "model", "key", client, nil)
+			adapter, err := NewOpenAI(test.baseURL, "model", "key", client, nil, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -123,7 +167,7 @@ func TestOpenAIRejectsRedirectUnknownAndDuplicateCandidateFields(t *testing.T) {
 				Header:     http.Header{"Content-Type": []string{"application/json"}},
 				Body:       io.NopCloser(strings.NewReader(fixture.body)),
 			}, nil
-		})}, nil)
+		})}, nil, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -152,7 +196,7 @@ func TestOpenAIReportsSanitizedInvalidProviderResponseDetails(t *testing.T) {
 					Header:     http.Header{"Content-Type": []string{"application/json"}},
 					Body:       io.NopCloser(strings.NewReader(test.body)),
 				}, nil
-			})}, nil)
+			})}, nil, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -183,20 +227,20 @@ func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, erro
 func TestNewOpenAIRequiresHTTPSAndFixedConfiguration(t *testing.T) {
 	client := &http.Client{}
 	for _, baseURL := range []string{"http://provider", "https://user:pass@provider", "https://provider?key=value", "https://provider#fragment"} {
-		if _, err := NewOpenAI(baseURL, "model", "key", client, nil); err == nil {
+		if _, err := NewOpenAI(baseURL, "model", "key", client, nil, false); err == nil {
 			t.Fatalf("base URL %q accepted", baseURL)
 		}
 	}
-	if _, err := NewOpenAI("https://provider", "model\nother", "key", client, nil); err == nil {
+	if _, err := NewOpenAI("https://provider", "model\nother", "key", client, nil, false); err == nil {
 		t.Fatal("multiline model accepted")
 	}
-	if _, err := NewOpenAI("https://provider", "model", strings.Repeat(" ", 2), client, nil); err == nil {
+	if _, err := NewOpenAI("https://provider", "model", strings.Repeat(" ", 2), client, nil, false); err == nil {
 		t.Fatal("empty key accepted")
 	}
-	if _, err := NewOpenAI("https://provider", strings.Repeat("m", 257), "key", client, nil); err == nil {
+	if _, err := NewOpenAI("https://provider", strings.Repeat("m", 257), "key", client, nil, false); err == nil {
 		t.Fatal("oversized model accepted")
 	}
-	if _, err := NewOpenAI("https://provider/"+strings.Repeat("p", 2048), "model", "key", client, nil); err == nil {
+	if _, err := NewOpenAI("https://provider/"+strings.Repeat("p", 2048), "model", "key", client, nil, false); err == nil {
 		t.Fatal("oversized provider URL accepted")
 	}
 }

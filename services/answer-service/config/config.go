@@ -16,18 +16,19 @@ import (
 )
 
 type Config struct {
-	GRPCAddress      string
-	MetricsAddress   string
-	RetrievalAddress string
-	RetrievalDNSName string
-	LLMBaseURL       string
-	LLMModel         string
+	GRPCAddress          string
+	MetricsAddress       string
+	RetrievalAddress     string
+	RetrievalDNSName     string
+	LLMBaseURL           string
+	LLMModel             string
 	LLMRequestsPerMinute int
-	LLMAPIKeyFile    string
-	LLMCAFile        string
-	TLS              internaltls.Files
-	RunAs            process.Identity
-	Limits           application.Limits
+	LogProviderErrorBody bool
+	LLMAPIKeyFile        string
+	LLMCAFile            string
+	TLS                  internaltls.Files
+	RunAs                process.Identity
+	Limits               application.Limits
 }
 
 func Load() (Config, error) {
@@ -54,7 +55,16 @@ func Load() (Config, error) {
 			MaximumEvidenceBytes: maximumItem, MaximumSegments: maximumSegments, MaximumAnswerBytes: maximumAnswer, MaximumCitations: maximumCitations,
 			MaximumOutputTokens: maximumTokens, ProviderConcurrency: concurrency, RequestTimeout: requestTimeout, RetrievalTimeout: retrievalTimeout, ProviderTimeout: providerTimeout},
 	}
-	configuration.LLMRequestsPerMinute = providerRequestsPerMinute("ANSWER_PROVIDER_REQUESTS_PER_MINUTE", configuration.LLMModel)
+	rpm, rpmErr := providerRequestsPerMinute("ANSWER_PROVIDER_REQUESTS_PER_MINUTE", configuration.LLMModel)
+	if rpmErr != nil {
+		return Config{}, errors.New("invalid answer configuration")
+	}
+	configuration.LLMRequestsPerMinute = rpm
+	logProviderErrorBody, logProviderErrorBodyErr := boolean("ANSWER_PROVIDER_LOG_ERROR_BODY", false)
+	if logProviderErrorBodyErr != nil {
+		return Config{}, errors.New("invalid answer configuration")
+	}
+	configuration.LogProviderErrorBody = logProviderErrorBody
 	if configuration.RetrievalDNSName == "" {
 		configuration.RetrievalDNSName = "retrieval-service"
 	}
@@ -98,6 +108,18 @@ func duration(key string, fallback, minimum, maximum time.Duration) (time.Durati
 	return parsed, nil
 }
 
+func boolean(key string, fallback bool) (bool, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, errors.New("invalid boolean")
+	}
+	return parsed, nil
+}
+
 func validListenAddress(value string) bool {
 	host, port, err := net.SplitHostPort(value)
 	if err != nil || port == "" {
@@ -116,17 +138,17 @@ func validProviderURL(value string) bool {
 	return err == nil && len(value) <= 2048 && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
-func providerRequestsPerMinute(key, model string) int {
+func providerRequestsPerMinute(key, model string) (int, error) {
 	value := os.Getenv(key)
 	if value != "" {
 		parsed, err := strconv.Atoi(value)
 		if err != nil || parsed < 0 || parsed > 1000 {
-			return 0
+			return 0, errors.New("invalid integer")
 		}
-		return parsed
+		return parsed, nil
 	}
 	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(model)), ":free") {
-		return 15
+		return 15, nil
 	}
-	return 0
+	return 0, nil
 }

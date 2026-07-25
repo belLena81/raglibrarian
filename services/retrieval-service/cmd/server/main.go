@@ -168,7 +168,7 @@ func configureSummaryProvider(configuration config.Config, serviceLogger *zap.Lo
 	if configuration.SummaryLLMBaseURL == "" {
 		return nil, nil
 	}
-	apiKey, err := readSecret(configuration.SummaryLLMAPIKeyFile)
+	apiKey, err := provider.ReadAPIKey(configuration.SummaryLLMAPIKeyFile)
 	if err != nil {
 		if serviceLogger != nil {
 			serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "api_key_unavailable"))

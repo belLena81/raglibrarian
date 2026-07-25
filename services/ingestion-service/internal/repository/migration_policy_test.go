@@ -6,14 +6,17 @@ import (
 	"testing"
 )
 
-func TestLifecycleMigrationGrantsOnlyDeletionCompletionColumns(t *testing.T) {
-	contents, err := os.ReadFile("../../migrations/002_ingestion_lifecycle.up.sql")
+func TestBootstrapSchemaIncludesLifecycleTablesAndGrants(t *testing.T) {
+	contents, err := os.ReadFile("../../migrations/001_ingestion_schema.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	normalized := strings.Join(strings.Fields(string(contents)), " ")
 	required := []string{
-		"GRANT SELECT ( event_id, ack_event_id, ack_event_type, ack_payload, ack_occurred_at, completed_at ) ON ingestion.deletion_inbox TO ingestion_cleanup;",
+		"CREATE TABLE IF NOT EXISTS ingestion.lifecycle_fences",
+		"CREATE TABLE IF NOT EXISTS ingestion.deletion_inbox",
+		"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ingestion TO ingestion_runtime;",
+		"GRANT SELECT ON ingestion.artifact_sets TO ingestion_cleanup;",
 		"GRANT UPDATE ( manifest_reference, manifest_sha256, deletion_cleanup_completed_at ) ON ingestion.artifact_sets TO ingestion_cleanup;",
 		"GRANT UPDATE ( manifest_reference, manifest_sha256, manifest_byte_size, updated_at ) ON ingestion.jobs TO ingestion_cleanup;",
 		"GRANT SELECT (id) ON ingestion.jobs TO ingestion_cleanup;",
@@ -25,34 +28,25 @@ func TestLifecycleMigrationGrantsOnlyDeletionCompletionColumns(t *testing.T) {
 		}
 	}
 	for _, broad := range []string{
-		"GRANT SELECT ON ingestion.deletion_inbox",
-		"GRANT UPDATE ON ingestion.artifact_sets",
-		"GRANT UPDATE ON ingestion.jobs",
-		"GRANT INSERT ON ingestion.outbox",
+		"ALTER TABLE",
+		"DROP TABLE",
+		"DROP INDEX",
 	} {
 		if strings.Contains(normalized, broad) {
-			t.Fatalf("broad cleanup-role grant found: %q", broad)
+			t.Fatalf("bootstrap schema should stay create-only, found %q", broad)
 		}
 	}
 }
 
-func TestLifecycleDownMigrationRemovesAcknowledgementsBeforeRestoringOutboxConstraint(t *testing.T) {
-	contents, err := os.ReadFile("../../migrations/002_ingestion_lifecycle.down.sql")
+func TestBootstrapSchemaRemainsCreateOnly(t *testing.T) {
+	contents, err := os.ReadFile("../../migrations/001_ingestion_schema.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	normalized := strings.Join(strings.Fields(string(contents)), " ")
-	deleteAcknowledgement := "DELETE FROM ingestion.outbox WHERE event_type = 'ingestion.book.artifacts-deleted.v1';"
-	restoreConstraint := "ALTER TABLE ingestion.outbox ADD CONSTRAINT outbox_event_type_check CHECK"
-	deleteIndex := strings.Index(normalized, deleteAcknowledgement)
-	restoreIndex := strings.Index(normalized, restoreConstraint)
-	if deleteIndex < 0 {
-		t.Fatalf("missing lifecycle acknowledgement cleanup statement %q", deleteAcknowledgement)
-	}
-	if restoreIndex < 0 {
-		t.Fatalf("missing outbox constraint restore statement %q", restoreConstraint)
-	}
-	if deleteIndex > restoreIndex {
-		t.Fatal("lifecycle acknowledgements must be removed before restoring the pre-lifecycle outbox constraint")
+	for _, forbidden := range []string{"ALTER TABLE", "DROP TABLE", "DROP INDEX"} {
+		if strings.Contains(normalized, forbidden) {
+			t.Fatalf("bootstrap schema should stay create-only, found %q", forbidden)
+		}
 	}
 }

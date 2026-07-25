@@ -12,7 +12,7 @@ func TestIdentitySchemaIsCreateOnly(t *testing.T) {
 	contents := readMigration(t, "001_identity_schema.up.sql")
 
 	for _, fragment := range []string{
-		"CREATE TABLE identity.password_reset_challenges",
+		"CREATE TABLE IF NOT EXISTS identity.password_reset_challenges",
 		"CONSTRAINT users_email_role_unique UNIQUE (email, role)",
 		"CONSTRAINT email_outbox_payload_check CHECK",
 		"CREATE OR REPLACE FUNCTION identity.protect_user_review_fields()",

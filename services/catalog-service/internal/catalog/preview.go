@@ -8,6 +8,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	htmlpkg "html"
 	"io"
 	"net/url"
 	"os"
@@ -19,6 +20,9 @@ import (
 )
 
 const previewPageLimit = 3
+
+var previewTempDir = os.MkdirTemp
+var previewExecCommand = runCommand
 
 func defaultPreviewBook(ctx context.Context, book Book, objects OriginalObjectStore) (string, error) {
 	if objects == nil || book.ObjectReference == "" {
@@ -34,11 +38,15 @@ func defaultPreviewBook(ctx context.Context, book Book, objects OriginalObjectSt
 	if book.MediaType == "application/epub+zip" {
 		suffix = ".epub"
 	}
-	tmp, err := os.CreateTemp("", "catalog-preview-*"+suffix)
+	workDir, err := previewTempDir("", "catalog-preview-*")
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
+	defer func() { _ = os.RemoveAll(workDir) }()
+	tmp, err := os.Create(filepath.Join(workDir, "source"+suffix))
+	if err != nil {
+		return "", err
+	}
 	if _, err = io.Copy(tmp, source); err != nil {
 		_ = tmp.Close()
 		return "", err
@@ -60,7 +68,7 @@ func defaultPreviewBook(ctx context.Context, book Book, objects OriginalObjectSt
 func previewPDFFragment(ctx context.Context, sourcePath string) (string, error) {
 	dir := filepath.Dir(sourcePath)
 	outputPattern := filepath.Join(dir, "catalog-preview-page-%03d.pdf")
-	if err := runCommand(ctx, "/usr/bin/pdfseparate", "-f", "1", "-l", strconv.Itoa(previewPageLimit), sourcePath, outputPattern); err != nil {
+	if err := previewExecCommand(ctx, "/usr/bin/pdfseparate", "-f", "1", "-l", strconv.Itoa(previewPageLimit), sourcePath, outputPattern); err != nil {
 		return "", err
 	}
 
@@ -76,7 +84,7 @@ func previewPDFFragment(ctx context.Context, sourcePath string) (string, error) 
 	}
 
 	fragmentPath := filepath.Join(dir, "catalog-preview-fragment.pdf")
-	if err := runCommand(ctx, "/usr/bin/pdfunite", append(pagePaths, fragmentPath)...); err != nil {
+	if err := previewExecCommand(ctx, "/usr/bin/pdfunite", append(pagePaths, fragmentPath)...); err != nil {
 		return "", err
 	}
 	data, err := os.ReadFile(fragmentPath)
@@ -107,12 +115,24 @@ func previewEPUBFragment(sourcePath string) (string, error) {
 	for index, page := range pages {
 		html.WriteString("<section class=\"page\"><iframe sandbox=\"\" title=\"Page ")
 		html.WriteString(strconv.Itoa(index + 1))
-		html.WriteString("\" src=\"data:application/xhtml+xml;base64,")
-		html.WriteString(base64.StdEncoding.EncodeToString(page))
+		html.WriteString("\" srcdoc=\"")
+		html.WriteString(htmlpkg.EscapeString(injectEPUBPreviewCSP(page)))
 		html.WriteString("\"></iframe></section>")
 	}
 	html.WriteString("</body></html>")
 	return "data:text/html;base64," + base64.StdEncoding.EncodeToString([]byte(html.String())), nil
+}
+
+const epubPreviewCSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; media-src 'none'; object-src 'none'; connect-src 'none'; frame-src 'none'; child-src 'none'">`
+
+func injectEPUBPreviewCSP(page []byte) string {
+	content := string(page)
+	lower := strings.ToLower(content)
+	if index := strings.Index(lower, "<head>"); index >= 0 {
+		insertAt := index + len("<head>")
+		return content[:insertAt] + epubPreviewCSP + content[insertAt:]
+	}
+	return "<!doctype html><html><head><meta charset=\"utf-8\">" + epubPreviewCSP + "</head><body>" + content + "</body></html>"
 }
 
 func extractEPUBPreviewPages(sourcePath string) ([][]byte, error) {

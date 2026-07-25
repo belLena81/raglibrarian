@@ -28,3 +28,23 @@ func TestConfigureSummaryProviderDisablesInvalidConfiguration(t *testing.T) {
 		t.Fatal("configureSummaryProvider() returned a provider for invalid configuration")
 	}
 }
+
+func TestConfigureSummaryProviderRejectsPermissiveAPIKeyFile(t *testing.T) {
+	directory := t.TempDir()
+	apiKeyFile := filepath.Join(directory, "summary-api-key")
+	if err := os.WriteFile(apiKeyFile, []byte("test-api-key\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	provider, err := configureSummaryProvider(config.Config{
+		SummaryLLMBaseURL:           "https://openrouter.ai",
+		SummaryLLMModel:             "ohere/north-mini-code:free",
+		SummaryLLMAPIKeyFile:        apiKeyFile,
+		SummaryLLMRequestsPerMinute: 1,
+	}, zap.NewNop())
+	if err != nil {
+		t.Fatalf("configureSummaryProvider() error = %v", err)
+	}
+	if provider != nil {
+		t.Fatal("configureSummaryProvider() accepted a permissive API key file")
+	}
+}

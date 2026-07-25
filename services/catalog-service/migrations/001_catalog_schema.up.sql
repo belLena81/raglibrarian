@@ -1,3 +1,5 @@
+-- Bootstrap schema for the first fresh app launch.
+-- This release intentionally ships create-only DDL; upgrade migrations are out of scope.
 CREATE SCHEMA IF NOT EXISTS catalog AUTHORIZATION catalog_migrator;
 
 CREATE TABLE IF NOT EXISTS catalog.books (

@@ -120,11 +120,16 @@ func TestOpenAIRequestFailureLogsDiagnostics(t *testing.T) {
 	}
 	assertContains("retrieval summary request failed")
 	assertContains("reason_code=provider_http_status_401")
+	assertContains("reason_detail=provider_http_status")
 	assertContains("request_model=test-model")
 	assertContains("request_url=https://openrouter.ai/api/v1/chat/completions")
 	assertContains("request_path=/api/v1/chat/completions")
-	assertContains("request_body_preview={\"model\":\"test-model\"")
-	assertContains("response_body_preview={\"error\":{\"message\":\"Missing Authentication header\",\"code\":401}}")
+	if strings.Contains(value, "request_body_preview=") {
+		t.Fatalf("log output %q should not include a request body preview", value)
+	}
+	if strings.Contains(value, "response_body_preview=") {
+		t.Fatalf("log output %q should not include response body preview", value)
+	}
 	if !regexp.MustCompile(`request_body_sha256=[0-9a-f]{64}`).MatchString(value) {
 		t.Fatalf("log output %q does not contain a request body digest", value)
 	}
