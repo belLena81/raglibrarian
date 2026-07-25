@@ -42,6 +42,29 @@ func TestLoadRejectsPublicDependencyURL(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsOptionalSummaryProviderConfiguration(t *testing.T) {
+	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+	t.Setenv("RETRIEVAL_SUMMARY_LLM_BASE_URL", "https://llm-provider.example.com")
+	t.Setenv("RETRIEVAL_SUMMARY_LLM_MODEL", "summary-model")
+	t.Setenv("RETRIEVAL_SUMMARY_LLM_API_KEY_FILE", "/run/secrets/summary-key")
+
+	configuration, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if configuration.SummaryLLMBaseURL != "https://llm-provider.example.com" || configuration.SummaryLLMModel != "summary-model" {
+		t.Fatalf("unexpected summary provider configuration: %#v", configuration)
+	}
+}
+
 func TestLoadWorkerBoundsServerlessInvocationTimeout(t *testing.T) {
 	setWorkerEnvironment(t)
 	t.Setenv("RETRIEVAL_SERVERLESS_INVOCATION_TIMEOUT", "45s")

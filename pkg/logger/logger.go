@@ -91,7 +91,7 @@ func humanizeMessage(message string) string {
 
 var allowedFieldNames = map[string]struct{}{
 	"request_id": {}, "method": {}, "route": {}, "route_template": {}, "status": {}, "outcome": {}, "duration": {}, "duration_ms": {},
-	"response_bytes": {}, "operation": {}, "code": {}, "grpc_code": {}, "stage": {}, "reason": {}, "reason_code": {}, "error_code": {},
+	"response_bytes": {}, "operation": {}, "code": {}, "grpc_code": {}, "stage": {}, "reason": {}, "reason_code": {}, "reason_detail": {}, "error_code": {},
 	"stack_fingerprint": {}, "actor_id": {}, "book_id": {}, "checksum_sha256": {}, "byte_size": {}, "tag_count": {}, "page_size": {}, "result_count": {}, "role": {}, "account_status": {},
 	"segment_count": {}, "summary_length": {},
 }
@@ -152,6 +152,9 @@ func validDiagnosticField(key string, fieldType zapcore.FieldType, value string)
 	if key == "summary" {
 		return fieldType == zapcore.StringType && len(value) <= 1024 && value != "" && !strings.ContainsAny(value, "=\t\r\n")
 	}
+	if key == "reason_detail" {
+		return fieldType == zapcore.StringType && len(value) <= 256 && value != "" && !strings.ContainsAny(value, "=\t\r\n")
+	}
 	if len(value) > 256 || value == "" || strings.ContainsAny(value, " =\t\r\n") {
 		return false
 	}
@@ -181,7 +184,13 @@ func validDiagnosticField(key string, fieldType zapcore.FieldType, value string)
 	case "account_status":
 		return fieldType == zapcore.StringType && (value == "active" || value == "pending" || value == "rejected")
 	case "outcome", "operation", "stage", "reason", "reason_code", "error_code":
-		return fieldType == zapcore.StringType && allowedDiagnosticValue(key, value)
+		if fieldType != zapcore.StringType {
+			return false
+		}
+		if key == "reason_code" && strings.HasPrefix(value, "provider_http_status_") {
+			return parseBoundedInt(strings.TrimPrefix(value, "provider_http_status_"), 100, 599)
+		}
+		return allowedDiagnosticValue(key, value)
 	case "code", "grpc_code":
 		return fieldType == zapcore.StringType && validGRPCCode(value)
 	default:
@@ -193,6 +202,7 @@ var allowedDiagnosticValues = map[string]map[string]struct{}{
 	"outcome": {
 		"success": {}, "client_error": {}, "server_error": {}, "response_aborted": {}, "not_implemented": {}, "invalid_token": {},
 		"invalid_registration": {}, "invalid_credentials": {}, "dependency_unavailable": {},
+		"answered": {}, "empty_evidence": {}, "retrieval_failure": {}, "provider_failure": {}, "invalid_output": {}, "capacity_exhausted": {},
 	},
 	"operation": {
 		"register": {}, "verify_email": {}, "resend_verification": {}, "password_reset_request": {}, "password_reset_verify": {}, "password_reset_complete": {},
@@ -203,6 +213,7 @@ var allowedDiagnosticValues = map[string]map[string]struct{}{
 	},
 	"stage": {
 		"session_cleanup": {}, "verification_cleanup": {}, "rejected_cleanup": {}, "password_reset_cleanup": {}, "email_claim": {}, "email_mark": {}, "email_retry": {}, "email_exhausted": {},
+		"retrieval": {}, "provider": {}, "validation": {},
 	},
 	"reason": {},
 	"reason_code": {
@@ -213,6 +224,8 @@ var allowedDiagnosticValues = map[string]map[string]struct{}{
 		"invalid_delivery": {}, "invalid_event": {}, "conflicting_event": {}, "manifest_integrity": {}, "incompatible_profile": {}, "embedding_unavailable": {}, "vector_store_unavailable": {}, "resource_limit_exceeded": {},
 		"indexing_timeout": {}, "internal_indexing_error": {}, "manifest_artifact_read_failed": {}, "retry_publish_failed": {}, "terminal_failure_record_failed": {}, "vector_deactivate_failed": {},
 		"outbox_publish_failed": {}, "outbox_mark_failed": {}, "outbox_defer_failed": {},
+		"deadline_exceeded": {}, "canceled": {}, "provider_unavailable": {}, "invalid_provider_response": {}, "invalid_provider_output": {}, "retrieval_failed": {},
+		"provider_request_create_failed": {}, "provider_timeout": {}, "provider_canceled": {}, "provider_tls_error": {}, "provider_dns_error": {}, "provider_network_error": {}, "provider_transport_error": {},
 	},
 	"error_code": {
 		"request_id_generation_failed": {}, "internal_panic": {},

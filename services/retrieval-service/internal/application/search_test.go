@@ -3,6 +3,8 @@ package application
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
@@ -42,6 +44,77 @@ func TestSearcherReturnsRankedEvidence(t *testing.T) {
 		len(result.Documents) != 1 || result.Documents[0].DocumentID != "document-1" || result.Documents[0].Summary != "Replication keeps copies." ||
 		store.query.Question() != "replication" || embedder.calls != 1 {
 		t.Fatalf("unexpected results: %#v", result)
+	}
+}
+
+func TestSearcherUsesProviderSummariesAndFallsBack(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{
+		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Deterministic retries keep search stable.", Score: 0.91}},
+		documents: []DocumentResult{{
+			DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", ChunkCount: 1,
+			Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "Deterministic retries keep search stable."}},
+		}},
+	}
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	if err != nil {
+		t.Fatalf("NewSearcher() error = %v", err)
+	}
+	provider := &stubSummaryProvider{response: func(value string) string {
+		return "summary: " + strings.TrimSpace(value)
+	}}
+	searcher.SetSummaryProvider(provider)
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: " replication ", Limit: 3})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].Summary != "summary: Deterministic retries keep search stable." {
+		t.Fatalf("provider-backed evidence summary missing: %#v", result.Evidence)
+	}
+	if len(result.Documents) != 1 || result.Documents[0].Summary != "summary: Deterministic retries keep search stable." || len(result.Documents[0].Evidence) != 1 ||
+		result.Documents[0].Evidence[0].Summary != "summary: Deterministic retries keep search stable." {
+		t.Fatalf("provider-backed document summary missing: %#v", result.Documents)
+	}
+	if provider.calls() != 3 {
+		t.Fatalf("provider calls = %d, want 3", provider.calls())
+	}
+
+	searcher.SetSummaryProvider(&stubSummaryProvider{err: errors.New("provider failed")})
+	fallback, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: " replication ", Limit: 3})
+	if err != nil {
+		t.Fatalf("fallback Search() error = %v", err)
+	}
+	if len(fallback.Evidence) != 1 || fallback.Evidence[0].Summary != "Deterministic retries keep search stable." || len(fallback.Documents) != 1 || fallback.Documents[0].Summary != "Deterministic retries keep search stable." {
+		t.Fatalf("local fallback summary missing: %#v", fallback)
+	}
+}
+
+func TestSearcherSkipsEmptyPassagesForSummaries(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{
+		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Passage: "   ", Score: 0.91}},
+		documents: []DocumentResult{{
+			DocumentID: "document-1", JobID: "job-1", BookID: "book-1", ChunkCount: 1,
+			Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "   "}},
+		}},
+	}
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	if err != nil {
+		t.Fatalf("NewSearcher() error = %v", err)
+	}
+	provider := &stubSummaryProvider{}
+	searcher.SetSummaryProvider(provider)
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: " replication ", Limit: 3})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if provider.calls() != 0 {
+		t.Fatalf("provider calls = %d, want 0", provider.calls())
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].Summary != "" || len(result.Documents) != 1 || result.Documents[0].Summary != "" {
+		t.Fatalf("empty passages should not produce summaries: %#v", result)
 	}
 }
 
@@ -211,4 +284,32 @@ func (v filteringVisibility) FilterIndexedDocuments(_ context.Context, values []
 		}
 	}
 	return results, nil
+}
+
+type stubSummaryProvider struct {
+	mu       sync.Mutex
+	inputs   []string
+	response func(string) string
+	err      error
+}
+
+func (s *stubSummaryProvider) Summarize(_ context.Context, value string) (string, error) {
+	s.mu.Lock()
+	s.inputs = append(s.inputs, value)
+	response := s.response
+	err := s.err
+	s.mu.Unlock()
+	if err != nil {
+		return "", err
+	}
+	if response == nil {
+		return value, nil
+	}
+	return response(value), nil
+}
+
+func (s *stubSummaryProvider) calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.inputs)
 }

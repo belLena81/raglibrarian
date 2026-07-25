@@ -62,10 +62,11 @@ func TestAnswerSelectsBoundedDeduplicatedEvidenceInRankingOrder(t *testing.T) {
 
 type fakeObserver struct{}
 
-func (fakeObserver) Observe(Outcome, time.Duration) {}
-func (fakeObserver) ProviderStarted()               {}
-func (fakeObserver) ProviderResponse(int, int)      {}
-func (fakeObserver) ProviderFinished()              {}
+func (fakeObserver) Observe(Outcome, time.Duration)                         {}
+func (fakeObserver) Failure(Outcome, string, string, string, time.Duration) {}
+func (fakeObserver) ProviderStarted()                                       {}
+func (fakeObserver) ProviderResponse(int, int)                              {}
+func (fakeObserver) ProviderFinished()                                      {}
 
 func TestAnswerReturnsValidatedGroundedSegments(t *testing.T) {
 	retriever := &fakeRetriever{result: searchResult("evidence-1")}

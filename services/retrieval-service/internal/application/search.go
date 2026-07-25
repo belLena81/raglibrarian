@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 	"unicode/utf8"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 )
@@ -63,9 +66,10 @@ type IndexVisibility interface {
 }
 
 type Searcher struct {
-	embedder   QueryEmbedder
-	store      EvidenceStore
-	visibility IndexVisibility
+	embedder        QueryEmbedder
+	store           EvidenceStore
+	visibility      IndexVisibility
+	summaryProvider SummaryProvider
 }
 
 func NewSearcher(embedder QueryEmbedder, store EvidenceStore, visibility IndexVisibility) (*Searcher, error) {
@@ -73,6 +77,10 @@ func NewSearcher(embedder QueryEmbedder, store EvidenceStore, visibility IndexVi
 		return nil, errors.New("invalid searcher configuration")
 	}
 	return &Searcher{embedder: embedder, store: store, visibility: visibility}, nil
+}
+
+func (s *Searcher) SetSummaryProvider(provider SummaryProvider) {
+	s.summaryProvider = provider
 }
 
 func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.SearchQueryInput) (SearchResult, error) {
@@ -119,9 +127,7 @@ func (s *Searcher) searchVisibleEvidence(ctx context.Context, query domain.Searc
 		}
 	}
 	results = trimEvidence(results, query.Limit())
-	for index := range results {
-		results[index].Summary = summarizeEvidence(results[index])
-	}
+	s.populateEvidenceSummaries(ctx, results)
 	return results, nil
 }
 
@@ -143,13 +149,43 @@ func (s *Searcher) searchVisibleDocuments(ctx context.Context, query domain.Sear
 		}
 	}
 	results = trimDocuments(results, query.Limit())
-	for index := range results {
-		for evidenceIndex := range results[index].Evidence {
-			results[index].Evidence[evidenceIndex].Summary = summarizeEvidence(results[index].Evidence[evidenceIndex])
-		}
-		results[index].Summary = summarizeDocument(results[index])
-	}
+	s.populateDocumentSummaries(ctx, results)
 	return results, nil
+}
+
+func (s *Searcher) populateEvidenceSummaries(ctx context.Context, results []Evidence) {
+	if len(results) == 0 {
+		return
+	}
+	group, groupContext := errgroup.WithContext(ctx)
+	group.SetLimit(4)
+	for index := range results {
+		index := index
+		group.Go(func() error {
+			results[index].Summary = s.summarizeEvidence(groupContext, results[index])
+			return nil
+		})
+	}
+	_ = group.Wait()
+}
+
+func (s *Searcher) populateDocumentSummaries(ctx context.Context, results []DocumentResult) {
+	if len(results) == 0 {
+		return
+	}
+	group, groupContext := errgroup.WithContext(ctx)
+	group.SetLimit(4)
+	for index := range results {
+		index := index
+		group.Go(func() error {
+			for evidenceIndex := range results[index].Evidence {
+				results[index].Evidence[evidenceIndex].Summary = s.summarizeEvidence(groupContext, results[index].Evidence[evidenceIndex])
+			}
+			results[index].Summary = s.summarizeDocument(groupContext, results[index])
+			return nil
+		})
+	}
+	_ = group.Wait()
 }
 
 func searchPageLimit(limit int) int {
@@ -181,25 +217,75 @@ func trimDocuments(values []DocumentResult, limit int) []DocumentResult {
 	return values[:limit]
 }
 
-func summarizeEvidence(value Evidence) string {
-	return summarizeText(value.Passage)
+func (s *Searcher) summarizeEvidence(ctx context.Context, value Evidence) string {
+	return s.summarizeText(ctx, value.Passage)
 }
 
-func summarizeDocument(value DocumentResult) string {
-	if len(value.Evidence) == 0 {
+func (s *Searcher) summarizeDocument(ctx context.Context, value DocumentResult) string {
+	input := normalizeDocumentSummaryInput(value)
+	if input == "" {
 		return ""
 	}
-	parts := make([]string, 0, len(value.Evidence))
-	for _, evidence := range value.Evidence {
-		summary := summarizeText(evidence.Passage)
-		if summary != "" {
-			parts = append(parts, summary)
+	return s.summarizeText(ctx, input)
+}
+
+func (s *Searcher) summarizeText(ctx context.Context, value string) string {
+	normalized := normalizeSummaryInput(value)
+	if normalized == "" {
+		return ""
+	}
+	if s.summaryProvider != nil {
+		summaryContext, cancel := context.WithTimeout(ctx, summaryProviderTimeout)
+		defer cancel()
+		summary, err := s.summaryProvider.Summarize(summaryContext, normalized)
+		if err == nil {
+			if sanitized := normalizeProviderSummary(summary); sanitized != "" {
+				return sanitized
+			}
 		}
+	}
+	return summarizeText(normalized)
+}
+
+func normalizeSummaryInput(value string) string {
+	normalized := strings.Join(strings.Fields(value), " ")
+	if normalized == "" {
+		return ""
+	}
+	const maximumSummaryInputRunes = 4096
+	if utf8.RuneCountInString(normalized) <= maximumSummaryInputRunes {
+		return normalized
+	}
+	runes := []rune(normalized)
+	return strings.TrimSpace(string(runes[:maximumSummaryInputRunes]))
+}
+
+func normalizeProviderSummary(value string) string {
+	normalized := strings.Join(strings.Fields(value), " ")
+	if normalized == "" {
+		return ""
+	}
+	const maximumSummaryRunes = 220
+	if utf8.RuneCountInString(normalized) <= maximumSummaryRunes {
+		return normalized
+	}
+	runes := []rune(normalized)
+	return strings.TrimSpace(string(runes[:maximumSummaryRunes-1])) + "…"
+}
+
+func normalizeDocumentSummaryInput(value DocumentResult) string {
+	parts := make([]string, 0, 2)
+	for _, evidence := range value.Evidence {
+		part := normalizeSummaryInput(evidence.Passage)
+		if part == "" {
+			continue
+		}
+		parts = append(parts, part)
 		if len(parts) >= 2 {
 			break
 		}
 	}
-	return summarizeText(strings.Join(parts, " "))
+	return strings.Join(parts, " ")
 }
 
 func summarizeText(value string) string {
@@ -229,3 +315,9 @@ func firstSentenceMatch(value string) string {
 	}
 	return ""
 }
+
+type SummaryProvider interface {
+	Summarize(context.Context, string) (string, error)
+}
+
+const summaryProviderTimeout = 2 * time.Second

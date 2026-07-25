@@ -16,15 +16,19 @@ import (
 )
 
 type Config struct {
-	GRPCAddress      string
-	MetricsAddress   string
-	TEIURL           string
-	QdrantURL        string
-	QdrantCollection string
-	QdrantAPIKeyFile string
-	PostgresDSNFile  string
-	TLS              internaltls.Files
-	RunAs            process.Identity
+	GRPCAddress          string
+	MetricsAddress       string
+	TEIURL               string
+	QdrantURL            string
+	QdrantCollection     string
+	QdrantAPIKeyFile     string
+	PostgresDSNFile      string
+	SummaryLLMBaseURL    string
+	SummaryLLMModel      string
+	SummaryLLMAPIKeyFile string
+	SummaryLLMCAFile     string
+	TLS                  internaltls.Files
+	RunAs                process.Identity
 }
 
 type WorkerConfig struct {
@@ -52,16 +56,27 @@ func Load() (Config, error) {
 	configuration := Config{
 		GRPCAddress: grpcAddress, MetricsAddress: os.Getenv("RETRIEVAL_METRICS_ADDR"), TEIURL: os.Getenv("RETRIEVAL_TEI_URL"),
 		QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: collection, QdrantAPIKeyFile: os.Getenv("RETRIEVAL_QDRANT_API_KEY_FILE"),
-		PostgresDSNFile: os.Getenv("RETRIEVAL_POSTGRES_DSN_FILE"),
-		TLS:             internaltls.Files{CA: os.Getenv("RETRIEVAL_TLS_CA_FILE"), Certificate: os.Getenv("RETRIEVAL_TLS_CERT_FILE"), Key: os.Getenv("RETRIEVAL_TLS_KEY_FILE")},
-		RunAs:           process.Identity{UID: uid, GID: gid},
+		PostgresDSNFile: os.Getenv("RETRIEVAL_POSTGRES_DSN_FILE"), SummaryLLMBaseURL: os.Getenv("RETRIEVAL_SUMMARY_LLM_BASE_URL"),
+		SummaryLLMModel: os.Getenv("RETRIEVAL_SUMMARY_LLM_MODEL"), SummaryLLMAPIKeyFile: os.Getenv("RETRIEVAL_SUMMARY_LLM_API_KEY_FILE"),
+		SummaryLLMCAFile: os.Getenv("RETRIEVAL_SUMMARY_LLM_CA_FILE"),
+		TLS:              internaltls.Files{CA: os.Getenv("RETRIEVAL_TLS_CA_FILE"), Certificate: os.Getenv("RETRIEVAL_TLS_CERT_FILE"), Key: os.Getenv("RETRIEVAL_TLS_KEY_FILE")},
+		RunAs:            process.Identity{UID: uid, GID: gid},
 	}
 	if configuration.GRPCAddress == "" || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
 		configuration.PostgresDSNFile == "" || configuration.QdrantAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
-		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || uidErr != nil || gidErr != nil {
+		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || uidErr != nil || gidErr != nil ||
+		!validSummaryProviderConfiguration(configuration) {
 		return Config{}, errors.New("invalid retrieval configuration")
 	}
 	return configuration, nil
+}
+
+func validSummaryProviderConfiguration(configuration Config) bool {
+	if configuration.SummaryLLMBaseURL == "" {
+		return true
+	}
+	return validProviderURL(configuration.SummaryLLMBaseURL) && strings.TrimSpace(configuration.SummaryLLMModel) != "" && len(configuration.SummaryLLMModel) <= 256 &&
+		!strings.ContainsAny(configuration.SummaryLLMModel, "\r\n") && configuration.SummaryLLMAPIKeyFile != ""
 }
 
 func positiveInteger(value string, fallback int) (int, error) {
@@ -161,6 +176,11 @@ func privateServiceURL(value string) bool {
 		return true
 	}
 	return !strings.Contains(host, ".")
+}
+
+func validProviderURL(value string) bool {
+	parsed, err := url.Parse(value)
+	return err == nil && len(value) <= 2048 && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
 // ValidateServerlessBrokerURI restricts short-lived jobs to private AMQPS.

@@ -2,10 +2,9 @@ package provider
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -15,7 +14,7 @@ import (
 )
 
 func TestOpenAIGeneratesStrictStructuredSegments(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+	adapter, err := NewOpenAI("https://provider", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Path != "/v1/chat/completions" || request.Header.Get("Authorization") != "Bearer synthetic-key" {
 			t.Errorf("unexpected request path or authorization")
 		}
@@ -23,18 +22,52 @@ func TestOpenAIGeneratesStrictStructuredSegments(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
-		_, _ = response.Write([]byte(`{"choices":[{"message":{"content":"{\"segments\":[{\"text\":\"answer\",\"evidence_ids\":[\"e-1\"]}]}"}}]}`))
-	}))
-	defer server.Close()
-	client := server.Client()
-	client.Transport.(*http.Transport).TLSClientConfig.MinVersion = tls.VersionTLS13
-	adapter, err := NewOpenAI(server.URL, "test-model", "synthetic-key", client)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"{\"segments\":[{\"text\":\"answer\",\"evidence_ids\":[\"e-1\"]}]}"}}]}`)),
+		}, nil
+	})})
 	if err != nil {
 		t.Fatal(err)
 	}
 	segments, err := adapter.Generate(context.Background(), application.ProviderRequest{Question: "question", Evidence: []domain.ContextEvidence{{EvidenceID: "e-1", Passage: "passage"}}, MaxTokens: 10})
 	if err != nil || len(segments) != 1 || segments[0].Text != "answer" {
 		t.Fatalf("Generate() = %#v, %v", segments, err)
+	}
+}
+
+func TestOpenAIAcceptsPlainTextCandidateContent(t *testing.T) {
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/api/v1/chat/completions" {
+			t.Fatalf("unexpected request path %q", request.URL.Path)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"Use w, b, and dd to move and edit quickly."}}]}`)),
+		}, nil
+	})}
+	adapter, err := NewOpenAI("https://openrouter.ai/", "model", "synthetic-key", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	segments, err := adapter.Generate(context.Background(), application.ProviderRequest{
+		Question:  "vim shortcuts",
+		Evidence:  []domain.ContextEvidence{{EvidenceID: "e-1", Passage: "passage 1"}, {EvidenceID: "e-2", Passage: "passage 2"}},
+		MaxTokens: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segments) != 1 {
+		t.Fatalf("len(segments) = %d, want 1", len(segments))
+	}
+	if segments[0].Text != "Use w, b, and dd to move and edit quickly." {
+		t.Fatalf("segment text = %q", segments[0].Text)
+	}
+	if got, want := strings.Join(segments[0].EvidenceIDs, ","), "e-1,e-2"; got != want {
+		t.Fatalf("segment evidence IDs = %q, want %q", got, want)
 	}
 }
 
@@ -49,6 +82,8 @@ func TestNewOpenAIBuildsChatCompletionsEndpointFromAPIBase(t *testing.T) {
 		{name: "v1", baseURL: "https://provider/v1", expectedPath: "/v1/chat/completions"},
 		{name: "v1 trailing slash", baseURL: "https://provider/v1/", expectedPath: "/v1/chat/completions"},
 		{name: "prefixed v1", baseURL: "https://provider/openai/v1", expectedPath: "/openai/v1/chat/completions"},
+		{name: "openrouter root", baseURL: "https://openrouter.ai/", expectedPath: "/api/v1/chat/completions"},
+		{name: "openrouter api v1", baseURL: "https://openrouter.ai/api/v1", expectedPath: "/api/v1/chat/completions"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			adapter, err := NewOpenAI(test.baseURL, "model", "key", client)
@@ -72,20 +107,27 @@ func TestOpenAIRejectsRedirectUnknownAndDuplicateCandidateFields(t *testing.T) {
 		{status: http.StatusOK, body: `{"choices":[{"message":{"content":"{\"segments\":[],\"segments\":[]}"}}]}`},
 	}
 	for index, fixture := range responses {
-		server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-			response.WriteHeader(fixture.status)
-			_, _ = response.Write([]byte(fixture.body))
-		}))
-		adapter, err := NewOpenAI(server.URL, "test-model", "synthetic-key", server.Client())
+		adapter, err := NewOpenAI("https://provider", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: fixture.status,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(fixture.body)),
+			}, nil
+		})})
 		if err != nil {
 			t.Fatal(err)
 		}
 		_, err = adapter.Generate(context.Background(), application.ProviderRequest{Question: "q", Evidence: []domain.ContextEvidence{{EvidenceID: "e", Passage: "p"}}, MaxTokens: 10})
-		server.Close()
 		if err == nil {
 			t.Fatalf("case %d unexpectedly passed", index)
 		}
 	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
 func TestNewOpenAIRequiresHTTPSAndFixedConfiguration(t *testing.T) {

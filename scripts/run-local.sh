@@ -364,7 +364,7 @@ for service in edge-api identity-service catalog-service ingestion-service retri
   fi
 
   rm -f "$service_pid_file"
-  nohup docker compose logs --no-color --follow "$service" >>"$service_log_file" 2>&1 &
+  nohup docker compose --profile m5 --profile m6 logs --no-color --follow "$service" >>"$service_log_file" 2>&1 &
   echo "$!" >"$service_pid_file"
 done
 

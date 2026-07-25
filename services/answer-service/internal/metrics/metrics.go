@@ -13,6 +13,7 @@ import (
 type Recorder struct {
 	answered          atomic.Uint64
 	emptyEvidence     atomic.Uint64
+	retrievalFailure  atomic.Uint64
 	providerFailure   atomic.Uint64
 	invalidOutput     atomic.Uint64
 	capacityExhausted atomic.Uint64
@@ -27,6 +28,8 @@ func (r *Recorder) Observe(outcome application.Outcome, duration time.Duration) 
 		r.answered.Add(1)
 	case application.OutcomeEmptyEvidence:
 		r.emptyEvidence.Add(1)
+	case application.OutcomeRetrievalFailure:
+		r.retrievalFailure.Add(1)
 	case application.OutcomeProviderFailure:
 		r.providerFailure.Add(1)
 	case application.OutcomeInvalidOutput:
@@ -67,7 +70,7 @@ func (r *Recorder) Handler() http.Handler {
 			response.WriteHeader(http.StatusOK)
 		case "/metrics":
 			response.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-			_, _ = fmt.Fprintf(response, metricFormat, r.answered.Load(), r.emptyEvidence.Load(), r.providerFailure.Load(), r.invalidOutput.Load(),
+			_, _ = fmt.Fprintf(response, metricFormat, r.answered.Load(), r.emptyEvidence.Load(), r.retrievalFailure.Load(), r.providerFailure.Load(), r.invalidOutput.Load(),
 				r.capacityExhausted.Load(), r.providerInFlight.Load(), r.retrievalReady.Load(), float64(r.durationNS.Load())/float64(time.Second))
 		default:
 			http.NotFound(response, request)
@@ -78,6 +81,7 @@ func (r *Recorder) Handler() http.Handler {
 const metricFormat = `# TYPE answer_requests_total counter
 answer_requests_total{outcome="answered"} %d
 answer_requests_total{outcome="empty_evidence"} %d
+answer_requests_total{outcome="retrieval_failure"} %d
 answer_requests_total{outcome="provider_failure"} %d
 answer_requests_total{outcome="invalid_output"} %d
 answer_requests_total{outcome="capacity_exhausted"} %d

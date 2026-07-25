@@ -33,6 +33,7 @@ type Outcome string
 const (
 	OutcomeAnswered          Outcome = "answered"
 	OutcomeEmptyEvidence     Outcome = "empty_evidence"
+	OutcomeRetrievalFailure  Outcome = "retrieval_failure"
 	OutcomeProviderFailure   Outcome = "provider_failure"
 	OutcomeInvalidOutput     Outcome = "invalid_output"
 	OutcomeCapacityExhausted Outcome = "capacity_exhausted"
@@ -40,9 +41,18 @@ const (
 
 type Observer interface {
 	Observe(Outcome, time.Duration)
+	Failure(Outcome, string, string, string, time.Duration)
 	ProviderStarted()
 	ProviderResponse(segmentCount, summaryLength int)
 	ProviderFinished()
+}
+
+type codedReason interface {
+	ReasonCode() string
+}
+
+type detailedReason interface {
+	ReasonDetail() string
 }
 
 type Limits struct {
@@ -105,6 +115,7 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 	search, err := s.retriever.Search(retrievalContext, request)
 	retrievalCancel()
 	if err != nil {
+		s.observer.Failure(OutcomeRetrievalFailure, "retrieval", failureReasonCode(err, "retrieval"), failureReasonDetail(err), time.Since(started))
 		return domain.AnswerResult{}, err
 	}
 	result := domain.AnswerResult{Search: search}
@@ -129,12 +140,12 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 		MaxTokens: s.limits.MaximumOutputTokens, MaxSegment: s.limits.MaximumSegments})
 	providerCancel()
 	if err != nil {
-		s.observer.Observe(OutcomeProviderFailure, time.Since(started))
+		s.observer.Failure(OutcomeProviderFailure, "provider", failureReasonCode(err, "provider"), failureReasonDetail(err), time.Since(started))
 		return result, nil
 	}
 	validated, err := validateSegments(segments, evidence, s.limits)
 	if err != nil {
-		s.observer.Observe(OutcomeInvalidOutput, time.Since(started))
+		s.observer.Failure(OutcomeInvalidOutput, "validation", failureReasonCode(err, "validation"), failureReasonDetail(err), time.Since(started))
 		return result, nil
 	}
 	summary := summarizeSegments(validated)
@@ -210,6 +221,55 @@ func validateSegments(values []domain.AnswerSegment, evidence []domain.ContextEv
 
 func unsafeAnswerRune(value rune) bool {
 	return unicode.IsControl(value) || unicode.Is(unicode.Cf, value) || value == '\u2028' || value == '\u2029'
+}
+
+func failureReasonCode(err error, stage string) string {
+	if err == nil {
+		return "unknown_failure"
+	}
+	var coded codedReason
+	if errors.As(err, &coded) {
+		return coded.ReasonCode()
+	}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case stage == "provider" && strings.Contains(err.Error(), "provider unavailable"):
+		return "provider_unavailable"
+	case stage == "provider" && strings.Contains(err.Error(), "invalid provider response"):
+		return "invalid_provider_response"
+	case stage == "validation" && strings.Contains(err.Error(), "invalid provider output"):
+		return "invalid_provider_output"
+	case stage == "retrieval":
+		return "retrieval_failed"
+	default:
+		return "unknown_failure"
+	}
+}
+
+func failureReasonDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	var detailed detailedReason
+	if errors.As(err, &detailed) {
+		return detailed.ReasonDetail()
+	}
+	return sanitizeFailureDetail(err.Error())
+}
+
+func sanitizeFailureDetail(value string) string {
+	value = strings.TrimSpace(strings.Join(strings.Fields(value), " "))
+	if value == "" {
+		return ""
+	}
+	if utf8.RuneCountInString(value) > 160 {
+		runes := []rune(value)
+		value = string(runes[:160])
+	}
+	return value
 }
 
 func summarizeSegments(values []domain.AnswerSegment) string {

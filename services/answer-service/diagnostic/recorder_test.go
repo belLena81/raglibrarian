@@ -20,9 +20,9 @@ func TestRecorderLogsFixedOutcomeAndProviderResponseMetadata(t *testing.T) {
 	recorder := New(log, &metrics.Recorder{})
 	recorder.ProviderStarted()
 	recorder.ProviderResponse(2, 17)
-	recorder.Observe(application.OutcomeInvalidOutput, 12*time.Millisecond)
+	recorder.Failure(application.OutcomeInvalidOutput, "validation", "invalid_provider_output", "provider returned HTTP status 404", 12*time.Millisecond)
 	line := output.String()
-	if !strings.Contains(line, "answer provider request") || !strings.Contains(line, "answer provider response") || !strings.Contains(line, "segment_count=2") || !strings.Contains(line, "summary_length=17") || !strings.Contains(line, "answer request degraded") || !strings.Contains(line, "duration_ms=12") {
+	if !strings.Contains(line, "answer provider request") || !strings.Contains(line, "answer provider response") || !strings.Contains(line, "segment_count=2") || !strings.Contains(line, "summary_length=17") || !strings.Contains(line, "answer request failed") || !strings.Contains(line, "outcome=invalid_output") || !strings.Contains(line, "stage=validation") || !strings.Contains(line, "reason_code=invalid_provider_output") || !strings.Contains(line, "reason_detail=provider returned HTTP status 404") || !strings.Contains(line, "duration_ms=12") {
 		t.Fatalf("log line = %q", line)
 	}
 	for _, canary := range []string{"grounded response", "question-canary", "passage-canary", "provider-canary", "secret-canary"} {

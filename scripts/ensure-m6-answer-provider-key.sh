@@ -8,10 +8,11 @@ mkdir -p "$secret_dir"
 chmod 700 "$secret_dir"
 
 if [[ -r "$key_file" ]]; then
-  [[ ! -L "$key_file" && -f "$key_file" && "$(stat -c '%a' "$key_file")" == 400 ]] || {
+  [[ ! -L "$key_file" && -f "$key_file" ]] || {
     echo 'Existing answer provider key is not a regular 0400 secret file' >&2
     exit 1
   }
+  chmod 400 "$key_file"
   exit 0
 fi
 

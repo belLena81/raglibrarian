@@ -13,15 +13,18 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/grpcauth"
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
+	"github.com/belLena81/raglibrarian/pkg/logger"
 	"github.com/belLena81/raglibrarian/pkg/process"
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/embedding"
 	retrievalgrpc "github.com/belLena81/raglibrarian/services/retrieval-service/internal/grpc"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/provider"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )
 
@@ -31,6 +34,7 @@ func main() {
 		log.Print("retrieval server could not start because configuration was invalid")
 		os.Exit(1)
 	}
+	serviceLogger := logger.Must("retrieval-service")
 	transportCredentials, err := internaltls.ServerCredentials(configuration.TLS)
 	if err != nil {
 		log.Print("retrieval server could not load transport credentials")
@@ -57,6 +61,11 @@ func main() {
 		log.Print("retrieval server could not read database credentials")
 		os.Exit(1)
 	}
+	summaryProvider, err := configureSummaryProvider(configuration, serviceLogger)
+	if err != nil {
+		log.Print("retrieval server could not configure summary provider")
+		os.Exit(1)
+	}
 	if err = process.DropPrivileges(configuration.RunAs); err != nil {
 		log.Print("retrieval server could not reduce process privileges")
 		os.Exit(1)
@@ -73,6 +82,7 @@ func main() {
 		log.Print("retrieval server could not configure search")
 		os.Exit(1)
 	}
+	searcher.SetSummaryProvider(summaryProvider)
 	listener, err := net.Listen("tcp", configuration.GRPCAddress)
 	if err != nil {
 		log.Print("retrieval server listener unavailable")
@@ -146,4 +156,23 @@ func readSecret(path string) (string, error) {
 		return "", os.ErrInvalid
 	}
 	return secret, nil
+}
+
+func configureSummaryProvider(configuration config.Config, serviceLogger *zap.Logger) (application.SummaryProvider, error) {
+	if configuration.SummaryLLMBaseURL == "" {
+		return nil, nil
+	}
+	apiKey, err := readSecret(configuration.SummaryLLMAPIKeyFile)
+	if err != nil {
+		return nil, err
+	}
+	httpClient, err := provider.NewHTTPClient(configuration.SummaryLLMCAFile)
+	if err != nil {
+		return nil, err
+	}
+	summaryProvider, err := provider.NewOpenAI(configuration.SummaryLLMBaseURL, configuration.SummaryLLMModel, apiKey, httpClient, serviceLogger)
+	if err != nil {
+		return nil, err
+	}
+	return summaryProvider, nil
 }
