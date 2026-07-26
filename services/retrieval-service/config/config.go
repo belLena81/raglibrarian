@@ -29,6 +29,7 @@ type Config struct {
 	SummaryLLMBaseURL           string
 	SummaryLLMModel             string
 	SummaryLLMTimeout           time.Duration
+	SummaryLLMMaxOutputTokens   int
 	SummaryLLMRequestsPerMinute int
 	SummaryLLMAPIKeyFile        string
 	SummaryLLMCAFile            string
@@ -71,15 +72,17 @@ func Load() (Config, error) {
 	searchTimeout, searchTimeoutErr := requiredDuration("RETRIEVAL_SEARCH_TIMEOUT")
 	dependencyTimeout, dependencyTimeoutErr := optionalDuration("RETRIEVAL_DEPENDENCY_TIMEOUT", searchTimeout)
 	summaryTimeout, summaryTimeoutErr := optionalDuration("RETRIEVAL_SUMMARY_LLM_TIMEOUT", searchTimeout)
+	summaryMaxOutputTokens, summaryMaxOutputTokensErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_OUTPUT_TOKENS", 64, 256)
 	configuration.SearchTimeout = searchTimeout
 	configuration.DependencyTimeout = dependencyTimeout
 	configuration.SummaryLLMTimeout = summaryTimeout
+	configuration.SummaryLLMMaxOutputTokens = summaryMaxOutputTokens
 	configuration.SummaryLLMRequestsPerMinute = nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_REQUESTS_PER_MINUTE", 15, 1000)
 	configuration.TEIRequestsPerSecond = nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000)
 	if configuration.GRPCAddress == "" || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
 		configuration.PostgresDSNFile == "" || configuration.QdrantAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || uidErr != nil || gidErr != nil ||
-		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || configuration.SummaryLLMTimeout > configuration.SearchTimeout ||
+		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || configuration.SummaryLLMTimeout > configuration.SearchTimeout ||
 		!validSummaryProviderConfiguration(configuration) {
 		return Config{}, errors.New("invalid retrieval configuration")
 	}
@@ -136,6 +139,18 @@ func optionalDuration(key string, fallback time.Duration) (time.Duration, error)
 	parsed, err := time.ParseDuration(value)
 	if err != nil || parsed <= 0 {
 		return 0, errors.New("invalid duration")
+	}
+	return parsed, nil
+}
+
+func boundedPositiveInteger(key string, fallback, maximum int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 || parsed > maximum {
+		return 0, errors.New("invalid integer")
 	}
 	return parsed, nil
 }

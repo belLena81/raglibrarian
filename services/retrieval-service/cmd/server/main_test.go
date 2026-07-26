@@ -19,6 +19,7 @@ func TestConfigureSummaryProviderDisablesInvalidConfiguration(t *testing.T) {
 		SummaryLLMBaseURL:           "http://openrouter.ai",
 		SummaryLLMModel:             "ohere/north-mini-code:free",
 		SummaryLLMAPIKeyFile:        apiKeyFile,
+		SummaryLLMMaxOutputTokens:   64,
 		SummaryLLMRequestsPerMinute: 1,
 	}, zap.NewNop())
 	if err != nil {
@@ -39,6 +40,7 @@ func TestConfigureSummaryProviderRejectsPermissiveAPIKeyFile(t *testing.T) {
 		SummaryLLMBaseURL:           "https://openrouter.ai",
 		SummaryLLMModel:             "ohere/north-mini-code:free",
 		SummaryLLMAPIKeyFile:        apiKeyFile,
+		SummaryLLMMaxOutputTokens:   64,
 		SummaryLLMRequestsPerMinute: 1,
 	}, zap.NewNop())
 	if err != nil {

@@ -210,6 +210,10 @@ if ! grep -Fq 'retrieval_summary_provider_model="${RETRIEVAL_SUMMARY_LLM_MODEL:-
   echo "host env renderer does not default retrieval summary model from answer provider config" >&2
   exit 1
 fi
+if ! grep -Fq 'retrieval_summary_provider_max_output_tokens="${RETRIEVAL_SUMMARY_LLM_MAX_OUTPUT_TOKENS:-64}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not default retrieval summary max output tokens" >&2
+  exit 1
+fi
 if ! grep -Fq 'bash ./scripts/stop-local-host-services.sh' "$root_dir/scripts/run-local-host-services.sh"; then
   echo "host services launcher does not stop stale screen sessions before restart" >&2
   exit 1

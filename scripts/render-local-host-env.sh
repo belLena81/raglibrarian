@@ -129,6 +129,7 @@ answer_provider_key="$(resolve_host_path "$answer_provider_key")"
 [[ -r "$answer_provider_key" ]] || { echo "Answer provider key file is not readable: $answer_provider_key" >&2; exit 1; }
 retrieval_summary_provider_url="${RETRIEVAL_SUMMARY_LLM_BASE_URL:-$answer_provider_url}"
 retrieval_summary_provider_model="${RETRIEVAL_SUMMARY_LLM_MODEL:-$answer_provider_model}"
+retrieval_summary_provider_max_output_tokens="${RETRIEVAL_SUMMARY_LLM_MAX_OUTPUT_TOKENS:-64}"
 
 host_run_as_uid="$(resolve_host_run_as_uid)"
 host_run_as_gid="$(resolve_host_run_as_gid)"
@@ -218,6 +219,7 @@ export RETRIEVAL_QDRANT_API_KEY_FILE="$root_dir/$secret_dir/retrieval_qdrant_rea
 export RETRIEVAL_TEI_URL="http://$tei_host"
 export RETRIEVAL_SUMMARY_LLM_BASE_URL="$retrieval_summary_provider_url"
 export RETRIEVAL_SUMMARY_LLM_MODEL="$retrieval_summary_provider_model"
+export RETRIEVAL_SUMMARY_LLM_MAX_OUTPUT_TOKENS="$retrieval_summary_provider_max_output_tokens"
 export RETRIEVAL_SUMMARY_LLM_API_KEY_FILE="$answer_provider_key"
 export RETRIEVAL_SUMMARY_LLM_CA_FILE="$root_dir/$cert_dir/ca.crt"
 export RETRIEVAL_SEARCH_TIMEOUT="${RETRIEVAL_SEARCH_TIMEOUT:-2m}"

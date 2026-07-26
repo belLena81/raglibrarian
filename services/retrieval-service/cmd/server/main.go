@@ -190,7 +190,7 @@ func configureSummaryProvider(configuration config.Config, serviceLogger *zap.Lo
 		}
 		return nil, nil
 	}
-	summaryProvider, err := provider.NewOpenAI(configuration.SummaryLLMBaseURL, configuration.SummaryLLMModel, apiKey, httpClient, serviceLogger, limit)
+	summaryProvider, err := provider.NewOpenAI(configuration.SummaryLLMBaseURL, configuration.SummaryLLMModel, apiKey, httpClient, serviceLogger, limit, configuration.SummaryLLMMaxOutputTokens)
 	if err != nil {
 		if serviceLogger != nil {
 			serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "configuration_invalid"))
