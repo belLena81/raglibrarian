@@ -108,7 +108,7 @@ Globals:
         LOG_LEVEL: info
         RETRIEVAL_RUNTIME_BACKEND: aws
         RETRIEVAL_PROCESSING_MODE: lambda
-        RETRIEVAL_INDEX_PROFILE: m7-pdf-epub-v1
+        RETRIEVAL_INDEX_PROFILE: m8-bge-v1
         RETRIEVAL_PROCESSING_TIMEOUT: 13m30s
 
 Resources:

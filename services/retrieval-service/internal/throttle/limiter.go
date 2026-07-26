@@ -94,7 +94,21 @@ func (l *Limiter) Wait(ctx context.Context) (time.Duration, error) {
 			l.mu.Unlock()
 			return time.Since(started), ctx.Err()
 		case <-timer.C:
-			return time.Since(started), nil
+			l.mu.Lock()
+			now := time.Now()
+			if index := l.indexOfReservationLocked(reservation); index < 0 {
+				l.mu.Unlock()
+				return time.Since(started), nil
+			} else if index == 0 && !reservation.target.After(now) {
+				l.waiters = append(l.waiters[:index], l.waiters[index+1:]...)
+				l.next = now.Add(l.interval)
+				l.rebalanceLocked(now)
+				l.signalLocked()
+				l.mu.Unlock()
+				return time.Since(started), nil
+			}
+			l.mu.Unlock()
+			continue
 		case <-notify:
 			stopTimer(timer)
 		}

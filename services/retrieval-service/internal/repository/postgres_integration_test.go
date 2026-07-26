@@ -120,6 +120,162 @@ func TestReplayRecoveryTerminalFailureAndVisibilityUseDurableState(t *testing.T)
 	}
 }
 
+func TestApplyReindexCreatesNewLifecycleGenerationWithoutHidingPriorIndex(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+
+	repository := NewPostgres(pool)
+	suffix := randomIntegrationID(t)
+	bookID := "book-reindex-" + suffix
+	oldJobID := "job-old-" + suffix
+	newJobID := "job-new-" + suffix
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sourceSHA256 := integrationDigest(11)
+	manifestSHA256 := integrationDigest(12)
+	processingConfigDigest := integrationDigest(14)
+	shardSHA256 := integrationDigest(15)
+	contentSHA256 := integrationDigest(16)
+	manifestPayloadDigest := integrationDigest(17)
+	lifecyclePayloadDigest := integrationDigest(18)
+	profileDigest := domain.SupportedIndexProfile().Digest
+
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.metadata_facts
+		(book_id,event_id,payload_digest,source_sha256,title,author,publication_year,tags,correlation_id,causation_id,occurred_at)
+		VALUES($1,$2,$3,$4,'Synthetic systems','RAGLibrarian QA',2026,'{}',$5,$6,$7)`,
+		bookID, "metadata-"+suffix, contentSHA256[:], sourceSHA256[:], "correlation-"+suffix, "cause-"+suffix, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := application.Manifest{
+		SchemaVersion:          "v1",
+		BookID:                 bookID,
+		SourceSHA256:           sourceSHA256,
+		ManifestSHA256:         manifestSHA256,
+		ProcessingConfigDigest: processingConfigDigest,
+		PageCount:              1,
+		ChunkCount:             1,
+		GeneratedAt:            now.Add(-time.Minute),
+		ExtractionVersion:      domain.SupportedIndexProfile().ExtractionVersion,
+		NormalizationVersion:   domain.SupportedIndexProfile().NormalizationVersion,
+		TokenizerVersion:       domain.SupportedIndexProfile().TokenizerVersion,
+		ChunkingVersion:        domain.SupportedIndexProfile().ChunkingVersion,
+		StructureVersion:       domain.SupportedIndexProfile().StructureVersion,
+		MaximumTokens:          uint32(domain.SupportedIndexProfile().MaximumTokens),
+		OverlapTokens:          uint32(domain.SupportedIndexProfile().OverlapTokens),
+		Shards: []application.Shard{{
+			Reference:         "books/" + bookID + "/" + hex.EncodeToString(sourceSHA256[:]) + "/" + hex.EncodeToString(processingConfigDigest[:]) + "/shards/000000.pb.zst",
+			SHA256:            shardSHA256,
+			CompressedBytes:   10,
+			UncompressedBytes: 20,
+			ChunkCount:        1,
+			FirstChunkOrder:   0,
+			LastChunkOrder:    0,
+		}},
+	}
+	manifestPayload, err := encodeManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.manifest_facts
+		(book_id,event_id,payload_digest,source_sha256,manifest_sha256,manifest_reference,manifest_payload,correlation_id,causation_id,occurred_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		bookID, "manifest-"+suffix, manifestPayloadDigest[:], sourceSHA256[:], manifestSHA256[:],
+		"books/"+bookID+"/"+hex.EncodeToString(sourceSHA256[:])+"/"+hex.EncodeToString(processingConfigDigest[:])+"/manifest.pb",
+		manifestPayload, "correlation-"+suffix, "cause-"+suffix, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_jobs
+		(id,book_id,source_sha256,manifest_sha256,profile_digest,state,expected_batches,evidence_count,correlation_id,created_at,updated_at,lifecycle_version)
+		VALUES($1,$2,$3,$4,$5,'indexed',1,1,$6,$7,$7,1)`,
+		oldJobID, bookID, sourceSHA256[:], manifestSHA256[:], profileDigest[:], "correlation-"+suffix, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.book_lifecycle
+		(book_id,lifecycle_version,state,active_job_id,event_id,command_id,event_type,payload_digest,cleanup_pending,correlation_id,updated_at)
+		VALUES($1,1,'active',$2,$3,$4,'reindex',$5,false,$6,$7)`,
+		bookID, oldJobID, "reindex-old-"+suffix, "command-old-"+suffix, lifecyclePayloadDigest[:], "correlation-"+suffix, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.evidence
+		(evidence_id,chunk_id,job_id,book_id,title,author,publication_year,tags,page_start,page_end,passage,content_sha256,created_at)
+		VALUES($1,'chunk-old',$2,$3,'Synthetic systems','RAGLibrarian QA',2026,'{}',1,1,'old evidence',$4,$5)`,
+		"evidence-old-"+suffix, oldJobID, bookID, contentSHA256[:], now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.evidence WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.book_lifecycle WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.manifest_facts WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
+	})
+
+	event := application.LifecycleEvent{
+		EventID:           "reindex-" + suffix,
+		BookID:            bookID,
+		CommandID:         "command-new-" + suffix,
+		ActorID:           "actor-" + suffix,
+		CorrelationID:     "correlation-" + suffix,
+		CausationID:       "cause-" + suffix,
+		Producer:          "catalog-service",
+		SchemaVersion:     "v1",
+		IdempotencyKey:    "command-new-" + suffix,
+		Kind:              application.LifecycleReindex,
+		LifecycleVersion:  2,
+		SourceSHA256:      sourceSHA256,
+		ManifestSHA256:    manifestSHA256,
+		PayloadDigest:     integrationDigest(18),
+		ManifestReference: "books/" + bookID + "/" + hex.EncodeToString(sourceSHA256[:]) + "/" + hex.EncodeToString(processingConfigDigest[:]) + "/manifest.pb",
+		OccurredAt:        now,
+	}
+	if err = event.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if transitioned, applyErr := repository.ApplyReindex(ctx, event, newJobID, now); applyErr != nil || !transitioned {
+		t.Fatalf("ApplyReindex() transitioned=%v error=%v", transitioned, applyErr)
+	}
+	var lifecycleVersion int64
+	var lifecycleState, activeJobID string
+	if err = pool.QueryRow(ctx, `SELECT lifecycle_version,state,coalesce(active_job_id,'') FROM retrieval.book_lifecycle WHERE book_id=$1`, bookID).
+		Scan(&lifecycleVersion, &lifecycleState, &activeJobID); err != nil {
+		t.Fatal(err)
+	}
+	if lifecycleVersion != 2 || lifecycleState != "reindexing" || activeJobID != oldJobID {
+		t.Fatalf("lifecycle_version=%d lifecycle_state=%q active_job_id=%q", lifecycleVersion, lifecycleState, activeJobID)
+	}
+	visible, err := repository.FilterIndexed(ctx, []application.Evidence{
+		{EvidenceID: "old-visible", JobID: oldJobID, BookID: bookID, Passage: "old evidence"},
+		{EvidenceID: "new-hidden", JobID: newJobID, BookID: bookID, Passage: "new evidence"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(visible) != 1 || visible[0].JobID != oldJobID {
+		t.Fatalf("visible=%#v", visible)
+	}
+	var jobCount int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.index_jobs WHERE book_id=$1 AND lifecycle_version IN (1,2)`, bookID).Scan(&jobCount); err != nil {
+		t.Fatal(err)
+	}
+	if jobCount != 2 {
+		t.Fatalf("job count=%d, want 2", jobCount)
+	}
+}
+
 func TestBeginBatchRollsBackEarlierWritesWhenOutboxInsertFails(t *testing.T) {
 	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
 		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")

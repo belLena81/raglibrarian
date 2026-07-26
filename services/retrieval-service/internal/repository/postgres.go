@@ -98,7 +98,7 @@ func (r *Postgres) ApplyReindex(ctx context.Context, event application.Lifecycle
 		(book_id,lifecycle_version,state,active_job_id,event_id,command_id,event_type,payload_digest,cleanup_pending,correlation_id,updated_at)
 		VALUES($1,$2,'reindexing',NULL,$3,$4,'reindex',$5,false,$6,$7)
 		ON CONFLICT(book_id) DO UPDATE SET lifecycle_version=EXCLUDED.lifecycle_version,state='reindexing',
-		    active_job_id=NULL,event_id=EXCLUDED.event_id,command_id=EXCLUDED.command_id,event_type='reindex',payload_digest=EXCLUDED.payload_digest,
+		    event_id=EXCLUDED.event_id,command_id=EXCLUDED.command_id,event_type='reindex',payload_digest=EXCLUDED.payload_digest,
 		    cleanup_pending=false,cleanup_attempts=0,cleanup_next_attempt_at=NULL,
 		    correlation_id=EXCLUDED.correlation_id,updated_at=EXCLUDED.updated_at`,
 		event.BookID, int64(event.LifecycleVersion), event.EventID, event.CommandID, event.PayloadDigest[:], event.CorrelationID, now) // #nosec G115 -- lifecycle versions originate as validated int64 protobuf fields.
@@ -148,11 +148,11 @@ func (r *Postgres) prepareReindexJob(ctx context.Context, tx pgx.Tx, event appli
 	var existingState string
 	queryErr := tx.QueryRow(ctx, `SELECT id,state
 		FROM retrieval.index_jobs
-		WHERE book_id=$1 AND source_sha256=$2 AND manifest_sha256=$3 AND profile_digest=$4
+		WHERE book_id=$1 AND lifecycle_version=$2 AND source_sha256=$3 AND manifest_sha256=$4 AND profile_digest=$5
 		ORDER BY lifecycle_version DESC, created_at DESC, id DESC
 		LIMIT 1
 		FOR UPDATE`,
-		event.BookID, event.SourceSHA256[:], event.ManifestSHA256[:], profileDigest[:]).
+		event.BookID, int64(event.LifecycleVersion), event.SourceSHA256[:], event.ManifestSHA256[:], profileDigest[:]).
 		Scan(&existingJobID, &existingState)
 	if errors.Is(queryErr, pgx.ErrNoRows) {
 		_, queryErr = tx.Exec(ctx, `INSERT INTO retrieval.index_jobs
@@ -1422,7 +1422,7 @@ func (r *Postgres) FilterIndexed(ctx context.Context, values []application.Evide
 	rows, err := r.pool.Query(ctx, `SELECT j.id
 		FROM retrieval.index_jobs j
 		JOIN retrieval.book_lifecycle l ON l.book_id=j.book_id AND l.active_job_id=j.id
-		WHERE j.id=ANY($1) AND j.state='indexed' AND l.state='active'`, jobIDs)
+		WHERE j.id=ANY($1) AND j.state='indexed' AND l.state IN ('active','reindexing')`, jobIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -1461,7 +1461,7 @@ func (r *Postgres) FilterIndexedDocuments(ctx context.Context, values []applicat
 	rows, err := r.pool.Query(ctx, `SELECT j.id
 		FROM retrieval.index_jobs j
 		JOIN retrieval.book_lifecycle l ON l.book_id=j.book_id AND l.active_job_id=j.id
-		WHERE j.id=ANY($1) AND j.state='indexed' AND l.state='active'`, jobIDs)
+		WHERE j.id=ANY($1) AND j.state='indexed' AND l.state IN ('active','reindexing')`, jobIDs)
 	if err != nil {
 		return nil, err
 	}

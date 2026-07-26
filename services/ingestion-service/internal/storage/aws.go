@@ -207,10 +207,18 @@ func validBucket(value string) bool {
 }
 
 func validSourceReference(reference string) bool {
-	if !strings.HasPrefix(reference, "originals/") || strings.Count(reference, "/") != 1 || !strings.HasSuffix(reference, ".pdf") || len(reference) > 512 {
+	if !strings.HasPrefix(reference, "originals/") || strings.Count(reference, "/") != 1 || len(reference) > 512 {
 		return false
 	}
-	name := strings.TrimSuffix(strings.TrimPrefix(reference, "originals/"), ".pdf")
+	name := strings.TrimPrefix(reference, "originals/")
+	switch {
+	case strings.HasSuffix(name, ".pdf"):
+		name = strings.TrimSuffix(name, ".pdf")
+	case strings.HasSuffix(name, ".epub"):
+		name = strings.TrimSuffix(name, ".epub")
+	default:
+		return false
+	}
 	if name == "" {
 		return false
 	}

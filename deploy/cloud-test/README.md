@@ -107,7 +107,7 @@ it outside the repository and do not place it in shell history, logs, or CI.
 Download the pinned embedding model when instructed:
 
 ```sh
-M5_MODEL_DIR="$PWD/deploy/cloud-test/runtime/models/m5-jina-code-v1" \
+M5_MODEL_DIR="$PWD/deploy/cloud-test/runtime/models/m8-bge-base-en-v1_5" \
   bash scripts/bootstrap-m5-model.sh
 ```
 
@@ -186,7 +186,7 @@ docker compose \
   --env-file deploy/cloud-test/.env.cloud \
   -f docker-compose.yml \
   -f deploy/cloud-test/compose.yaml \
-  --profile m5 --profile m6 \
+  --profile raglibrarian \
   up -d --force-recreate identity-service
 ```
 

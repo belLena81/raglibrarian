@@ -107,12 +107,12 @@ jobs:
       - name: Validate and start the local stack
         run: |
           make compose-config
-          docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 --profile m6 --profile m6-test config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile raglibrarian config --quiet
           POSTGRES_PORT=5432 MINIO_API_PORT=9000 RABBITMQ_AMQP_PORT=5672 EDGE_RETRIEVAL_READINESS_REQUIRED=true \
-            docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 --profile m6 --profile m6-test up -d --build --wait --wait-timeout 300
+            docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile raglibrarian up -d --build --wait --wait-timeout 300
       - name: Configure host-side integration clients
         run: |
-          compose=(docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 --profile m6 --profile m6-test)
+          compose=(docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile raglibrarian)
           container_ip() {
             local service="$1"
             local container_id
@@ -198,10 +198,10 @@ jobs:
           exit 1
       - name: Show container state
         if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 --profile m6 --profile m6-test ps --all
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile raglibrarian ps --all
       - name: Tear down stack
         if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile m5 --profile m6 --profile m6-test down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile raglibrarian down -v
 
   m4-performance:
     if: github.event_name == 'schedule'

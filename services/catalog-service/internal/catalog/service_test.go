@@ -556,11 +556,12 @@ func TestGetBookDropsOversizedPreview(t *testing.T) {
 	}
 }
 
-func TestGetBookIgnoresPreviewTimeout(t *testing.T) {
+func TestGetBookFallsBackWhenPreviewTimeoutExpires(t *testing.T) {
 	repository := NewMemoryRepository()
 	objects := NewMemoryObjectStore()
 	service := NewServiceWithOptions(repository, objects, ServiceOptions{
-		MaxBytes: 1024,
+		MaxBytes:       1024,
+		PreviewTimeout: 50 * time.Millisecond,
 		PreviewBook: func(ctx context.Context, _ Book, _ OriginalObjectStore) (string, error) {
 			<-ctx.Done()
 			return "", ctx.Err()
@@ -577,6 +578,35 @@ func TestGetBookIgnoresPreviewTimeout(t *testing.T) {
 	}
 	if retrieved.Preview != "" {
 		t.Fatalf("preview = %q, want empty fallback", retrieved.Preview)
+	}
+}
+
+func TestGetBookUsesConfiguredPreviewTimeout(t *testing.T) {
+	repository := NewMemoryRepository()
+	objects := NewMemoryObjectStore()
+	service := NewServiceWithOptions(repository, objects, ServiceOptions{
+		MaxBytes:       1024,
+		PreviewTimeout: 150 * time.Millisecond,
+		PreviewBook: func(ctx context.Context, _ Book, _ OriginalObjectStore) (string, error) {
+			select {
+			case <-time.After(10 * time.Millisecond):
+				return "data:application/pdf;base64,ZmFrZQ==", nil
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		},
+	})
+	book, err := service.UploadBook(context.Background(), validUploadInput(strings.NewReader("%PDF-1.7\nbody")))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	retrieved, err := service.GetBook(context.Background(), book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retrieved.Preview == "" {
+		t.Fatal("expected preview to be attached before the configured deadline")
 	}
 }
 

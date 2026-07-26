@@ -254,9 +254,9 @@ m5-contract-test: contract-test m5-contract-only-test
 
 m5-contract-only-test: _require_root
 	@project=raglibrarian-m5-contract-test; \
-	trap 'MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian down -v --remove-orphans' EXIT; \
-	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian build retrieval-qdrant-init retrieval-service retrieval-contract-tests && \
-	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian run --rm retrieval-contract-tests
+	trap 'MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian --profile tests down -v --remove-orphans' EXIT; \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian --profile tests build retrieval-qdrant-init retrieval-service retrieval-contract-tests && \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian --profile tests run --rm retrieval-contract-tests
 
 m5-contract-ci-test: _require_root
 	@if [ "$(M5_SEARCH_QUALITY_REQUIRE_MODEL)" = "true" ]; then \
@@ -264,7 +264,7 @@ m5-contract-ci-test: _require_root
 	fi
 	@project=raglibrarian-m5-contract-test; \
 	status=0; \
-	compose() { MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian "$$@"; }; \
+	compose() { MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian --profile tests "$$@"; }; \
 	trap 'compose down -v --remove-orphans' EXIT; \
 	compose build retrieval-qdrant-init retrieval-service retrieval-contract-tests && \
 	compose up -d --wait text-embeddings-inference && \
@@ -284,14 +284,14 @@ m5-search-quality-test: _require_root
 	fi
 	@project=raglibrarian-m5-search-quality-test; \
 	status=0; \
-	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian build retrieval-contract-tests && \
-	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian up -d --wait text-embeddings-inference && \
-	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian run --rm --no-deps -e RETRIEVAL_TEI_URL=http://text-embeddings-inference:8080 retrieval-contract-tests "go -C /src/services/retrieval-service test -count=1 -v -run '^TestSearchQualityBenchmark$$' ./internal/application" || status=$$?; \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian --profile tests build retrieval-contract-tests && \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian --profile tests up -d --wait text-embeddings-inference && \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian --profile tests run --rm --no-deps -e RETRIEVAL_TEI_URL=http://text-embeddings-inference:8080 retrieval-contract-tests "go -C /src/services/retrieval-service test -count=1 -v -run '^TestSearchQualityBenchmark$$' ./internal/application" || status=$$?; \
 	if [ "$$status" -ne 0 ]; then \
 		docker inspect --format 'exit={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{.State.Error}} memory_bytes={{.HostConfig.Memory}} nano_cpus={{.HostConfig.NanoCPUs}}' "$${project}-text-embeddings-inference-1" || true; \
-		MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian logs --no-color --tail=200 text-embeddings-inference || true; \
+		MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian --profile tests logs --no-color --tail=200 text-embeddings-inference || true; \
 	fi; \
-	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian down -v --remove-orphans; \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian --profile tests down -v --remove-orphans; \
 	exit $$status
 
 m5-search-quality-test-real: _require_root m5-model-bootstrap
@@ -326,7 +326,7 @@ m6-contract-test: _require_root
 	@bash ./scripts/ensure-m6-dev-cert.sh "$${CERT_DIR:-.dev/certs}"
 	@bash ./scripts/ensure-m6-dev-secret.sh "$${SECRET_DIR:-.dev/secrets}"
 	@project=raglibrarian-m6-contract-test; \
-	compose() { ANSWER_LLM_API_KEY_PATH="$${SECRET_DIR:-.dev/secrets}/answer_llm_test_api_key" MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian "$$@"; }; \
+	compose() { ANSWER_LLM_API_KEY_PATH="$${SECRET_DIR:-.dev/secrets}/answer_llm_test_api_key" MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian --profile tests "$$@"; }; \
 	trap 'compose down -v --remove-orphans' EXIT; \
 	compose build retrieval-qdrant-init retrieval-service answer-service llm-provider-stub answer-contract-tests && \
 	compose run --rm answer-contract-tests
@@ -537,17 +537,17 @@ m4-soak: m4-fixtures
 .PHONY: contract-test
 contract-test: _require_root
 	@project=raglibrarian-contract-test; \
-	trap 'MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile raglibrarian down -v --remove-orphans' EXIT; \
-	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile raglibrarian build identity-service catalog-service ingestion-service contract-tests && \
-	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile raglibrarian run --rm contract-tests
+	trap 'MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile raglibrarian --profile tests down -v --remove-orphans' EXIT; \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile raglibrarian --profile tests build identity-service catalog-service ingestion-service contract-tests && \
+	MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile raglibrarian --profile tests run --rm contract-tests
 
 minio-runtime-test: _require_root
 	@project=raglibrarian-minio-runtime-test; \
-	trap 'MINIO_API_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile raglibrarian down -v --remove-orphans' EXIT; \
-	MINIO_API_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile raglibrarian build catalog-minio-runtime-tests && \
-	MINIO_API_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile raglibrarian up -d --wait minio && \
-	MINIO_API_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile raglibrarian run --rm minio-bootstrap && \
-	MINIO_API_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile raglibrarian run --rm catalog-minio-runtime-tests
+	trap 'MINIO_API_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile raglibrarian --profile tests down -v --remove-orphans' EXIT; \
+	MINIO_API_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile raglibrarian --profile tests build catalog-minio-runtime-tests && \
+	MINIO_API_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile raglibrarian --profile tests up -d --wait minio && \
+	MINIO_API_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile raglibrarian --profile tests run --rm minio-bootstrap && \
+	MINIO_API_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose --profile raglibrarian --profile tests run --rm catalog-minio-runtime-tests
 
 # ── Database ──────────────────────────────────────────────────────────────────
 migrate-identity-up: _require_root

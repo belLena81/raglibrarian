@@ -78,3 +78,8 @@ grep -F -- '-e HF_ENDPOINT=https://hf.example.internal' "$docker_log_file" >/dev
   echo "docker fallback did not forward HF_ENDPOINT" >&2
   exit 1
 }
+
+! grep -F -- '--no-deps' "$docker_log_file" >/dev/null || {
+  echo "docker fallback still disables dependency installation" >&2
+  exit 1
+}

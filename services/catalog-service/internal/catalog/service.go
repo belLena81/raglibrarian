@@ -26,7 +26,6 @@ const (
 	ChunkSize       = 64 << 10
 	DefaultMaxBytes = 25 << 20
 	maxPreviewBytes = 1 << 20
-	previewTimeout  = 2 * time.Second
 )
 
 var (
@@ -101,14 +100,15 @@ type OutboxEvent struct {
 
 // Service coordinates validation, private object storage and atomic persistence.
 type Service struct {
-	repository  BookRepository
-	objects     OriginalObjectStore
-	now         func() time.Time
-	newID       func() (string, error)
-	maxBytes    int64
-	uploads     chan struct{}
-	preview     chan struct{}
-	previewBook func(context.Context, Book, OriginalObjectStore) (string, error)
+	repository     BookRepository
+	objects        OriginalObjectStore
+	now            func() time.Time
+	newID          func() (string, error)
+	maxBytes       int64
+	uploads        chan struct{}
+	preview        chan struct{}
+	previewBook    func(context.Context, Book, OriginalObjectStore) (string, error)
+	previewTimeout time.Duration
 }
 
 // ServiceOptions supplies bounded runtime dependencies without exposing
@@ -117,6 +117,7 @@ type ServiceOptions struct {
 	MaxBytes           int64
 	UploadConcurrency  int
 	PreviewConcurrency int
+	PreviewTimeout     time.Duration
 	Clock              func() time.Time
 	NewID              func() (string, error)
 	PreviewBook        func(context.Context, Book, OriginalObjectStore) (string, error)
@@ -136,6 +137,9 @@ func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStor
 	if options.PreviewConcurrency <= 0 {
 		options.PreviewConcurrency = 2
 	}
+	if options.PreviewTimeout <= 0 {
+		options.PreviewTimeout = 5 * time.Second
+	}
 	if options.Clock == nil {
 		options.Clock = func() time.Time { return time.Now().UTC() }
 	}
@@ -146,14 +150,15 @@ func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStor
 		options.PreviewBook = defaultPreviewBook
 	}
 	return &Service{
-		repository:  repository,
-		objects:     objects,
-		now:         options.Clock,
-		maxBytes:    options.MaxBytes,
-		uploads:     make(chan struct{}, options.UploadConcurrency),
-		preview:     make(chan struct{}, options.PreviewConcurrency),
-		newID:       options.NewID,
-		previewBook: options.PreviewBook,
+		repository:     repository,
+		objects:        objects,
+		now:            options.Clock,
+		maxBytes:       options.MaxBytes,
+		uploads:        make(chan struct{}, options.UploadConcurrency),
+		preview:        make(chan struct{}, options.PreviewConcurrency),
+		newID:          options.NewID,
+		previewBook:    options.PreviewBook,
+		previewTimeout: options.PreviewTimeout,
 	}
 }
 
@@ -400,7 +405,7 @@ func (s *Service) GetBook(ctx context.Context, id string) (Book, error) {
 		default:
 			return book, nil
 		}
-		previewContext, cancel := context.WithTimeout(ctx, previewTimeout)
+		previewContext, cancel := context.WithTimeout(ctx, s.previewTimeout)
 		preview, previewErr := s.previewBook(previewContext, book, s.objects)
 		cancel()
 		if previewErr == nil && len(preview) <= maxPreviewBytes {

@@ -31,6 +31,7 @@ type Config struct {
 	MaxUploadBytes     int64
 	UploadConcurrency  int
 	PreviewConcurrency int
+	PreviewTimeout     time.Duration
 	MetricsAddress     string
 	ReconcileInterval  time.Duration
 	OrphanGracePeriod  time.Duration
@@ -118,6 +119,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	previewTimeout, err := boundedDuration("CATALOG_PREVIEW_TIMEOUT", time.Second, 30*time.Second, 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
 	metricsAddress, err := privateMetricsAddress(optional("CATALOG_METRICS_ADDR", "127.0.0.1:9092"))
 	if err != nil {
 		return Config{}, err
@@ -130,7 +135,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{Address: optional("CATALOG_GRPC_ADDR", ":50052"), DSN: dsn, MinIOEndpoint: endpoint, MinIOAccessKey: minioAccessKey, MinIOSecretKey: minioSecretKey, MinIOBucket: bucket, MinIOInsecure: minioInsecure, MinIOCAFile: minioCAFile, RabbitURI: rabbitURI, IngestionRabbitURI: ingestionRabbitURI, RetrievalRabbitURI: retrievalRabbitURI, MaxUploadBytes: maxUploadBytes, UploadConcurrency: uploadConcurrency, PreviewConcurrency: previewConcurrency, MetricsAddress: metricsAddress, ReconcileInterval: reconcileInterval, OrphanGracePeriod: orphanGracePeriod, TLS: internaltls.Files{CA: ca, Certificate: cert, Key: key}, RunAs: process.Identity{UID: uid, GID: gid}}, nil
+	return Config{Address: optional("CATALOG_GRPC_ADDR", ":50052"), DSN: dsn, MinIOEndpoint: endpoint, MinIOAccessKey: minioAccessKey, MinIOSecretKey: minioSecretKey, MinIOBucket: bucket, MinIOInsecure: minioInsecure, MinIOCAFile: minioCAFile, RabbitURI: rabbitURI, IngestionRabbitURI: ingestionRabbitURI, RetrievalRabbitURI: retrievalRabbitURI, MaxUploadBytes: maxUploadBytes, UploadConcurrency: uploadConcurrency, PreviewConcurrency: previewConcurrency, PreviewTimeout: previewTimeout, MetricsAddress: metricsAddress, ReconcileInterval: reconcileInterval, OrphanGracePeriod: orphanGracePeriod, TLS: internaltls.Files{CA: ca, Certificate: cert, Key: key}, RunAs: process.Identity{UID: uid, GID: gid}}, nil
 }
 
 func strictBool(key string, fallback bool) (bool, error) {

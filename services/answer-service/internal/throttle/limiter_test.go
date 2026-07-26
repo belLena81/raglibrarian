@@ -64,6 +64,28 @@ func TestLimiterReleasesCanceledReservations(t *testing.T) {
 	}
 }
 
+func TestLimiterReleasesTimerReservations(t *testing.T) {
+	limiter, err := New(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wait, err := limiter.Wait(context.Background()); err != nil || wait != 0 {
+		t.Fatalf("first Wait() = %s, %v", wait, err)
+	}
+	for index := 0; index < 2; index++ {
+		if wait, err := limiter.Wait(context.Background()); err != nil || wait < 90*time.Millisecond || wait > 170*time.Millisecond {
+			t.Fatalf("warmup Wait(%d) = %s, %v", index+2, wait, err)
+		}
+	}
+	started := time.Now()
+	if wait, err := limiter.Wait(context.Background()); err != nil || wait < 90*time.Millisecond || wait > 170*time.Millisecond {
+		t.Fatalf("third queued Wait() = %s, %v", wait, err)
+	}
+	if elapsed := time.Since(started); elapsed < 90*time.Millisecond || elapsed > 170*time.Millisecond {
+		t.Fatalf("timer reservation was not consumed, elapsed=%s", elapsed)
+	}
+}
+
 func TestLimiterPacesPerMinuteCalls(t *testing.T) {
 	limiter, err := NewPerMinute(15)
 	if err != nil {

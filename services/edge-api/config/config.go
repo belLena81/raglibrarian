@@ -130,7 +130,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	answerDeadline, err := boundedDuration("EDGE_ANSWER_DEADLINE", 2*time.Minute, answerclient.MaxAnswerDeadline)
+	answerDeadline, err := boundedDuration("EDGE_ANSWER_DEADLINE", answerclient.MaxAnswerDeadline, answerclient.MaxAnswerDeadline)
 	if err != nil {
 		return Config{}, err
 	}

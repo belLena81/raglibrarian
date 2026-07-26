@@ -91,19 +91,20 @@ func TestHTTPServerFailureClassifiesListenAndServeErrors(t *testing.T) {
 	assert.ErrorIs(t, serveFailure, ErrHTTPServe)
 }
 
-func TestHTTPWriteTimeoutProvidesHeadroomForAnswerDeadline(t *testing.T) {
+func TestHTTPWriteTimeoutProvidesHeadroomForAnswerAndRetrievalDeadlines(t *testing.T) {
 	tests := []struct {
-		name           string
-		answerDeadline time.Duration
-		want           time.Duration
+		name              string
+		answerDeadline    time.Duration
+		retrievalDeadline time.Duration
+		want              time.Duration
 	}{
-		{name: "minimum", answerDeadline: 7 * time.Second, want: 30 * time.Second},
-		{name: "long answer", answerDeadline: 2 * time.Minute, want: 125 * time.Second},
-		{name: "maximum", answerDeadline: 5 * time.Minute, want: 305 * time.Second},
+		{name: "minimum", answerDeadline: 7 * time.Second, retrievalDeadline: 2 * time.Second, want: 30 * time.Second},
+		{name: "long answer", answerDeadline: 2 * time.Minute, retrievalDeadline: 2 * time.Minute, want: 245 * time.Second},
+		{name: "maximum", answerDeadline: 5 * time.Minute, retrievalDeadline: 2 * time.Minute, want: 425 * time.Second},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := httpWriteTimeout(test.answerDeadline); got != test.want {
+			if got := httpWriteTimeout(test.answerDeadline, test.retrievalDeadline); got != test.want {
 				t.Fatalf("httpWriteTimeout(%s) = %s, want %s", test.answerDeadline, got, test.want)
 			}
 		})

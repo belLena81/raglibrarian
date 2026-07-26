@@ -143,7 +143,7 @@ PY
 
     if command -v pip3 >/dev/null; then
       echo "Attempting to install huggingface_hub into the local Python user site."
-      python3 -m pip install --user --disable-pip-version-check --no-input --no-deps "huggingface_hub>=0.29" || true
+      python3 -m pip install --user --disable-pip-version-check --no-input "huggingface_hub>=0.29" || true
       if python3 - <<'PY'
 import importlib
 
@@ -183,7 +183,7 @@ PY
     -e HOME=/tmp \
     "$hf_image" \
     bash -lc 'mkdir -p "$HF_HUB_CACHE" "$HF_HOME" && \
-      python -m pip install --no-cache-dir --user --no-deps "huggingface_hub" >/tmp/huggingface_hub_install.log && \
+      python -m pip install --no-cache-dir --user "huggingface_hub" >/tmp/huggingface_hub_install.log && \
       cat > /tmp/bootstrap-hf.py && \
       python /tmp/bootstrap-hf.py'
 }

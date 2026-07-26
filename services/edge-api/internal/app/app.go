@@ -54,12 +54,12 @@ var (
 	ErrHTTPShutdown = errors.New("HTTP shutdown failed")
 )
 
-func httpWriteTimeout(answerDeadline time.Duration) time.Duration {
+func httpWriteTimeout(answerDeadline, retrievalDeadline time.Duration) time.Duration {
 	const (
 		minimumWriteTimeout  = 30 * time.Second
 		writeTimeoutHeadroom = 5 * time.Second
 	)
-	timeout := answerDeadline + writeTimeoutHeadroom
+	timeout := answerDeadline + retrievalDeadline + writeTimeoutHeadroom
 	if timeout < minimumWriteTimeout {
 		return minimumWriteTimeout
 	}
@@ -147,7 +147,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		}, booksHandler),
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      httpWriteTimeout(cfg.AnswerDeadline),
+		WriteTimeout:      httpWriteTimeout(cfg.AnswerDeadline, cfg.RetrievalSearchDeadline),
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}

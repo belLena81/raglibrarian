@@ -75,6 +75,7 @@ FROM alpine:3.22 AS catalog-runtime
 RUN apk add --no-cache ca-certificates poppler-utils
 COPY --from=builder /bin/service /service
 COPY --from=builder /bin/healthcheck /healthcheck
+COPY --from=ingestion-sandbox-builder /bin/parser-sandbox /parser-sandbox
 # The process reads root-owned Compose secrets, then drops permanently to the
 # configured numeric runtime identity before opening its private listeners.
 # hadolint ignore=DL3002

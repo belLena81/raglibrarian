@@ -68,7 +68,7 @@
           "RETRIEVAL_QDRANT_URL": "http://test-host.internal:6333",
           "RETRIEVAL_TEI_URL": "http://test-host.internal:8080",
           "RETRIEVAL_METRICS_ADDR": "127.0.0.1:9094",
-          "RETRIEVAL_INDEX_PROFILE": "m7-pdf-epub-v1",
+          "RETRIEVAL_INDEX_PROFILE": "m8-bge-v1",
           "RETRIEVAL_SERVERLESS_INVOCATION_TIMEOUT": "13m",
           "RETRIEVAL_SERVERLESS_BROKER_ALLOWED_SUFFIXES": "internal"
         },
@@ -79,7 +79,7 @@
           "RETRIEVAL_QDRANT_URL": "http://test-host.internal:6333",
           "RETRIEVAL_TEI_URL": "http://test-host.internal:8080",
           "RETRIEVAL_METRICS_ADDR": "127.0.0.1:9094",
-          "RETRIEVAL_INDEX_PROFILE": "m7-pdf-epub-v1",
+          "RETRIEVAL_INDEX_PROFILE": "m8-bge-v1",
           "RETRIEVAL_SERVERLESS_INVOCATION_TIMEOUT": "13m",
           "RETRIEVAL_SERVERLESS_BROKER_ALLOWED_SUFFIXES": "internal"
         },

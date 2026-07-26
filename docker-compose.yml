@@ -331,7 +331,7 @@ services:
 
   edge-api-2:
     <<: *edge-api-service
-    profiles: ["raglibrarian"]
+    profiles: ["tests"]
     ports:
       - "127.0.0.1:${EDGE_SECONDARY_PORT:-8081}:8080"
     environment:
@@ -409,7 +409,7 @@ services:
       start_period: 10s
 
   qdrant:
-    profiles: ["raglibrarian"]
+    profiles: ["tests"]
     image: ${M5_QDRANT_IMAGE:-qdrant/qdrant:v1.18.3}
     read_only: true
     user: "0:0"
@@ -451,7 +451,7 @@ services:
       - DAC_READ_SEARCH
       - SETGID
       - SETUID
-    profiles: ["raglibrarian"]
+    profiles: ["tests"]
     build:
       context: .
       target: retrieval-runtime
@@ -472,7 +472,7 @@ services:
     pids_limit: 128
 
   text-embeddings-inference:
-    profiles: ["raglibrarian"]
+    profiles: ["tests"]
     image: ${M5_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference@sha256:cb570aabbfa016b86684f576b5bd72d1ee96cc0b7a00b0ad221b298762b32157}
     read_only: true
     user: "65532:65532"

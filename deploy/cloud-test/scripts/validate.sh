@@ -25,8 +25,7 @@ docker compose \
   --env-file "$env_file" \
   -f docker-compose.yml \
   -f deploy/cloud-test/compose.yaml \
-  --profile m5 \
-  --profile m6 \
+  --profile raglibrarian \
   config --quiet
 
 GOCACHE="${GOCACHE:-/tmp/raglibrarian-go-cache}" go test ./tools/rabbitmq-topology

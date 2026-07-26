@@ -101,6 +101,16 @@ services:
       # Empty means system trust roots only; the internal CA is not a public-provider root.
       ANSWER_LLM_CA_FILE: ""
 
+  contract-tests:
+    profiles: ["tests"]
+    depends_on: !override {}
+
+  retrieval-contract-tests:
+    profiles: ["tests"]
+
+  answer-contract-tests:
+    profiles: ["tests"]
+
   qdrant:
     image: "${M5_QDRANT_IMAGE:-qdrant/qdrant@sha256:e8c968e9a32219a4cde0d34ee594ad697ed92df41c542b5ec2d178eaa807804b}"
     mem_limit: 1536m
@@ -112,7 +122,7 @@ services:
     cpus: "${M5_TEI_CPU_LIMIT:-1.5}"
 
   catalog-minio-runtime-tests:
-    profiles: ["cloud-storage-test"]
+    profiles: ["tests"]
     environment:
       CATALOG_MINIO_ENDPOINT: "${S3_ENDPOINT:?set S3_ENDPOINT}"
       CATALOG_MINIO_INSECURE: "false"

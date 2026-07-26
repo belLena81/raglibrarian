@@ -36,8 +36,7 @@ docker compose \
   --env-file "$env_file" \
   -f docker-compose.yml \
   -f deploy/cloud-test/compose.yaml \
-  --profile m5 \
-  --profile m6 \
+  --profile raglibrarian \
   up -d --build --wait --wait-timeout 600
 
 tailscale serve --bg --https=443 http://127.0.0.1:8088

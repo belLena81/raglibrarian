@@ -130,9 +130,6 @@ func (c *LifecycleCoordinator) completeDeletion(ctx context.Context, cleanup Del
 	if err := c.vectors.DeleteBook(ctx, cleanup.BookID); err != nil {
 		return errors.Join(errors.New("delete book vectors"), err)
 	}
-	if err := c.vectors.DeleteBook(ctx, cleanup.BookID); err != nil {
-		return errors.Join(errors.New("delete book vectors"), err)
-	}
 	if err := c.repository.CompleteDeletion(ctx, cleanup, c.now().UTC()); err != nil {
 		return errors.Join(errors.New("complete book deletion"), err)
 	}
