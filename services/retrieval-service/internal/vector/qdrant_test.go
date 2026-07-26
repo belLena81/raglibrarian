@@ -17,7 +17,7 @@ import (
 func TestQdrantSearchUsesBoundedLimitAndReturnsEvidence(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
 		var body queryRequest
-		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body.Limit != 4 || body.Offset != 6 || body.Filter == nil || len(body.Filter.Must) < 2 || body.Filter.Must[0].Key != "indexed" || body.Filter.Must[0].Match.Value != "true" || body.Filter.Must[1].Key != "vector_kind" || body.Filter.Must[1].Match.Value != "chunk" || body.ScoreThreshold <= 0 {
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body.Limit != 4 || body.Offset != 6 || body.Filter == nil || len(body.Filter.Must) < 2 || body.Filter.Must[0].Key != "indexed" || body.Filter.Must[0].Match.Value != "true" || body.Filter.Must[1].Key != "vector_kind" || body.Filter.Must[1].Match.Value != "chunk" || body.ScoreThreshold != domain.MinimumSearchScore {
 			t.Fatalf("unexpected request body: %#v, %v", body, err)
 		}
 		return response(http.StatusOK, `{"result":{"points":[{"id":"point-1","score":0.9,"payload":{"evidence_id":"evidence-1","chunk_id":"chunk-1","job_id":"job-1","book_id":"book-1","title":"Systems","author":"Author","year":2026,"tags":["distributed"],"chapter":"One","section":"Replication","page_start":3,"page_end":4,"passage":"Copies improve availability."}}]}}`)
@@ -44,7 +44,7 @@ func TestQdrantSearchDocumentsHydratesStoredChunkEvidence(t *testing.T) {
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 				t.Fatalf("invalid document request body: %v", err)
 			}
-			if body.Limit != 4 || body.Offset != 2 || body.Filter.Must[1].Key != "vector_kind" || body.Filter.Must[1].Match.Value != "document" {
+			if body.Limit != 4 || body.Offset != 2 || body.Filter.Must[1].Key != "vector_kind" || body.Filter.Must[1].Match.Value != "document" || body.ScoreThreshold != domain.MinimumSearchScore {
 				t.Fatalf("unexpected document request: %#v", body)
 			}
 			return response(http.StatusOK, `{"result":{"points":[{"id":"document-point-1","score":0.8,"payload":{"document_id":"document-1","job_id":"job-1","book_id":"book-1","title":"Systems","author":"Author","year":2026,"tags":["distributed"],"page_start":1,"page_end":20,"chunk_count":10}},{"id":"document-point-2","score":0.7,"payload":{"document_id":"document-2","job_id":"job-2","book_id":"book-2","title":"Queues","author":"Author","year":2025,"tags":["distributed"],"page_start":2,"page_end":12,"chunk_count":8}}]}}`)
@@ -58,7 +58,7 @@ func TestQdrantSearchDocumentsHydratesStoredChunkEvidence(t *testing.T) {
 				if index == 1 {
 					wantJobID = "job-2"
 				}
-				if search.Limit != 3 || len(search.Filter.Must) < 3 || search.Filter.Must[1].Match.Value != "chunk" || search.Filter.Must[2].Key != "job_id" || search.Filter.Must[2].Match.Value != wantJobID {
+				if search.Limit != 3 || search.ScoreThreshold != domain.MinimumSearchScore || len(search.Filter.Must) < 3 || search.Filter.Must[1].Match.Value != "chunk" || search.Filter.Must[2].Key != "job_id" || search.Filter.Must[2].Match.Value != wantJobID {
 					t.Fatalf("unexpected evidence hydration request %d: %#v", index, search)
 				}
 			}

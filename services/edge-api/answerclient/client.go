@@ -16,7 +16,8 @@ import (
 	"github.com/belLena81/raglibrarian/services/edge-api/internal/searchcontract"
 )
 
-const maxAnswerDeadline = 5 * time.Minute
+// MaxAnswerDeadline bounds Edge's gRPC answer request budget.
+const MaxAnswerDeadline = 5 * time.Minute
 
 // Client translates Edge query requests to the versioned Answer contract.
 type Client struct {
@@ -29,8 +30,8 @@ func New(service answerv1.AnswerServiceClient, deadline time.Duration) *Client {
 	if service == nil {
 		panic("answerclient: service must not be nil")
 	}
-	if deadline <= 0 || deadline > maxAnswerDeadline {
-		panic("answerclient: deadline must be between zero and 25 seconds")
+	if deadline <= 0 || deadline > MaxAnswerDeadline {
+		panic("answerclient: deadline must be between zero and 5 minutes")
 	}
 	return &Client{service: service, deadline: deadline}
 }

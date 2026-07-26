@@ -36,8 +36,8 @@ func TestSearchMapsRequestResponseMetadataAndDeadline(t *testing.T) {
 		deadline, ok := ctx.Deadline()
 		require.True(t, ok)
 		remaining := time.Until(deadline)
-		assert.LessOrEqual(t, remaining, 5*time.Minute)
-		assert.Greater(t, remaining, 4*time.Minute+30*time.Second)
+		assert.LessOrEqual(t, remaining, 2*time.Minute)
+		assert.Greater(t, remaining, 90*time.Second)
 		metadata, ok := grpcmetadata.FromOutgoingContext(ctx)
 		require.True(t, ok)
 		assert.Equal(t, []string{testRequestID}, metadata.Get("x-request-id"))
@@ -68,7 +68,7 @@ func TestSearchMapsRequestResponseMetadataAndDeadline(t *testing.T) {
 			}},
 		}, nil
 	}
-	client := New(stub)
+	client := New(stub, 2*time.Minute)
 	ctx := context.WithValue(context.Background(), chimiddleware.RequestIDKey, testRequestID)
 
 	result, err := client.Search(ctx, handler.SearchRequest{
@@ -104,7 +104,7 @@ func TestSearchMapsStableRetrievalFailures(t *testing.T) {
 		t.Run(test.code.String(), func(t *testing.T) {
 			client := New(&retrievalClientStub{search: func(context.Context, *retrievalv1.SearchRequest, ...grpc.CallOption) (*retrievalv1.SearchResponse, error) {
 				return nil, status.Error(test.code, "private retrieval detail")
-			}})
+			}}, 2*time.Minute)
 			ctx := context.WithValue(context.Background(), chimiddleware.RequestIDKey, testRequestID)
 
 			_, err := client.Search(ctx, handler.SearchRequest{Question: "q"})
@@ -120,7 +120,7 @@ func TestSearchRejectsInvalidRequestIDBeforeRPC(t *testing.T) {
 	client := New(&retrievalClientStub{search: func(context.Context, *retrievalv1.SearchRequest, ...grpc.CallOption) (*retrievalv1.SearchResponse, error) {
 		called = true
 		return &retrievalv1.SearchResponse{}, nil
-	}})
+	}}, 2*time.Minute)
 
 	_, err := client.Search(context.Background(), handler.SearchRequest{Question: "q"})
 
@@ -151,7 +151,7 @@ func TestSearchNormalizesNilBookTagsToEmptySlice(t *testing.T) {
 				}},
 			}},
 		}, nil
-	}})
+	}}, 2*time.Minute)
 	ctx := context.WithValue(context.Background(), chimiddleware.RequestIDKey, testRequestID)
 
 	result, err := client.Search(ctx, handler.SearchRequest{Question: "q"})

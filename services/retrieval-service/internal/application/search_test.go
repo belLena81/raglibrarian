@@ -30,7 +30,7 @@ func TestSearcherReturnsRankedEvidence(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{
 		results:   []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Replication keeps copies.", Score: 0.91}},
-		documents: []DocumentResult{{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", ChunkCount: 10, Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "Replication keeps copies.", Score: 0.91}}}},
+		documents: []DocumentResult{{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", ChunkCount: 10, Score: 0.91, Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "Replication keeps copies.", Score: 0.91}}}},
 	}
 	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
 	if err != nil {
@@ -52,7 +52,7 @@ func TestSearcherUsesProviderSummariesAndFallsBack(t *testing.T) {
 	store := &stubEvidenceStore{
 		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Deterministic retries keep search stable.", Score: 0.91}},
 		documents: []DocumentResult{{
-			DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", ChunkCount: 1,
+			DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", ChunkCount: 1, Score: 0.91,
 			Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "Deterministic retries keep search stable.", Score: 0.91}},
 		}},
 	}
@@ -93,6 +93,49 @@ func TestSearcherUsesProviderSummariesAndFallsBack(t *testing.T) {
 	}
 }
 
+func TestSearcherDoesNotClipProviderOrFallbackSummaries(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	longSentence := strings.TrimSpace(strings.Repeat("Detailed JavaScript guidance sentence without clipping. ", 8))
+	store := &stubEvidenceStore{
+		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: longSentence, Score: 0.91}},
+		documents: []DocumentResult{{
+			DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", ChunkCount: 1, Score: 0.91,
+			Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: longSentence, Score: 0.91}},
+		}},
+	}
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	if err != nil {
+		t.Fatalf("NewSearcher() error = %v", err)
+	}
+
+	provider := &stubSummaryProvider{response: func(value SummaryRequest) string {
+		return longSentence
+	}}
+	searcher.SetSummaryProvider(provider)
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 3})
+	if err != nil {
+		t.Fatalf("provider Search() error = %v", err)
+	}
+	if got := result.Evidence[0].Summary; got != longSentence {
+		t.Fatalf("provider evidence summary = %q, want full long summary", got)
+	}
+	if got := result.Documents[0].Summary; got != longSentence {
+		t.Fatalf("provider document summary = %q, want full long summary", got)
+	}
+
+	searcher.SetSummaryProvider(&stubSummaryProvider{err: errors.New("provider failed")})
+	fallback, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 3})
+	if err != nil {
+		t.Fatalf("fallback Search() error = %v", err)
+	}
+	if got := fallback.Evidence[0].Summary; got != longSentence {
+		t.Fatalf("fallback evidence summary = %q, want full long summary", got)
+	}
+	if got := fallback.Documents[0].Summary; got != longSentence {
+		t.Fatalf("fallback document summary = %q, want full long summary", got)
+	}
+}
+
 func TestSearcherCapsProviderSummaryCallsPerSearch(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	results := make([]Evidence, 0, 5)
@@ -116,6 +159,7 @@ func TestSearcherCapsProviderSummaryCallsPerSearch(t *testing.T) {
 			BookID:     "book-" + documentID,
 			Title:      "Systems",
 			ChunkCount: 1,
+			Score:      0.91,
 			Evidence:   []Evidence{{EvidenceID: evidenceID + "-doc", Passage: docPassage, Score: 0.91}},
 		})
 	}
@@ -149,19 +193,19 @@ func TestSearcherFiltersLowScoringEvidenceBeforeReturningResults(t *testing.T) {
 	store := &stubEvidenceStore{
 		resultsByPage: [][]Evidence{
 			{
-				{EvidenceID: "low-1", JobID: "job-low-1", BookID: "book-low", Passage: "low evidence", Score: 0.59},
-				{EvidenceID: "low-2", JobID: "job-low-2", BookID: "book-low", Passage: "low evidence", Score: 0.58},
+				{EvidenceID: "low-1", JobID: "job-low-1", BookID: "book-low", Passage: "low evidence", Score: 0.49},
+				{EvidenceID: "low-2", JobID: "job-low-2", BookID: "book-low", Passage: "low evidence", Score: 0.48},
 			},
 			{
-				{EvidenceID: "high-1", JobID: "job-high-1", BookID: "book-high", Passage: "high evidence", Score: 0.60},
+				{EvidenceID: "high-1", JobID: "job-high-1", BookID: "book-high", Passage: "high evidence", Score: 0.50},
 			},
 		},
 		documentsByPage: [][]DocumentResult{
 			{
-				{DocumentID: "doc-low", JobID: "job-low-1", BookID: "book-low", ChunkCount: 1, Score: 0.93, Evidence: []Evidence{{EvidenceID: "low-1", Passage: "low evidence", Score: 0.59}, {EvidenceID: "low-2", Passage: "low evidence", Score: 0.58}}},
+				{DocumentID: "doc-low", JobID: "job-low-1", BookID: "book-low", ChunkCount: 1, Score: 0.93, Evidence: []Evidence{{EvidenceID: "low-1", Passage: "low evidence", Score: 0.49}, {EvidenceID: "low-2", Passage: "low evidence", Score: 0.48}}},
 			},
 			{
-				{DocumentID: "doc-high", JobID: "job-high-1", BookID: "book-high", ChunkCount: 1, Score: 0.91, Evidence: []Evidence{{EvidenceID: "high-1", Passage: "high evidence", Score: 0.60}}},
+				{DocumentID: "doc-high", JobID: "job-high-1", BookID: "book-high", ChunkCount: 1, Score: 0.91, Evidence: []Evidence{{EvidenceID: "high-1", Passage: "high evidence", Score: 0.50}}},
 			},
 		},
 	}
@@ -182,12 +226,79 @@ func TestSearcherFiltersLowScoringEvidenceBeforeReturningResults(t *testing.T) {
 	}
 }
 
+func TestSearcherFiltersLowScoringDocumentsEvenWhenEvidenceIsVisible(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{
+		results: []Evidence{
+			{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Passage: "visible passage", Score: 0.81},
+		},
+		documents: []DocumentResult{
+			{DocumentID: "document-low", JobID: "job-1", BookID: "book-1", ChunkCount: 1, Score: 0.46, Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "visible passage", Score: 0.81}}},
+			{DocumentID: "document-high", JobID: "job-2", BookID: "book-2", ChunkCount: 1, Score: 0.67, Evidence: []Evidence{{EvidenceID: "evidence-2", Passage: "better visible passage", Score: 0.78}}},
+		},
+	}
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	if err != nil {
+		t.Fatalf("NewSearcher() error = %v", err)
+	}
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 5})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Documents) != 1 || result.Documents[0].DocumentID != "document-high" {
+		t.Fatalf("documents = %#v", result.Documents)
+	}
+}
+
+func TestSearcherSortsEvidenceDocumentsAndSupportingPassagesByScore(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{
+		results: []Evidence{
+			{EvidenceID: "evidence-low", JobID: "job-1", BookID: "book-1", Passage: "low", Score: 0.51},
+			{EvidenceID: "evidence-high", JobID: "job-2", BookID: "book-2", Passage: "high", Score: 0.88},
+			{EvidenceID: "evidence-mid", JobID: "job-3", BookID: "book-3", Passage: "mid", Score: 0.72},
+		},
+		documents: []DocumentResult{
+			{
+				DocumentID: "document-low", JobID: "job-1", BookID: "book-1", ChunkCount: 2, Score: 0.55,
+				Evidence: []Evidence{
+					{EvidenceID: "support-low", Passage: "support low", Score: 0.52},
+					{EvidenceID: "support-high", Passage: "support high", Score: 0.90},
+				},
+			},
+			{
+				DocumentID: "document-high", JobID: "job-2", BookID: "book-2", ChunkCount: 1, Score: 0.93,
+				Evidence: []Evidence{{EvidenceID: "support-mid", Passage: "support mid", Score: 0.77}},
+			},
+		},
+	}
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	if err != nil {
+		t.Fatalf("NewSearcher() error = %v", err)
+	}
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 5})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if got := []string{result.Evidence[0].EvidenceID, result.Evidence[1].EvidenceID, result.Evidence[2].EvidenceID}; got[0] != "evidence-high" || got[1] != "evidence-mid" || got[2] != "evidence-low" {
+		t.Fatalf("evidence ordering = %#v", got)
+	}
+	if got := []string{result.Documents[0].DocumentID, result.Documents[1].DocumentID}; got[0] != "document-high" || got[1] != "document-low" {
+		t.Fatalf("document ordering = %#v", got)
+	}
+	if got := []string{result.Documents[1].Evidence[0].EvidenceID, result.Documents[1].Evidence[1].EvidenceID}; got[0] != "support-high" || got[1] != "support-low" {
+		t.Fatalf("supporting evidence ordering = %#v", got)
+	}
+}
+
 func TestSearcherSkipsEmptyPassagesForSummaries(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{
 		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Passage: "   ", Score: 0.91}},
 		documents: []DocumentResult{{
-			DocumentID: "document-1", JobID: "job-1", BookID: "book-1", ChunkCount: 1,
+			DocumentID: "document-1", JobID: "job-1", BookID: "book-1", ChunkCount: 1, Score: 0.91,
 			Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "   ", Score: 0.91}},
 		}},
 	}
@@ -225,12 +336,12 @@ func TestSearcherBackfillsAfterVisibilityFiltering(t *testing.T) {
 		},
 		documentsByPage: [][]DocumentResult{
 			{
-				{DocumentID: "pending-document-1", JobID: "pending-1", BookID: "book-pending", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "pending-1", Score: 0.99}}},
-				{DocumentID: "pending-document-2", JobID: "pending-2", BookID: "book-pending", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "pending-2", Score: 0.98}}},
+				{DocumentID: "pending-document-1", JobID: "pending-1", BookID: "book-pending", ChunkCount: 1, Score: 0.99, Evidence: []Evidence{{EvidenceID: "pending-1", Score: 0.99}}},
+				{DocumentID: "pending-document-2", JobID: "pending-2", BookID: "book-pending", ChunkCount: 1, Score: 0.98, Evidence: []Evidence{{EvidenceID: "pending-2", Score: 0.98}}},
 			},
 			{
-				{DocumentID: "visible-document-1", JobID: "indexed-1", BookID: "book-1", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "visible-1", Passage: "visible one", Score: 0.80}}},
-				{DocumentID: "visible-document-2", JobID: "indexed-2", BookID: "book-2", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "visible-2", Passage: "visible two", Score: 0.79}}},
+				{DocumentID: "visible-document-1", JobID: "indexed-1", BookID: "book-1", ChunkCount: 1, Score: 0.80, Evidence: []Evidence{{EvidenceID: "visible-1", Passage: "visible one", Score: 0.80}}},
+				{DocumentID: "visible-document-2", JobID: "indexed-2", BookID: "book-2", ChunkCount: 1, Score: 0.79, Evidence: []Evidence{{EvidenceID: "visible-2", Passage: "visible two", Score: 0.79}}},
 			},
 		},
 	}
@@ -260,7 +371,7 @@ func TestSearcherContinuesDocumentPaginationAfterHydrationDropsCandidates(t *tes
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{documentPages: []DocumentPage{
 		{Exhausted: false},
-		{Documents: []DocumentResult{{DocumentID: "document-2", JobID: "job-2", BookID: "book-2", ChunkCount: 1, Evidence: []Evidence{{EvidenceID: "evidence-2", Score: 0.8}}}}, Exhausted: true},
+		{Documents: []DocumentResult{{DocumentID: "document-2", JobID: "job-2", BookID: "book-2", ChunkCount: 1, Score: 0.8, Evidence: []Evidence{{EvidenceID: "evidence-2", Score: 0.8}}}}, Exhausted: true},
 	}}
 	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
 	if err != nil {

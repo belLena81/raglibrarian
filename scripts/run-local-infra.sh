@@ -92,9 +92,9 @@ set +a
 
 secret_dir="${SECRET_DIR:-.dev/secrets}"
 cert_dir="${CERT_DIR:-.dev/certs}"
-model_dir="${M5_MODEL_DIR:-.dev/models/m5-jina-code-v1}"
+model_dir="${M5_MODEL_DIR:-.dev/models/m8-bge-base-en-v1_5}"
 fallback_root="${TMPDIR:-/tmp}/raglibrarian-model-cache-$(id -u)"
-fallback_dir="$fallback_root/m5-jina-code-v1"
+fallback_dir="$fallback_root/m8-bge-base-en-v1_5"
 
 has_bootstrapped_m5_model_cache() {
   local path="$1"

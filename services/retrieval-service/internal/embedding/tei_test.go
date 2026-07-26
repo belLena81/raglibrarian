@@ -15,7 +15,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-func TestTEIEmbedsWithoutTruncation(t *testing.T) {
+func TestTEIEmbedsWithProviderTruncationEnabled(t *testing.T) {
 	client, err := NewTEI("https://tei.example", &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Path != "/embed" || request.Method != http.MethodPost {
 			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
@@ -27,7 +27,7 @@ func TestTEIEmbedsWithoutTruncation(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if body.Inputs != "replication" || body.Truncate {
+		if body.Inputs != bgeQueryInstruction+"replication" || !body.Truncate {
 			t.Fatalf("unexpected body: %#v", body)
 		}
 		vector := make([]float32, domain.EmbeddingDimensions)
@@ -112,6 +112,9 @@ func TestTEIEmbedDocumentsBatchesEightInputsAndPreservesOrder(t *testing.T) {
 		}
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Fatalf("decode request: %v", err)
+		}
+		if !body.Truncate {
+			t.Fatalf("expected truncation enabled: %#v", body)
 		}
 		requests = append(requests, append([]string(nil), body.Inputs...))
 		vectors := make([][]float32, 0, len(body.Inputs))

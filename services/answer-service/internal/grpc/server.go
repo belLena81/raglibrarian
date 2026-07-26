@@ -82,14 +82,14 @@ func searchToProto(value domain.SearchResult) *retrievalv1.SearchResponse {
 			evidence = append(evidence, evidenceToProto(item))
 		}
 		response.Documents = append(response.Documents, &retrievalv1.DocumentResult{DocumentId: document.DocumentID, Book: bookToProto(document.Book), ChunkCount: document.ChunkCount,
-			PageStart: document.PageStart, PageEnd: document.PageEnd, Score: document.Score, Evidence: evidence})
+			PageStart: document.PageStart, PageEnd: document.PageEnd, Score: document.Score, Evidence: evidence, Summary: document.Summary})
 	}
 	return response
 }
 
 func evidenceToProto(value domain.Evidence) *retrievalv1.Evidence {
 	return &retrievalv1.Evidence{EvidenceId: value.EvidenceID, ChunkId: value.ChunkID, Book: bookToProto(value.Book), Chapter: value.Chapter,
-		Section: value.Section, PageStart: value.PageStart, PageEnd: value.PageEnd, Passage: value.Passage, Score: value.Score}
+		Section: value.Section, PageStart: value.PageStart, PageEnd: value.PageEnd, Passage: value.Passage, Score: value.Score, Summary: value.Summary}
 }
 
 func bookToProto(value domain.BookMetadata) *retrievalv1.BookMetadata {

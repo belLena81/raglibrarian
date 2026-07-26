@@ -6,7 +6,7 @@ temp_dir="$(mktemp -d)"
 trap 'rm -rf "$temp_dir"' EXIT
 
 model_dir="$temp_dir/model"
-revision=516f4baf13dec4ddddda8631e019b5737c8bc250
+revision=5e233c43ad83ba072172bca158a7c7dec46302a0
 mkdir -p "$model_dir/nested" "$model_dir/onnx"
 printf '%s\n' "$revision" > "$model_dir/.revision"
 printf 'synthetic model fixture\n' > "$model_dir/model.safetensors"

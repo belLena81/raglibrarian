@@ -15,6 +15,8 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/process"
+	"github.com/belLena81/raglibrarian/services/edge-api/answerclient"
+	"github.com/belLena81/raglibrarian/services/edge-api/retrievalclient"
 )
 
 var (
@@ -49,7 +51,7 @@ type Config struct {
 	BookUploadRateLimit, BookUploadRateMaxKeys                             int
 	BookUploadRateWindow                                                   time.Duration
 	AnswerRateLimit                                                        int
-	AnswerRateWindow, AnswerDeadline                                       time.Duration
+	AnswerRateWindow, AnswerDeadline, RetrievalSearchDeadline              time.Duration
 	RunAs                                                                  process.Identity
 }
 
@@ -122,11 +124,15 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	answerRateWindow, err := positiveDuration("EDGE_ANSWER_RATE_WINDOW", time.Minute)
+	answerRateWindow, err := positiveDuration("EDGE_ANSWER_RATE_WINDOW", 3*time.Minute)
 	if err != nil {
 		return Config{}, err
 	}
-	answerDeadline, err := boundedDuration("EDGE_ANSWER_DEADLINE", 5*time.Minute, 5*time.Minute)
+	answerDeadline, err := boundedDuration("EDGE_ANSWER_DEADLINE", 2*time.Minute, answerclient.MaxAnswerDeadline)
+	if err != nil {
+		return Config{}, err
+	}
+	retrievalSearchDeadline, err := boundedDuration("EDGE_RETRIEVAL_SEARCH_DEADLINE", 2*time.Minute, retrievalclient.MaxSearchDeadline)
 	if err != nil {
 		return Config{}, err
 	}
@@ -185,6 +191,7 @@ func Load() (Config, error) {
 		AnswerRateLimit:            answerRateLimit,
 		AnswerRateWindow:           answerRateWindow,
 		AnswerDeadline:             answerDeadline,
+		RetrievalSearchDeadline:    retrievalSearchDeadline,
 		RunAs:                      runAs,
 	}, nil
 }

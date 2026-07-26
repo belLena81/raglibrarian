@@ -105,10 +105,7 @@ func (r *Postgres) ApplyReindex(ctx context.Context, event application.Lifecycle
 	if err != nil {
 		return false, err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO retrieval.index_jobs
-		(id,book_id,source_sha256,manifest_sha256,profile_digest,state,expected_batches,correlation_id,created_at,updated_at,lifecycle_version)
-		VALUES($1,$2,$3,$4,$5,'pending',$6,$7,$8,$8,$9)`,
-		jobID, event.BookID, event.SourceSHA256[:], event.ManifestSHA256[:], profile.Digest[:], len(manifest.Shards), event.CorrelationID, now, int64(event.LifecycleVersion)) // #nosec G115 -- lifecycle versions originate as validated int64 protobuf fields.
+	jobID, err = r.prepareReindexJob(ctx, tx, event, profile.Digest, jobID, len(manifest.Shards), now)
 	if err != nil {
 		return false, err
 	}
@@ -144,6 +141,70 @@ func (r *Postgres) ApplyReindex(ctx context.Context, event application.Lifecycle
 		}
 	}
 	return true, tx.Commit(ctx)
+}
+
+func (r *Postgres) prepareReindexJob(ctx context.Context, tx pgx.Tx, event application.LifecycleEvent, profileDigest [sha256.Size]byte, jobID string, expectedBatches int, now time.Time) (string, error) {
+	var existingJobID string
+	var existingState string
+	queryErr := tx.QueryRow(ctx, `SELECT id,state
+		FROM retrieval.index_jobs
+		WHERE book_id=$1 AND source_sha256=$2 AND manifest_sha256=$3 AND profile_digest=$4
+		ORDER BY lifecycle_version DESC, created_at DESC, id DESC
+		LIMIT 1
+		FOR UPDATE`,
+		event.BookID, event.SourceSHA256[:], event.ManifestSHA256[:], profileDigest[:]).
+		Scan(&existingJobID, &existingState)
+	if errors.Is(queryErr, pgx.ErrNoRows) {
+		_, queryErr = tx.Exec(ctx, `INSERT INTO retrieval.index_jobs
+			(id,book_id,source_sha256,manifest_sha256,profile_digest,state,expected_batches,correlation_id,created_at,updated_at,lifecycle_version)
+			VALUES($1,$2,$3,$4,$5,'pending',$6,$7,$8,$8,$9)`,
+			jobID, event.BookID, event.SourceSHA256[:], event.ManifestSHA256[:], profileDigest[:], expectedBatches, event.CorrelationID, now, int64(event.LifecycleVersion)) // #nosec G115 -- lifecycle versions originate as validated int64 protobuf fields.
+		if queryErr != nil {
+			return "", queryErr
+		}
+		return jobID, nil
+	}
+	if queryErr != nil {
+		return "", queryErr
+	}
+	if existingState != "failed" {
+		return "", application.ErrConflictingEvent
+	}
+	if _, queryErr = tx.Exec(ctx, `DELETE FROM retrieval.outbox WHERE aggregate_id=$1`, existingJobID); queryErr != nil {
+		return "", queryErr
+	}
+	if _, queryErr = tx.Exec(ctx, `DELETE FROM retrieval.index_batches WHERE job_id=$1`, existingJobID); queryErr != nil {
+		return "", queryErr
+	}
+	if _, queryErr = tx.Exec(ctx, `DELETE FROM retrieval.evidence WHERE job_id=$1`, existingJobID); queryErr != nil {
+		return "", queryErr
+	}
+	if _, queryErr = tx.Exec(ctx, `DELETE FROM retrieval.documents WHERE job_id=$1`, existingJobID); queryErr != nil {
+		return "", queryErr
+	}
+	if _, queryErr = tx.Exec(ctx, `DELETE FROM retrieval.document_embedding_accumulators WHERE job_id=$1`, existingJobID); queryErr != nil {
+		return "", queryErr
+	}
+	_, queryErr = tx.Exec(ctx, `UPDATE retrieval.index_jobs
+		SET state='pending',
+		    expected_batches=$2,
+		    evidence_count=0,
+		    failure_category=NULL,
+		    correlation_id=$3,
+		    created_at=$4,
+		    updated_at=$4,
+		    lifecycle_version=$5,
+		    finalization_inflight=false,
+		    finalization_lease_expires_at=NULL,
+		    vector_cleanup_pending=false,
+		    vector_cleanup_attempts=0,
+		    vector_cleanup_next_attempt_at=NULL
+		WHERE id=$1`,
+		existingJobID, expectedBatches, event.CorrelationID, now, int64(event.LifecycleVersion)) // #nosec G115 -- lifecycle versions originate as validated int64 protobuf fields.
+	if queryErr != nil {
+		return "", queryErr
+	}
+	return existingJobID, nil
 }
 
 func (r *Postgres) FenceDeletion(ctx context.Context, event application.LifecycleEvent, now time.Time) (bool, error) {
@@ -1103,6 +1164,28 @@ func (r *Postgres) FailBatch(ctx context.Context, work application.BatchWork, ca
 		}
 	}
 	if command.RowsAffected() == 1 {
+		if _, err = tx.Exec(ctx, `UPDATE retrieval.book_lifecycle
+			SET state='active',
+			    active_job_id=(
+			    	SELECT prior.id
+			    	FROM retrieval.index_jobs prior
+			    	WHERE prior.book_id=$1
+			    	  AND prior.state='indexed'
+			    	  AND prior.lifecycle_version < (
+			    		SELECT lifecycle_version FROM retrieval.index_jobs WHERE id=$2
+			    	  )
+			    	ORDER BY prior.lifecycle_version DESC, prior.created_at DESC, prior.id DESC
+			    	LIMIT 1
+			    ),
+			    cleanup_pending=false,
+			    updated_at=$3
+			WHERE book_id=$1
+			  AND lifecycle_version=(
+			  	SELECT lifecycle_version FROM retrieval.index_jobs WHERE id=$2
+			  )
+			  AND state='reindexing'`, work.BookID, work.JobID, now); err != nil {
+			return false, err
+		}
 		message := &retrievalv1.BookIndexingFailedV1{EventId: work.JobID + ":failed", BookId: work.BookID, JobId: work.JobID,
 			SourceSha256: work.SourceSHA256[:], ManifestSha256: work.ManifestSHA256[:], IndexProfileDigest: work.ProfileDigest[:], FailureCategory: protoCategory,
 			CorrelationId: work.CorrelationID, OccurredAt: timestamppb.New(now), CausationId: work.EventID, Producer: "retrieval-service", SchemaVersion: "v1", IdempotencyKey: work.JobID + ":failed",
@@ -1339,7 +1422,7 @@ func (r *Postgres) FilterIndexed(ctx context.Context, values []application.Evide
 	rows, err := r.pool.Query(ctx, `SELECT j.id
 		FROM retrieval.index_jobs j
 		JOIN retrieval.book_lifecycle l ON l.book_id=j.book_id AND l.active_job_id=j.id
-		WHERE j.id=ANY($1) AND j.state='indexed' AND l.state='active' AND l.lifecycle_version=j.lifecycle_version`, jobIDs)
+		WHERE j.id=ANY($1) AND j.state='indexed' AND l.state='active'`, jobIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -1378,7 +1461,7 @@ func (r *Postgres) FilterIndexedDocuments(ctx context.Context, values []applicat
 	rows, err := r.pool.Query(ctx, `SELECT j.id
 		FROM retrieval.index_jobs j
 		JOIN retrieval.book_lifecycle l ON l.book_id=j.book_id AND l.active_job_id=j.id
-		WHERE j.id=ANY($1) AND j.state='indexed' AND l.state='active' AND l.lifecycle_version=j.lifecycle_version`, jobIDs)
+		WHERE j.id=ANY($1) AND j.state='indexed' AND l.state='active'`, jobIDs)
 	if err != nil {
 		return nil, err
 	}

@@ -41,7 +41,7 @@ func main() {
 		log.Print("retrieval server could not load transport credentials")
 		os.Exit(1)
 	}
-	httpClient := &http.Client{Timeout: 25 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	httpClient := &http.Client{Timeout: configuration.DependencyTimeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	teiLimiter, err := throttle.New(configuration.TEIRequestsPerSecond)
 	if err != nil {
 		log.Print("retrieval server could not configure embedding throttle")
@@ -89,6 +89,7 @@ func main() {
 		os.Exit(1)
 	}
 	searcher.SetSummaryProvider(summaryProvider)
+	searcher.SetSummaryProviderTimeout(configuration.SummaryLLMTimeout)
 	listener, err := net.Listen("tcp", configuration.GRPCAddress)
 	if err != nil {
 		log.Print("retrieval server listener unavailable")
@@ -101,7 +102,7 @@ func main() {
 			DNSNames: []string{"edge-api", "answer-service"},
 		})),
 	)
-	retrievalv1.RegisterRetrievalServiceServer(server, retrievalgrpc.NewServer(searcher, serviceLogger, embedder, store, records))
+	retrievalv1.RegisterRetrievalServiceServer(server, retrievalgrpc.NewServer(searcher, serviceLogger, configuration.SearchTimeout, embedder, store, records))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if configuration.MetricsAddress != "" {
@@ -175,7 +176,7 @@ func configureSummaryProvider(configuration config.Config, serviceLogger *zap.Lo
 		}
 		return nil, nil
 	}
-	httpClient, err := provider.NewHTTPClient(configuration.SummaryLLMCAFile)
+	httpClient, err := provider.NewHTTPClient(configuration.SummaryLLMCAFile, configuration.SummaryLLMTimeout)
 	if err != nil {
 		if serviceLogger != nil {
 			serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "transport_unavailable"))

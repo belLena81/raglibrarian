@@ -23,14 +23,18 @@ type Server struct {
 	retrievalv1.UnimplementedRetrievalServiceServer
 	search    SearchService
 	log       *zap.Logger
+	timeout   time.Duration
 	readiness []interface{ CheckReady(context.Context) error }
 }
 
-func NewServer(search SearchService, log *zap.Logger, readiness ...interface{ CheckReady(context.Context) error }) *Server {
+func NewServer(search SearchService, log *zap.Logger, timeout time.Duration, readiness ...interface{ CheckReady(context.Context) error }) *Server {
 	if search == nil {
 		panic("retrievalgrpc: search service is required")
 	}
-	return &Server{search: search, log: log, readiness: readiness}
+	if timeout <= 0 {
+		panic("retrievalgrpc: search timeout is required")
+	}
+	return &Server{search: search, log: log, timeout: timeout, readiness: readiness}
 }
 
 func (s *Server) Check(ctx context.Context, _ *retrievalv1.CheckRequest) (*retrievalv1.CheckResponse, error) {
@@ -77,7 +81,7 @@ func (s *Server) Search(parent context.Context, request *retrievalv1.SearchReque
 			filters.YearTo = &value
 		}
 	}
-	ctx, cancel := context.WithTimeout(parent, 25*time.Second)
+	ctx, cancel := context.WithTimeout(parent, s.timeout)
 	defer cancel()
 	results, err := s.search.Search(ctx, actor, domain.SearchQueryInput{Question: request.Question, Filters: filters, Limit: int(request.Limit)})
 	if err != nil {

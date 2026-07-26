@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -88,4 +89,23 @@ func TestHTTPServerFailureClassifiesListenAndServeErrors(t *testing.T) {
 
 	assert.ErrorIs(t, listenFailure, ErrHTTPListen)
 	assert.ErrorIs(t, serveFailure, ErrHTTPServe)
+}
+
+func TestHTTPWriteTimeoutProvidesHeadroomForAnswerDeadline(t *testing.T) {
+	tests := []struct {
+		name           string
+		answerDeadline time.Duration
+		want           time.Duration
+	}{
+		{name: "minimum", answerDeadline: 7 * time.Second, want: 30 * time.Second},
+		{name: "long answer", answerDeadline: 2 * time.Minute, want: 125 * time.Second},
+		{name: "maximum", answerDeadline: 5 * time.Minute, want: 305 * time.Second},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := httpWriteTimeout(test.answerDeadline); got != test.want {
+				t.Fatalf("httpWriteTimeout(%s) = %s, want %s", test.answerDeadline, got, test.want)
+			}
+		})
+	}
 }

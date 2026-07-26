@@ -2,8 +2,8 @@
 set -euo pipefail
 umask 077
 
-model_dir="${M5_MODEL_DIR:-.dev/models/m5-jina-code-v1}"
-revision=516f4baf13dec4ddddda8631e019b5737c8bc250
+model_dir="${M5_MODEL_DIR:-.dev/models/m8-bge-base-en-v1_5}"
+revision=5e233c43ad83ba072172bca158a7c7dec46302a0
 default_model_dir="$model_dir"
 default_parent="$(dirname "$default_model_dir")"
 hf_image="${HF_BOOTSTRAP_IMAGE:-python:3.12-slim}"
@@ -14,7 +14,7 @@ if [[ "${M5_MODEL_DIR:-}" == "" ]]; then
       fallback_root="${TMPDIR:-/tmp}/raglibrarian-model-cache"
       fallback_root="${fallback_root}-$(id -u)"
       rm -rf "$fallback_root"
-      model_dir="$fallback_root/m5-jina-code-v1"
+      model_dir="$fallback_root/m8-bge-base-en-v1_5"
       M5_MODEL_DIR="$model_dir"
       mkdir -p "$fallback_root"
       chmod 700 "$fallback_root"
@@ -22,7 +22,7 @@ if [[ "${M5_MODEL_DIR:-}" == "" ]]; then
     fi
   elif [[ ! -w "$default_parent" ]]; then
     fallback_root="${TMPDIR:-/tmp}/raglibrarian-model-cache-$(id -u)"
-    model_dir="$fallback_root/m5-jina-code-v1"
+    model_dir="$fallback_root/m8-bge-base-en-v1_5"
     M5_MODEL_DIR="$model_dir"
     mkdir -p "$fallback_root"
     chmod 700 "$fallback_root"
@@ -107,7 +107,7 @@ import os
 from huggingface_hub import snapshot_download
 
 snapshot_download(
-    repo_id="jinaai/jina-embeddings-v2-base-code",
+    repo_id="BAAI/bge-base-en-v1.5",
     revision=os.environ["HF_BOOTSTRAP_REVISION"],
     local_dir=os.environ["HF_BOOTSTRAP_MODEL_DIR"],
     local_dir_use_symlinks=False,

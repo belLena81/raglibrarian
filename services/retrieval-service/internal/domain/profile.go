@@ -6,12 +6,12 @@ import (
 )
 
 const (
-	IndexProfileName     = "m5-jina-code-v1"
-	EPUBIndexProfileName = "m7-jina-code-epub-v1"
+	IndexProfileName     = "m8-bge-base-pdf-v1"
+	EPUBIndexProfileName = "m8-bge-base-epub-v1"
 	MediaTypePDF         = "application/pdf"
 	MediaTypeEPUB        = "application/epub+zip"
-	EmbeddingModel       = "jinaai/jina-embeddings-v2-base-code"
-	EmbeddingRevision    = "516f4baf13dec4ddddda8631e019b5737c8bc250"
+	EmbeddingModel       = "BAAI/bge-base-en-v1.5"
+	EmbeddingRevision    = "5e233c43ad83ba072172bca158a7c7dec46302a0"
 	EmbeddingDimensions  = 768
 )
 

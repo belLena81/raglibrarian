@@ -43,7 +43,7 @@ func TestAnswerPropagatesRequestIDDeadlineActorAndMapsResponse(t *testing.T) {
 	stub.answer = func(ctx context.Context, request *answerv1.AnswerRequest, _ ...grpc.CallOption) (*answerv1.AnswerResponse, error) {
 		deadline, ok := ctx.Deadline()
 		require.True(t, ok)
-		assert.LessOrEqual(t, time.Until(deadline), 5*time.Minute)
+		assert.LessOrEqual(t, time.Until(deadline), 25*time.Second)
 		metadata, ok := grpcmetadata.FromOutgoingContext(ctx)
 		require.True(t, ok)
 		assert.Equal(t, []string{testRequestID}, metadata.Get("x-request-id"))

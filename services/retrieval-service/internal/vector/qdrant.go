@@ -133,7 +133,7 @@ func (q *Qdrant) Search(ctx context.Context, query domain.SearchQuery, vector []
 }
 
 func (q *Qdrant) SearchDocuments(ctx context.Context, query domain.SearchQuery, vector []float32, limit, offset int) (application.DocumentPage, error) {
-	payload, err := json.Marshal(queryRequest{Query: vector, Limit: limit, Offset: offset, WithPayload: true, Filter: buildFilter(query.Filters(), []condition{{Key: "vector_kind", Match: &matchValue{Value: "document"}}}), ScoreThreshold: 0.25})
+	payload, err := json.Marshal(queryRequest{Query: vector, Limit: limit, Offset: offset, WithPayload: true, Filter: buildFilter(query.Filters(), []condition{{Key: "vector_kind", Match: &matchValue{Value: "document"}}}), ScoreThreshold: domain.MinimumSearchScore})
 	if err != nil {
 		return application.DocumentPage{}, errors.New("encode vector query")
 	}
@@ -186,7 +186,7 @@ func (q *Qdrant) SearchDocuments(ctx context.Context, query domain.SearchQuery, 
 }
 
 func (q *Qdrant) searchEvidence(ctx context.Context, query domain.SearchQuery, vector []float32, limit, offset int, extra []condition) ([]application.Evidence, error) {
-	payload, err := json.Marshal(queryRequest{Query: vector, Limit: limit, Offset: offset, WithPayload: true, Filter: buildFilter(query.Filters(), extra), ScoreThreshold: 0.25})
+	payload, err := json.Marshal(queryRequest{Query: vector, Limit: limit, Offset: offset, WithPayload: true, Filter: buildFilter(query.Filters(), extra), ScoreThreshold: domain.MinimumSearchScore})
 	if err != nil {
 		return nil, errors.New("encode vector query")
 	}
@@ -234,7 +234,7 @@ func (q *Qdrant) searchEvidenceBatch(ctx context.Context, query domain.SearchQue
 		searches[index] = queryRequest{Query: vector, Limit: limit, WithPayload: true, Filter: buildFilter(query.Filters(), []condition{
 			{Key: "vector_kind", Match: &matchValue{Value: "chunk"}},
 			{Key: "job_id", Match: &matchValue{Value: jobID}},
-		}), ScoreThreshold: 0.25}
+		}), ScoreThreshold: domain.MinimumSearchScore}
 	}
 	payload, err := json.Marshal(queryBatchRequest{Searches: searches})
 	if err != nil {

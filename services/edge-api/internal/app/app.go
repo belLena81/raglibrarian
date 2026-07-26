@@ -54,6 +54,18 @@ var (
 	ErrHTTPShutdown = errors.New("HTTP shutdown failed")
 )
 
+func httpWriteTimeout(answerDeadline time.Duration) time.Duration {
+	const (
+		minimumWriteTimeout  = 30 * time.Second
+		writeTimeoutHeadroom = 5 * time.Second
+	)
+	timeout := answerDeadline + writeTimeoutHeadroom
+	if timeout < minimumWriteTimeout {
+		return minimumWriteTimeout
+	}
+	return timeout
+}
+
 // Run composes and manages the Edge process lifecycle.
 func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorder) error {
 	if diagnostics == nil {
@@ -104,7 +116,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	defer func() { _ = answerConnection.Close() }()
 	identity := identityclient.New(identityv1.NewIdentityServiceClient(connection), grpc_health_v1.NewHealthClient(connection))
 	catalog := catalogclient.New(catalogv1.NewCatalogServiceClient(catalogConnection))
-	retrieval := retrievalclient.New(retrievalv1.NewRetrievalServiceClient(retrievalConnection))
+	retrieval := retrievalclient.New(retrievalv1.NewRetrievalServiceClient(retrievalConnection), cfg.RetrievalSearchDeadline)
 	answer := answerclient.New(answerv1.NewAnswerServiceClient(answerConnection), cfg.AnswerDeadline)
 	authHandler := handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: cfg.SecureCookie})
 	answerAdmission := middleware.NewPrincipalRateLimiter(cfg.AnswerRateLimit, cfg.AnswerRateWindow, cfg.QueryRateMaxKeys)
@@ -135,7 +147,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		}, booksHandler),
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      httpWriteTimeout(cfg.AnswerDeadline),
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}

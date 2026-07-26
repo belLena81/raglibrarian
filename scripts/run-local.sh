@@ -33,11 +33,11 @@ fi
 
 secret_dir="${SECRET_DIR:-.dev/secrets}"
 cert_dir="${CERT_DIR:-.dev/certs}"
-model_dir="${M5_MODEL_DIR:-.dev/models/m5-jina-code-v1}"
+model_dir="${M5_MODEL_DIR:-.dev/models/m8-bge-base-en-v1_5}"
 bootstrap_verifier_file="$secret_dir/identity_bootstrap_verifier"
 bootstrap_status="unknown"
 fallback_root="${TMPDIR:-/tmp}/raglibrarian-model-cache-$(id -u)"
-fallback_dir="$fallback_root/m5-jina-code-v1"
+fallback_dir="$fallback_root/m8-bge-base-en-v1_5"
 
 is_valid_m5_model_cache() {
   local path="$1"

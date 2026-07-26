@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -18,9 +19,11 @@ import (
 const landlockPreflightArgument = "--landlock-preflight"
 
 const (
-	defaultPDFInfoPath    = "/usr/bin/pdfinfo"
-	defaultPDFToTextPath  = "/usr/bin/pdftotext"
-	defaultEPUBParserPath = "/usr/local/bin/epub-parser"
+	defaultPDFInfoPath     = "/usr/bin/pdfinfo"
+	defaultPDFToTextPath   = "/usr/bin/pdftotext"
+	defaultPDFSeparatePath = "/usr/bin/pdfseparate"
+	defaultPDFUnitePath    = "/usr/bin/pdfunite"
+	defaultEPUBParserPath  = "/usr/local/bin/epub-parser"
 )
 
 func main() {
@@ -30,7 +33,7 @@ func main() {
 		}
 		os.Exit(0)
 	}
-	path, arguments, sourcePath, err := validatedCommand(os.Args[1:])
+	path, arguments, sourcePath, workspaceDir, err := validatedCommand(os.Args[1:])
 	if err != nil {
 		traceParserSandboxValidationFailure(os.Args[1:], err)
 		os.Exit(120)
@@ -38,7 +41,7 @@ func main() {
 	if applyLimits() != nil {
 		os.Exit(121)
 	}
-	if applyFilesystemPolicy(path, sourcePath) != nil {
+	if applyFilesystemPolicy(path, sourcePath, workspaceDir) != nil {
 		os.Exit(122)
 	}
 	if applySeccomp() != nil {
@@ -50,41 +53,104 @@ func main() {
 	}
 }
 
-func validatedCommand(arguments []string) (string, []string, string, error) {
+func validatedCommand(arguments []string) (string, []string, string, string, error) {
 	if len(arguments) < 2 {
-		return "", nil, "", errors.New("invalid parser command")
+		return "", nil, "", "", errors.New("invalid parser command")
 	}
 	path := arguments[0]
 	commandArguments := arguments[1:]
 	var sourcePath string
+	var workspaceDir string
 	switch path {
 	case parserSandboxPDFInfoPath():
 		if len(commandArguments) != 1 {
-			return "", nil, "", errors.New("invalid pdfinfo command")
+			return "", nil, "", "", errors.New("invalid pdfinfo command")
 		}
 		sourcePath = commandArguments[0]
 	case parserSandboxPDFToTextPath():
 		if len(commandArguments) != 5 || commandArguments[0] != "-layout" || commandArguments[1] != "-enc" || commandArguments[2] != "UTF-8" || commandArguments[4] != "-" {
-			return "", nil, "", errors.New("invalid pdftotext command")
+			return "", nil, "", "", errors.New("invalid pdftotext command")
 		}
 		sourcePath = commandArguments[3]
+	case parserSandboxPDFSeparatePath():
+		if len(commandArguments) != 6 || commandArguments[0] != "-f" || commandArguments[2] != "-l" {
+			return "", nil, "", "", errors.New("invalid pdfseparate command")
+		}
+		if _, err := strconv.Atoi(commandArguments[1]); err != nil {
+			return "", nil, "", "", errors.New("invalid pdfseparate command")
+		}
+		if _, err := strconv.Atoi(commandArguments[3]); err != nil {
+			return "", nil, "", "", errors.New("invalid pdfseparate command")
+		}
+		sourcePath = commandArguments[4]
+		if _, err := validatedParserSandboxInputPath(sourcePath, filepath.Dir(sourcePath)); err != nil {
+			return "", nil, "", "", err
+		}
+		workspaceDir = filepath.Dir(commandArguments[5])
+		if _, err := validatedParserSandboxOutputPath(commandArguments[5], workspaceDir); err != nil {
+			return "", nil, "", "", err
+		}
+	case parserSandboxPDFUnitePath():
+		if len(commandArguments) < 3 {
+			return "", nil, "", "", errors.New("invalid pdfunite command")
+		}
+		workspaceDir = filepath.Dir(commandArguments[len(commandArguments)-1])
+		outputPath, err := validatedParserSandboxOutputPath(commandArguments[len(commandArguments)-1], workspaceDir)
+		if err != nil {
+			return "", nil, "", "", err
+		}
+		sourcePath = commandArguments[0]
+		for _, inputPath := range commandArguments[:len(commandArguments)-1] {
+			if _, err = validatedParserSandboxInputPath(inputPath, workspaceDir); err != nil {
+				return "", nil, "", "", err
+			}
+		}
+		if outputPath == "" {
+			return "", nil, "", "", errors.New("invalid pdfunite command")
+		}
 	case parserSandboxEPUBParserPath():
 		if len(commandArguments) != 1 {
-			return "", nil, "", errors.New("invalid EPUB parser command")
+			return "", nil, "", "", errors.New("invalid EPUB parser command")
 		}
 		sourcePath = commandArguments[0]
 	default:
-		return "", nil, "", errors.New("parser executable is not allowlisted")
+		return "", nil, "", "", errors.New("parser executable is not allowlisted")
 	}
 	cleaned := filepath.Clean(sourcePath)
 	if !filepath.IsAbs(cleaned) || filepath.Dir(cleaned) == "/" || !strings.HasPrefix(cleaned, "/tmp/") {
-		return "", nil, "", errors.New("parser source path is invalid")
+		return "", nil, "", "", errors.New("parser source path is invalid")
 	}
 	info, err := os.Lstat(cleaned) // #nosec G703 -- absolute /tmp path is cleaned, shape-checked, and must be a regular non-symlink file.
 	if err != nil || !info.Mode().IsRegular() {
-		return "", nil, "", errors.New("parser source is not a regular file")
+		return "", nil, "", "", errors.New("parser source is not a regular file")
 	}
-	return path, commandArguments, cleaned, nil
+	return path, commandArguments, cleaned, workspaceDir, nil
+}
+
+func validatedParserSandboxInputPath(value, directory string) (string, error) {
+	cleaned := filepath.Clean(value)
+	if !filepath.IsAbs(cleaned) || filepath.Dir(cleaned) == "/" || !strings.HasPrefix(cleaned, "/tmp/") {
+		return "", errors.New("parser source path is invalid")
+	}
+	if filepath.Dir(cleaned) != filepath.Clean(directory) {
+		return "", errors.New("parser source path is invalid")
+	}
+	info, err := os.Lstat(cleaned) // #nosec G703 -- absolute /tmp path is cleaned, shape-checked, and must be a regular non-symlink file.
+	if err != nil || !info.Mode().IsRegular() {
+		return "", errors.New("parser source is not a regular file")
+	}
+	return cleaned, nil
+}
+
+func validatedParserSandboxOutputPath(value, directory string) (string, error) {
+	cleaned := filepath.Clean(value)
+	if !filepath.IsAbs(cleaned) || filepath.Dir(cleaned) == "/" || !strings.HasPrefix(cleaned, "/tmp/") {
+		return "", errors.New("parser source path is invalid")
+	}
+	if filepath.Dir(cleaned) != filepath.Clean(directory) {
+		return "", errors.New("parser source path is invalid")
+	}
+	return cleaned, nil
 }
 
 func parserSandboxPDFInfoPath() string {
@@ -137,7 +203,7 @@ func traceParserSandboxValidationFailure(arguments []string, err error) {
 // can read exactly its source file and Poppler's runtime data, and can execute
 // only the selected Poppler binary. In particular, /tmp siblings, /proc and
 // /run/secrets remain inaccessible even after a parser compromise.
-func applyFilesystemPolicy(executablePath, sourcePath string) error {
+func applyFilesystemPolicy(executablePath, sourcePath, workspaceDir string) error {
 	ruleset, err := createLandlockRuleset()
 	if err != nil {
 		return err
@@ -146,7 +212,7 @@ func applyFilesystemPolicy(executablePath, sourcePath string) error {
 
 	readFile := uint64(unix.LANDLOCK_ACCESS_FS_READ_FILE)
 	readTree := readFile | unix.LANDLOCK_ACCESS_FS_READ_DIR
-	rules := filesystemPolicyRules(executablePath, sourcePath, readFile, readTree)
+	rules := filesystemPolicyRules(executablePath, sourcePath, workspaceDir, readFile, readTree)
 	for _, rule := range rules {
 		if err = addLandlockPathRule(ruleset, rule.path, rule.access); err != nil {
 			return err
@@ -155,11 +221,11 @@ func applyFilesystemPolicy(executablePath, sourcePath string) error {
 	return restrictWithLandlock(ruleset)
 }
 
-func filesystemPolicyRules(executablePath, sourcePath string, readFile, readTree uint64) []struct {
+func filesystemPolicyRules(executablePath, sourcePath, workspaceDir string, readFile, readTree uint64) []struct {
 	path   string
 	access uint64
 } {
-	return []struct {
+	rules := []struct {
 		path   string
 		access uint64
 	}{
@@ -176,8 +242,27 @@ func filesystemPolicyRules(executablePath, sourcePath string, readFile, readTree
 		{"/usr/share/fontconfig", readTree},
 		{"/etc/fonts", readTree},
 		{"/var/cache/fontconfig", readTree},
+		{sourcePath, readFile},
 		{"/dev/null", readFile | unix.LANDLOCK_ACCESS_FS_WRITE_FILE},
 	}
+	if workspaceDir != "" {
+		rules = append(rules, struct {
+			path   string
+			access uint64
+		}{
+			path:   workspaceDir,
+			access: readTree | unix.LANDLOCK_ACCESS_FS_WRITE_FILE | unix.LANDLOCK_ACCESS_FS_REMOVE_DIR | unix.LANDLOCK_ACCESS_FS_REMOVE_FILE | unix.LANDLOCK_ACCESS_FS_MAKE_DIR | unix.LANDLOCK_ACCESS_FS_MAKE_REG | unix.LANDLOCK_ACCESS_FS_MAKE_SYM,
+		})
+	}
+	return rules
+}
+
+func parserSandboxPDFSeparatePath() string {
+	return parserSandboxPathEnv("PARSER_SANDBOX_PDFSEPARATE_PATH", defaultPDFSeparatePath)
+}
+
+func parserSandboxPDFUnitePath() string {
+	return parserSandboxPathEnv("PARSER_SANDBOX_PDFUNITE_PATH", defaultPDFUnitePath)
 }
 
 func preflightFilesystemPolicy() error {

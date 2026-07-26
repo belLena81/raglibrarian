@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"archive/zip"
 	"context"
 	"fmt"
 	"os"
@@ -26,18 +27,23 @@ func TestDefaultPreviewBookRemovesTemporaryWorkspace(t *testing.T) {
 	}
 	previewExecCommand = func(_ context.Context, command string, args ...string) error {
 		switch command {
-		case "/usr/bin/pdfseparate":
-			outputPattern := args[len(args)-1]
-			for page := 1; page <= previewPageLimit; page++ {
-				pagePath := fmt.Sprintf(outputPattern, page)
-				if err := os.WriteFile(pagePath, []byte(fmt.Sprintf("page-%d", page)), 0o600); err != nil {
-					return err
+		case "/parser-sandbox":
+			switch args[0] {
+			case "/usr/bin/pdfseparate":
+				outputPattern := args[len(args)-1]
+				for page := 1; page <= previewPageLimit; page++ {
+					pagePath := fmt.Sprintf(outputPattern, page)
+					if err := os.WriteFile(pagePath, []byte(fmt.Sprintf("page-%d", page)), 0o600); err != nil {
+						return err
+					}
 				}
+				return nil
+			case "/usr/bin/pdfunite":
+				fragmentPath := args[len(args)-1]
+				return os.WriteFile(fragmentPath, []byte("%PDF-1.4\npreview\n"), 0o600)
+			default:
+				return fmt.Errorf("unexpected sandbox command %q", args[0])
 			}
-			return nil
-		case "/usr/bin/pdfunite":
-			fragmentPath := args[len(args)-1]
-			return os.WriteFile(fragmentPath, []byte("%PDF-1.4\npreview\n"), 0o600)
 		default:
 			return fmt.Errorf("unexpected command %q", command)
 		}
@@ -57,6 +63,46 @@ func TestDefaultPreviewBookRemovesTemporaryWorkspace(t *testing.T) {
 	if _, err := os.Stat(workspace); !os.IsNotExist(err) {
 		t.Fatalf("workspace %q still exists after preview generation: %v", workspace, err)
 	}
+}
+
+func TestExtractEPUBPreviewPagesRejectsOversizedArchive(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "book.epub")
+	if err := writePreviewEPUB(sourcePath, epubPreviewEntryLimit+1); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := extractEPUBPreviewPages(sourcePath)
+
+	if err == nil {
+		t.Fatal("oversized EPUB archive was accepted")
+	}
+}
+
+func writePreviewEPUB(path string, totalEntries int) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	writer := zip.NewWriter(file)
+	for index := 0; index < totalEntries; index++ {
+		name := fmt.Sprintf("entry-%05d.txt", index)
+		if index == 0 {
+			name = "mimetype"
+		} else if index == 1 {
+			name = "META-INF/container.xml"
+		} else if index == 2 {
+			name = "EPUB/content.opf"
+		}
+		entry, err := writer.Create(name)
+		if err != nil {
+			return err
+		}
+		if _, err = entry.Write([]byte("synthetic")); err != nil {
+			return err
+		}
+	}
+	return writer.Close()
 }
 
 func TestInjectEPUBPreviewCSPWrapsTheDocument(t *testing.T) {

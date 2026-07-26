@@ -105,7 +105,7 @@ type lifecycleProcessor interface {
 func validateMode() error {
 	indexProfile := os.Getenv("RETRIEVAL_INDEX_PROFILE")
 	if os.Getenv("RETRIEVAL_PROCESSING_MODE") != "lambda" || os.Getenv("RETRIEVAL_RUNTIME_BACKEND") != "aws" ||
-		(indexProfile != "m5-jina-code-v1" && indexProfile != "m7-pdf-epub-v1") {
+		indexProfile != "m8-bge-v1" {
 		return errors.New("invalid Lambda processing mode")
 	}
 	return nil

@@ -497,7 +497,7 @@ services:
       - --pooling
       - mean
     volumes:
-      - ${M5_MODEL_DIR:-./.dev/models/m5-jina-code-v1}:/data/model:ro
+      - ${M5_MODEL_DIR:-./.dev/models/m8-bge-base-en-v1_5}:/data/model:ro
     networks:
       - retrieval-index
     ports:
@@ -538,7 +538,7 @@ services:
       RETRIEVAL_SUMMARY_LLM_MODEL: "${RETRIEVAL_SUMMARY_LLM_MODEL:-}"
       RETRIEVAL_SUMMARY_LLM_API_KEY_FILE: /run/secrets/answer_llm_api_key
       RETRIEVAL_SUMMARY_LLM_CA_FILE: /run/secrets/internal_ca
-      RETRIEVAL_INDEX_PROFILE: m7-pdf-epub-v1
+      RETRIEVAL_INDEX_PROFILE: m8-bge-v1
       RETRIEVAL_GRPC_ADDR: "0.0.0.0:50054"
       RETRIEVAL_METRICS_ADDR: "0.0.0.0:9094"
       RETRIEVAL_TLS_CA_FILE: /run/secrets/internal_ca
@@ -643,7 +643,7 @@ services:
       RETRIEVAL_QDRANT_URL: http://qdrant:6333
       RETRIEVAL_QDRANT_API_KEY_FILE: /run/secrets/retrieval_qdrant_api_key
       RETRIEVAL_TEI_URL: http://text-embeddings-inference:8080
-      RETRIEVAL_INDEX_PROFILE: m7-pdf-epub-v1
+      RETRIEVAL_INDEX_PROFILE: m8-bge-v1
       RETRIEVAL_METRICS_ADDR: "0.0.0.0:9095"
       RETRIEVAL_SERVERLESS_INVOCATION_TIMEOUT: "${RETRIEVAL_SERVERLESS_INVOCATION_TIMEOUT:-10m}"
       HEALTHCHECK_HTTP_URL: http://127.0.0.1:9095/readyz

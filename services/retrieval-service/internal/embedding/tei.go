@@ -20,6 +20,8 @@ import (
 
 const maximumResponseBytes = 8 << 20
 const providerBatchSize = 8
+const bgeQueryInstruction = "Represent this sentence for searching relevant passages: "
+const providerTruncateInputs = true
 
 type TEI struct {
 	endpoint string
@@ -37,7 +39,7 @@ func NewTEI(endpoint string, client *http.Client, log *zap.Logger, limit *thrott
 }
 
 func (t *TEI) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
-	vectors, err := t.embed(ctx, text, 1, "embed_query")
+	vectors, err := t.embed(ctx, bgeQueryInstruction+text, 1, "embed_query")
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +78,7 @@ func (t *TEI) embed(ctx context.Context, inputs any, expected int, operation str
 	body, err := json.Marshal(struct {
 		Inputs   any  `json:"inputs"`
 		Truncate bool `json:"truncate"`
-	}{Inputs: inputs, Truncate: false})
+	}{Inputs: inputs, Truncate: providerTruncateInputs})
 	if err != nil {
 		return nil, t.failure(operation, "request_encode_failed", "request", "", 0, 0, started, errors.New("encode embedding request"))
 	}

@@ -62,7 +62,7 @@ func fromProto(response *retrievalv1.SearchResponse) domain.SearchResult {
 			continue
 		}
 		document := domain.DocumentResult{DocumentID: value.DocumentId, Book: bookFromProto(value.Book), ChunkCount: value.ChunkCount,
-			PageStart: value.PageStart, PageEnd: value.PageEnd, Score: value.Score, Evidence: make([]domain.Evidence, 0, len(value.Evidence))}
+			PageStart: value.PageStart, PageEnd: value.PageEnd, Score: value.Score, Summary: value.Summary, Evidence: make([]domain.Evidence, 0, len(value.Evidence))}
 		for _, evidence := range value.Evidence {
 			if evidence != nil {
 				document.Evidence = append(document.Evidence, evidenceFromProto(evidence))
@@ -75,7 +75,7 @@ func fromProto(response *retrievalv1.SearchResponse) domain.SearchResult {
 
 func evidenceFromProto(value *retrievalv1.Evidence) domain.Evidence {
 	return domain.Evidence{EvidenceID: value.EvidenceId, ChunkID: value.ChunkId, Book: bookFromProto(value.Book), Chapter: value.Chapter,
-		Section: value.Section, PageStart: value.PageStart, PageEnd: value.PageEnd, Passage: value.Passage, Score: value.Score}
+		Section: value.Section, PageStart: value.PageStart, PageEnd: value.PageEnd, Passage: value.Passage, Score: value.Score, Summary: value.Summary}
 }
 
 func bookFromProto(value *retrievalv1.BookMetadata) domain.BookMetadata {

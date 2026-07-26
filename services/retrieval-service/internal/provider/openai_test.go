@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"regexp"
@@ -18,6 +19,8 @@ import (
 func TestOpenAIGenerateSummarizesText(t *testing.T) {
 	var requestPath string
 	var requestModel string
+	var requestFormat string
+	var requestSystemPolicy string
 	var requestContent string
 	limit, err := throttle.New(0)
 	if err != nil {
@@ -25,8 +28,8 @@ func TestOpenAIGenerateSummarizesText(t *testing.T) {
 	}
 	adapter, err := NewOpenAI("https://openrouter.ai/", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		requestPath = request.URL.Path
-		requestModel, requestContent = decodeSummaryRequest(t, request.Body)
-		return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":" concise summary "}}]}`), nil
+		requestModel, requestFormat, requestSystemPolicy, requestContent = decodeSummaryRequest(t, request.Body)
+		return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":"{\"summary\":\" concise summary \"}"}}]}`), nil
 	})}, zap.NewNop(), limit)
 	if err != nil {
 		t.Fatalf("NewOpenAI() error = %v", err)
@@ -39,8 +42,11 @@ func TestOpenAIGenerateSummarizesText(t *testing.T) {
 	if summary != "concise summary" {
 		t.Fatalf("Summarize() = %q, want concise summary", summary)
 	}
-	if requestPath != "/api/v1/chat/completions" || requestModel != "test-model" || !strings.Contains(requestContent, "How do retries help?") || !strings.Contains(requestContent, "Deterministic retries keep search stable.") {
-		t.Fatalf("unexpected request: path=%q model=%q content=%q", requestPath, requestModel, requestContent)
+	if requestPath != "/api/v1/chat/completions" || requestModel != "test-model" || requestFormat != "json_object" ||
+		!strings.Contains(requestSystemPolicy, "exactly one field named summary") ||
+		!strings.Contains(requestContent, "How do retries help?") ||
+		!strings.Contains(requestContent, "Deterministic retries keep search stable.") {
+		t.Fatalf("unexpected request: path=%q model=%q format=%q system=%q content=%q", requestPath, requestModel, requestFormat, requestSystemPolicy, requestContent)
 	}
 }
 
@@ -58,7 +64,7 @@ func TestOpenAIChatCompletionPathNormalization(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			adapter, err := NewOpenAI(test.baseURL, "model", "key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-				return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":"summary"}}]}`), nil
+				return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":"{\"summary\":\"summary\"}"}}]}`), nil
 			})}, zap.NewNop(), nil)
 			if err != nil {
 				t.Fatalf("NewOpenAI() error = %v", err)
@@ -138,6 +144,113 @@ func TestOpenAIRequestFailureLogsDiagnostics(t *testing.T) {
 	}
 }
 
+func TestOpenAIRejectsInvalidCandidateSummaries(t *testing.T) {
+	tests := []struct {
+		name   string
+		body   string
+		detail string
+	}{
+		{
+			name:   "missing summary field",
+			body:   `{"choices":[{"message":{"content":"{\"text\":\"concise summary\"}"}}]}`,
+			detail: "candidate_json_shape_invalid",
+		},
+		{
+			name:   "meta response",
+			body:   `{"choices":[{"message":{"content":"{\"summary\":\"The user asks how to start coding in JavaScript.\"}"}}]}`,
+			detail: "candidate_meta_response",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			adapter, err := NewOpenAI("https://openrouter.ai/", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return httpResponse(http.StatusOK, test.body), nil
+			})}, zap.NewNop(), nil)
+			if err != nil {
+				t.Fatalf("NewOpenAI() error = %v", err)
+			}
+
+			_, err = adapter.Summarize(context.Background(), application.SummaryRequest{
+				Question: "How do retries help?",
+				Passage:  "Deterministic retries keep search stable.",
+			})
+			if err == nil {
+				t.Fatal("Summarize() error = nil, want provider failure")
+			}
+			var providerErr *providerError
+			if !errors.As(err, &providerErr) {
+				t.Fatalf("Summarize() error = %T, want *providerError", err)
+			}
+			if providerErr.ReasonCode() != "invalid_provider_response" || providerErr.ReasonDetail() != test.detail {
+				t.Fatalf("error reason = (%q, %q), want (%q, %q)", providerErr.ReasonCode(), providerErr.ReasonDetail(), "invalid_provider_response", test.detail)
+			}
+		})
+	}
+}
+
+func TestOpenAIAcceptsPlainTextCandidateSummary(t *testing.T) {
+	adapter, err := NewOpenAI("https://openrouter.ai/", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":" concise summary without JSON "}}]}`), nil
+	})}, zap.NewNop(), nil)
+	if err != nil {
+		t.Fatalf("NewOpenAI() error = %v", err)
+	}
+
+	summary, err := adapter.Summarize(context.Background(), application.SummaryRequest{
+		Question: "How do retries help?",
+		Passage:  "Deterministic retries keep search stable.",
+	})
+	if err != nil {
+		t.Fatalf("Summarize() error = %v", err)
+	}
+	if summary != "concise summary without JSON" {
+		t.Fatalf("Summarize() = %q, want plain text candidate", summary)
+	}
+}
+
+func TestOpenAISalvagesPlainTextMetaPrefixedSummary(t *testing.T) {
+	adapter, err := NewOpenAI("https://openrouter.ai/", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":"The user asks: \"JavaScript: How to start coding\". The passage is about learning JS basics. Start by writing JavaScript code and building a solid foundation."}}]}`), nil
+	})}, zap.NewNop(), nil)
+	if err != nil {
+		t.Fatalf("NewOpenAI() error = %v", err)
+	}
+
+	summary, err := adapter.Summarize(context.Background(), application.SummaryRequest{
+		Question: "JavaScript: How to start coding",
+		Passage:  "Start by writing JavaScript code and building a solid foundation.",
+	})
+	if err != nil {
+		t.Fatalf("Summarize() error = %v", err)
+	}
+	if summary != "Start by writing JavaScript code and building a solid foundation." {
+		t.Fatalf("Summarize() = %q, want salvaged summary", summary)
+	}
+}
+
+func TestOpenAIAcceptsFlexibleSummaryLength(t *testing.T) {
+	longSummary := strings.TrimSpace(strings.Repeat("Detailed JavaScript guidance sentence. ", 12))
+	adapter, err := NewOpenAI("https://openrouter.ai/", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		body := `{"choices":[{"message":{"content":"{\"summary\":\"` + longSummary + `\"}"}}]}`
+		return httpResponse(http.StatusOK, body), nil
+	})}, zap.NewNop(), nil)
+	if err != nil {
+		t.Fatalf("NewOpenAI() error = %v", err)
+	}
+
+	summary, err := adapter.Summarize(context.Background(), application.SummaryRequest{
+		Question: "How do I start?",
+		Passage:  "Detailed guidance.",
+	})
+	if err != nil {
+		t.Fatalf("Summarize() error = %v", err)
+	}
+	if summary != longSummary {
+		t.Fatalf("Summarize() = %q, want full long summary", summary)
+	}
+}
+
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -153,7 +266,7 @@ func httpResponse(status int, body string) *http.Response {
 	}
 }
 
-func decodeSummaryRequest(t *testing.T, body io.ReadCloser) (string, string) {
+func decodeSummaryRequest(t *testing.T, body io.ReadCloser) (string, string, string, string) {
 	t.Helper()
 	defer func() { _ = body.Close() }()
 	contents, err := io.ReadAll(body)
@@ -161,7 +274,10 @@ func decodeSummaryRequest(t *testing.T, body io.ReadCloser) (string, string) {
 		t.Fatalf("ReadAll() error = %v", err)
 	}
 	var request struct {
-		Model    string `json:"model"`
+		Model          string `json:"model"`
+		ResponseFormat struct {
+			Type string `json:"type"`
+		} `json:"response_format"`
 		Messages []struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
@@ -173,5 +289,5 @@ func decodeSummaryRequest(t *testing.T, body io.ReadCloser) (string, string) {
 	if len(request.Messages) != 2 {
 		t.Fatalf("messages = %#v", request.Messages)
 	}
-	return request.Model, request.Messages[1].Content
+	return request.Model, request.ResponseFormat.Type, request.Messages[0].Content, request.Messages[1].Content
 }

@@ -20,6 +20,7 @@ func TestOpenAIGeneratesStrictStructuredSegments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var systemPrompt string
 	adapter, err := NewOpenAI("https://provider", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Path != "/v1/chat/completions" || request.Header.Get("Authorization") != "Bearer synthetic-key" {
 			t.Errorf("unexpected request path or authorization")
@@ -32,6 +33,15 @@ func TestOpenAIGeneratesStrictStructuredSegments(t *testing.T) {
 		if !ok || format["type"] != "json_object" {
 			t.Fatalf("response_format = %#v, want json_object", body["response_format"])
 		}
+		messages, ok := body["messages"].([]any)
+		if !ok || len(messages) != 2 {
+			t.Fatalf("messages = %#v", body["messages"])
+		}
+		first, ok := messages[0].(map[string]any)
+		if !ok {
+			t.Fatalf("messages[0] = %#v", messages[0])
+		}
+		systemPrompt, _ = first["content"].(string)
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -45,9 +55,20 @@ func TestOpenAIGeneratesStrictStructuredSegments(t *testing.T) {
 	if err != nil || len(segments) != 1 || segments[0].Text != "answer" {
 		t.Fatalf("Generate() = %#v, %v", segments, err)
 	}
+	assertContains := func(substr string) {
+		t.Helper()
+		if !strings.Contains(systemPrompt, substr) {
+			t.Fatalf("system prompt %q does not contain %q", systemPrompt, substr)
+		}
+	}
+	assertContains("Return exactly one valid JSON object and nothing else.")
+	assertContains("exactly one top-level key named segments")
+	assertContains("exactly two keys: text and evidence_ids")
+	assertContains("Never invent evidence IDs.")
+	assertContains("Example valid output:")
 }
 
-func TestOpenAIRejectsPlainTextCandidateContent(t *testing.T) {
+func TestOpenAIAcceptsPlainTextCandidateContent(t *testing.T) {
 	limit, err := throttle.New(0)
 	if err != nil {
 		t.Fatal(err)
@@ -66,9 +87,70 @@ func TestOpenAIRejectsPlainTextCandidateContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = adapter.Generate(context.Background(), application.ProviderRequest{
+	segments, err := adapter.Generate(context.Background(), application.ProviderRequest{
 		Question:  "vim shortcuts",
 		Evidence:  []domain.ContextEvidence{{EvidenceID: "e-1", Passage: "passage 1"}, {EvidenceID: "e-2", Passage: "passage 2"}},
+		MaxTokens: 10,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if len(segments) != 1 || segments[0].Text != "Use w, b, and dd to move and edit quickly." {
+		t.Fatalf("Generate() = %#v, want plain text fallback segment", segments)
+	}
+	if got := segments[0].EvidenceIDs; len(got) != 2 || got[0] != "e-1" || got[1] != "e-2" {
+		t.Fatalf("fallback evidence ids = %#v", got)
+	}
+}
+
+func TestOpenAISalvagesMetaPrefixedPlainTextCandidate(t *testing.T) {
+	limit, err := throttle.New(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"The user asks about vim shortcuts. The evidence describes quick movement and editing with w, b, and dd. Use w, b, and dd to move and edit quickly."}}]}`)),
+		}, nil
+	})}
+	adapter, err := NewOpenAI("https://openrouter.ai/", "model", "synthetic-key", client, limit, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	segments, err := adapter.Generate(context.Background(), application.ProviderRequest{
+		Question:  "vim shortcuts",
+		Evidence:  []domain.ContextEvidence{{EvidenceID: "e-1", Passage: "passage 1"}},
+		MaxTokens: 10,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if len(segments) != 1 || segments[0].Text != "Use w, b, and dd to move and edit quickly." {
+		t.Fatalf("Generate() = %#v, want salvaged plain text fallback", segments)
+	}
+}
+
+func TestOpenAIRejectsMetaOnlyPlainTextCandidate(t *testing.T) {
+	limit, err := throttle.New(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"The user asks about vim shortcuts. The evidence is about editing commands."}}]}`)),
+		}, nil
+	})}
+	adapter, err := NewOpenAI("https://openrouter.ai/", "model", "synthetic-key", client, limit, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Generate(context.Background(), application.ProviderRequest{
+		Question:  "vim shortcuts",
+		Evidence:  []domain.ContextEvidence{{EvidenceID: "e-1", Passage: "passage 1"}},
 		MaxTokens: 10,
 	})
 	if err == nil {

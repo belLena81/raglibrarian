@@ -6,7 +6,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 runtime_dir="${1:-$repo_root/deploy/cloud-test/runtime}"
 secret_dir="$runtime_dir/secrets"
 cert_dir="$runtime_dir/certs"
-model_dir="$runtime_dir/models/m5-jina-code-v1"
+model_dir="$runtime_dir/models/m8-bge-base-en-v1_5"
 
 for command in go jq openssl; do
   command -v "$command" >/dev/null || { echo "$command is required" >&2; exit 1; }

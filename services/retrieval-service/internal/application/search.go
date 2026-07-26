@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -72,6 +73,7 @@ type Searcher struct {
 	store           EvidenceStore
 	visibility      IndexVisibility
 	summaryProvider SummaryProvider
+	summaryTimeout  time.Duration
 }
 
 type SummaryRequest struct {
@@ -79,7 +81,7 @@ type SummaryRequest struct {
 	Passage  string
 }
 
-const minimumVisibleScore = 0.6
+const minimumVisibleScore = domain.MinimumSearchScore
 
 func NewSearcher(embedder QueryEmbedder, store EvidenceStore, visibility IndexVisibility) (*Searcher, error) {
 	if embedder == nil || store == nil || visibility == nil {
@@ -92,11 +94,15 @@ func (s *Searcher) SetSummaryProvider(provider SummaryProvider) {
 	s.summaryProvider = provider
 }
 
+func (s *Searcher) SetSummaryProviderTimeout(timeout time.Duration) {
+	s.summaryTimeout = timeout
+}
+
 func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.SearchQueryInput) (SearchResult, error) {
 	if !actor.CanSearch() {
 		return SearchResult{}, ErrSearchForbidden
 	}
-	summaryCache := newSearchSummaryCache(maximumSearchSummaryProviderCalls)
+	summaryCache := newSearchSummaryCache(maximumSearchSummaryProviderCalls, s.summaryTimeout)
 	query, err := domain.NewSearchQuery(input)
 	if err != nil {
 		return SearchResult{}, err
@@ -138,6 +144,7 @@ func (s *Searcher) searchVisibleEvidence(ctx context.Context, query domain.Searc
 			break
 		}
 	}
+	sortEvidenceByScore(results)
 	results = trimEvidence(results, query.Limit())
 	s.populateEvidenceSummaries(ctx, query.Question(), results, summaryCache)
 	return results, nil
@@ -161,6 +168,7 @@ func (s *Searcher) searchVisibleDocuments(ctx context.Context, query domain.Sear
 			break
 		}
 	}
+	sortDocumentsByScore(results)
 	results = trimDocuments(results, query.Limit())
 	s.populateDocumentSummaries(ctx, query.Question(), results, summaryCache)
 	return results, nil
@@ -244,13 +252,43 @@ func filterVisibleEvidence(values []Evidence) []Evidence {
 func filterVisibleDocuments(values []DocumentResult) []DocumentResult {
 	results := make([]DocumentResult, 0, len(values))
 	for _, value := range values {
+		if value.Score < minimumVisibleScore {
+			continue
+		}
 		value.Evidence = filterVisibleEvidence(value.Evidence)
+		sortEvidenceByScore(value.Evidence)
 		if len(value.Evidence) == 0 {
 			continue
 		}
 		results = append(results, value)
 	}
 	return results
+}
+
+func sortEvidenceByScore(values []Evidence) {
+	slices.SortStableFunc(values, func(left, right Evidence) int {
+		switch {
+		case left.Score > right.Score:
+			return -1
+		case left.Score < right.Score:
+			return 1
+		default:
+			return 0
+		}
+	})
+}
+
+func sortDocumentsByScore(values []DocumentResult) {
+	slices.SortStableFunc(values, func(left, right DocumentResult) int {
+		switch {
+		case left.Score > right.Score:
+			return -1
+		case left.Score < right.Score:
+			return 1
+		default:
+			return 0
+		}
+	})
 }
 
 func (s *Searcher) summarizeEvidence(ctx context.Context, question string, value Evidence, summaryCache *searchSummaryCache) string {
@@ -286,16 +324,7 @@ func normalizeSummaryInput(value string) string {
 }
 
 func normalizeProviderSummary(value string) string {
-	normalized := strings.Join(strings.Fields(value), " ")
-	if normalized == "" {
-		return ""
-	}
-	const maximumSummaryRunes = 220
-	if utf8.RuneCountInString(normalized) <= maximumSummaryRunes {
-		return normalized
-	}
-	runes := []rune(normalized)
-	return strings.TrimSpace(string(runes[:maximumSummaryRunes-1])) + "…"
+	return strings.TrimSpace(strings.Join(strings.Fields(value), " "))
 }
 
 func normalizeDocumentSummaryInput(value DocumentResult) string {
@@ -318,22 +347,14 @@ func summarizeText(value string) string {
 	if normalized == "" {
 		return ""
 	}
-	firstSentence := normalized
-	if match := firstSentenceMatch(normalized); match != "" {
-		firstSentence = match
-	}
-	const maximumSummaryRunes = 220
-	if utf8.RuneCountInString(firstSentence) <= maximumSummaryRunes {
-		return firstSentence
-	}
-	runes := []rune(firstSentence)
-	return strings.TrimSpace(string(runes[:maximumSummaryRunes-1])) + "…"
+	return strings.TrimSpace(normalized)
 }
 
 type searchSummaryCache struct {
-	mu        sync.Mutex
-	remaining int
-	entries   map[string]*searchSummaryEntry
+	mu             sync.Mutex
+	remaining      int
+	summaryTimeout time.Duration
+	entries        map[string]*searchSummaryEntry
 }
 
 type searchSummaryEntry struct {
@@ -341,8 +362,8 @@ type searchSummaryEntry struct {
 	summary string
 }
 
-func newSearchSummaryCache(limit int) *searchSummaryCache {
-	return &searchSummaryCache{remaining: limit, entries: make(map[string]*searchSummaryEntry)}
+func newSearchSummaryCache(limit int, summaryTimeout time.Duration) *searchSummaryCache {
+	return &searchSummaryCache{remaining: limit, summaryTimeout: summaryTimeout, entries: make(map[string]*searchSummaryEntry)}
 }
 
 func (c *searchSummaryCache) summarize(ctx context.Context, provider SummaryProvider, request SummaryRequest) string {
@@ -373,7 +394,11 @@ func (c *searchSummaryCache) summarize(ctx context.Context, provider SummaryProv
 
 	summary := summarizeText(normalizedPassage)
 	if useProvider {
-		summaryContext, cancel := context.WithTimeout(ctx, summaryProviderTimeout)
+		summaryContext := ctx
+		cancel := func() {}
+		if c.summaryTimeout > 0 {
+			summaryContext, cancel = context.WithTimeout(ctx, c.summaryTimeout)
+		}
 		defer cancel()
 		if providerSummary, err := provider.Summarize(summaryContext, SummaryRequest{Question: normalizedQuestion, Passage: normalizedPassage}); err == nil {
 			if sanitized := normalizeProviderSummary(providerSummary); sanitized != "" {
@@ -389,19 +414,6 @@ func (c *searchSummaryCache) summarize(ctx context.Context, provider SummaryProv
 	return summary
 }
 
-func firstSentenceMatch(value string) string {
-	for index, r := range value {
-		if r == '.' || r == '!' || r == '?' {
-			if index+1 == len(value) || value[index+1] == ' ' {
-				return value[:index+1]
-			}
-		}
-	}
-	return ""
-}
-
 type SummaryProvider interface {
 	Summarize(context.Context, SummaryRequest) (string, error)
 }
-
-const summaryProviderTimeout = 4*time.Minute + 30*time.Second

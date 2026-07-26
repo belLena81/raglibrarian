@@ -9,10 +9,10 @@ import (
 
 func TestSupportedIndexProfileDigestIsStable(t *testing.T) {
 	profile := SupportedIndexProfile()
-	if profile.Model != "jinaai/jina-embeddings-v2-base-code" || profile.Dimensions != 768 || profile.Distance != "cosine" {
+	if profile.Model != "BAAI/bge-base-en-v1.5" || profile.Dimensions != 768 || profile.Distance != "cosine" {
 		t.Fatalf("unexpected supported profile: %#v", profile)
 	}
-	if got := hex.EncodeToString(profile.Digest[:]); got != "096058de661aa9d81b4d8f9bd5005a613a951f9afcaf69400ecbb8079ab27740" {
+	if got := hex.EncodeToString(profile.Digest[:]); got != "e084ab877256e8cf1d974e4c4e3a05435a17b0015176ad64f16f05fc10f1c8b2" {
 		t.Fatalf("profile digest = %s", got)
 	}
 }
@@ -83,7 +83,7 @@ func TestNewSearchQueryRejectsInvalidBounds(t *testing.T) {
 
 func TestIndexJobCompletesOnlyAfterEveryBatch(t *testing.T) {
 	now := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
-	job, err := NewIndexJob("job-1", "book-1", checksum(1), checksum(2), "m5-jina-code-v1", 2, now)
+	job, err := NewIndexJob("job-1", "book-1", checksum(1), checksum(2), "m8-bge-base-pdf-v1", 2, now)
 	if err != nil {
 		t.Fatalf("NewIndexJob() error = %v", err)
 	}
@@ -103,7 +103,7 @@ func TestIndexJobCompletesOnlyAfterEveryBatch(t *testing.T) {
 
 func TestIndexJobFailureIsTerminalAndIdempotent(t *testing.T) {
 	now := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
-	job, err := NewIndexJob("job-1", "book-1", checksum(1), checksum(2), "m5-jina-code-v1", 1, now)
+	job, err := NewIndexJob("job-1", "book-1", checksum(1), checksum(2), "m8-bge-base-pdf-v1", 1, now)
 	if err != nil {
 		t.Fatalf("NewIndexJob() error = %v", err)
 	}

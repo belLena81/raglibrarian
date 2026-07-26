@@ -1,5 +1,3 @@
--- Bootstrap schema for the first fresh app launch.
--- This release intentionally ships create-only DDL; upgrade migrations are out of scope.
 CREATE SCHEMA IF NOT EXISTS catalog AUTHORIZATION catalog_migrator;
 
 CREATE TABLE IF NOT EXISTS catalog.books (
@@ -13,7 +11,7 @@ CREATE TABLE IF NOT EXISTS catalog.books (
     object_reference          TEXT UNIQUE,
     checksum                  BYTEA       CHECK (checksum IS NULL OR octet_length(checksum) = 32),
     byte_size                 BIGINT      CHECK (byte_size IS NULL OR byte_size > 0),
-    media_type                TEXT,
+    media_type                TEXT        CHECK (media_type IN ('application/pdf', 'application/epub+zip')),
     actor_id                  TEXT,
     processing_stage          TEXT        DEFAULT 'queued' CHECK (processing_stage IN ('queued', 'extracting', 'chunks_ready', 'indexed', 'failed')),
     processing_failure_category TEXT      DEFAULT '' CHECK (processing_failure_category IN ('', 'encrypted_document', 'extraction_not_permitted',

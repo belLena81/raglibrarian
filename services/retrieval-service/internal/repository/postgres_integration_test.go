@@ -1416,6 +1416,147 @@ func TestLifecycleFinalizeReindexMarksPriorSQLGenerationForCleanup(t *testing.T)
 	}
 }
 
+func TestFailBatchReindexRestoresPriorIndexedGenerationVisibility(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+
+	repository := NewPostgres(pool)
+	suffix := randomIntegrationID(t)
+	bookID := "book-reindex-fail-" + suffix
+	oldJobID := "job-old-" + suffix
+	newJobID := "job-new-" + suffix
+	batchID := newJobID + ":0"
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sourceSHA256 := integrationDigest(51)
+	manifestSHA256 := integrationDigest(52)
+	profileDigest := domain.SupportedIndexProfile().Digest
+	payloadDigest := integrationDigest(53)
+	oldContentSHA256 := integrationDigest(54)
+	shardSHA256 := integrationDigest(55)
+
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.metadata_facts
+		(book_id,event_id,payload_digest,source_sha256,title,author,publication_year,tags,correlation_id,causation_id,occurred_at)
+		VALUES($1,$2,$3,$4,'Synthetic systems','RAGLibrarian QA',2026,'{}',$5,$6,$7)`,
+		bookID, "metadata-"+suffix, payloadDigest[:], sourceSHA256[:], "correlation-"+suffix, "cause-"+suffix, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_jobs
+		(id,book_id,source_sha256,manifest_sha256,profile_digest,state,expected_batches,evidence_count,correlation_id,created_at,updated_at,lifecycle_version)
+		VALUES
+		($1,$3,$4,$5,$6,'indexed',1,1,$7,$8,$8,1),
+		($2,$3,$4,$5,$6,'pending',1,0,$7,$9,$9,2)`,
+		oldJobID, newJobID, bookID, sourceSHA256[:], manifestSHA256[:], profileDigest[:], "correlation-"+suffix, now.Add(-time.Hour), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.book_lifecycle
+		(book_id,lifecycle_version,state,active_job_id,event_id,command_id,event_type,payload_digest,correlation_id,updated_at)
+		VALUES($1,2,'reindexing',NULL,$2,$3,'reindex',$4,$5,$6)`,
+		bookID, "reindex-"+suffix, "command-"+suffix, payloadDigest[:], "correlation-"+suffix, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_batches
+		(id,job_id,shard_reference,shard_sha256,compressed_byte_size,uncompressed_byte_size,chunk_count,state,updated_at)
+		VALUES($1,$2,$3,$4,10,20,1,'processing',$5)`,
+		batchID, newJobID, "books/"+bookID+"/profile/shards/000000.pb.zst", shardSHA256[:], now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.evidence
+		(evidence_id,chunk_id,job_id,book_id,title,author,publication_year,tags,page_start,page_end,passage,content_sha256,created_at)
+		VALUES($1,'chunk-old',$2,$3,'Synthetic systems','RAGLibrarian QA',2026,'{}',1,1,'old evidence',$4,$5)`,
+		"evidence-old-"+suffix, oldJobID, bookID, oldContentSHA256[:], now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.outbox WHERE aggregate_id=ANY($1)`, []string{oldJobID, newJobID})
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.book_lifecycle WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.evidence WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_batches WHERE job_id=ANY($1)`, []string{oldJobID, newJobID})
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
+	})
+
+	work := application.BatchWork{
+		EventID:              batchID + ":requested",
+		JobID:                newJobID,
+		BatchID:              batchID,
+		BookID:               bookID,
+		ShardReference:       "books/" + bookID + "/profile/shards/000000.pb.zst",
+		ShardSHA256:          integrationDigest(55),
+		SourceSHA256:         sourceSHA256,
+		ManifestSHA256:       manifestSHA256,
+		ProfileDigest:        profileDigest,
+		CompressedBytes:      10,
+		UncompressedBytes:    20,
+		ChunkCount:           1,
+		ManifestPageCount:    1,
+		FirstChunkOrder:      0,
+		LastChunkOrder:       0,
+		ExtractionVersion:    domain.SupportedIndexProfile().ExtractionVersion,
+		NormalizationVersion: domain.SupportedIndexProfile().NormalizationVersion,
+		TokenizerVersion:     domain.SupportedIndexProfile().TokenizerVersion,
+		ChunkingVersion:      domain.SupportedIndexProfile().ChunkingVersion,
+		StructureVersion:     domain.SupportedIndexProfile().StructureVersion,
+		MaximumTokens:        uint32(domain.SupportedIndexProfile().MaximumTokens),
+		OverlapTokens:        uint32(domain.SupportedIndexProfile().OverlapTokens),
+		CorrelationID:        "correlation-" + suffix,
+		CausationID:          "reindex-" + suffix,
+		Producer:             "retrieval-service",
+		SchemaVersion:        "v1",
+		IdempotencyKey:       batchID,
+		OccurredAt:           now,
+		LifecycleVersion:     2,
+	}
+
+	transitioned, err := repository.FailBatch(ctx, work, domain.FailureEmbeddingUnavailable, now.Add(time.Second))
+	if err != nil || !transitioned {
+		t.Fatalf("FailBatch() transitioned=%v err=%v", transitioned, err)
+	}
+
+	var lifecycleVersion int64
+	var lifecycleState, activeJobID string
+	if err = pool.QueryRow(ctx, `SELECT lifecycle_version,state,coalesce(active_job_id,'') FROM retrieval.book_lifecycle WHERE book_id=$1`, bookID).
+		Scan(&lifecycleVersion, &lifecycleState, &activeJobID); err != nil {
+		t.Fatal(err)
+	}
+	var failedState, failedCategory string
+	if err = pool.QueryRow(ctx, `SELECT state,coalesce(failure_category,'') FROM retrieval.index_jobs WHERE id=$1`, newJobID).
+		Scan(&failedState, &failedCategory); err != nil {
+		t.Fatal(err)
+	}
+	visible, err := repository.FilterIndexed(ctx, []application.Evidence{
+		{EvidenceID: "visible-old", JobID: oldJobID, BookID: bookID, Passage: "old evidence"},
+		{EvidenceID: "hidden-new", JobID: newJobID, BookID: bookID, Passage: "new evidence"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failedEvents int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.outbox WHERE event_id=$1`, newJobID+":failed").Scan(&failedEvents); err != nil {
+		t.Fatal(err)
+	}
+	if lifecycleVersion != 2 || lifecycleState != "active" || activeJobID != oldJobID ||
+		failedState != "failed" || failedCategory != string(domain.FailureEmbeddingUnavailable) ||
+		failedEvents != 1 || len(visible) != 1 || visible[0].JobID != oldJobID {
+		t.Fatalf("lifecycle_version=%d lifecycle_state=%q active_job_id=%q failed_state=%q failed_category=%q failed_events=%d visible=%#v",
+			lifecycleVersion, lifecycleState, activeJobID, failedState, failedCategory, failedEvents, visible)
+	}
+}
+
 func TestRolePrivilegesPlannerAndCleanupCanCompleteDeletion(t *testing.T) {
 	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
 		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")

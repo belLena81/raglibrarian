@@ -42,8 +42,8 @@ var supportedM7EPUBIndexProfileDigest = newM5ProfileDigest("epub-spine-v1")
 
 func newM5ProfileDigest(extractionVersion string) [sha256.Size]byte {
 	values := []string{
-		"jinaai/jina-embeddings-v2-base-code",
-		"516f4baf13dec4ddddda8631e019b5737c8bc250",
+		"BAAI/bge-base-en-v1.5",
+		"5e233c43ad83ba072172bca158a7c7dec46302a0",
 		"768",
 		"cosine",
 		"mean",

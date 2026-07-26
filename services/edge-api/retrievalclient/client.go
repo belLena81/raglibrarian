@@ -21,19 +21,24 @@ var (
 	ErrUnavailable = errors.New("retrieval unavailable")
 )
 
-const searchDeadline = 5 * time.Minute
+// MaxSearchDeadline bounds Edge's gRPC retrieval request budget.
+const MaxSearchDeadline = 5 * time.Minute
 
 // Client translates Edge search requests to the versioned Retrieval contract.
 type Client struct {
 	service retrievalv1.RetrievalServiceClient
+	deadline time.Duration
 }
 
 // New constructs a Retrieval client adapter.
-func New(service retrievalv1.RetrievalServiceClient) *Client {
+func New(service retrievalv1.RetrievalServiceClient, deadline time.Duration) *Client {
 	if service == nil {
 		panic("retrievalclient: service must not be nil")
 	}
-	return &Client{service: service}
+	if deadline <= 0 || deadline > MaxSearchDeadline {
+		panic("retrievalclient: deadline must be between zero and 5 minutes")
+	}
+	return &Client{service: service, deadline: deadline}
 }
 
 // CheckReady verifies the synchronous Retrieval boundary within a short deadline.
@@ -57,7 +62,7 @@ func (c *Client) Search(ctx context.Context, request handler.SearchRequest) (han
 	metadata = metadata.Copy()
 	metadata.Set("x-request-id", requestID)
 	ctx = grpcmetadata.NewOutgoingContext(ctx, metadata)
-	ctx, cancel := context.WithTimeout(ctx, searchDeadline)
+	ctx, cancel := context.WithTimeout(ctx, c.deadline)
 	defer cancel()
 
 	response, err := c.service.Search(ctx, searchcontract.RequestToProto(request, requestID))

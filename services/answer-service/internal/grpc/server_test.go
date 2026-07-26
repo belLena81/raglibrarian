@@ -23,11 +23,30 @@ func (f fakeService) Answer(context.Context, domain.SearchRequest) (domain.Answe
 func (f fakeService) CheckReady(context.Context) error { return f.err }
 
 func TestServerMapsEvidenceAndAnswerWithoutLosingFields(t *testing.T) {
-	result := domain.AnswerResult{Search: domain.SearchResult{Query: "q", Results: []domain.Evidence{{EvidenceID: "e-1", Passage: "p"}}},
+	result := domain.AnswerResult{Search: domain.SearchResult{
+		Query: "q",
+		Results: []domain.Evidence{{
+			EvidenceID: "e-1", Passage: "p", Summary: "passage summary",
+		}},
+		Documents: []domain.DocumentResult{{
+			DocumentID: "doc-1",
+			ChunkCount: 1,
+			PageStart:  1,
+			PageEnd:    2,
+			Score:      0.8,
+			Summary:    "document summary",
+			Evidence: []domain.Evidence{{
+				EvidenceID: "e-1", Passage: "p", Summary: "passage summary",
+			}},
+		}},
+	},
 		Answer: &domain.GroundedAnswer{Segments: []domain.AnswerSegment{{Text: "a", EvidenceIDs: []string{"e-1"}}}}}
 	server := NewServer(fakeService{result: result})
 	response, err := server.Answer(context.Background(), validProtoRequest())
-	if err != nil || response.Search.Results[0].Passage != "p" || response.Answer.Segments[0].EvidenceIds[0] != "e-1" {
+	if err != nil || response.Search.Results[0].Passage != "p" || response.Search.Results[0].Summary != "passage summary" ||
+		len(response.Search.Documents) != 1 || response.Search.Documents[0].Summary != "document summary" ||
+		len(response.Search.Documents[0].Evidence) != 1 || response.Search.Documents[0].Evidence[0].Summary != "passage summary" ||
+		response.Answer.Segments[0].EvidenceIds[0] != "e-1" {
 		t.Fatalf("Answer() = %#v, %v", response, err)
 	}
 }

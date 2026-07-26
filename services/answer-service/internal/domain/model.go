@@ -87,6 +87,7 @@ type Evidence struct {
 	PageEnd    uint32
 	Passage    string
 	Score      float64
+	Summary    string
 }
 
 type BookMetadata struct {
@@ -105,6 +106,7 @@ type DocumentResult struct {
 	PageEnd    uint32
 	Score      float64
 	Evidence   []Evidence
+	Summary    string
 }
 
 type SearchResult struct {

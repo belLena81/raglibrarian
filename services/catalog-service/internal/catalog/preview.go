@@ -19,7 +19,10 @@ import (
 	"strings"
 )
 
-const previewPageLimit = 3
+const (
+	previewPageLimit      = 3
+	epubPreviewEntryLimit = 2048
+)
 
 var previewTempDir = os.MkdirTemp
 var previewExecCommand = runCommand
@@ -43,7 +46,15 @@ func defaultPreviewBook(ctx context.Context, book Book, objects OriginalObjectSt
 		return "", err
 	}
 	defer func() { _ = os.RemoveAll(workDir) }()
-	tmp, err := os.Create(filepath.Join(workDir, "source"+suffix))
+	inputDir := filepath.Join(workDir, "input")
+	if err = os.MkdirAll(inputDir, 0o700); err != nil {
+		return "", err
+	}
+	outputDir := filepath.Join(workDir, "output")
+	if err = os.MkdirAll(outputDir, 0o700); err != nil {
+		return "", err
+	}
+	tmp, err := os.Create(filepath.Join(inputDir, "source"+suffix))
 	if err != nil {
 		return "", err
 	}
@@ -57,7 +68,7 @@ func defaultPreviewBook(ctx context.Context, book Book, objects OriginalObjectSt
 
 	switch book.MediaType {
 	case "application/pdf":
-		return previewPDFFragment(ctx, tmp.Name())
+		return previewPDFFragment(ctx, tmp.Name(), outputDir)
 	case "application/epub+zip":
 		return previewEPUBFragment(tmp.Name())
 	default:
@@ -65,10 +76,9 @@ func defaultPreviewBook(ctx context.Context, book Book, objects OriginalObjectSt
 	}
 }
 
-func previewPDFFragment(ctx context.Context, sourcePath string) (string, error) {
-	dir := filepath.Dir(sourcePath)
-	outputPattern := filepath.Join(dir, "catalog-preview-page-%03d.pdf")
-	if err := previewExecCommand(ctx, "/usr/bin/pdfseparate", "-f", "1", "-l", strconv.Itoa(previewPageLimit), sourcePath, outputPattern); err != nil {
+func previewPDFFragment(ctx context.Context, sourcePath, outputDir string) (string, error) {
+	outputPattern := filepath.Join(outputDir, "catalog-preview-page-%03d.pdf")
+	if err := previewSandboxCommand(ctx, "/usr/bin/pdfseparate", "-f", "1", "-l", strconv.Itoa(previewPageLimit), sourcePath, outputPattern); err != nil {
 		return "", err
 	}
 
@@ -83,8 +93,8 @@ func previewPDFFragment(ctx context.Context, sourcePath string) (string, error) 
 		return "", errors.New("empty PDF preview")
 	}
 
-	fragmentPath := filepath.Join(dir, "catalog-preview-fragment.pdf")
-	if err := previewExecCommand(ctx, "/usr/bin/pdfunite", append(pagePaths, fragmentPath)...); err != nil {
+	fragmentPath := filepath.Join(outputDir, "catalog-preview-fragment.pdf")
+	if err := previewSandboxCommand(ctx, "/usr/bin/pdfunite", append(pagePaths, fragmentPath)...); err != nil {
 		return "", err
 	}
 	data, err := os.ReadFile(fragmentPath)
@@ -142,6 +152,9 @@ func extractEPUBPreviewPages(sourcePath string) ([][]byte, error) {
 	}
 	defer func() { _ = archive.Close() }()
 	if len(archive.File) < 3 {
+		return nil, errors.New("invalid EPUB archive")
+	}
+	if len(archive.File) > epubPreviewEntryLimit {
 		return nil, errors.New("invalid EPUB archive")
 	}
 
@@ -218,6 +231,17 @@ func extractEPUBPreviewPages(sourcePath string) ([][]byte, error) {
 		}
 	}
 	return pages, nil
+}
+
+func previewSandboxCommand(ctx context.Context, command string, args ...string) error {
+	return previewExecCommand(ctx, previewSandboxPath(), append([]string{command}, args...)...)
+}
+
+func previewSandboxPath() string {
+	if value := strings.TrimSpace(os.Getenv("PARSER_SANDBOX_PATH")); value != "" {
+		return value
+	}
+	return "/parser-sandbox"
 }
 
 func runCommand(ctx context.Context, path string, args ...string) error {
