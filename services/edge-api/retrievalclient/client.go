@@ -26,7 +26,7 @@ const MaxSearchDeadline = 5 * time.Minute
 
 // Client translates Edge search requests to the versioned Retrieval contract.
 type Client struct {
-	service retrievalv1.RetrievalServiceClient
+	service  retrievalv1.RetrievalServiceClient
 	deadline time.Duration
 }
 

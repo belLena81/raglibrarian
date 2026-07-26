@@ -44,6 +44,9 @@ client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
   projections, and synchronous search over indexed chunks.
 - **answer-service** owns bounded prompt construction, provider integration,
   and validation of grounded answer segments against Retrieval evidence IDs.
+  When a free model ignores JSON mode, the provider retries with a documented
+  plain-text format that requires a model-authored `Citations:` preamble and a
+  matching answer line; the service never fabricates citation IDs.
 - Internal gRPC ports and Postgres are private in Compose. Service-to-service
   calls use TLS 1.3 with client certificates.
 - Future lifecycle work is added in its owning bounded context. Bounded event
@@ -243,7 +246,10 @@ protected staging gate and requires an existing authenticated fixture stack
 plus reader and librarian token files. It recreates only `answer-service` with
 the supplied HTTPS provider URL, model, and file-backed key, verifies that
 configuration, and requires a grounded response from that provider. The
-recreated service remains configured for the real provider after the gate.
+provider path first asks for JSON and then falls back to a plain-text response
+that must include a model-authored `Citations:` preamble plus the answer body;
+it never invents citation IDs from the search context. The recreated service
+remains configured for the real provider after the gate.
 Identity and Catalog expose standard gRPC health services inside the private
 Compose network. `make contract-test` verifies both services over mTLS.
 

@@ -17,6 +17,7 @@ QDRANT_TRIVY_IGNORE_FILE := security/trivy/qdrant-v1.18.3.ignore.yaml
 M5_TEI_IMAGE := ghcr.io/huggingface/text-embeddings-inference@sha256:cb570aabbfa016b86684f576b5bd72d1ee96cc0b7a00b0ad221b298762b32157
 M5_TEI_TRIVY_IGNORE_FILE := security/trivy/text-embeddings-inference-cpu-latest.ignore.yaml
 M5_PROVIDER_IMAGES := $(QDRANT_IMAGE) $(M5_TEI_IMAGE)
+DEPLOYABLE_IMAGES := raglibrarian-ingestion-lambda:local raglibrarian-ingestion-cleanup-lambda:local raglibrarian-retrieval-planner-lambda:local raglibrarian-retrieval-index-lambda:local raglibrarian-retrieval-dispatcher-lambda:local raglibrarian-retrieval-cleanup-lambda:local raglibrarian-web:local raglibrarian-tei-stub:local llm-provider-stub
 M5_TEST_COMPOSE_FILES ?= -f docker-compose.yml -f docker-compose.ci.yml
 M5_SEARCH_QUALITY_REQUIRE_MODEL ?= false
 INTEGRATION_COMPOSE_FILES ?=
@@ -706,6 +707,15 @@ image-build: _require_root
 	docker build --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/worker -t raglibrarian-ingestion-service:local .
 	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/server -t raglibrarian-retrieval-service:local .
 	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/worker -t raglibrarian-retrieval-worker:local .
+	docker build --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/lambda -t raglibrarian-ingestion-lambda:local .
+	docker build --target ingestion-cleanup-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda -t raglibrarian-ingestion-cleanup-lambda:local .
+	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/planner_lambda -t raglibrarian-retrieval-planner-lambda:local .
+	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/index_lambda -t raglibrarian-retrieval-index-lambda:local .
+	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/dispatcher_lambda -t raglibrarian-retrieval-dispatcher-lambda:local .
+	docker build --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda -t raglibrarian-retrieval-cleanup-lambda:local .
+	docker build -f deploy/cloud-test/Dockerfile.ui -t raglibrarian-web:local .
+	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/tei_stub -t raglibrarian-tei-stub:local .
+	docker build --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/provider_stub -t llm-provider-stub .
 	docker build --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/server -t raglibrarian-answer-service:local .
 
 image-build-ci: _require_root
@@ -722,6 +732,15 @@ image-build-ci: _require_root
 	build_ci raglibrarian-ingestion-service:local ingestion-service --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/worker; \
 	build_ci raglibrarian-retrieval-service:local retrieval-service --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/server; \
 	build_ci raglibrarian-retrieval-worker:local retrieval-worker --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/worker; \
+	build_ci raglibrarian-ingestion-lambda:local ingestion-service --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/lambda; \
+	build_ci raglibrarian-ingestion-cleanup-lambda:local ingestion-service --target ingestion-cleanup-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda; \
+	build_ci raglibrarian-retrieval-planner-lambda:local retrieval-service --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/planner_lambda; \
+	build_ci raglibrarian-retrieval-index-lambda:local retrieval-service --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/index_lambda; \
+	build_ci raglibrarian-retrieval-dispatcher-lambda:local retrieval-service --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/dispatcher_lambda; \
+	build_ci raglibrarian-retrieval-cleanup-lambda:local retrieval-service --target retrieval-lambda-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/cleanup_lambda; \
+	build_ci raglibrarian-web:local web -f deploy/cloud-test/Dockerfile.ui; \
+	build_ci raglibrarian-tei-stub:local retrieval-service --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/tei_stub; \
+	build_ci llm-provider-stub answer-service --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/provider_stub; \
 	build_ci raglibrarian-answer-service:local answer-service --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/server
 
 image-scan: image-build image-scan-images
@@ -730,7 +749,7 @@ image-scan-ci: image-build-ci image-scan-images
 
 image-scan-images: _require_root
 	@mkdir -p "$${TRIVY_CACHE_DIR:-$$HOME/.cache/trivy}"
-	@for image in $(SERVICE_IMAGES) $(M5_PROVIDER_IMAGES); do \
+	@for image in $(SERVICE_IMAGES) $(DEPLOYABLE_IMAGES) $(M5_PROVIDER_IMAGES); do \
 		ignorefile=""; \
 		if [ "$$image" = "$(QDRANT_IMAGE)" ]; then ignorefile="--ignorefile /trivyignore/qdrant-v1.18.3.ignore.yaml"; fi; \
 		if [ "$$image" = "$(M5_TEI_IMAGE)" ]; then ignorefile="--ignorefile /trivyignore/text-embeddings-inference-cpu-latest.ignore.yaml"; fi; \
@@ -751,7 +770,7 @@ security-check-ci: secret-scan dockerfile-lint image-scan-ci ui-audit
 full-gates: fmt-check vet lint test test-race arch-check vuln proto-check proto-breaking dev-secrets-test m6-dev-config-test compose-config m5-mode-policy sam-m5-validate ui-check security-check
 
 integration-gates: compose-config
-	docker compose --profile raglibrarian up -d --build --wait --wait-timeout 180
+	docker compose --profile raglibrarian --profile m4-ha up -d --build --wait --wait-timeout 180
 	$(MAKE) contract-test minio-runtime-test m4-integration-test
 
 smtp-url:

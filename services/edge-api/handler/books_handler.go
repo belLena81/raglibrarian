@@ -109,8 +109,8 @@ func (h *BooksHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		writeBookError(w, r, http.StatusBadRequest, "invalid_upload", "invalid upload")
 		return
 	}
-	fileMediaType, _, parseErr := mime.ParseMediaType(filePart.Header.Get("Content-Type"))
-	if parseErr != nil || (fileMediaType != "application/pdf" && fileMediaType != "application/epub+zip") {
+	fileMediaType := normalizedUploadMediaType(filePart.FileName(), filePart.Header.Get("Content-Type"))
+	if fileMediaType == "" {
 		writeBookError(w, r, http.StatusUnsupportedMediaType, "unsupported_media_type", "unsupported media type")
 		return
 	}
@@ -226,6 +226,22 @@ func validIdempotencyKey(value string) bool {
 		return false
 	}
 	return true
+}
+
+func normalizedUploadMediaType(filename, contentType string) string {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		mediaType = ""
+	}
+	switch mediaType {
+	case "application/pdf", "application/epub+zip":
+		return mediaType
+	case "", "application/octet-stream":
+		if strings.HasSuffix(strings.ToLower(filename), ".epub") {
+			return "application/epub+zip"
+		}
+	}
+	return ""
 }
 
 func validBookID(value string) bool {

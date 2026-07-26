@@ -68,20 +68,45 @@ func TestOpenAIGeneratesStrictStructuredSegments(t *testing.T) {
 	assertContains("Example valid output:")
 }
 
-func TestOpenAIAcceptsPlainTextCandidateContent(t *testing.T) {
+func TestOpenAIFallsBackToPlainTextCitationPreamble(t *testing.T) {
 	limit, err := throttle.New(0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	call := 0
 	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Path != "/api/v1/chat/completions" {
 			t.Fatalf("unexpected request path %q", request.URL.Path)
 		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"Use w, b, and dd to move and edit quickly."}}]}`)),
-		}, nil
+		call++
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch call {
+		case 1:
+			format, ok := body["response_format"].(map[string]any)
+			if !ok || format["type"] != "json_object" {
+				t.Fatalf("response_format = %#v, want json_object", body["response_format"])
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"Use w, b, and dd to move and edit quickly."}}]}`)),
+			}, nil
+		case 2:
+			if _, ok := body["response_format"]; ok {
+				t.Fatalf("fallback request unexpectedly set response_format: %#v", body["response_format"])
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"Citations: e-1, e-2\nAnswer: Use w, b, and dd to move and edit quickly."}}]}`)),
+			}, nil
+		default:
+			t.Fatalf("unexpected request count %d", call)
+			return nil, nil
+		}
 	})}
 	adapter, err := NewOpenAI("https://openrouter.ai/", "model", "synthetic-key", client, limit, false)
 	if err != nil {
@@ -103,7 +128,7 @@ func TestOpenAIAcceptsPlainTextCandidateContent(t *testing.T) {
 	}
 }
 
-func TestOpenAISalvagesMetaPrefixedPlainTextCandidate(t *testing.T) {
+func TestOpenAIAcceptsPlainTextCandidateWithCitationPreamble(t *testing.T) {
 	limit, err := throttle.New(0)
 	if err != nil {
 		t.Fatal(err)
@@ -112,7 +137,7 @@ func TestOpenAISalvagesMetaPrefixedPlainTextCandidate(t *testing.T) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"The user asks about vim shortcuts. The evidence describes quick movement and editing with w, b, and dd. Use w, b, and dd to move and edit quickly."}}]}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"Citations: e-1\nAnswer: Use w, b, and dd to move and edit quickly."}}]}`)),
 		}, nil
 	})}
 	adapter, err := NewOpenAI("https://openrouter.ai/", "model", "synthetic-key", client, limit, false)
@@ -128,11 +153,14 @@ func TestOpenAISalvagesMetaPrefixedPlainTextCandidate(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 	if len(segments) != 1 || segments[0].Text != "Use w, b, and dd to move and edit quickly." {
-		t.Fatalf("Generate() = %#v, want salvaged plain text fallback", segments)
+		t.Fatalf("Generate() = %#v, want accepted plain text fallback", segments)
+	}
+	if got := segments[0].EvidenceIDs; len(got) != 1 || got[0] != "e-1" {
+		t.Fatalf("fallback evidence ids = %#v", got)
 	}
 }
 
-func TestOpenAIRejectsMetaOnlyPlainTextCandidate(t *testing.T) {
+func TestOpenAIRejectsPlainTextCandidateWithoutCitationPreamble(t *testing.T) {
 	limit, err := throttle.New(0)
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +169,43 @@ func TestOpenAIRejectsMetaOnlyPlainTextCandidate(t *testing.T) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"The user asks about vim shortcuts. The evidence is about editing commands."}}]}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"Use w, b, and dd to move and edit quickly."}}]}`)),
+		}, nil
+	})}
+	adapter, err := NewOpenAI("https://openrouter.ai/", "model", "synthetic-key", client, limit, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Generate(context.Background(), application.ProviderRequest{
+		Question:  "vim shortcuts",
+		Evidence:  []domain.ContextEvidence{{EvidenceID: "e-1", Passage: "passage 1"}},
+		MaxTokens: 10,
+	})
+	if err == nil {
+		t.Fatal("Generate() error = nil, want invalid provider response")
+	}
+	var providerErr interface {
+		ReasonCode() string
+		ReasonDetail() string
+	}
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("error = %T, want providerError", err)
+	}
+	if providerErr.ReasonCode() != "invalid_provider_response" || providerErr.ReasonDetail() != "candidate_plain_text_response" {
+		t.Fatalf("reason = %s detail = %s", providerErr.ReasonCode(), providerErr.ReasonDetail())
+	}
+}
+
+func TestOpenAIRejectsPlainTextCandidateWithUnknownCitationPreamble(t *testing.T) {
+	limit, err := throttle.New(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"Citations: unknown-1\nAnswer: Use w, b, and dd to move and edit quickly."}}]}`)),
 		}, nil
 	})}
 	adapter, err := NewOpenAI("https://openrouter.ai/", "model", "synthetic-key", client, limit, false)
@@ -225,6 +289,7 @@ func TestNewOpenAIBuildsChatCompletionsEndpointFromAPIBase(t *testing.T) {
 		{name: "prefixed v1", baseURL: "https://provider/openai/v1", expectedPath: "/openai/v1/chat/completions"},
 		{name: "openrouter root", baseURL: "https://openrouter.ai/", expectedPath: "/api/v1/chat/completions"},
 		{name: "openrouter api v1", baseURL: "https://openrouter.ai/api/v1", expectedPath: "/api/v1/chat/completions"},
+		{name: "openrouter explicit port", baseURL: "https://openrouter.ai:443/", expectedPath: "/api/v1/chat/completions"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			adapter, err := NewOpenAI(test.baseURL, "model", "key", client, nil, false)

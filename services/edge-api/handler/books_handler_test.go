@@ -117,6 +117,26 @@ func TestUploadAcceptsEPUBAndForwardsMediaType(t *testing.T) {
 	}
 }
 
+func TestUploadAcceptsEPUBWithoutRegisteredBrowserMediaType(t *testing.T) {
+	for _, mediaType := range []string{"application/octet-stream", ""} {
+		t.Run(mediaType, func(t *testing.T) {
+			catalog := &uploadCatalog{}
+			h := handler.NewBooksHandler(catalog)
+			req := newUploadRequestWithMedia(t, "2025", "book.epub", mediaType, []byte("PK\x03\x04"))
+			recorder := httptest.NewRecorder()
+
+			h.Upload(recorder, req)
+
+			if recorder.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+			}
+			if catalog.metadata.MediaType != "application/epub+zip" {
+				t.Fatalf("Catalog media type = %q, want application/epub+zip", catalog.metadata.MediaType)
+			}
+		})
+	}
+}
+
 func newUploadRequest(t *testing.T, year string) *http.Request {
 	return newUploadRequestWithMedia(t, year, "book.pdf", "application/pdf", []byte("%PDF-1.7"))
 }

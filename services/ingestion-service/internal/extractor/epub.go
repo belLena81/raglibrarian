@@ -9,6 +9,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/url"
 	"os/exec"
@@ -335,7 +336,7 @@ func decodeStrictXML(contents []byte, target any) error {
 		bytes.Contains(bytes.ToLower(contents), []byte("<!entity")) {
 		return errors.New("unsafe XML")
 	}
-	decoder := xml.NewDecoder(bytes.NewReader(contents))
+	decoder := xml.NewDecoder(bytes.NewReader(normalizeEPUBXHTMLEntities(contents)))
 	decoder.Strict = true
 	if err := decoder.Decode(target); err != nil {
 		return err
@@ -359,7 +360,7 @@ func extractEPUBXHTML(contents []byte, maximum int64) (string, error) {
 	if maximum < 1 || len(contents) == 0 || bytes.Contains(bytes.ToLower(contents), []byte("<!entity")) {
 		return "", epubFailure(domain.FailureMalformedDocument, errors.New("unsafe EPUB XHTML"))
 	}
-	decoder := xml.NewDecoder(strings.NewReader(epubXHTMLEntityReplacer.Replace(string(contents))))
+	decoder := xml.NewDecoder(strings.NewReader(string(normalizeEPUBXHTMLEntities(contents))))
 	decoder.Strict = true
 	var output strings.Builder
 	var depth, skipDepth, tokens int
@@ -428,6 +429,45 @@ func extractEPUBXHTML(contents []byte, maximum int64) (string, error) {
 		return "", epubFailure(domain.FailureResourceLimitExceeded, errors.New("EPUB text limit exceeded"))
 	}
 	return text, nil
+}
+
+func normalizeEPUBXHTMLEntities(contents []byte) []byte {
+	if len(contents) == 0 || !bytes.Contains(contents, []byte("&")) || !bytes.Contains(contents, []byte(";")) {
+		return contents
+	}
+	const xmlEntities = "&amp;|&lt;|&gt;|&apos;|&quot;"
+	var output strings.Builder
+	output.Grow(len(contents))
+	for index := 0; index < len(contents); {
+		if contents[index] != '&' {
+			output.WriteByte(contents[index])
+			index++
+			continue
+		}
+		semicolon := bytes.IndexByte(contents[index:], ';')
+		if semicolon <= 0 {
+			output.WriteByte(contents[index])
+			index++
+			continue
+		}
+		candidate := string(contents[index : index+semicolon+1])
+		if strings.Contains(xmlEntities, candidate) || strings.HasPrefix(candidate, "&#") {
+			output.WriteString(candidate)
+			index += semicolon + 1
+			continue
+		}
+		unescaped := html.UnescapeString(candidate)
+		if unescaped == candidate {
+			output.WriteString(candidate)
+			index += semicolon + 1
+			continue
+		}
+		for _, r := range unescaped {
+			output.WriteString(fmt.Sprintf("&#%d;", r))
+		}
+		index += semicolon + 1
+	}
+	return []byte(output.String())
 }
 
 func standardEPUBHTMLDoctype(value xml.Directive) bool {

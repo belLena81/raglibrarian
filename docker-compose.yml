@@ -331,7 +331,7 @@ services:
 
   edge-api-2:
     <<: *edge-api-service
-    profiles: ["tests"]
+    profiles: ["m4-ha"]
     ports:
       - "127.0.0.1:${EDGE_SECONDARY_PORT:-8081}:8080"
     environment:
@@ -409,7 +409,7 @@ services:
       start_period: 10s
 
   qdrant:
-    profiles: ["tests"]
+    profiles: ["raglibrarian"]
     image: ${M5_QDRANT_IMAGE:-qdrant/qdrant:v1.18.3}
     read_only: true
     user: "0:0"
@@ -451,7 +451,7 @@ services:
       - DAC_READ_SEARCH
       - SETGID
       - SETUID
-    profiles: ["tests"]
+    profiles: ["raglibrarian"]
     build:
       context: .
       target: retrieval-runtime
@@ -472,7 +472,7 @@ services:
     pids_limit: 128
 
   text-embeddings-inference:
-    profiles: ["tests"]
+    profiles: ["raglibrarian"]
     image: ${M5_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference@sha256:cb570aabbfa016b86684f576b5bd72d1ee96cc0b7a00b0ad221b298762b32157}
     read_only: true
     user: "65532:65532"
@@ -688,7 +688,7 @@ services:
     <<: *job-hardening
     tmpfs:
       - /tmp:rw,exec,nosuid,nodev,size=1g
-    profiles: ["raglibrarian"]
+    profiles: ["tests"]
     build:
       context: .
       target: contract-tests
@@ -776,7 +776,7 @@ services:
     <<: *job-hardening
     tmpfs:
       - /tmp:rw,exec,nosuid,nodev,size=1g
-    profiles: ["raglibrarian"]
+    profiles: ["tests"]
     build:
       context: .
       target: contract-tests
@@ -805,7 +805,7 @@ services:
     <<: *job-hardening
     tmpfs:
       - /tmp:rw,exec,nosuid,nodev,size=1g
-    profiles: ["raglibrarian"]
+    profiles: ["tests"]
     build:
       context: .
       target: contract-tests
@@ -849,7 +849,7 @@ services:
     <<: *job-hardening
     tmpfs:
       - /tmp:rw,exec,nosuid,nodev,size=1g
-    profiles: ["raglibrarian"]
+    profiles: ["tests"]
     build:
       context: .
       target: contract-tests

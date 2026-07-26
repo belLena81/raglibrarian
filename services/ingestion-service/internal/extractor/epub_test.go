@@ -137,7 +137,7 @@ func TestParseEPUBAcceptsXHTML11DoctypeInXHTML(t *testing.T) {
 	}
 }
 
-func TestParseEPUBAcceptsFixedXHTMLEntitiesInXHTML(t *testing.T) {
+func TestParseEPUBAcceptsSafeXHTMLEntitiesInXHTML(t *testing.T) {
 	path := writeSyntheticEPUB(t, []epubTestEntry{
 		{name: "mimetype", contents: "application/epub+zip", method: zip.Store},
 		{name: "META-INF/container.xml", contents: containerXML("OPS/package.opf")},
@@ -147,7 +147,7 @@ func TestParseEPUBAcceptsFixedXHTMLEntitiesInXHTML(t *testing.T) {
 		)},
 		{name: "OPS/chapter.xhtml", contents: `<?xml version="1.0"?>` +
 			`<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">` +
-			`<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Spacing&nbsp;kept.</p></body></html>`},
+			`<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Caf&eacute; &mdash; spacing&nbsp;kept &hellip; and punctuation.</p></body></html>`},
 	})
 
 	pages, err := ParseEPUBFile(path, DefaultEPUBArchiveLimits())
@@ -155,7 +155,7 @@ func TestParseEPUBAcceptsFixedXHTMLEntitiesInXHTML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pages) != 1 || !strings.Contains(pages[0].Text, "Spacing kept.") {
+	if len(pages) != 1 || !strings.Contains(pages[0].Text, "Café — spacing kept … and punctuation.") {
 		t.Fatalf("pages = %#v", pages)
 	}
 }

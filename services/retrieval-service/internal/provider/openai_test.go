@@ -62,6 +62,7 @@ func TestOpenAIChatCompletionPathNormalization(t *testing.T) {
 		{name: "v1", baseURL: "https://provider/v1", expected: "/v1/chat/completions"},
 		{name: "openrouter root", baseURL: "https://openrouter.ai/", expected: "/api/v1/chat/completions"},
 		{name: "openrouter api v1", baseURL: "https://openrouter.ai/api/v1", expected: "/api/v1/chat/completions"},
+		{name: "openrouter explicit port", baseURL: "https://openrouter.ai:443/", expected: "/api/v1/chat/completions"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

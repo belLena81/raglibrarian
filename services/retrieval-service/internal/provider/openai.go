@@ -51,7 +51,7 @@ func NewOpenAI(baseURL, model, apiKey string, client *http.Client, log *zap.Logg
 		return nil, errors.New("invalid summary provider configuration")
 	}
 	endpoint := *parsed
-	endpoint.Path = openAIChatCompletionsPath(parsed.Host, parsed.Path)
+	endpoint.Path = openAIChatCompletionsPath(parsed.Hostname(), parsed.Path)
 	return &OpenAI{endpoint: &endpoint, model: model, apiKey: apiKey, client: client, log: log, limit: limit, maxTokens: maxTokens}, nil
 }
 

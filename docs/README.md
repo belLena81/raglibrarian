@@ -351,6 +351,10 @@ Implementation:
 - Run the provider over HTTPS with an operator-configured CA and file-backed
   key on an isolated egress network. The deterministic provider stub exists
   only in the explicit test profile.
+- If a free model ignores JSON mode, retry once with a documented plain-text
+  format that must start with a model-authored `Citations:` line and a matching
+  answer line. The service validates those citation IDs against the retrieved
+  evidence set and rejects plain text that omits or invents citations.
 
 Acceptance:
 
