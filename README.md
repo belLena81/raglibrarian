@@ -7,7 +7,13 @@ with traceable book, chapter, page, and passage citations.
 The repository implements Milestones 2 through 7, including PDF/EPUB Catalog
 upload, event-driven extraction, structured chunking, live lifecycle status,
 Retrieval-owned indexing/reindexing/deletion, Qdrant search, and optional
-grounded answers. It does not perform OCR.
+grounded answers. Free-tier LLM usage is intentionally bounded, so grounded
+answers can take up to 5 minutes in free environments. It does not perform
+OCR.
+
+Current verification as of July 26, 2026: the Retrieval service package test
+suite passes after the grounded-summary prompt and token-budget update, and
+the touched host-mode shell scripts pass syntax checks.
 
 ## Architecture decision
 

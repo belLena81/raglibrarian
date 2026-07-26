@@ -11,6 +11,10 @@ user or operator outcome, deployable service health, and automated acceptance
 coverage. A feature starts in its owning bounded context; it is never built in
 Edge and extracted later.
 
+Current verification as of July 26, 2026: the Retrieval service package test
+suite passes after the grounded-summary prompt and token-budget update, and
+the touched host-mode shell scripts pass syntax checks.
+
 ## Target architecture
 
 ```text
@@ -323,12 +327,16 @@ controlled serverless and real-provider acceptance gates pass.
 acceptance remains required.
 
 **Outcome:** users choose evidence-only search or an LLM answer grounded in the
-same returned passages.
+same returned passages. Free-tier LLM usage is intentionally bounded, so
+grounded answers may take up to 5 minutes in free environments.
 
 Implementation:
 
 - Introduce a stateless Answer service with provider-neutral `LLMProvider` and
   Retrieval client ports.
+- Retrieval-side summary prompting already asks for grounded answers against
+  the user question and uses a configurable output-token budget; the retrieval
+  service test suite passes with that change.
 - Add an optional query mode that defaults to search. Extend responses
   additively with an optional `answer` while retaining evidence results.
 - Validate every generated citation against retrieved result IDs. Unavailable
