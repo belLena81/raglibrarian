@@ -27,6 +27,7 @@ func (f *fakeRPC) Search(ctx context.Context, request *retrievalv1.SearchRequest
 		Query: request.Question,
 		Results: []*retrievalv1.Evidence{{
 			EvidenceId: "e-1", Passage: "passage", Summary: "passage summary",
+			Book: &retrievalv1.BookMetadata{BookId: "book-1", Title: "Book", Author: "Author", Year: 2024, MediaType: "application/epub+zip"},
 		}},
 		Documents: []*retrievalv1.DocumentResult{{
 			DocumentId: "doc-1",
@@ -37,7 +38,9 @@ func (f *fakeRPC) Search(ctx context.Context, request *retrievalv1.SearchRequest
 			Summary:    "document summary",
 			Evidence: []*retrievalv1.Evidence{{
 				EvidenceId: "e-1", Passage: "passage", Summary: "passage summary",
+				Book: &retrievalv1.BookMetadata{BookId: "book-1", Title: "Book", Author: "Author", Year: 2024, MediaType: "application/epub+zip"},
 			}},
+			Book: &retrievalv1.BookMetadata{BookId: "book-1", Title: "Book", Author: "Author", Year: 2024, MediaType: "application/epub+zip"},
 		}},
 	}, nil
 }
@@ -49,8 +52,9 @@ func TestClientForwardsActorCorrelationAndMapsEvidence(t *testing.T) {
 	result, err := client.Search(context.Background(), domain.SearchRequest{Question: "question", Limit: 5,
 		Actor: domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, CorrelationID: id})
 	if err != nil || rpc.request.Actor.UserId != "user-1" || rpc.request.CorrelationId != id || len(rpc.ids) != 1 || rpc.ids[0] != id || result.Results[0].EvidenceID != "e-1" ||
-		result.Results[0].Summary != "passage summary" || len(result.Documents) != 1 || result.Documents[0].Summary != "document summary" ||
-		len(result.Documents[0].Evidence) != 1 || result.Documents[0].Evidence[0].Summary != "passage summary" {
+		result.Results[0].Summary != "passage summary" || result.Results[0].Book.MediaType != "application/epub+zip" || len(result.Documents) != 1 || result.Documents[0].Summary != "document summary" ||
+		result.Documents[0].Book.MediaType != "application/epub+zip" || len(result.Documents[0].Evidence) != 1 || result.Documents[0].Evidence[0].Summary != "passage summary" ||
+		result.Documents[0].Evidence[0].Book.MediaType != "application/epub+zip" {
 		t.Fatalf("Search() = %#v, %v; request=%#v ids=%#v", result, err, rpc.request, rpc.ids)
 	}
 }

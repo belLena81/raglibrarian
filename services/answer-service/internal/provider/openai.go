@@ -173,7 +173,8 @@ func (p *OpenAI) generate(ctx context.Context, input application.ProviderRequest
 				detail = preview
 			}
 		}
-		return nil, false, &providerError{code: fmt.Sprintf("provider_http_status_%d", response.StatusCode), detail: detail, err: fmt.Errorf("provider returned HTTP status %d", response.StatusCode)}
+		retryable := responseFormat != nil && response.StatusCode == http.StatusBadRequest
+		return nil, retryable, &providerError{code: fmt.Sprintf("provider_http_status_%d", response.StatusCode), detail: detail, err: fmt.Errorf("provider returned HTTP status %d", response.StatusCode)}
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maximumProviderResponseBytes+1))
 	if err != nil {

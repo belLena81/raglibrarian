@@ -17,6 +17,7 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/process"
 	"github.com/belLena81/raglibrarian/services/edge-api/answerclient"
+	"github.com/belLena81/raglibrarian/services/edge-api/catalogclient"
 	"github.com/belLena81/raglibrarian/services/edge-api/retrievalclient"
 )
 
@@ -37,24 +38,24 @@ var (
 
 // Config is validated Edge runtime configuration.
 type Config struct {
-	Addr, IdentityAddress, CatalogAddress, RetrievalAddress, AnswerAddress string
-	StatusRabbitURI, StatusQueue                                           string
-	VerifyKey                                                              []byte
-	PreviousVerifyKey                                                      []byte
-	TrustedProxyCIDRs                                                      []netip.Prefix
-	TLS                                                                    internaltls.Files
-	SecureCookie                                                           bool
-	PublicOrigin                                                           string
-	EnforceBrowserOrigin                                                   bool
-	RetrievalReadinessRequired                                             bool
-	QueryRateLimit, QueryRateMaxKeys, QueryConcurrency                     int
-	QueryRateWindow                                                        time.Duration
-	BookUploadRateLimit, BookUploadRateMaxKeys                             int
-	BookUploadRateWindow                                                   time.Duration
-	AnswerRateLimit                                                        int
-	AnswerRateWindow, AnswerDeadline, RetrievalSearchDeadline              time.Duration
-	MinimumEvidenceScore                                                   float64
-	RunAs                                                                  process.Identity
+	Addr, IdentityAddress, CatalogAddress, RetrievalAddress, AnswerAddress            string
+	StatusRabbitURI, StatusQueue                                                      string
+	VerifyKey                                                                         []byte
+	PreviousVerifyKey                                                                 []byte
+	TrustedProxyCIDRs                                                                 []netip.Prefix
+	TLS                                                                               internaltls.Files
+	SecureCookie                                                                      bool
+	PublicOrigin                                                                      string
+	EnforceBrowserOrigin                                                              bool
+	RetrievalReadinessRequired                                                        bool
+	QueryRateLimit, QueryRateMaxKeys, QueryConcurrency                                int
+	QueryRateWindow                                                                   time.Duration
+	BookUploadRateLimit, BookUploadRateMaxKeys                                        int
+	BookUploadRateWindow                                                              time.Duration
+	AnswerRateLimit                                                                   int
+	AnswerRateWindow, AnswerDeadline, RetrievalSearchDeadline, CatalogPreviewDeadline time.Duration
+	MinimumEvidenceScore                                                              float64
+	RunAs                                                                             process.Identity
 }
 
 // Load reads Edge configuration from the environment.
@@ -138,6 +139,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	catalogPreviewDeadline, err := boundedDuration("EDGE_CATALOG_PREVIEW_DEADLINE", 5*time.Second, catalogclient.MaxPreviewDeadline)
+	if err != nil {
+		return Config{}, err
+	}
 	minimumEvidenceScore, err := boundedFloat("EDGE_MINIMUM_EVIDENCE_SCORE", 0.6, 0, 1)
 	if err != nil {
 		return Config{}, err
@@ -198,6 +203,7 @@ func Load() (Config, error) {
 		AnswerRateWindow:           answerRateWindow,
 		AnswerDeadline:             answerDeadline,
 		RetrievalSearchDeadline:    retrievalSearchDeadline,
+		CatalogPreviewDeadline:     catalogPreviewDeadline,
 		MinimumEvidenceScore:       minimumEvidenceScore,
 		RunAs:                      runAs,
 	}, nil

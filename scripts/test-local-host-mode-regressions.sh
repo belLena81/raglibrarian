@@ -214,6 +214,14 @@ if ! grep -Fq 'retrieval_summary_provider_max_output_tokens="${RETRIEVAL_SUMMARY
   echo "host env renderer does not default retrieval summary max output tokens" >&2
   exit 1
 fi
+if ! grep -Fq 'export RETRIEVAL_SUMMARY_LLM_MAX_CALLS="${RETRIEVAL_SUMMARY_LLM_MAX_CALLS:-4}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export retrieval summary max calls" >&2
+  exit 1
+fi
+if ! grep -Fq 'export EDGE_CATALOG_PREVIEW_DEADLINE="${EDGE_CATALOG_PREVIEW_DEADLINE:-5s}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export the catalog preview deadline" >&2
+  exit 1
+fi
 if ! grep -Fq 'bash ./scripts/stop-local-host-services.sh' "$root_dir/scripts/run-local-host-services.sh"; then
   echo "host services launcher does not stop stale screen sessions before restart" >&2
   exit 1

@@ -96,11 +96,12 @@ type Evidence struct {
 }
 
 type BookMetadata struct {
-	BookID string
-	Title  string
-	Author string
-	Year   int32
-	Tags   []string
+	BookID    string
+	Title     string
+	Author    string
+	Year      int32
+	Tags      []string
+	MediaType string
 }
 
 type DocumentResult struct {

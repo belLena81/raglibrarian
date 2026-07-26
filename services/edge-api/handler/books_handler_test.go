@@ -62,7 +62,7 @@ func TestUploadRejectsInvalidPublicationYearsBeforeCallingCatalog(t *testing.T) 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			catalog := &uploadCatalog{}
-			h := handler.NewBooksHandler(catalog)
+			h := handler.NewBooksHandler(catalog, 5*time.Second)
 			req := newUploadRequest(t, testCase.year)
 			recorder := httptest.NewRecorder()
 
@@ -84,7 +84,7 @@ func TestUploadRejectsInvalidPublicationYearsBeforeCallingCatalog(t *testing.T) 
 func TestUploadAcceptsMaximumPublicationYearUnchanged(t *testing.T) {
 	maximumYear := time.Now().UTC().Year() + 1
 	catalog := &uploadCatalog{}
-	h := handler.NewBooksHandler(catalog)
+	h := handler.NewBooksHandler(catalog, 5*time.Second)
 	req := newUploadRequest(t, fmt.Sprintf("%d", maximumYear))
 	recorder := httptest.NewRecorder()
 
@@ -103,7 +103,7 @@ func TestUploadAcceptsMaximumPublicationYearUnchanged(t *testing.T) {
 
 func TestUploadAcceptsEPUBAndForwardsMediaType(t *testing.T) {
 	catalog := &uploadCatalog{}
-	h := handler.NewBooksHandler(catalog)
+	h := handler.NewBooksHandler(catalog, 5*time.Second)
 	req := newUploadRequestWithMedia(t, "2025", "book.epub", "application/epub+zip", []byte("PK\x03\x04"))
 	recorder := httptest.NewRecorder()
 
@@ -121,7 +121,7 @@ func TestUploadAcceptsEPUBWithoutRegisteredBrowserMediaType(t *testing.T) {
 	for _, mediaType := range []string{"application/octet-stream", ""} {
 		t.Run(mediaType, func(t *testing.T) {
 			catalog := &uploadCatalog{}
-			h := handler.NewBooksHandler(catalog)
+			h := handler.NewBooksHandler(catalog, 5*time.Second)
 			req := newUploadRequestWithMedia(t, "2025", "book.epub", mediaType, []byte("PK\x03\x04"))
 			recorder := httptest.NewRecorder()
 
@@ -202,7 +202,7 @@ func (*commandCatalog) CheckReady(context.Context) error { return nil }
 
 func TestReindexRequiresIdempotencyKeyBeforeCallingCatalog(t *testing.T) {
 	catalog := &commandCatalog{}
-	h := handler.NewBooksHandler(catalog)
+	h := handler.NewBooksHandler(catalog, 5*time.Second)
 	request := bookCommandRequest(http.MethodPost, "AAAAAAAAAAAAAAAAAAAAAA", "")
 	recorder := httptest.NewRecorder()
 
@@ -215,7 +215,7 @@ func TestReindexRequiresIdempotencyKeyBeforeCallingCatalog(t *testing.T) {
 
 func TestDeleteForwardsIdempotencyKeyAndReturnsAcceptedProjection(t *testing.T) {
 	catalog := &commandCatalog{}
-	h := handler.NewBooksHandler(catalog)
+	h := handler.NewBooksHandler(catalog, 5*time.Second)
 	request := bookCommandRequest(http.MethodDelete, "AAAAAAAAAAAAAAAAAAAAAA", "command-123")
 	recorder := httptest.NewRecorder()
 
@@ -227,6 +227,56 @@ func TestDeleteForwardsIdempotencyKeyAndReturnsAcceptedProjection(t *testing.T) 
 	if !strings.Contains(recorder.Body.String(), `"processing_status":"deleting"`) {
 		t.Fatalf("body = %s, want deleting projection", recorder.Body.String())
 	}
+}
+
+type previewCatalog struct {
+	deadline time.Duration
+}
+
+func (c *previewCatalog) UploadBook(context.Context, handler.BookMetadata, handler.CatalogActor, string, io.Reader) (handler.Book, error) {
+	return handler.Book{}, errors.New("unexpected upload")
+}
+func (c *previewCatalog) ListBooks(context.Context, int, string, handler.CatalogActor) (handler.BookPage, error) {
+	return handler.BookPage{}, errors.New("unexpected list")
+}
+func (c *previewCatalog) GetBook(ctx context.Context, _ string, _ handler.CatalogActor) (handler.Book, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return handler.Book{}, errors.New("missing deadline")
+	}
+	c.deadline = time.Until(deadline)
+	return handler.Book{ID: "book-id"}, nil
+}
+func (c *previewCatalog) ReindexBook(context.Context, string, handler.CatalogActor, string, string) (handler.Book, error) {
+	return handler.Book{}, errors.New("unexpected reindex")
+}
+func (c *previewCatalog) DeleteBook(context.Context, string, handler.CatalogActor, string, string) (handler.Book, error) {
+	return handler.Book{}, errors.New("unexpected delete")
+}
+func (*previewCatalog) CheckReady(context.Context) error { return nil }
+
+func TestGetAllowsGeneratedPreviewTimeBudget(t *testing.T) {
+	catalog := &previewCatalog{}
+	h := handler.NewBooksHandler(catalog, 5*time.Second)
+	request := bookLookupRequest("AAAAAAAAAAAAAAAAAAAAAA")
+	recorder := httptest.NewRecorder()
+
+	h.Get(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	if catalog.deadline < 4*time.Second {
+		t.Fatalf("remaining deadline = %s, want at least 4s", catalog.deadline)
+	}
+}
+
+func bookLookupRequest(bookID string) *http.Request {
+	request := httptest.NewRequest(http.MethodGet, "/books/"+bookID, nil)
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("book_id", bookID)
+	ctx := context.WithValue(request.Context(), chi.RouteCtxKey, routeContext)
+	return request.WithContext(ctx)
 }
 
 func bookCommandRequest(method, bookID, commandID string) *http.Request {
@@ -259,7 +309,7 @@ func (paginationCatalog) DeleteBook(context.Context, string, handler.CatalogActo
 func (paginationCatalog) CheckReady(context.Context) error { return nil }
 
 func TestListMapsCatalogPaginationErrorToBadRequest(t *testing.T) {
-	h := handler.NewBooksHandler(paginationCatalog{})
+	h := handler.NewBooksHandler(paginationCatalog{}, 5*time.Second)
 	req := httptest.NewRequest(http.MethodGet, "/books?page_token=short", nil)
 	req = req.WithContext(middleware.WithClaims(req.Context(), auth.Claims{UserID: "reader", Role: auth.RoleReader}))
 	recorder := httptest.NewRecorder()
@@ -316,7 +366,7 @@ func TestGetRejectsInvalidBookIDBeforeCallingCatalog(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			catalog := &bookLookupCatalog{}
-			h := handler.NewBooksHandler(catalog)
+			h := handler.NewBooksHandler(catalog, 5*time.Second)
 			request := bookGetRequest(test.bookID)
 			recorder := httptest.NewRecorder()
 
@@ -341,7 +391,7 @@ func TestGetRejectsInvalidBookIDBeforeCallingCatalog(t *testing.T) {
 func TestGetForwardsCanonicalBookID(t *testing.T) {
 	const bookID = "AAAAAAAAAAAAAAAAAAAAAA"
 	catalog := &bookLookupCatalog{}
-	h := handler.NewBooksHandler(catalog)
+	h := handler.NewBooksHandler(catalog, 5*time.Second)
 	recorder := httptest.NewRecorder()
 
 	h.Get(recorder, bookGetRequest(bookID))

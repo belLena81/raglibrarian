@@ -27,6 +27,7 @@ func TestServerMapsEvidenceAndAnswerWithoutLosingFields(t *testing.T) {
 		Query: "q",
 		Results: []domain.Evidence{{
 			EvidenceID: "e-1", Passage: "p", Summary: "passage summary",
+			Book: domain.BookMetadata{BookID: "book-1", Title: "Book", Author: "Author", Year: 2024, MediaType: "application/epub+zip"},
 		}},
 		Documents: []domain.DocumentResult{{
 			DocumentID: "doc-1",
@@ -37,15 +38,18 @@ func TestServerMapsEvidenceAndAnswerWithoutLosingFields(t *testing.T) {
 			Summary:    "document summary",
 			Evidence: []domain.Evidence{{
 				EvidenceID: "e-1", Passage: "p", Summary: "passage summary",
+				Book: domain.BookMetadata{BookID: "book-1", Title: "Book", Author: "Author", Year: 2024, MediaType: "application/epub+zip"},
 			}},
+			Book: domain.BookMetadata{BookID: "book-1", Title: "Book", Author: "Author", Year: 2024, MediaType: "application/epub+zip"},
 		}},
 	},
 		Answer: &domain.GroundedAnswer{Segments: []domain.AnswerSegment{{Text: "a", EvidenceIDs: []string{"e-1"}}}}}
 	server := NewServer(fakeService{result: result})
 	response, err := server.Answer(context.Background(), validProtoRequest())
 	if err != nil || response.Search.Results[0].Passage != "p" || response.Search.Results[0].Summary != "passage summary" ||
-		len(response.Search.Documents) != 1 || response.Search.Documents[0].Summary != "document summary" ||
-		len(response.Search.Documents[0].Evidence) != 1 || response.Search.Documents[0].Evidence[0].Summary != "passage summary" ||
+		response.Search.Results[0].Book.GetMediaType() != "application/epub+zip" || len(response.Search.Documents) != 1 || response.Search.Documents[0].Summary != "document summary" ||
+		response.Search.Documents[0].Book.GetMediaType() != "application/epub+zip" || len(response.Search.Documents[0].Evidence) != 1 || response.Search.Documents[0].Evidence[0].Summary != "passage summary" ||
+		response.Search.Documents[0].Evidence[0].Book.GetMediaType() != "application/epub+zip" ||
 		response.Answer.Segments[0].EvidenceIds[0] != "e-1" {
 		t.Fatalf("Answer() = %#v, %v", response, err)
 	}

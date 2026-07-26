@@ -72,15 +72,16 @@ type BookCatalog interface {
 	CheckReady(context.Context) error
 }
 type BooksHandler struct {
-	catalog BookCatalog
-	events  *bookEvents
+	catalog        BookCatalog
+	previewTimeout time.Duration
+	events         *bookEvents
 }
 
-func NewBooksHandler(catalog BookCatalog) *BooksHandler {
-	if dependencyMissing(catalog) {
+func NewBooksHandler(catalog BookCatalog, previewTimeout time.Duration) *BooksHandler {
+	if dependencyMissing(catalog) || previewTimeout <= 0 {
 		panic("handler: book catalog is required")
 	}
-	return &BooksHandler{catalog: catalog}
+	return &BooksHandler{catalog: catalog, previewTimeout: previewTimeout}
 }
 
 func (h *BooksHandler) Upload(w http.ResponseWriter, r *http.Request) {
@@ -165,7 +166,7 @@ func (h *BooksHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal, _ := middleware.PrincipalFromContext(r.Context())
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), h.previewTimeout)
 	defer cancel()
 	book, err := h.catalog.GetBook(ctx, bookID, catalogActor(principal))
 	if err != nil {

@@ -37,6 +37,7 @@ type Config struct {
 	SummaryLLMModel             string
 	SummaryLLMTimeout           time.Duration
 	SummaryLLMMaxOutputTokens   int
+	SummaryLLMMaxCalls          int
 	SummaryLLMRequestsPerMinute int
 	SummaryLLMAPIKeyFile        string
 	SummaryLLMCAFile            string
@@ -81,6 +82,7 @@ func Load() (Config, error) {
 	dependencyTimeout, dependencyTimeoutErr := optionalDuration("RETRIEVAL_DEPENDENCY_TIMEOUT", searchTimeout)
 	summaryTimeout, summaryTimeoutErr := optionalDuration("RETRIEVAL_SUMMARY_LLM_TIMEOUT", searchTimeout)
 	summaryMaxOutputTokens, summaryMaxOutputTokensErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_OUTPUT_TOKENS", 64, 256)
+	summaryMaxCalls, summaryMaxCallsErr := nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_MAX_CALLS", 4, 1000)
 	minimumSearchScore, minimumSearchScoreErr := LoadMinimumSearchScore()
 	summaryLLMRequestsPerMinute, summaryLLMRequestsPerMinuteErr := nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_REQUESTS_PER_MINUTE", 15, 1000)
 	teiRequestsPerSecond, teiRequestsPerSecondErr := nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000)
@@ -88,13 +90,14 @@ func Load() (Config, error) {
 	configuration.DependencyTimeout = dependencyTimeout
 	configuration.SummaryLLMTimeout = summaryTimeout
 	configuration.SummaryLLMMaxOutputTokens = summaryMaxOutputTokens
+	configuration.SummaryLLMMaxCalls = summaryMaxCalls
 	configuration.MinimumSearchScore = minimumSearchScore
 	configuration.SummaryLLMRequestsPerMinute = summaryLLMRequestsPerMinute
 	configuration.TEIRequestsPerSecond = teiRequestsPerSecond
 	if configuration.GRPCAddress == "" || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
 		configuration.PostgresDSNFile == "" || configuration.QdrantAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || uidErr != nil || gidErr != nil ||
-		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || teiRequestsPerSecondErr != nil || configuration.SummaryLLMTimeout > configuration.SearchTimeout ||
+		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || teiRequestsPerSecondErr != nil || configuration.SummaryLLMTimeout > configuration.SearchTimeout ||
 		!validSummaryProviderConfiguration(configuration) {
 		return Config{}, errors.New("invalid retrieval configuration")
 	}

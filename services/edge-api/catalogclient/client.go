@@ -20,10 +20,22 @@ import (
 )
 
 type Client struct {
-	service catalogv1.CatalogServiceClient
+	service        catalogv1.CatalogServiceClient
+	previewTimeout time.Duration
 }
 
-func New(service catalogv1.CatalogServiceClient) *Client { return &Client{service: service} }
+// MaxPreviewDeadline bounds Edge's gRPC catalog preview request budget.
+const MaxPreviewDeadline = 30 * time.Second
+
+func New(service catalogv1.CatalogServiceClient, previewTimeout time.Duration) *Client {
+	if service == nil {
+		panic("catalogclient: service must not be nil")
+	}
+	if previewTimeout <= 0 || previewTimeout > MaxPreviewDeadline {
+		panic("catalogclient: preview timeout must be between zero and 30 seconds")
+	}
+	return &Client{service: service, previewTimeout: previewTimeout}
+}
 func (c *Client) CheckReady(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
@@ -117,7 +129,7 @@ func (c *Client) GetBook(ctx context.Context, id string, actor handler.CatalogAc
 	if err != nil {
 		return handler.Book{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, c.previewTimeout)
 	defer cancel()
 	response, err := c.service.GetBook(ctx, &catalogv1.GetBookRequest{BookId: id, Actor: actorProto(actor)})
 	if err != nil {

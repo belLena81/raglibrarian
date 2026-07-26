@@ -23,7 +23,7 @@ import (
 func TestSearchQualityBenchmark(t *testing.T) {
 	embedder := newQualityEmbedder(t)
 	store := newQualityQdrant(t, embedder)
-	searcher, err := application.NewSearcher(embedder, store, qualityVisibility{}, 0.6)
+	searcher, err := application.NewSearcher(embedder, store, qualityVisibility{}, 0.6, 4)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}

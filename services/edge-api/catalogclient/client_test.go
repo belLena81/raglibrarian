@@ -71,7 +71,7 @@ func TestUploadBookForwardsValidatedYearUnchanged(t *testing.T) {
 	})
 
 	const year int32 = 2027
-	client := New(catalogv1.NewCatalogServiceClient(connection))
+	client := New(catalogv1.NewCatalogServiceClient(connection), 5*time.Second)
 	if _, err = client.UploadBook(ctx, handler.BookMetadata{Title: "Title", Author: "Author", Year: year, MediaType: "application/epub+zip"}, handler.CatalogActor{}, testRequestID, bytes.NewBufferString("PK")); err != nil {
 		t.Fatalf("upload book: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestLifecycleCommandsForwardActorCommandAndProjection(t *testing.T) {
 			return &catalogv1.DeleteBookResponse{Book: &catalogv1.Book{Id: request.BookId, LifecycleVersion: 5}}, nil
 		},
 	}
-	client := New(service)
+	client := New(service, 5*time.Second)
 	actor := handler.CatalogActor{UserID: "manager"}
 
 	reindexed, err := client.ReindexBook(context.Background(), "book-id", actor, testRequestID, "reindex-command")
@@ -187,7 +187,7 @@ func TestUploadBookRecoversTerminalStatusAfterSendEOF(t *testing.T) {
 				return stream, nil
 			}}
 
-			_, err := New(service).UploadBook(context.Background(), handler.BookMetadata{}, handler.CatalogActor{}, testRequestID, bytes.NewBufferString("%PDF"))
+			_, err := New(service, 5*time.Second).UploadBook(context.Background(), handler.BookMetadata{}, handler.CatalogActor{}, testRequestID, bytes.NewBufferString("%PDF"))
 
 			if !errors.Is(err, test.want) {
 				t.Fatalf("UploadBook() error = %v, want %v", err, test.want)
@@ -205,7 +205,7 @@ func TestUploadBookMapsNonEOFSendStatusWithoutClosingAgain(t *testing.T) {
 		return stream, nil
 	}}
 
-	_, err := New(service).UploadBook(context.Background(), handler.BookMetadata{}, handler.CatalogActor{}, testRequestID, bytes.NewBufferString("%PDF"))
+	_, err := New(service, 5*time.Second).UploadBook(context.Background(), handler.BookMetadata{}, handler.CatalogActor{}, testRequestID, bytes.NewBufferString("%PDF"))
 
 	if !errors.Is(err, handler.ErrBookUnauthorized) {
 		t.Fatalf("UploadBook() error = %v, want %v", err, handler.ErrBookUnauthorized)
@@ -235,7 +235,7 @@ func TestCatalogReadsForwardValidatedRequestID(t *testing.T) {
 		"x-request-id", "duplicate-request-id",
 	))
 	ctx = context.WithValue(ctx, chimiddleware.RequestIDKey, testRequestID)
-	client := New(service)
+	client := New(service, 5*time.Second)
 
 	if _, err := client.ListBooks(ctx, 25, "", handler.CatalogActor{}); err != nil {
 		t.Fatalf("ListBooks() error = %v", err)
@@ -267,7 +267,7 @@ func TestCatalogReadsRejectInvalidInternalRequestIDBeforeRPC(t *testing.T) {
 
 	for _, requestID := range []string{"", strings.Repeat("a", 31), strings.Repeat("A", 32), strings.Repeat("z", 32)} {
 		ctx := context.WithValue(context.Background(), chimiddleware.RequestIDKey, requestID)
-		client := New(service)
+		client := New(service, 5*time.Second)
 		if _, err := client.ListBooks(ctx, 25, "", handler.CatalogActor{}); !errors.Is(err, handler.ErrInvalidBookRequest) {
 			t.Fatalf("ListBooks() with request ID %q error = %v, want invalid request", requestID, err)
 		}
@@ -280,7 +280,8 @@ func TestCatalogReadsRejectInvalidInternalRequestIDBeforeRPC(t *testing.T) {
 	}
 }
 
-func TestGetBookUsesSixSecondDeadline(t *testing.T) {
+func TestGetBookUsesConfiguredDeadline(t *testing.T) {
+	previewTimeout := 9 * time.Second
 	service := &catalogClientStub{
 		get: func(ctx context.Context, _ *catalogv1.GetBookRequest, _ ...grpc.CallOption) (*catalogv1.GetBookResponse, error) {
 			deadline, ok := ctx.Deadline()
@@ -288,15 +289,15 @@ func TestGetBookUsesSixSecondDeadline(t *testing.T) {
 				t.Fatal("GetBook context missing deadline")
 			}
 			remaining := time.Until(deadline)
-			if remaining > 6*time.Second || remaining < 5*time.Second {
-				t.Fatalf("deadline remaining = %v, want about 6s", remaining)
+			if remaining > 10*time.Second || remaining < 8*time.Second {
+				t.Fatalf("deadline remaining = %v, want about 9s", remaining)
 			}
 			return &catalogv1.GetBookResponse{Book: &catalogv1.Book{Id: "book-id"}}, nil
 		},
 	}
 	ctx := context.WithValue(context.Background(), chimiddleware.RequestIDKey, testRequestID)
 
-	_, err := New(service).GetBook(ctx, "AAAAAAAAAAAAAAAAAAAAAA", handler.CatalogActor{})
+	_, err := New(service, previewTimeout).GetBook(ctx, "AAAAAAAAAAAAAAAAAAAAAA", handler.CatalogActor{})
 
 	if err != nil {
 		t.Fatalf("GetBook() error = %v", err)

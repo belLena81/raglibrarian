@@ -115,7 +115,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	}
 	defer func() { _ = answerConnection.Close() }()
 	identity := identityclient.New(identityv1.NewIdentityServiceClient(connection), grpc_health_v1.NewHealthClient(connection))
-	catalog := catalogclient.New(catalogv1.NewCatalogServiceClient(catalogConnection))
+	catalog := catalogclient.New(catalogv1.NewCatalogServiceClient(catalogConnection), cfg.CatalogPreviewDeadline)
 	retrieval := retrievalclient.New(retrievalv1.NewRetrievalServiceClient(retrievalConnection), cfg.RetrievalSearchDeadline)
 	answer := answerclient.New(answerv1.NewAnswerServiceClient(answerConnection), cfg.AnswerDeadline, cfg.MinimumEvidenceScore)
 	authHandler := handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: cfg.SecureCookie})
@@ -127,7 +127,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		retrieval:                  retrieval,
 		retrievalReadinessRequired: cfg.RetrievalReadinessRequired,
 	})
-	booksHandler := handler.NewBooksHandler(catalog)
+	booksHandler := handler.NewBooksHandler(catalog, cfg.CatalogPreviewDeadline)
 	bookStatusHub := handler.NewBookStatusHub(200)
 	booksHandler.EnableEvents(handler.BookEventsConfig{
 		Sessions: identity, Hub: bookStatusHub, PublicOrigin: cfg.PublicOrigin, EnforceOrigin: cfg.EnforceBrowserOrigin,

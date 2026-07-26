@@ -94,7 +94,7 @@ func evidenceToProto(value domain.Evidence) *retrievalv1.Evidence {
 }
 
 func bookToProto(value domain.BookMetadata) *retrievalv1.BookMetadata {
-	return &retrievalv1.BookMetadata{BookId: value.BookID, Title: value.Title, Author: value.Author, Year: value.Year, Tags: append([]string(nil), value.Tags...)}
+	return &retrievalv1.BookMetadata{BookId: value.BookID, Title: value.Title, Author: value.Author, Year: value.Year, Tags: append([]string(nil), value.Tags...), MediaType: value.MediaType}
 }
 
 func mapError(err error) error {

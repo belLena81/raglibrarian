@@ -128,6 +128,64 @@ func TestOpenAIFallsBackToPlainTextCitationPreamble(t *testing.T) {
 	}
 }
 
+func TestOpenAIFallsBackToPlainTextWhenJSONModeIsRejected(t *testing.T) {
+	limit, err := throttle.New(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := 0
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		call++
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch call {
+		case 1:
+			format, ok := body["response_format"].(map[string]any)
+			if !ok || format["type"] != "json_object" {
+				t.Fatalf("response_format = %#v, want json_object", body["response_format"])
+			}
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Status:     "400 Bad Request",
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"response_format is not supported"}}`)),
+			}, nil
+		case 2:
+			if _, ok := body["response_format"]; ok {
+				t.Fatalf("fallback request unexpectedly set response_format: %#v", body["response_format"])
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"Citations: e-1\nAnswer: Plain text fallback works."}}]}`)),
+			}, nil
+		default:
+			t.Fatalf("unexpected request count %d", call)
+			return nil, nil
+		}
+	})}
+	adapter, err := NewOpenAI("https://openrouter.ai/", "model", "synthetic-key", client, limit, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	segments, err := adapter.Generate(context.Background(), application.ProviderRequest{
+		Question:  "vim shortcuts",
+		Evidence:  []domain.ContextEvidence{{EvidenceID: "e-1", Passage: "passage 1"}},
+		MaxTokens: 10,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if len(segments) != 1 || segments[0].Text != "Plain text fallback works." {
+		t.Fatalf("Generate() = %#v, want plain text fallback segment", segments)
+	}
+	if got := segments[0].EvidenceIDs; len(got) != 1 || got[0] != "e-1" {
+		t.Fatalf("fallback evidence ids = %#v", got)
+	}
+}
+
 func TestOpenAIAcceptsPlainTextCandidateWithCitationPreamble(t *testing.T) {
 	limit, err := throttle.New(0)
 	if err != nil {

@@ -42,6 +42,7 @@ func TestLoadParsesExplicitSecurityConfiguration(t *testing.T) {
 	assert.Equal(t, "answer-service:50055", cfg.AnswerAddress)
 	assert.Equal(t, 5*time.Minute, cfg.AnswerDeadline)
 	assert.Equal(t, 2*time.Minute, cfg.RetrievalSearchDeadline)
+	assert.Equal(t, 5*time.Second, cfg.CatalogPreviewDeadline)
 	assert.Equal(t, 10, cfg.AnswerRateLimit)
 	assert.Equal(t, 3*time.Minute, cfg.AnswerRateWindow)
 	assert.True(t, cfg.RetrievalReadinessRequired)
@@ -76,6 +77,7 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	t.Setenv("EDGE_BOOK_UPLOAD_RATE_MAX_KEYS", "600")
 	t.Setenv("EDGE_ANSWER_DEADLINE", "7s")
 	t.Setenv("EDGE_RETRIEVAL_SEARCH_DEADLINE", "11s")
+	t.Setenv("EDGE_CATALOG_PREVIEW_DEADLINE", "9s")
 	t.Setenv("EDGE_ANSWER_RATE_LIMIT", "9")
 	t.Setenv("EDGE_ANSWER_RATE_WINDOW", "45s")
 
@@ -91,6 +93,7 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	assert.Equal(t, 600, cfg.BookUploadRateMaxKeys)
 	assert.Equal(t, 7*time.Second, cfg.AnswerDeadline)
 	assert.Equal(t, 11*time.Second, cfg.RetrievalSearchDeadline)
+	assert.Equal(t, 9*time.Second, cfg.CatalogPreviewDeadline)
 	assert.Equal(t, 9, cfg.AnswerRateLimit)
 	assert.Equal(t, 45*time.Second, cfg.AnswerRateWindow)
 }
@@ -125,9 +128,29 @@ func TestLoadAcceptsMaximumAnswerDeadline(t *testing.T) {
 	assert.Equal(t, 5*time.Minute, cfg.AnswerDeadline)
 }
 
+func TestLoadAcceptsMaximumCatalogPreviewDeadline(t *testing.T) {
+	setRequired(t)
+	t.Setenv("EDGE_CATALOG_PREVIEW_DEADLINE", "30s")
+
+	cfg, err := config.Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, 30*time.Second, cfg.CatalogPreviewDeadline)
+}
+
 func TestLoadRejectsOversizedAnswerDeadline(t *testing.T) {
 	setRequired(t)
 	t.Setenv("EDGE_ANSWER_DEADLINE", "5m1s")
+
+	_, err := config.Load()
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, config.ErrQueryLimitConfiguration)
+}
+
+func TestLoadRejectsOversizedCatalogPreviewDeadline(t *testing.T) {
+	setRequired(t)
+	t.Setenv("EDGE_CATALOG_PREVIEW_DEADLINE", "31s")
 
 	_, err := config.Load()
 

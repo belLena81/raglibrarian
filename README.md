@@ -44,9 +44,10 @@ client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
   projections, and synchronous search over indexed chunks.
 - **answer-service** owns bounded prompt construction, provider integration,
   and validation of grounded answer segments against Retrieval evidence IDs.
-  When a free model ignores JSON mode, the provider retries with a documented
-  plain-text format that requires a model-authored `Citations:` preamble and a
-  matching answer line; the service never fabricates citation IDs.
+  When a free model ignores or rejects JSON mode, the provider retries with a
+  documented plain-text format that requires a model-authored `Citations:`
+  preamble and a matching answer line; the service never fabricates citation
+  IDs.
 - Internal gRPC ports and Postgres are private in Compose. Service-to-service
   calls use TLS 1.3 with client certificates.
 - Future lifecycle work is added in its owning bounded context. Bounded event

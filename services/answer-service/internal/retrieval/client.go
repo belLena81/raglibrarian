@@ -82,5 +82,5 @@ func bookFromProto(value *retrievalv1.BookMetadata) domain.BookMetadata {
 	if value == nil {
 		return domain.BookMetadata{Tags: []string{}}
 	}
-	return domain.BookMetadata{BookID: value.BookId, Title: value.Title, Author: value.Author, Year: value.Year, Tags: append([]string(nil), value.Tags...)}
+	return domain.BookMetadata{BookID: value.BookId, Title: value.Title, Author: value.Author, Year: value.Year, Tags: append([]string(nil), value.Tags...), MediaType: value.MediaType}
 }

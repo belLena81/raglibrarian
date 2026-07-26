@@ -17,7 +17,6 @@ import (
 var ErrSearchForbidden = errors.New("search forbidden")
 
 const maximumSearchCandidates = domain.MaximumResultLimit * 5
-const maximumSearchSummaryProviderCalls = 4
 
 // Evidence is Retrieval's controlled local chunk projection returned to an authorized caller.
 type Evidence struct {
@@ -74,6 +73,7 @@ type Searcher struct {
 	visibility          IndexVisibility
 	summaryProvider     SummaryProvider
 	summaryTimeout      time.Duration
+	summaryCallLimit    int
 	minimumVisibleScore float64
 }
 
@@ -82,11 +82,11 @@ type SummaryRequest struct {
 	Passage  string
 }
 
-func NewSearcher(embedder QueryEmbedder, store EvidenceStore, visibility IndexVisibility, minimumVisibleScore float64) (*Searcher, error) {
-	if embedder == nil || store == nil || visibility == nil {
+func NewSearcher(embedder QueryEmbedder, store EvidenceStore, visibility IndexVisibility, minimumVisibleScore float64, summaryCallLimit int) (*Searcher, error) {
+	if embedder == nil || store == nil || visibility == nil || summaryCallLimit < 0 {
 		return nil, errors.New("invalid searcher configuration")
 	}
-	return &Searcher{embedder: embedder, store: store, visibility: visibility, minimumVisibleScore: minimumVisibleScore}, nil
+	return &Searcher{embedder: embedder, store: store, visibility: visibility, minimumVisibleScore: minimumVisibleScore, summaryCallLimit: summaryCallLimit}, nil
 }
 
 func (s *Searcher) SetSummaryProvider(provider SummaryProvider) {
@@ -101,7 +101,7 @@ func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.
 	if !actor.CanSearch() {
 		return SearchResult{}, ErrSearchForbidden
 	}
-	summaryCache := newSearchSummaryCache(maximumSearchSummaryProviderCalls, s.summaryTimeout)
+	summaryCache := newSearchSummaryCache(s.summaryCallLimit, s.summaryTimeout)
 	query, err := domain.NewSearchQuery(input)
 	if err != nil {
 		return SearchResult{}, err

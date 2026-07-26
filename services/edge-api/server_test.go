@@ -229,7 +229,7 @@ func TestBookUploadRateLimitUsesRouterConfiguration(t *testing.T) {
 			BookUploadRateWindow:  time.Hour,
 			BookUploadRateMaxKeys: 100,
 		},
-		handler.NewBooksHandler(catalog),
+		handler.NewBooksHandler(catalog, 5*time.Second),
 	)
 	token, err := signer.Issue(auth.Subject{UserID: "upload-user", Email: "librarian@example.test", Role: auth.RoleLibrarian, SessionID: "session-1"})
 	require.NoError(t, err)
