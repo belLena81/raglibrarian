@@ -78,6 +78,41 @@ func TestAnswerReturnsValidatedGroundedSegments(t *testing.T) {
 	}
 }
 
+func TestAnswerFiltersEvidenceBeforeSynthesisUsingMinimumScore(t *testing.T) {
+	retriever := &fakeRetriever{result: domain.SearchResult{
+		Query: "question",
+		Results: []domain.Evidence{
+			{EvidenceID: "low", Passage: "too weak", Score: 0.59},
+			{EvidenceID: "high", Passage: "strong enough", Score: 0.6},
+		},
+		Documents: []domain.DocumentResult{{
+			DocumentID: "doc-1",
+			Evidence: []domain.Evidence{
+				{EvidenceID: "low-doc", Passage: "too weak", Score: 0.59},
+				{EvidenceID: "high-doc", Passage: "strong enough", Score: 0.6},
+			},
+		}},
+	}}
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"high"}}}}
+	service := newTestService(t, retriever, provider, DefaultLimits())
+	request := validRequest()
+	request.MinimumEvidenceScore = 0.6
+
+	result, err := service.Answer(context.Background(), request)
+	if err != nil || result.Answer == nil {
+		t.Fatalf("Answer() = %#v, %v", result, err)
+	}
+	if len(provider.input.Evidence) != 2 || provider.input.Evidence[0].EvidenceID != "high" || provider.input.Evidence[1].EvidenceID != "high-doc" {
+		t.Fatalf("provider evidence = %#v", provider.input.Evidence)
+	}
+	if len(result.Search.Results) != 1 || result.Search.Results[0].EvidenceID != "high" {
+		t.Fatalf("search results = %#v", result.Search.Results)
+	}
+	if len(result.Search.Documents) != 1 || len(result.Search.Documents[0].Evidence) != 1 || result.Search.Documents[0].Evidence[0].EvidenceID != "high-doc" {
+		t.Fatalf("search documents = %#v", result.Search.Documents)
+	}
+}
+
 func TestAnswerDoesNotCallProviderWithoutEvidence(t *testing.T) {
 	provider := &fakeProvider{}
 	service := newTestService(t, &fakeRetriever{result: domain.SearchResult{}}, provider, DefaultLimits())

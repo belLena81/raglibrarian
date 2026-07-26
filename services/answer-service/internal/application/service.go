@@ -4,6 +4,7 @@ package application
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"time"
 	"unicode"
@@ -118,6 +119,7 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 		s.observer.Failure(OutcomeRetrievalFailure, "retrieval", failureReasonCode(err, "retrieval"), failureReasonDetail(err), time.Since(started))
 		return domain.AnswerResult{}, err
 	}
+	search = filterSearchByMinimumEvidenceScore(search, request.MinimumEvidenceScore)
 	result := domain.AnswerResult{Search: search}
 	evidence := selectEvidence(search, s.limits)
 	if len(evidence) == 0 {
@@ -154,6 +156,35 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 	s.observer.ProviderResponse(len(validated), utf8.RuneCountInString(summary))
 	s.observer.Observe(OutcomeAnswered, time.Since(started))
 	return result, nil
+}
+
+func filterSearchByMinimumEvidenceScore(search domain.SearchResult, minimumEvidenceScore float64) domain.SearchResult {
+	if minimumEvidenceScore <= 0 || math.IsNaN(minimumEvidenceScore) || math.IsInf(minimumEvidenceScore, 0) {
+		return search
+	}
+	results := make([]domain.Evidence, 0, len(search.Results))
+	for _, value := range search.Results {
+		if value.Score >= minimumEvidenceScore {
+			results = append(results, value)
+		}
+	}
+	documents := make([]domain.DocumentResult, 0, len(search.Documents))
+	for _, document := range search.Documents {
+		evidence := make([]domain.Evidence, 0, len(document.Evidence))
+		for _, value := range document.Evidence {
+			if value.Score >= minimumEvidenceScore {
+				evidence = append(evidence, value)
+			}
+		}
+		if len(evidence) == 0 {
+			continue
+		}
+		document.Evidence = evidence
+		documents = append(documents, document)
+	}
+	search.Results = results
+	search.Documents = documents
+	return search
 }
 
 func selectEvidence(search domain.SearchResult, limits Limits) []domain.ContextEvidence {

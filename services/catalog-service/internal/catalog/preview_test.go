@@ -112,3 +112,14 @@ func TestInjectEPUBPreviewCSPWrapsTheDocument(t *testing.T) {
 		t.Fatalf("wrapped preview = %q", wrapped)
 	}
 }
+
+func TestInjectEPUBPreviewCSPUsesTheRealHeadElement(t *testing.T) {
+	page := []byte(`<?xml version="1.0"?><!-- <head> --><html><head><title>preview</title></head><body><img src="https://example.invalid/track.png"></body></html>`)
+	wrapped := injectEPUBPreviewCSP(page)
+	if !strings.Contains(wrapped, "<head>"+epubPreviewCSP) {
+		t.Fatalf("wrapped preview = %q", wrapped)
+	}
+	if strings.Contains(wrapped, "<!-- <head> -->"+epubPreviewCSP) {
+		t.Fatalf("CSP was injected into the comment instead of the real head: %q", wrapped)
+	}
+}

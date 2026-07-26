@@ -21,19 +21,23 @@ const MaxAnswerDeadline = 5 * time.Minute
 
 // Client translates Edge query requests to the versioned Answer contract.
 type Client struct {
-	service  answerv1.AnswerServiceClient
-	deadline time.Duration
+	service              answerv1.AnswerServiceClient
+	deadline             time.Duration
+	minimumEvidenceScore float64
 }
 
 // New constructs an Answer client adapter with a bounded RPC deadline.
-func New(service answerv1.AnswerServiceClient, deadline time.Duration) *Client {
+func New(service answerv1.AnswerServiceClient, deadline time.Duration, minimumEvidenceScore float64) *Client {
 	if service == nil {
 		panic("answerclient: service must not be nil")
 	}
 	if deadline <= 0 || deadline > MaxAnswerDeadline {
 		panic("answerclient: deadline must be between zero and 5 minutes")
 	}
-	return &Client{service: service, deadline: deadline}
+	if minimumEvidenceScore <= 0 || minimumEvidenceScore > 1 {
+		panic("answerclient: minimum evidence score must be within (0, 1]")
+	}
+	return &Client{service: service, deadline: deadline, minimumEvidenceScore: minimumEvidenceScore}
 }
 
 // Answer requests grounded synthesis while forwarding only trusted Edge data.
@@ -50,7 +54,8 @@ func (c *Client) Answer(ctx context.Context, request handler.SearchRequest) (han
 	defer cancel()
 
 	response, err := c.service.Answer(ctx, &answerv1.AnswerRequest{
-		Search: searchcontract.RequestToProto(request, requestID),
+		Search:               searchcontract.RequestToProto(request, requestID),
+		MinimumEvidenceScore: c.minimumEvidenceScore,
 	})
 	if err != nil {
 		return handler.AnswerResult{}, mapError(err)

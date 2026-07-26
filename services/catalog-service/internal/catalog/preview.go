@@ -137,12 +137,27 @@ const epubPreviewCSP = `<meta http-equiv="Content-Security-Policy" content="defa
 
 func injectEPUBPreviewCSP(page []byte) string {
 	content := string(page)
-	lower := strings.ToLower(content)
-	if index := strings.Index(lower, "<head>"); index >= 0 {
-		insertAt := index + len("<head>")
+	if insertAt := epubPreviewHeadInsertOffset(content); insertAt >= 0 {
 		return content[:insertAt] + epubPreviewCSP + content[insertAt:]
 	}
 	return "<!doctype html><html><head><meta charset=\"utf-8\">" + epubPreviewCSP + "</head><body>" + content + "</body></html>"
+}
+
+func epubPreviewHeadInsertOffset(content string) int {
+	decoder := xml.NewDecoder(strings.NewReader(content))
+	decoder.Strict = true
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			return -1
+		}
+		if err != nil {
+			return -1
+		}
+		if start, ok := token.(xml.StartElement); ok && strings.EqualFold(start.Name.Local, "head") {
+			return int(decoder.InputOffset())
+		}
+	}
 }
 
 func extractEPUBPreviewPages(sourcePath string) ([][]byte, error) {

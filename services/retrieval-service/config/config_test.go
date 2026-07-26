@@ -113,6 +113,35 @@ func TestLoadDefaultsSummaryProviderRateLimit(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultsSearchTimeoutAndMinimumScore(t *testing.T) {
+	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+
+	configuration, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if configuration.SearchTimeout != 2*time.Minute {
+		t.Fatalf("SearchTimeout = %s, want 2m", configuration.SearchTimeout)
+	}
+	if configuration.DependencyTimeout != 2*time.Minute {
+		t.Fatalf("DependencyTimeout = %s, want 2m", configuration.DependencyTimeout)
+	}
+	if configuration.SummaryLLMTimeout != 2*time.Minute {
+		t.Fatalf("SummaryLLMTimeout = %s, want 2m", configuration.SummaryLLMTimeout)
+	}
+	if configuration.MinimumSearchScore != 0.6 {
+		t.Fatalf("MinimumSearchScore = %g, want 0.6", configuration.MinimumSearchScore)
+	}
+}
+
 func TestLoadOverridesSummaryProviderRateLimit(t *testing.T) {
 	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
 	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
@@ -184,6 +213,50 @@ func TestLoadOverridesRetrievalTimeouts(t *testing.T) {
 	}
 	if configuration.SummaryLLMTimeout != 30*time.Second {
 		t.Fatalf("SummaryLLMTimeout = %s, want 30s", configuration.SummaryLLMTimeout)
+	}
+}
+
+func TestLoadRejectsInvalidThrottleConfiguration(t *testing.T) {
+	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+	t.Setenv("RETRIEVAL_TEI_REQUESTS_PER_SECOND", "not-a-number")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted malformed TEI throttle configuration")
+	}
+}
+
+func TestLoadRejectsInvalidMinimumSearchScore(t *testing.T) {
+	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+	t.Setenv("RETRIEVAL_MINIMUM_SEARCH_SCORE", "NaN")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted NaN minimum search score")
+	}
+
+	t.Setenv("RETRIEVAL_MINIMUM_SEARCH_SCORE", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted zero minimum search score")
+	}
+
+	t.Setenv("RETRIEVAL_MINIMUM_SEARCH_SCORE", "+Inf")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted infinite minimum search score")
 	}
 }
 

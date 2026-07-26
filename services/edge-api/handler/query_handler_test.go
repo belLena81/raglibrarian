@@ -114,7 +114,7 @@ func TestQueryReturnsRetrievedEvidenceAndUsesTrustedPrincipal(t *testing.T) {
 			}},
 		}},
 	}}
-	h := handler.NewQueryHandler(retrieval)
+	h := handler.NewQueryHandler(retrieval, 0.6)
 	req := httptest.NewRequest(http.MethodPost, "/query", bytes.NewBufferString(`{
 		"question":"How does replication work?",
 		"filters":{"tags":["systems"],"author":"A. Author","year_from":2020,"year_to":2025},
@@ -158,7 +158,7 @@ func TestQueryReturnsRetrievedEvidenceAndUsesTrustedPrincipal(t *testing.T) {
 
 func TestQueryReturnsSuccessfulEmptyEvidence(t *testing.T) {
 	retrieval := &retrievalStub{result: handler.SearchResult{Query: "unrelated", Results: []handler.Evidence{}, Documents: []handler.DocumentResult{}}}
-	h := handler.NewQueryHandler(retrieval)
+	h := handler.NewQueryHandler(retrieval, 0.6)
 	req := authenticatedQueryRequest(`{"question":"unrelated"}`)
 	recorder := httptest.NewRecorder()
 
@@ -185,7 +185,7 @@ func TestQueryFiltersLowScoringEvidenceBeforeSerializing(t *testing.T) {
 			Evidence:   []handler.Evidence{{EvidenceID: "high-doc", Score: 0.6, Passage: "just enough"}},
 		}},
 	}}
-	h := handler.NewQueryHandler(retrieval)
+	h := handler.NewQueryHandler(retrieval, 0.6)
 	recorder := httptest.NewRecorder()
 
 	h.Query(recorder, authenticatedQueryRequest(`{"question":"replication"}`))
@@ -218,7 +218,7 @@ func TestQueryAnswerModeReturnsAnswerSegmentsAndTrustedEvidence(t *testing.T) {
 		}}},
 	}}
 	admission := &answerAdmissionStub{allowed: true}
-	h := handler.NewQueryHandler(retrieval, handler.WithAnswer(answer, admission))
+	h := handler.NewQueryHandler(retrieval, 0.6, handler.WithAnswer(answer, admission))
 	recorder := httptest.NewRecorder()
 
 	h.Query(recorder, authenticatedQueryRequest(`{"question":"How?","mode":"answer"}`))
@@ -249,7 +249,7 @@ func TestQuerySearchModeBypassesAnswerAndPreservesResponseShape(t *testing.T) {
 		t.Run(body, func(t *testing.T) {
 			retrieval := &retrievalStub{result: handler.SearchResult{Query: "q", Results: []handler.Evidence{}, Documents: []handler.DocumentResult{}}}
 			answer := &answerStub{}
-			h := handler.NewQueryHandler(retrieval, handler.WithAnswer(answer, &answerAdmissionStub{allowed: true}))
+			h := handler.NewQueryHandler(retrieval, 0.6, handler.WithAnswer(answer, &answerAdmissionStub{allowed: true}))
 			recorder := httptest.NewRecorder()
 
 			h.Query(recorder, authenticatedQueryRequest(body))
@@ -266,7 +266,7 @@ func TestQueryAnswerModePreservesEvidenceOnlyDegradation(t *testing.T) {
 	answer := &answerStub{result: handler.AnswerResult{Search: handler.SearchResult{
 		Query: "q", Results: []handler.Evidence{}, Documents: []handler.DocumentResult{},
 	}}}
-	h := handler.NewQueryHandler(&retrievalStub{}, handler.WithAnswer(answer, &answerAdmissionStub{allowed: true}))
+	h := handler.NewQueryHandler(&retrievalStub{}, 0.6, handler.WithAnswer(answer, &answerAdmissionStub{allowed: true}))
 	recorder := httptest.NewRecorder()
 
 	h.Query(recorder, authenticatedQueryRequest(`{"question":"q","mode":"answer"}`))
@@ -278,7 +278,7 @@ func TestQueryAnswerModePreservesEvidenceOnlyDegradation(t *testing.T) {
 func TestQueryAnswerTransportFailureFallsBackOnceToRetrieval(t *testing.T) {
 	answer := &answerStub{err: handler.ErrAnswerUnavailable}
 	retrieval := &retrievalStub{result: handler.SearchResult{Query: "q", Results: []handler.Evidence{}, Documents: []handler.DocumentResult{}}}
-	h := handler.NewQueryHandler(retrieval, handler.WithAnswer(answer, &answerAdmissionStub{allowed: true}))
+	h := handler.NewQueryHandler(retrieval, 0.6, handler.WithAnswer(answer, &answerAdmissionStub{allowed: true}))
 	recorder := httptest.NewRecorder()
 
 	h.Query(recorder, authenticatedQueryRequest(`{"question":"q","mode":"answer"}`))
@@ -291,7 +291,7 @@ func TestQueryAnswerTransportFailureFallsBackOnceToRetrieval(t *testing.T) {
 func TestQueryAnswerNonFallbackFailureDoesNotCallRetrieval(t *testing.T) {
 	answer := &answerStub{err: handler.ErrAnswerFailed}
 	retrieval := &retrievalStub{}
-	h := handler.NewQueryHandler(retrieval, handler.WithAnswer(answer, &answerAdmissionStub{allowed: true}))
+	h := handler.NewQueryHandler(retrieval, 0.6, handler.WithAnswer(answer, &answerAdmissionStub{allowed: true}))
 	recorder := httptest.NewRecorder()
 
 	h.Query(recorder, authenticatedQueryRequest(`{"question":"private question","mode":"answer"}`))
@@ -307,7 +307,7 @@ func TestQueryAnswerRateLimitRejectsBeforeDownstreamCall(t *testing.T) {
 	answer := &answerStub{}
 	retrieval := &retrievalStub{}
 	admission := &answerAdmissionStub{allowed: false, retryAfter: 37 * time.Second}
-	h := handler.NewQueryHandler(retrieval, handler.WithAnswer(answer, admission))
+	h := handler.NewQueryHandler(retrieval, 0.6, handler.WithAnswer(answer, admission))
 	recorder := httptest.NewRecorder()
 
 	h.Query(recorder, authenticatedQueryRequest(`{"question":"private question","mode":"answer"}`))
@@ -321,7 +321,7 @@ func TestQueryAnswerRateLimitRejectsBeforeDownstreamCall(t *testing.T) {
 
 func TestQueryCountsUnicodeCharactersForPublicLimits(t *testing.T) {
 	retrieval := &retrievalStub{result: handler.SearchResult{Query: strings.Repeat("🙂", 1000)}}
-	h := handler.NewQueryHandler(retrieval)
+	h := handler.NewQueryHandler(retrieval, 0.6)
 	recorder := httptest.NewRecorder()
 
 	h.Query(recorder, authenticatedQueryRequest(`{"question":"`+strings.Repeat("🙂", 1000)+`","filters":{"author":"`+strings.Repeat("著", 256)+`","tags":["`+strings.Repeat("タグ", 32)+`"]}}`))
@@ -354,7 +354,7 @@ func TestQueryRejectsInvalidPublicRequestsWithoutCallingRetrieval(t *testing.T) 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			retrieval := &retrievalStub{}
-			h := handler.NewQueryHandler(retrieval)
+			h := handler.NewQueryHandler(retrieval, 0.6)
 			recorder := httptest.NewRecorder()
 
 			h.Query(recorder, authenticatedQueryRequest(test.body))
@@ -366,7 +366,7 @@ func TestQueryRejectsInvalidPublicRequestsWithoutCallingRetrieval(t *testing.T) 
 }
 
 func TestQueryRequiresTrustedPrincipal(t *testing.T) {
-	h := handler.NewQueryHandler(&retrievalStub{})
+	h := handler.NewQueryHandler(&retrievalStub{}, 0.6)
 	req := httptest.NewRequest(http.MethodPost, "/query", bytes.NewBufferString(`{"question":"q"}`))
 	recorder := httptest.NewRecorder()
 
@@ -387,7 +387,7 @@ func TestQueryMapsRetrievalFailuresToStableSanitizedErrors(t *testing.T) {
 	}
 	for _, test := range tests {
 		retrieval := &retrievalStub{err: test.err}
-		h := handler.NewQueryHandler(retrieval)
+		h := handler.NewQueryHandler(retrieval, 0.6)
 		recorder := httptest.NewRecorder()
 
 		h.Query(recorder, authenticatedQueryRequest(`{"question":"q"}`))
@@ -400,7 +400,7 @@ func TestQueryMapsRetrievalFailuresToStableSanitizedErrors(t *testing.T) {
 
 func TestQueryHandlerRejectsTypedNilRetrieval(t *testing.T) {
 	var retrieval *retrievalStub
-	assert.Panics(t, func() { handler.NewQueryHandler(retrieval) })
+	assert.Panics(t, func() { handler.NewQueryHandler(retrieval, 0.6) })
 }
 
 func authenticatedQueryRequest(body string) *http.Request {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/netip"
 	"net/url"
 	"os"
@@ -52,6 +53,7 @@ type Config struct {
 	BookUploadRateWindow                                                   time.Duration
 	AnswerRateLimit                                                        int
 	AnswerRateWindow, AnswerDeadline, RetrievalSearchDeadline              time.Duration
+	MinimumEvidenceScore                                                   float64
 	RunAs                                                                  process.Identity
 }
 
@@ -136,6 +138,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	minimumEvidenceScore, err := boundedFloat("EDGE_MINIMUM_EVIDENCE_SCORE", 0.6, 0, 1)
+	if err != nil {
+		return Config{}, err
+	}
 	publicOrigin := strings.TrimRight(strings.TrimSpace(os.Getenv("EDGE_PUBLIC_ORIGIN")), "/")
 	if enforceOrigin && publicOrigin == "" {
 		return Config{}, fmt.Errorf("EDGE_PUBLIC_ORIGIN is required when browser origin enforcement is enabled")
@@ -192,6 +198,7 @@ func Load() (Config, error) {
 		AnswerRateWindow:           answerRateWindow,
 		AnswerDeadline:             answerDeadline,
 		RetrievalSearchDeadline:    retrievalSearchDeadline,
+		MinimumEvidenceScore:       minimumEvidenceScore,
 		RunAs:                      runAs,
 	}, nil
 }
@@ -223,6 +230,15 @@ func boundedDuration(key string, fallback, maximum time.Duration) (time.Duration
 		return 0, fmt.Errorf("%w: %s must not exceed %s", ErrQueryLimitConfiguration, key, maximum)
 	}
 	return value, nil
+}
+
+func boundedFloat(key string, fallback, minimum, maximum float64) (float64, error) {
+	value := optional(key, strconv.FormatFloat(fallback, 'f', -1, 64))
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed <= minimum || parsed > maximum {
+		return 0, fmt.Errorf("%w: %s must be between %g and %g", ErrQueryLimitConfiguration, key, minimum, maximum)
+	}
+	return parsed, nil
 }
 
 func parseCIDRs(value string) ([]netip.Prefix, error) {

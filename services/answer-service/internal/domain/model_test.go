@@ -27,6 +27,7 @@ func TestSearchRequestValidateBoundsPublicInput(t *testing.T) {
 		func(r *SearchRequest) { r.CorrelationID = "not-a-request-id" },
 		func(r *SearchRequest) { r.Filters.Tags = []string{""} },
 		func(r *SearchRequest) { r.Filters.Author = string([]byte{0xff}) },
+		func(r *SearchRequest) { r.MinimumEvidenceScore = -0.1 },
 		func(r *SearchRequest) {
 			year := int32(10000)
 			r.Filters.YearTo = &year

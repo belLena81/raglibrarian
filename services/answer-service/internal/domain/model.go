@@ -4,6 +4,7 @@ package domain
 import (
 	"encoding/hex"
 	"errors"
+	"math"
 	"strings"
 	"unicode/utf8"
 )
@@ -39,11 +40,12 @@ type SearchFilters struct {
 }
 
 type SearchRequest struct {
-	Question      string
-	Filters       SearchFilters
-	Limit         uint32
-	Actor         Actor
-	CorrelationID string
+	Question             string
+	Filters              SearchFilters
+	Limit                uint32
+	Actor                Actor
+	CorrelationID        string
+	MinimumEvidenceScore float64
 }
 
 func (r SearchRequest) Validate() error {
@@ -53,6 +55,9 @@ func (r SearchRequest) Validate() error {
 	question := strings.TrimSpace(r.Question)
 	if question == "" || !utf8.ValidString(question) || utf8.RuneCountInString(question) > MaximumQuestionCharacters || r.Limit > MaximumResultLimit ||
 		len(r.Filters.Tags) > MaximumFilterTags || utf8.RuneCountInString(strings.TrimSpace(r.Filters.Author)) > MaximumAuthorCharacters || !validCorrelationID(r.CorrelationID) {
+		return ErrInvalidRequest
+	}
+	if math.IsNaN(r.MinimumEvidenceScore) || math.IsInf(r.MinimumEvidenceScore, 0) || r.MinimumEvidenceScore < 0 || r.MinimumEvidenceScore > 1 {
 		return ErrInvalidRequest
 	}
 	if !utf8.ValidString(r.Filters.Author) || r.Filters.YearFrom != nil && (*r.Filters.YearFrom < 0 || *r.Filters.YearFrom > 9999) ||

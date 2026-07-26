@@ -32,22 +32,23 @@ var (
 )
 
 type Qdrant struct {
-	endpoint   string
-	collection string
-	apiKey     string
-	client     *http.Client
+	endpoint           string
+	collection         string
+	apiKey             string
+	client             *http.Client
+	minimumSearchScore float64
 }
 
-func NewQdrant(endpoint, collection string, client *http.Client) (*Qdrant, error) {
+func NewQdrant(endpoint, collection string, client *http.Client, minimumSearchScore float64) (*Qdrant, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || collection == "" || strings.ContainsAny(collection, "/?#") || client == nil {
 		return nil, errors.New("invalid Qdrant configuration")
 	}
-	return &Qdrant{endpoint: strings.TrimRight(endpoint, "/"), collection: collection, client: client}, nil
+	return &Qdrant{endpoint: strings.TrimRight(endpoint, "/"), collection: collection, client: client, minimumSearchScore: minimumSearchScore}, nil
 }
 
-func NewAuthenticatedQdrant(endpoint, collection, apiKey string, client *http.Client) (*Qdrant, error) {
-	qdrant, err := NewQdrant(endpoint, collection, client)
+func NewAuthenticatedQdrant(endpoint, collection, apiKey string, client *http.Client, minimumSearchScore float64) (*Qdrant, error) {
+	qdrant, err := NewQdrant(endpoint, collection, client, minimumSearchScore)
 	if err != nil || strings.TrimSpace(apiKey) == "" || strings.ContainsAny(apiKey, "\r\n") {
 		return nil, errors.New("invalid Qdrant configuration")
 	}
@@ -133,7 +134,7 @@ func (q *Qdrant) Search(ctx context.Context, query domain.SearchQuery, vector []
 }
 
 func (q *Qdrant) SearchDocuments(ctx context.Context, query domain.SearchQuery, vector []float32, limit, offset int) (application.DocumentPage, error) {
-	payload, err := json.Marshal(queryRequest{Query: vector, Limit: limit, Offset: offset, WithPayload: true, Filter: buildFilter(query.Filters(), []condition{{Key: "vector_kind", Match: &matchValue{Value: "document"}}}), ScoreThreshold: domain.MinimumSearchScore})
+	payload, err := json.Marshal(queryRequest{Query: vector, Limit: limit, Offset: offset, WithPayload: true, Filter: buildFilter(query.Filters(), []condition{{Key: "vector_kind", Match: &matchValue{Value: "document"}}}), ScoreThreshold: q.minimumSearchScore})
 	if err != nil {
 		return application.DocumentPage{}, errors.New("encode vector query")
 	}
@@ -186,7 +187,7 @@ func (q *Qdrant) SearchDocuments(ctx context.Context, query domain.SearchQuery, 
 }
 
 func (q *Qdrant) searchEvidence(ctx context.Context, query domain.SearchQuery, vector []float32, limit, offset int, extra []condition) ([]application.Evidence, error) {
-	payload, err := json.Marshal(queryRequest{Query: vector, Limit: limit, Offset: offset, WithPayload: true, Filter: buildFilter(query.Filters(), extra), ScoreThreshold: domain.MinimumSearchScore})
+	payload, err := json.Marshal(queryRequest{Query: vector, Limit: limit, Offset: offset, WithPayload: true, Filter: buildFilter(query.Filters(), extra), ScoreThreshold: q.minimumSearchScore})
 	if err != nil {
 		return nil, errors.New("encode vector query")
 	}
@@ -234,7 +235,7 @@ func (q *Qdrant) searchEvidenceBatch(ctx context.Context, query domain.SearchQue
 		searches[index] = queryRequest{Query: vector, Limit: limit, WithPayload: true, Filter: buildFilter(query.Filters(), []condition{
 			{Key: "vector_kind", Match: &matchValue{Value: "chunk"}},
 			{Key: "job_id", Match: &matchValue{Value: jobID}},
-		}), ScoreThreshold: domain.MinimumSearchScore}
+		}), ScoreThreshold: q.minimumSearchScore}
 	}
 	payload, err := json.Marshal(queryBatchRequest{Searches: searches})
 	if err != nil {

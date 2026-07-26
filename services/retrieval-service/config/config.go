@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"io"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -15,6 +16,11 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/process"
 )
 
+const (
+	defaultMinimumSearchScore = 0.6
+	minimumSearchScoreKey     = "RETRIEVAL_MINIMUM_SEARCH_SCORE"
+)
+
 type Config struct {
 	GRPCAddress                 string
 	MetricsAddress              string
@@ -22,6 +28,7 @@ type Config struct {
 	TEIRequestsPerSecond        int
 	DependencyTimeout           time.Duration
 	SearchTimeout               time.Duration
+	MinimumSearchScore          float64
 	QdrantURL                   string
 	QdrantCollection            string
 	QdrantAPIKeyFile            string
@@ -43,6 +50,7 @@ type WorkerConfig struct {
 	MinIOInsecure                                                 bool
 	TEIURL, QdrantURL, QdrantCollection, QdrantAPIKey             string
 	TEIRequestsPerSecond                                          int
+	MinimumSearchScore                                            float64
 	MetricsAddress                                                string
 	ServerlessInvocationTimeout                                   time.Duration
 	Concurrency                                                   int
@@ -69,20 +77,24 @@ func Load() (Config, error) {
 		TLS:              internaltls.Files{CA: os.Getenv("RETRIEVAL_TLS_CA_FILE"), Certificate: os.Getenv("RETRIEVAL_TLS_CERT_FILE"), Key: os.Getenv("RETRIEVAL_TLS_KEY_FILE")},
 		RunAs:            process.Identity{UID: uid, GID: gid},
 	}
-	searchTimeout, searchTimeoutErr := requiredDuration("RETRIEVAL_SEARCH_TIMEOUT")
+	searchTimeout, searchTimeoutErr := optionalDuration("RETRIEVAL_SEARCH_TIMEOUT", 2*time.Minute)
 	dependencyTimeout, dependencyTimeoutErr := optionalDuration("RETRIEVAL_DEPENDENCY_TIMEOUT", searchTimeout)
 	summaryTimeout, summaryTimeoutErr := optionalDuration("RETRIEVAL_SUMMARY_LLM_TIMEOUT", searchTimeout)
 	summaryMaxOutputTokens, summaryMaxOutputTokensErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_OUTPUT_TOKENS", 64, 256)
+	minimumSearchScore, minimumSearchScoreErr := LoadMinimumSearchScore()
+	summaryLLMRequestsPerMinute, summaryLLMRequestsPerMinuteErr := nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_REQUESTS_PER_MINUTE", 15, 1000)
+	teiRequestsPerSecond, teiRequestsPerSecondErr := nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000)
 	configuration.SearchTimeout = searchTimeout
 	configuration.DependencyTimeout = dependencyTimeout
 	configuration.SummaryLLMTimeout = summaryTimeout
 	configuration.SummaryLLMMaxOutputTokens = summaryMaxOutputTokens
-	configuration.SummaryLLMRequestsPerMinute = nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_REQUESTS_PER_MINUTE", 15, 1000)
-	configuration.TEIRequestsPerSecond = nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000)
+	configuration.MinimumSearchScore = minimumSearchScore
+	configuration.SummaryLLMRequestsPerMinute = summaryLLMRequestsPerMinute
+	configuration.TEIRequestsPerSecond = teiRequestsPerSecond
 	if configuration.GRPCAddress == "" || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
 		configuration.PostgresDSNFile == "" || configuration.QdrantAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || uidErr != nil || gidErr != nil ||
-		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || configuration.SummaryLLMTimeout > configuration.SearchTimeout ||
+		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || teiRequestsPerSecondErr != nil || configuration.SummaryLLMTimeout > configuration.SearchTimeout ||
 		!validSummaryProviderConfiguration(configuration) {
 		return Config{}, errors.New("invalid retrieval configuration")
 	}
@@ -119,18 +131,6 @@ func boundedDuration(value string, minimum, maximum, fallback time.Duration) (ti
 	return parsed, nil
 }
 
-func requiredDuration(key string) (time.Duration, error) {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return 0, errors.New("invalid duration")
-	}
-	parsed, err := time.ParseDuration(value)
-	if err != nil || parsed <= 0 {
-		return 0, errors.New("invalid duration")
-	}
-	return parsed, nil
-}
-
 func optionalDuration(key string, fallback time.Duration) (time.Duration, error) {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
@@ -139,6 +139,22 @@ func optionalDuration(key string, fallback time.Duration) (time.Duration, error)
 	parsed, err := time.ParseDuration(value)
 	if err != nil || parsed <= 0 {
 		return 0, errors.New("invalid duration")
+	}
+	return parsed, nil
+}
+
+func LoadMinimumSearchScore() (float64, error) {
+	return boundedFloat(minimumSearchScoreKey, defaultMinimumSearchScore, 0, 1)
+}
+
+func boundedFloat(key string, fallback, minimum, maximum float64) (float64, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed <= minimum || parsed > maximum {
+		return 0, errors.New("invalid float")
 	}
 	return parsed, nil
 }
@@ -190,12 +206,16 @@ func LoadWorker() (WorkerConfig, error) {
 	concurrency, concurrencyErr := positiveInteger(os.Getenv("RETRIEVAL_WORK_CONCURRENCY"), 1)
 	minioInsecure, insecureErr := strconv.ParseBool(os.Getenv("RETRIEVAL_MINIO_INSECURE"))
 	serverlessInvocationTimeout, timeoutErr := boundedDuration(os.Getenv("RETRIEVAL_SERVERLESS_INVOCATION_TIMEOUT"), 10*time.Second, 13*time.Minute, 3*time.Minute)
+	teiRequestsPerSecond, teiRequestsPerSecondErr := nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000)
+	minimumSearchScore, minimumSearchScoreErr := LoadMinimumSearchScore()
 	configuration := WorkerConfig{DSN: dsn, ConsumerRabbitURI: consumerURI, PublisherRabbitURI: publisherURI,
 		MinIOEndpoint: os.Getenv("RETRIEVAL_MINIO_ENDPOINT"), MinIOAccessKey: accessKey, MinIOSecretKey: secretKey, ArtifactBucket: os.Getenv("RETRIEVAL_ARTIFACT_BUCKET"), MinIOInsecure: minioInsecure,
 		TEIURL: os.Getenv("RETRIEVAL_TEI_URL"), QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: "evidence_v2", QdrantAPIKey: qdrantAPIKey,
-		TEIRequestsPerSecond: nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000),
+		TEIRequestsPerSecond: teiRequestsPerSecond,
+		MinimumSearchScore:   minimumSearchScore,
 		MetricsAddress:       optional("RETRIEVAL_WORKER_METRICS_ADDR", os.Getenv("RETRIEVAL_METRICS_ADDR")), ServerlessInvocationTimeout: serverlessInvocationTimeout, Concurrency: concurrency, RunAs: process.Identity{UID: uid, GID: gid}}
-	if uidErr != nil || gidErr != nil || concurrencyErr != nil || concurrency > 16 || insecureErr != nil || timeoutErr != nil || configuration.MinIOEndpoint == "" ||
+	configuration.TEIRequestsPerSecond = teiRequestsPerSecond
+	if uidErr != nil || gidErr != nil || concurrencyErr != nil || concurrency > 16 || insecureErr != nil || timeoutErr != nil || teiRequestsPerSecondErr != nil || minimumSearchScoreErr != nil || configuration.MinIOEndpoint == "" ||
 		configuration.ArtifactBucket == "" || configuration.MetricsAddress == "" || !privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) {
 		return WorkerConfig{}, errors.New("invalid retrieval worker configuration")
 	}
@@ -238,16 +258,16 @@ func validProviderURL(value string) bool {
 	return err == nil && len(value) <= 2048 && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
-func nonNegativeInteger(key string, fallback, maximum int) int {
-	value := os.Getenv(key)
+func nonNegativeInteger(key string, fallback, maximum int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
-		return fallback
+		return fallback, nil
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed < 0 || parsed > maximum {
-		return fallback
+		return 0, errors.New("invalid integer")
 	}
-	return parsed
+	return parsed, nil
 }
 
 // ValidateServerlessBrokerURI restricts short-lived jobs to private AMQPS.

@@ -18,7 +18,6 @@ const (
 	maxQueryAuthorLength   = 256
 	defaultQueryLimit      = 5
 	maxQueryLimit          = 20
-	minimumEvidenceScore   = 0.6
 )
 
 var (
@@ -142,9 +141,10 @@ type AnswerAdmission interface {
 
 // QueryHandler exposes authenticated semantic evidence search.
 type QueryHandler struct {
-	retrieval       Searcher
-	answer          Answerer
-	answerAdmission AnswerAdmission
+	retrieval            Searcher
+	answer               Answerer
+	answerAdmission      AnswerAdmission
+	minimumEvidenceScore float64
 }
 
 // QueryHandlerOption configures optional query capabilities.
@@ -162,11 +162,14 @@ func WithAnswer(answer Answerer, admission AnswerAdmission) QueryHandlerOption {
 }
 
 // NewQueryHandler constructs the semantic query boundary.
-func NewQueryHandler(retrieval Searcher, options ...QueryHandlerOption) *QueryHandler {
+func NewQueryHandler(retrieval Searcher, minimumEvidenceScore float64, options ...QueryHandlerOption) *QueryHandler {
 	if dependencyMissing(retrieval) {
 		panic("handler: Retrieval must not be nil")
 	}
-	handler := &QueryHandler{retrieval: retrieval}
+	if minimumEvidenceScore <= 0 || minimumEvidenceScore > 1 {
+		panic("handler: minimum evidence score must be within (0, 1]")
+	}
+	handler := &QueryHandler{retrieval: retrieval, minimumEvidenceScore: minimumEvidenceScore}
 	for _, option := range options {
 		if option == nil {
 			panic("handler: query option must not be nil")
@@ -210,7 +213,7 @@ func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
 		}
 		result, err := h.answer.Answer(r.Context(), searchRequest)
 		if err == nil {
-			writeJSON(w, http.StatusOK, queryResponseFromAnswer(result))
+			writeJSON(w, http.StatusOK, h.queryResponseFromAnswer(result))
 			return
 		}
 		if !errors.Is(err, ErrAnswerUnavailable) {
@@ -224,7 +227,7 @@ func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
 		writeQueryError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, queryResponseFrom(result))
+	writeJSON(w, http.StatusOK, h.queryResponseFrom(result))
 }
 
 func writeQueryError(w http.ResponseWriter, err error) {
@@ -320,8 +323,8 @@ type documentResponse struct {
 	Summary    string             `json:"summary,omitempty"`
 }
 
-func queryResponseFrom(result SearchResult) queryResponse {
-	result = visibleQueryResult(result)
+func (h *QueryHandler) queryResponseFrom(result SearchResult) queryResponse {
+	result = h.visibleQueryResult(result)
 	results := make([]evidenceResponse, 0, len(result.Results))
 	for _, evidence := range result.Results {
 		results = append(results, evidenceResponseFrom(evidence))
@@ -338,9 +341,9 @@ func queryResponseFrom(result SearchResult) queryResponse {
 	return queryResponse{Query: result.Query, Results: results, Documents: documents}
 }
 
-func queryResponseFromAnswer(result AnswerResult) queryResponse {
-	result.Search = visibleQueryResult(result.Search)
-	response := queryResponseFrom(result.Search)
+func (h *QueryHandler) queryResponseFromAnswer(result AnswerResult) queryResponse {
+	result.Search = h.visibleQueryResult(result.Search)
+	response := h.queryResponseFrom(result.Search)
 	response.Summary = result.Summary
 	if result.Answer == nil {
 		return response
@@ -370,10 +373,10 @@ func evidenceResponseFrom(evidence Evidence) evidenceResponse {
 	}
 }
 
-func visibleQueryResult(result SearchResult) SearchResult {
+func (h *QueryHandler) visibleQueryResult(result SearchResult) SearchResult {
 	results := make([]Evidence, 0, len(result.Results))
 	for _, evidence := range result.Results {
-		if evidence.Score >= minimumEvidenceScore {
+		if evidence.Score >= h.minimumEvidenceScore {
 			results = append(results, evidence)
 		}
 	}
@@ -381,7 +384,7 @@ func visibleQueryResult(result SearchResult) SearchResult {
 	for _, document := range result.Documents {
 		evidence := make([]Evidence, 0, len(document.Evidence))
 		for _, value := range document.Evidence {
-			if value.Score >= minimumEvidenceScore {
+			if value.Score >= h.minimumEvidenceScore {
 				evidence = append(evidence, value)
 			}
 		}

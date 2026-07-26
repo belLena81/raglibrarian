@@ -13,7 +13,7 @@ import (
 func TestSearcherAuthorizesBeforeCallingDependencies(t *testing.T) {
 	embedder := &stubEmbedder{}
 	store := &stubEvidenceStore{}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
@@ -32,7 +32,7 @@ func TestSearcherReturnsRankedEvidence(t *testing.T) {
 		results:   []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Replication keeps copies.", Score: 0.91}},
 		documents: []DocumentResult{{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", ChunkCount: 10, Score: 0.91, Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "Replication keeps copies.", Score: 0.91}}}},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
@@ -56,7 +56,7 @@ func TestSearcherUsesProviderSummariesAndFallsBack(t *testing.T) {
 			Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "Deterministic retries keep search stable.", Score: 0.91}},
 		}},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
@@ -103,7 +103,7 @@ func TestSearcherDoesNotClipProviderOrFallbackSummaries(t *testing.T) {
 			Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: longSentence, Score: 0.91}},
 		}},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
@@ -167,7 +167,7 @@ func TestSearcherCapsProviderSummaryCallsPerSearch(t *testing.T) {
 		results:   results,
 		documents: documents,
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
@@ -194,22 +194,22 @@ func TestSearcherFiltersLowScoringEvidenceBeforeReturningResults(t *testing.T) {
 		resultsByPage: [][]Evidence{
 			{
 				{EvidenceID: "low-1", JobID: "job-low-1", BookID: "book-low", Passage: "low evidence", Score: 0.49},
-				{EvidenceID: "low-2", JobID: "job-low-2", BookID: "book-low", Passage: "low evidence", Score: 0.48},
+				{EvidenceID: "low-2", JobID: "job-low-2", BookID: "book-low", Passage: "low evidence", Score: 0.58},
 			},
 			{
-				{EvidenceID: "high-1", JobID: "job-high-1", BookID: "book-high", Passage: "high evidence", Score: 0.50},
+				{EvidenceID: "high-1", JobID: "job-high-1", BookID: "book-high", Passage: "high evidence", Score: 0.60},
 			},
 		},
 		documentsByPage: [][]DocumentResult{
 			{
-				{DocumentID: "doc-low", JobID: "job-low-1", BookID: "book-low", ChunkCount: 1, Score: 0.93, Evidence: []Evidence{{EvidenceID: "low-1", Passage: "low evidence", Score: 0.49}, {EvidenceID: "low-2", Passage: "low evidence", Score: 0.48}}},
+				{DocumentID: "doc-low", JobID: "job-low-1", BookID: "book-low", ChunkCount: 1, Score: 0.93, Evidence: []Evidence{{EvidenceID: "low-1", Passage: "low evidence", Score: 0.49}, {EvidenceID: "low-2", Passage: "low evidence", Score: 0.58}}},
 			},
 			{
-				{DocumentID: "doc-high", JobID: "job-high-1", BookID: "book-high", ChunkCount: 1, Score: 0.91, Evidence: []Evidence{{EvidenceID: "high-1", Passage: "high evidence", Score: 0.50}}},
+				{DocumentID: "doc-high", JobID: "job-high-1", BookID: "book-high", ChunkCount: 1, Score: 0.91, Evidence: []Evidence{{EvidenceID: "high-1", Passage: "high evidence", Score: 0.60}}},
 			},
 		},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
@@ -218,7 +218,7 @@ func TestSearcherFiltersLowScoringEvidenceBeforeReturningResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
-	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "high-1" || result.Evidence[0].Score < minimumVisibleScore {
+	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "high-1" || result.Evidence[0].Score < 0.6 {
 		t.Fatalf("low-scoring evidence was not filtered: %#v", result.Evidence)
 	}
 	if len(result.Documents) != 1 || result.Documents[0].DocumentID != "doc-high" || len(result.Documents[0].Evidence) != 1 || result.Documents[0].Evidence[0].EvidenceID != "high-1" {
@@ -237,7 +237,7 @@ func TestSearcherFiltersLowScoringDocumentsEvenWhenEvidenceIsVisible(t *testing.
 			{DocumentID: "document-high", JobID: "job-2", BookID: "book-2", ChunkCount: 1, Score: 0.67, Evidence: []Evidence{{EvidenceID: "evidence-2", Passage: "better visible passage", Score: 0.78}}},
 		},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
@@ -255,15 +255,15 @@ func TestSearcherSortsEvidenceDocumentsAndSupportingPassagesByScore(t *testing.T
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{
 		results: []Evidence{
-			{EvidenceID: "evidence-low", JobID: "job-1", BookID: "book-1", Passage: "low", Score: 0.51},
+			{EvidenceID: "evidence-low", JobID: "job-1", BookID: "book-1", Passage: "low", Score: 0.61},
 			{EvidenceID: "evidence-high", JobID: "job-2", BookID: "book-2", Passage: "high", Score: 0.88},
 			{EvidenceID: "evidence-mid", JobID: "job-3", BookID: "book-3", Passage: "mid", Score: 0.72},
 		},
 		documents: []DocumentResult{
 			{
-				DocumentID: "document-low", JobID: "job-1", BookID: "book-1", ChunkCount: 2, Score: 0.55,
+				DocumentID: "document-low", JobID: "job-1", BookID: "book-1", ChunkCount: 2, Score: 0.65,
 				Evidence: []Evidence{
-					{EvidenceID: "support-low", Passage: "support low", Score: 0.52},
+					{EvidenceID: "support-low", Passage: "support low", Score: 0.62},
 					{EvidenceID: "support-high", Passage: "support high", Score: 0.90},
 				},
 			},
@@ -273,7 +273,7 @@ func TestSearcherSortsEvidenceDocumentsAndSupportingPassagesByScore(t *testing.T
 			},
 		},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
@@ -302,7 +302,7 @@ func TestSearcherSkipsEmptyPassagesForSummaries(t *testing.T) {
 			Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "   ", Score: 0.91}},
 		}},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
@@ -346,7 +346,7 @@ func TestSearcherBackfillsAfterVisibilityFiltering(t *testing.T) {
 		},
 	}
 	visibility := filteringVisibility{indexedJobs: map[string]struct{}{"indexed-1": {}, "indexed-2": {}}}
-	searcher, err := NewSearcher(embedder, store, visibility)
+	searcher, err := NewSearcher(embedder, store, visibility, 0.6)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
@@ -373,7 +373,7 @@ func TestSearcherContinuesDocumentPaginationAfterHydrationDropsCandidates(t *tes
 		{Exhausted: false},
 		{Documents: []DocumentResult{{DocumentID: "document-2", JobID: "job-2", BookID: "book-2", ChunkCount: 1, Score: 0.8, Evidence: []Evidence{{EvidenceID: "evidence-2", Score: 0.8}}}}, Exhausted: true},
 	}}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{})
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}

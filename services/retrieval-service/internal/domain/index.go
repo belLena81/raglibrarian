@@ -16,7 +16,6 @@ const (
 	MaximumAuthorCharacters   = 256
 	DefaultResultLimit        = 5
 	MaximumResultLimit        = 20
-	MinimumSearchScore        = 0.5
 )
 
 var (

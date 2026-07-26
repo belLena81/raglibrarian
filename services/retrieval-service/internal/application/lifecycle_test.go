@@ -8,7 +8,7 @@ import (
 )
 
 func TestLifecycleDeletionFencesBeforeVectorCleanup(t *testing.T) {
-	steps := make([]string, 0, 3)
+	steps := make([]string, 0, 4)
 	repository := &lifecycleRepositoryStub{steps: &steps, cleanupRequired: true}
 	vectors := &lifecycleVectorStub{steps: &steps}
 	coordinator, err := NewLifecycleCoordinator(repository, vectors, func() (string, error) {
@@ -21,7 +21,7 @@ func TestLifecycleDeletionFencesBeforeVectorCleanup(t *testing.T) {
 	if err = coordinator.HandleDeletion(context.Background(), validLifecycleEvent(LifecycleDelete)); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"fence", "delete-vectors", "complete"}
+	want := []string{"fence", "delete-vectors", "delete-vectors", "complete"}
 	if len(steps) != len(want) {
 		t.Fatalf("steps = %#v", steps)
 	}
@@ -35,7 +35,12 @@ func TestLifecycleDeletionFencesBeforeVectorCleanup(t *testing.T) {
 func TestLifecycleDeletionRemainsPendingWhenVectorCleanupFails(t *testing.T) {
 	steps := make([]string, 0, 2)
 	repository := &lifecycleRepositoryStub{steps: &steps, cleanupRequired: true}
-	vectors := &lifecycleVectorStub{steps: &steps, err: errors.New("unavailable")}
+	vectors := &lifecycleVectorStub{steps: &steps, deleteErr: func(call int) error {
+		if call == 2 {
+			return errors.New("unavailable")
+		}
+		return nil
+	}}
 	coordinator, _ := NewLifecycleCoordinator(repository, vectors, func() (string, error) {
 		return "job-new", nil
 	}, lifecycleNow)
@@ -43,7 +48,7 @@ func TestLifecycleDeletionRemainsPendingWhenVectorCleanupFails(t *testing.T) {
 	if err := coordinator.HandleDeletion(context.Background(), validLifecycleEvent(LifecycleDelete)); err == nil {
 		t.Fatal("HandleDeletion() succeeded while vector cleanup failed")
 	}
-	if len(steps) != 2 || steps[0] != "fence" || steps[1] != "delete-vectors" {
+	if len(steps) != 3 || steps[0] != "fence" || steps[1] != "delete-vectors" || steps[2] != "delete-vectors" {
 		t.Fatalf("steps = %#v", steps)
 	}
 }
@@ -58,7 +63,7 @@ func TestLifecycleDeletionCompletesAfterDurablePreMetadataFence(t *testing.T) {
 	if err := coordinator.HandleDeletion(context.Background(), validLifecycleEvent(LifecycleDelete)); err != nil {
 		t.Fatal(err)
 	}
-	if vectors.deletions != 1 || repository.acknowledged != 1 {
+	if vectors.deletions != 2 || repository.acknowledged != 1 {
 		t.Fatalf("vector deletions=%d acknowledgements=%d, want cleanup and acknowledgement", vectors.deletions, repository.acknowledged)
 	}
 }
@@ -116,8 +121,8 @@ func TestDeletionCrossingVectorUpsertRequiresSecondCleanupBeforeAck(t *testing.T
 	if err = coordinator.RetryDeletions(context.Background(), 1); err != nil {
 		t.Fatalf("RetryDeletions() error = %v", err)
 	}
-	if lifecycleVectors.deletions != 2 || lifecycleRepository.acknowledged != 1 {
-		t.Fatalf("vector deletions=%d acknowledgements=%d, want 2/1", lifecycleVectors.deletions, lifecycleRepository.acknowledged)
+	if lifecycleVectors.deletions != 4 || lifecycleRepository.acknowledged != 1 {
+		t.Fatalf("vector deletions=%d acknowledgements=%d, want 4/1", lifecycleVectors.deletions, lifecycleRepository.acknowledged)
 	}
 }
 
@@ -165,8 +170,8 @@ func TestDeletionCrossingLastBatchFinalizationRequiresSecondCleanupBeforeAck(t *
 	if err := coordinator.RetryDeletions(context.Background(), 1); err != nil {
 		t.Fatalf("RetryDeletions() error = %v", err)
 	}
-	if lifecycleVectors.deletions != 2 || lifecycleRepository.acknowledged != 1 {
-		t.Fatalf("vector deletions=%d acknowledgements=%d, want 2/1", lifecycleVectors.deletions, lifecycleRepository.acknowledged)
+	if lifecycleVectors.deletions != 4 || lifecycleRepository.acknowledged != 1 {
+		t.Fatalf("vector deletions=%d acknowledgements=%d, want 4/1", lifecycleVectors.deletions, lifecycleRepository.acknowledged)
 	}
 }
 
@@ -231,6 +236,7 @@ func (r *lifecycleRepositoryStub) RetryDeletionCleanup(context.Context, Deletion
 type lifecycleVectorStub struct {
 	steps     *[]string
 	err       error
+	deleteErr func(int) error
 	deletions int
 }
 
@@ -238,6 +244,11 @@ func (v *lifecycleVectorStub) DeleteBook(context.Context, string) error {
 	v.deletions++
 	if v.steps != nil {
 		*v.steps = append(*v.steps, "delete-vectors")
+	}
+	if v.deleteErr != nil {
+		if err := v.deleteErr(v.deletions); err != nil {
+			return err
+		}
 	}
 	return v.err
 }

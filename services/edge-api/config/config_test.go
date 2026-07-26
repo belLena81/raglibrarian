@@ -45,6 +45,7 @@ func TestLoadParsesExplicitSecurityConfiguration(t *testing.T) {
 	assert.Equal(t, 10, cfg.AnswerRateLimit)
 	assert.Equal(t, 3*time.Minute, cfg.AnswerRateWindow)
 	assert.True(t, cfg.RetrievalReadinessRequired)
+	assert.Equal(t, 0.6, cfg.MinimumEvidenceScore)
 	assert.Equal(t, 30, cfg.QueryRateLimit)
 	assert.Equal(t, time.Minute, cfg.QueryRateWindow)
 	assert.Equal(t, 10000, cfg.QueryRateMaxKeys)
@@ -92,6 +93,26 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	assert.Equal(t, 11*time.Second, cfg.RetrievalSearchDeadline)
 	assert.Equal(t, 9, cfg.AnswerRateLimit)
 	assert.Equal(t, 45*time.Second, cfg.AnswerRateWindow)
+}
+
+func TestLoadParsesMinimumEvidenceScore(t *testing.T) {
+	setRequired(t)
+	t.Setenv("EDGE_MINIMUM_EVIDENCE_SCORE", "0.75")
+
+	cfg, err := config.Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, 0.75, cfg.MinimumEvidenceScore)
+}
+
+func TestLoadRejectsInvalidMinimumEvidenceScore(t *testing.T) {
+	for _, value := range []string{"0", "NaN", "+Inf"} {
+		setRequired(t)
+		t.Setenv("EDGE_MINIMUM_EVIDENCE_SCORE", value)
+		_, err := config.Load()
+		require.Error(t, err, "value %q should be rejected", value)
+		assert.ErrorIs(t, err, config.ErrQueryLimitConfiguration)
+	}
 }
 
 func TestLoadAcceptsMaximumAnswerDeadline(t *testing.T) {

@@ -38,6 +38,32 @@ func TestLimiterHonorsContextCancellation(t *testing.T) {
 	}
 }
 
+func TestLimiterReleasesCanceledReservations(t *testing.T) {
+	limiter, err := New(20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wait, err := limiter.Wait(context.Background()); err != nil || wait != 0 {
+		t.Fatalf("first Wait() = %s, %v", wait, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_, _ = limiter.Wait(ctx)
+		close(done)
+	}()
+	time.Sleep(5 * time.Millisecond)
+	cancel()
+	<-done
+	started := time.Now()
+	if wait, err := limiter.Wait(context.Background()); err != nil || wait < 20*time.Millisecond || wait > 100*time.Millisecond {
+		t.Fatalf("third Wait() = %s, %v", wait, err)
+	}
+	if elapsed := time.Since(started); elapsed < 20*time.Millisecond || elapsed > 100*time.Millisecond {
+		t.Fatalf("canceled reservation was not released, elapsed=%s", elapsed)
+	}
+}
+
 func TestLimiterPacesPerMinuteCalls(t *testing.T) {
 	limiter, err := NewPerMinute(15)
 	if err != nil {

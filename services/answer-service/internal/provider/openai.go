@@ -140,12 +140,10 @@ func (p *OpenAI) Generate(ctx context.Context, input application.ProviderRequest
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, maximumProviderResponseBytes+1))
+		_, _ = io.ReadAll(io.LimitReader(response.Body, maximumProviderResponseBytes+1))
 		detail := fmt.Sprintf("provider_http_status_%d", response.StatusCode)
 		if p.logErrorBody {
-			if preview := sanitizeProviderDetail(string(body)); preview != "" {
-				detail = preview
-			} else if preview = sanitizeProviderDetail(response.Status); preview != "" {
+			if preview := sanitizeProviderDetail(response.Status); preview != "" {
 				detail = preview
 			}
 		}

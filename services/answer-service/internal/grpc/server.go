@@ -40,14 +40,14 @@ func (s *Server) Answer(ctx context.Context, request *answerv1.AnswerRequest) (*
 	if request == nil || request.Search == nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid answer request")
 	}
-	result, err := s.service.Answer(ctx, searchFromProto(request.Search))
+	result, err := s.service.Answer(ctx, searchFromProto(request.Search, request.MinimumEvidenceScore))
 	if err != nil {
 		return nil, mapError(err)
 	}
 	return responseToProto(result), nil
 }
 
-func searchFromProto(value *retrievalv1.SearchRequest) domain.SearchRequest {
+func searchFromProto(value *retrievalv1.SearchRequest, minimumEvidenceScore float64) domain.SearchRequest {
 	request := domain.SearchRequest{Question: value.Question, Limit: value.Limit, CorrelationID: value.CorrelationId}
 	if value.Actor != nil {
 		request.Actor = domain.Actor{UserID: value.Actor.UserId, Role: value.Actor.Role, Status: value.Actor.Status}
@@ -56,6 +56,7 @@ func searchFromProto(value *retrievalv1.SearchRequest) domain.SearchRequest {
 		request.Filters = domain.SearchFilters{Tags: append([]string(nil), value.Filters.Tags...), Author: value.Filters.Author,
 			YearFrom: value.Filters.YearFrom, YearTo: value.Filters.YearTo}
 	}
+	request.MinimumEvidenceScore = minimumEvidenceScore
 	return request
 }
 

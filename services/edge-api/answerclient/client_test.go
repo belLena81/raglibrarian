@@ -34,8 +34,9 @@ func TestNewEnforcesAnswerDeadlineBudget(t *testing.T) {
 		return &answerv1.AnswerResponse{}, nil
 	}}
 
-	assert.NotPanics(t, func() { New(service, 5*time.Minute) })
-	assert.Panics(t, func() { New(service, 5*time.Minute+time.Second) })
+	assert.NotPanics(t, func() { New(service, 5*time.Minute, 0.6) })
+	assert.Panics(t, func() { New(service, 5*time.Minute+time.Second, 0.6) })
+	assert.Panics(t, func() { New(service, 5*time.Minute, 0) })
 }
 
 func TestAnswerPropagatesRequestIDDeadlineActorAndMapsResponse(t *testing.T) {
@@ -51,6 +52,7 @@ func TestAnswerPropagatesRequestIDDeadlineActorAndMapsResponse(t *testing.T) {
 		assert.Equal(t, "trusted-user", request.Search.Actor.UserId)
 		assert.Equal(t, "reader", request.Search.Actor.Role)
 		assert.Equal(t, "active", request.Search.Actor.Status)
+		assert.Equal(t, 0.75, request.MinimumEvidenceScore)
 		return &answerv1.AnswerResponse{
 			Search: &retrievalv1.SearchResponse{
 				Query:   request.Search.Question,
@@ -62,7 +64,7 @@ func TestAnswerPropagatesRequestIDDeadlineActorAndMapsResponse(t *testing.T) {
 			}}},
 		}, nil
 	}
-	client := New(stub, 8*time.Second)
+	client := New(stub, 8*time.Second, 0.75)
 	ctx := context.WithValue(context.Background(), chimiddleware.RequestIDKey, testRequestID)
 
 	result, err := client.Answer(ctx, handler.SearchRequest{
@@ -98,7 +100,7 @@ func TestAnswerMapsFallbackAndStableFailures(t *testing.T) {
 		t.Run(test.code.String(), func(t *testing.T) {
 			client := New(&answerClientStub{answer: func(context.Context, *answerv1.AnswerRequest, ...grpc.CallOption) (*answerv1.AnswerResponse, error) {
 				return nil, status.Error(test.code, "private answer detail")
-			}}, time.Second)
+			}}, time.Second, 0.6)
 			ctx := context.WithValue(context.Background(), chimiddleware.RequestIDKey, testRequestID)
 
 			_, err := client.Answer(ctx, handler.SearchRequest{Question: "private question"})
@@ -113,7 +115,7 @@ func TestAnswerMapsFallbackAndStableFailures(t *testing.T) {
 func TestAnswerMapsBareContextDeadlineToFallback(t *testing.T) {
 	client := New(&answerClientStub{answer: func(context.Context, *answerv1.AnswerRequest, ...grpc.CallOption) (*answerv1.AnswerResponse, error) {
 		return nil, context.DeadlineExceeded
-	}}, time.Second)
+	}}, time.Second, 0.6)
 	ctx := context.WithValue(context.Background(), chimiddleware.RequestIDKey, testRequestID)
 
 	_, err := client.Answer(ctx, handler.SearchRequest{Question: "private question"})
@@ -127,7 +129,7 @@ func TestAnswerRejectsInvalidRequestIDBeforeRPC(t *testing.T) {
 	client := New(&answerClientStub{answer: func(context.Context, *answerv1.AnswerRequest, ...grpc.CallOption) (*answerv1.AnswerResponse, error) {
 		called = true
 		return &answerv1.AnswerResponse{}, nil
-	}}, time.Second)
+	}}, time.Second, 0.6)
 
 	_, err := client.Answer(context.Background(), handler.SearchRequest{Question: "private question"})
 
@@ -138,7 +140,7 @@ func TestAnswerRejectsInvalidRequestIDBeforeRPC(t *testing.T) {
 func TestAnswerNormalizesMissingAnswerAndEvidenceCollections(t *testing.T) {
 	client := New(&answerClientStub{answer: func(context.Context, *answerv1.AnswerRequest, ...grpc.CallOption) (*answerv1.AnswerResponse, error) {
 		return &answerv1.AnswerResponse{Search: &retrievalv1.SearchResponse{Query: "q"}, Summary: "summary"}, nil
-	}}, time.Second)
+	}}, time.Second, 0.6)
 	ctx := context.WithValue(context.Background(), chimiddleware.RequestIDKey, testRequestID)
 
 	result, err := client.Answer(ctx, handler.SearchRequest{Question: "q"})

@@ -207,15 +207,17 @@ make local-reset  # optional only if you are cleaning stale local state
 make dev-secrets
 make bootstrap-verifier
 make dev-certs
-make m5-model-bootstrap
-make stack-up
-make e2e
+make app-bootstrap
+make app-test
 ```
 
-`make local-run` is the standard bootstrap and start path for an existing checkout.
+`make app-bootstrap` is the standard bootstrap and start path for an existing checkout.
+It now covers the complete local product stack rather than a milestone-specific slice.
+`make app-test` runs the current full repository gate set.
+`make local-run` remains the underlying bootstrap command for the Compose stack.
 `stack-up` now starts the current full stack profile set (M4, M5, and M6-capable),
 applies Identity migrations with the migration-only role, and brings up the same
-runtime used for current milestone development at loopback `:8080`.
+runtime used for current development at loopback `:8080`.
 A disposable Mailpit SMTP fixture is private to the backend network; its inspection
 UI is loopback-only on `:8025`.
 If you do not yet have the Hugging Face `hf` CLI available, use
@@ -224,9 +226,8 @@ TEI/provider stubs and does not fetch model files.
 To stop that stub run, use `make local-stop-stub`.
 `make dev` is an alias for this workflow.
 For a deliberate fresh baseline, run `make local-reset` before `make local-run`.
-For Milestone 5, run `make m5-model-bootstrap` before `make stack-up`; the
-stack preflight verifies the pinned host model cache and refuses to download it
-implicitly.
+For Retrieval model bootstrapping, use `make app-bootstrap`; it will reuse or
+repair the pinned host model cache as needed.
 If `hf` is not installed locally, bootstrap will use a temporary Docker-based
 download path (`HF_BOOTSTRAP_IMAGE`, default `python:3.12-slim`) and still produce
 the same pinned local cache.

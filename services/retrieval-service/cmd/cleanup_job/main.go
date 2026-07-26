@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/process"
+	retrievalconfig "github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
@@ -67,7 +68,11 @@ func run(ctx context.Context) error {
 	}
 	defer pool.Close()
 	records := repository.NewPostgres(pool)
-	index, err := newQdrant(qdrantURL, "evidence_v2", qdrantKey, &http.Client{Timeout: 90 * time.Second})
+	minimumSearchScore, err := retrievalconfig.LoadMinimumSearchScore()
+	if err != nil {
+		return err
+	}
+	index, err := newQdrant(qdrantURL, "evidence_v2", qdrantKey, &http.Client{Timeout: 90 * time.Second}, minimumSearchScore)
 	if err != nil {
 		return err
 	}

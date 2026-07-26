@@ -17,13 +17,13 @@ import (
 func TestQdrantSearchUsesBoundedLimitAndReturnsEvidence(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
 		var body queryRequest
-		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body.Limit != 4 || body.Offset != 6 || body.Filter == nil || len(body.Filter.Must) < 2 || body.Filter.Must[0].Key != "indexed" || body.Filter.Must[0].Match.Value != "true" || body.Filter.Must[1].Key != "vector_kind" || body.Filter.Must[1].Match.Value != "chunk" || body.ScoreThreshold != domain.MinimumSearchScore {
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body.Limit != 4 || body.Offset != 6 || body.Filter == nil || len(body.Filter.Must) < 2 || body.Filter.Must[0].Key != "indexed" || body.Filter.Must[0].Match.Value != "true" || body.Filter.Must[1].Key != "vector_kind" || body.Filter.Must[1].Match.Value != "chunk" || body.ScoreThreshold != 0.6 {
 			t.Fatalf("unexpected request body: %#v, %v", body, err)
 		}
 		return response(http.StatusOK, `{"result":{"points":[{"id":"point-1","score":0.9,"payload":{"evidence_id":"evidence-1","chunk_id":"chunk-1","job_id":"job-1","book_id":"book-1","title":"Systems","author":"Author","year":2026,"tags":["distributed"],"chapter":"One","section":"Replication","page_start":3,"page_end":4,"passage":"Copies improve availability."}}]}}`)
 	})}
 
-	store, err := NewQdrant("http://qdrant.test", "evidence", client)
+	store, err := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
 	if err != nil {
 		t.Fatalf("NewQdrant() error = %v", err)
 	}
@@ -44,7 +44,7 @@ func TestQdrantSearchDocumentsHydratesStoredChunkEvidence(t *testing.T) {
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 				t.Fatalf("invalid document request body: %v", err)
 			}
-			if body.Limit != 4 || body.Offset != 2 || body.Filter.Must[1].Key != "vector_kind" || body.Filter.Must[1].Match.Value != "document" || body.ScoreThreshold != domain.MinimumSearchScore {
+			if body.Limit != 4 || body.Offset != 2 || body.Filter.Must[1].Key != "vector_kind" || body.Filter.Must[1].Match.Value != "document" || body.ScoreThreshold != 0.6 {
 				t.Fatalf("unexpected document request: %#v", body)
 			}
 			return response(http.StatusOK, `{"result":{"points":[{"id":"document-point-1","score":0.8,"payload":{"document_id":"document-1","job_id":"job-1","book_id":"book-1","title":"Systems","author":"Author","year":2026,"tags":["distributed"],"page_start":1,"page_end":20,"chunk_count":10}},{"id":"document-point-2","score":0.7,"payload":{"document_id":"document-2","job_id":"job-2","book_id":"book-2","title":"Queues","author":"Author","year":2025,"tags":["distributed"],"page_start":2,"page_end":12,"chunk_count":8}}]}}`)
@@ -58,7 +58,7 @@ func TestQdrantSearchDocumentsHydratesStoredChunkEvidence(t *testing.T) {
 				if index == 1 {
 					wantJobID = "job-2"
 				}
-				if search.Limit != 3 || search.ScoreThreshold != domain.MinimumSearchScore || len(search.Filter.Must) < 3 || search.Filter.Must[1].Match.Value != "chunk" || search.Filter.Must[2].Key != "job_id" || search.Filter.Must[2].Match.Value != wantJobID {
+				if search.Limit != 3 || search.ScoreThreshold != 0.6 || len(search.Filter.Must) < 3 || search.Filter.Must[1].Match.Value != "chunk" || search.Filter.Must[2].Key != "job_id" || search.Filter.Must[2].Match.Value != wantJobID {
 					t.Fatalf("unexpected evidence hydration request %d: %#v", index, search)
 				}
 			}
@@ -68,7 +68,7 @@ func TestQdrantSearchDocumentsHydratesStoredChunkEvidence(t *testing.T) {
 			return response(http.StatusInternalServerError, `{}`)
 		}
 	})}
-	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
 	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 2})
 
 	page, err := store.SearchDocuments(context.Background(), query, make([]float32, domain.EmbeddingDimensions), 4, 2)
@@ -92,7 +92,7 @@ func TestQdrantSearchDocumentsKeepsFullRawPageOpenAfterHydrationDrops(t *testing
 			return response(http.StatusInternalServerError, `{}`)
 		}
 	})}
-	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
 	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 1})
 
 	page, err := store.SearchDocuments(context.Background(), query, make([]float32, domain.EmbeddingDimensions), 2, 0)
@@ -114,7 +114,7 @@ func TestQdrantSearchEvidenceBatchAcceptsHydrationResponseLargerThanFourMiB(t *t
 		}
 		return response(http.StatusOK, batchResponse)
 	})}
-	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
 	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 1})
 
 	results, err := store.searchEvidenceBatch(context.Background(), query, make([]float32, domain.EmbeddingDimensions), []string{"job-1"}, 3)
@@ -144,7 +144,7 @@ func TestQdrantPreservesExplicitZeroYearUpperBound(t *testing.T) {
 		}
 		return response(http.StatusOK, `{"result":{"points":[]}}`)
 	})}
-	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
 	yearTo := 0
 	query, err := domain.NewSearchQuery(domain.SearchQueryInput{Question: "old books", Filters: domain.SearchFilters{YearTo: &yearTo}, Limit: 1})
 	if err != nil {
@@ -181,7 +181,7 @@ func TestQdrantEnsureCollectionCreatesExactSchema(t *testing.T) {
 			return response(http.StatusInternalServerError, `{}`)
 		}
 	})}
-	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
 	if err := store.EnsureCollection(context.Background()); err != nil || requests != 10 {
 		t.Fatalf("EnsureCollection() requests=%d error=%v", requests, err)
 	}
@@ -210,7 +210,7 @@ func TestQdrantEnsureCollectionRepairsIndexesForExistingCollection(t *testing.T)
 			return response(http.StatusInternalServerError, `{}`)
 		}
 	})}
-	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
 	if err := store.EnsureCollection(context.Background()); err != nil || requests != 9 {
 		t.Fatalf("EnsureCollection() requests=%d error=%v", requests, err)
 	}
@@ -222,7 +222,7 @@ func TestQdrantEnsureCollectionRejectsIncompatibleExistingCollection(t *testing.
 		requests++
 		return response(http.StatusOK, `{"result":{"config":{"metadata":{"raglibrarian_index_profile_digest":"different"},"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
 	})}
-	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
 
 	err := store.EnsureCollection(context.Background())
 	if !errors.Is(err, ErrIncompatibleVectorCollection) {
@@ -237,7 +237,7 @@ func TestQdrantCheckReadyDistinguishesMissingCollection(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) *http.Response {
 		return response(http.StatusNotFound, `{}`)
 	})}
-	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
 
 	err := store.CheckReady(context.Background())
 	if !errors.Is(err, ErrMissingVectorCollection) {
@@ -249,7 +249,7 @@ func TestQdrantCheckReadyRejectsMissingProfileDigest(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) *http.Response {
 		return response(http.StatusOK, `{"result":{"config":{"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
 	})}
-	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
 
 	if err := store.CheckReady(context.Background()); err == nil {
 		t.Fatal("CheckReady() accepted collection without profile digest")
@@ -260,7 +260,7 @@ func TestQdrantCheckReadyRejectsDifferentProfileDigest(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) *http.Response {
 		return response(http.StatusOK, `{"result":{"config":{"metadata":{"raglibrarian_index_profile_digest":"different"},"params":{"vectors":{"size":768,"distance":"Cosine"}}}}}`)
 	})}
-	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
 
 	if err := store.CheckReady(context.Background()); err == nil {
 		t.Fatal("CheckReady() accepted collection with incompatible profile digest")
@@ -294,7 +294,7 @@ func TestQdrantStagesBeforeActivatingJob(t *testing.T) {
 		}
 		return response(http.StatusOK, `{}`)
 	})}
-	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
 	record := application.EvidenceRecord{Evidence: application.Evidence{EvidenceID: "book-1:chunk-1", ChunkID: "chunk-1", BookID: "book-1", Passage: "evidence"}, JobID: "job-1", Vector: make([]float32, domain.EmbeddingDimensions)}
 	if err := store.UpsertChunks(context.Background(), []application.EvidenceRecord{record}); err != nil {
 		t.Fatal(err)
@@ -332,7 +332,7 @@ func TestQdrantDeletesOnlyServerDerivedJobOrBookFilter(t *testing.T) {
 		}
 		return response(http.StatusOK, `{}`)
 	})}
-	store, _ := NewQdrant("http://qdrant.test", "evidence", client)
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
 
 	if err := store.DeleteJob(context.Background(), "job-1"); err != nil {
 		t.Fatal(err)

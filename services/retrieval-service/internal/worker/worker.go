@@ -134,7 +134,7 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 		pool.Close()
 		return nil, err
 	}
-	index, err := vector.NewAuthenticatedQdrant(configuration.QdrantURL, configuration.QdrantCollection, configuration.QdrantAPIKey, httpClient)
+	index, err := vector.NewAuthenticatedQdrant(configuration.QdrantURL, configuration.QdrantCollection, configuration.QdrantAPIKey, httpClient, configuration.MinimumSearchScore)
 	if err != nil {
 		pool.Close()
 		return nil, err

@@ -166,7 +166,7 @@ stack-up: _require_root
 	@test -r "$${SECRET_DIR:-.dev/secrets}/catalog_minio_access_key" || { echo "MinIO/RabbitMQ development secrets are missing; run make dev-secrets-m3"; exit 1; }
 	@bash ./scripts/check-m4-dev-secrets.sh "$${SECRET_DIR:-.dev/secrets}" || { echo "M4 ingestion development secrets are incomplete; run make dev-secrets for a fresh checkout or scripts/run-local.sh for an additive upgrade"; exit 1; }
 	@bash ./scripts/check-m5-dev-secrets.sh "$${SECRET_DIR:-.dev/secrets}" || { echo "M5 Retrieval development secrets are incomplete; run make dev-secrets for a fresh checkout or make dev-secrets-m5 for an additive upgrade"; exit 1; }
-	@test -r "$${M5_MODEL_DIR:-.dev/models/m5-jina-code-v1}/.revision" || { echo "M5 model cache is missing; run make m5-model-bootstrap"; exit 1; }
+	@test -r "$${M5_MODEL_DIR:-.dev/models/m8-bge-base-en-v1_5}/.revision" || { echo "M5 model cache is missing; run make m5-model-bootstrap"; exit 1; }
 	@bash ./scripts/ensure-m6-dev-cert.sh "$${CERT_DIR:-.dev/certs}"
 	@bash ./scripts/ensure-m6-answer-provider-key.sh "$${SECRET_DIR:-.dev/secrets}"
 	@test -r "$${CERT_DIR:-.dev/certs}/retrieval-service.crt" && test -r "$${CERT_DIR:-.dev/certs}/retrieval-service.key" || { echo "M5 Retrieval certificate is missing; run bash scripts/ensure-m5-dev-cert.sh"; exit 1; }
@@ -186,6 +186,10 @@ m6-stack-up: _require_root
 
 # dev is retained as a convenient alias for the full Compose workflow.
 dev: stack-up
+
+app-bootstrap: local-run
+
+app-test: full-gates
 
 local-run: _require_root
 	bash ./scripts/run-local.sh
@@ -256,7 +260,7 @@ m5-contract-only-test: _require_root
 
 m5-contract-ci-test: _require_root
 	@if [ "$(M5_SEARCH_QUALITY_REQUIRE_MODEL)" = "true" ]; then \
-		test -r "$${M5_MODEL_DIR:-.dev/models/m5-jina-code-v1}/.revision" || { echo "M5 model cache is missing; run make m5-model-bootstrap"; exit 1; }; \
+		test -r "$${M5_MODEL_DIR:-.dev/models/m8-bge-base-en-v1_5}/.revision" || { echo "M5 model cache is missing; run make m5-model-bootstrap"; exit 1; }; \
 	fi
 	@project=raglibrarian-m5-contract-test; \
 	status=0; \
@@ -276,7 +280,7 @@ m5-integration-test: m5-search-quality-test m5-contract-test m5-e2e m5-worker-re
 
 m5-search-quality-test: _require_root
 	@if [ "$(M5_SEARCH_QUALITY_REQUIRE_MODEL)" = "true" ]; then \
-		test -r "$${M5_MODEL_DIR:-.dev/models/m5-jina-code-v1}/.revision" || { echo "M5 model cache is missing; run make m5-model-bootstrap"; exit 1; }; \
+		test -r "$${M5_MODEL_DIR:-.dev/models/m8-bge-base-en-v1_5}/.revision" || { echo "M5 model cache is missing; run make m5-model-bootstrap"; exit 1; }; \
 	fi
 	@project=raglibrarian-m5-search-quality-test; \
 	status=0; \

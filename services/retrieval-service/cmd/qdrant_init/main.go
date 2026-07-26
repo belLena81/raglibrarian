@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/process"
+	retrievalconfig "github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
 )
 
@@ -53,7 +54,11 @@ func run(ctx context.Context, getenv func(string) string, readFile func(string) 
 	if err = dropPrivileges(configuration.RunAs); err != nil {
 		return err
 	}
-	store, err := vector.NewAuthenticatedQdrant(configuration.URL, configuration.Collection, apiKey, client)
+	minimumSearchScore, err := retrievalconfig.LoadMinimumSearchScore()
+	if err != nil {
+		return err
+	}
+	store, err := vector.NewAuthenticatedQdrant(configuration.URL, configuration.Collection, apiKey, client, minimumSearchScore)
 	if err != nil {
 		return err
 	}

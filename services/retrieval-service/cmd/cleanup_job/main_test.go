@@ -34,7 +34,7 @@ func TestRunDropsPrivilegesBeforeDatabaseAndVectorInitialization(t *testing.T) {
 		steps = append(steps, "pool")
 		return nil, nil
 	}
-	newQdrant = func(_, _, _ string, _ *http.Client) (*vector.Qdrant, error) {
+	newQdrant = func(_, _, _ string, _ *http.Client, _ float64) (*vector.Qdrant, error) {
 		steps = append(steps, "qdrant")
 		return nil, nil
 	}

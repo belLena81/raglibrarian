@@ -21,6 +21,7 @@ message CheckResponse {
 // cannot accept caller-supplied passages or citation metadata.
 message AnswerRequest {
   retrieval.v1.SearchRequest search = 1;
+  double minimum_evidence_score = 2;
 }
 
 message AnswerResponse {

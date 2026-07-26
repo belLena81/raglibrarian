@@ -57,7 +57,7 @@ func main() {
 		log.Print("retrieval server could not read vector dependency credentials")
 		os.Exit(1)
 	}
-	store, err := vector.NewAuthenticatedQdrant(configuration.QdrantURL, configuration.QdrantCollection, apiKey, httpClient)
+	store, err := vector.NewAuthenticatedQdrant(configuration.QdrantURL, configuration.QdrantCollection, apiKey, httpClient, configuration.MinimumSearchScore)
 	if err != nil {
 		log.Print("retrieval server could not configure vector dependency")
 		os.Exit(1)
@@ -83,7 +83,7 @@ func main() {
 	}
 	defer pool.Close()
 	records := repository.NewPostgres(pool)
-	searcher, err := application.NewSearcher(embedder, store, records)
+	searcher, err := application.NewSearcher(embedder, store, records, configuration.MinimumSearchScore)
 	if err != nil {
 		log.Print("retrieval server could not configure search")
 		os.Exit(1)

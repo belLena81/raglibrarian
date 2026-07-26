@@ -6,10 +6,12 @@ binding service-boundary decision lives in
 [architecture-decision-record.md](architecture-decision-record.md). Historical
 plans are not active implementation guidance.
 
-The roadmap uses vertical slices: every milestone ends with a demonstrable
+The roadmap uses vertical slices: every delivery slice ends with a demonstrable
 user or operator outcome, deployable service health, and automated acceptance
-coverage. A feature starts in its owning bounded context; it is never built in
-Edge and extracted later.
+coverage. The active bootstrap/test path is app-level, via `make app-bootstrap`
+and `make app-test`; the milestone sections below remain for delivery tracing.
+A feature starts in its owning bounded context; it is never built in Edge and
+extracted later.
 
 Current verification as of July 26, 2026: the Retrieval service package test
 suite passes after the grounded-summary prompt and token-budget update, and
@@ -406,7 +408,7 @@ observability, backup, and recovery gates.
 - Run concurrent auth, upload, ingestion, retrieval, and answer smoke/load
   tests against the product SLOs before Internet exposure.
 
-## Definition of done for every milestone
+## Definition of done for every delivery slice
 
 - The user/operator outcome works through Edge and, where applicable, the UI.
 - The owning service has liveness, dependency-aware readiness, graceful

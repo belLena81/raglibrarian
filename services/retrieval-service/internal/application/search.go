@@ -69,11 +69,12 @@ type IndexVisibility interface {
 }
 
 type Searcher struct {
-	embedder        QueryEmbedder
-	store           EvidenceStore
-	visibility      IndexVisibility
-	summaryProvider SummaryProvider
-	summaryTimeout  time.Duration
+	embedder            QueryEmbedder
+	store               EvidenceStore
+	visibility          IndexVisibility
+	summaryProvider     SummaryProvider
+	summaryTimeout      time.Duration
+	minimumVisibleScore float64
 }
 
 type SummaryRequest struct {
@@ -81,13 +82,11 @@ type SummaryRequest struct {
 	Passage  string
 }
 
-const minimumVisibleScore = domain.MinimumSearchScore
-
-func NewSearcher(embedder QueryEmbedder, store EvidenceStore, visibility IndexVisibility) (*Searcher, error) {
+func NewSearcher(embedder QueryEmbedder, store EvidenceStore, visibility IndexVisibility, minimumVisibleScore float64) (*Searcher, error) {
 	if embedder == nil || store == nil || visibility == nil {
 		return nil, errors.New("invalid searcher configuration")
 	}
-	return &Searcher{embedder: embedder, store: store, visibility: visibility}, nil
+	return &Searcher{embedder: embedder, store: store, visibility: visibility, minimumVisibleScore: minimumVisibleScore}, nil
 }
 
 func (s *Searcher) SetSummaryProvider(provider SummaryProvider) {
@@ -134,7 +133,7 @@ func (s *Searcher) searchVisibleEvidence(ctx context.Context, query domain.Searc
 			return nil, errors.New("search evidence")
 		}
 		candidateCount := len(candidates)
-		candidates = filterVisibleEvidence(candidates)
+		candidates = s.filterVisibleEvidence(candidates)
 		visible, err := s.visibility.FilterIndexed(ctx, candidates)
 		if err != nil {
 			return nil, errors.New("validate index visibility")
@@ -158,7 +157,7 @@ func (s *Searcher) searchVisibleDocuments(ctx context.Context, query domain.Sear
 		if err != nil {
 			return nil, errors.New("search documents")
 		}
-		page.Documents = filterVisibleDocuments(page.Documents)
+		page.Documents = s.filterVisibleDocuments(page.Documents)
 		visible, err := s.visibility.FilterIndexedDocuments(ctx, page.Documents)
 		if err != nil {
 			return nil, errors.New("validate document visibility")
@@ -238,10 +237,10 @@ func trimDocuments(values []DocumentResult, limit int) []DocumentResult {
 	return values[:limit]
 }
 
-func filterVisibleEvidence(values []Evidence) []Evidence {
+func (s *Searcher) filterVisibleEvidence(values []Evidence) []Evidence {
 	results := make([]Evidence, 0, len(values))
 	for _, value := range values {
-		if value.Score < minimumVisibleScore {
+		if value.Score < s.minimumVisibleScore {
 			continue
 		}
 		results = append(results, value)
@@ -249,13 +248,13 @@ func filterVisibleEvidence(values []Evidence) []Evidence {
 	return results
 }
 
-func filterVisibleDocuments(values []DocumentResult) []DocumentResult {
+func (s *Searcher) filterVisibleDocuments(values []DocumentResult) []DocumentResult {
 	results := make([]DocumentResult, 0, len(values))
 	for _, value := range values {
-		if value.Score < minimumVisibleScore {
+		if value.Score < s.minimumVisibleScore {
 			continue
 		}
-		value.Evidence = filterVisibleEvidence(value.Evidence)
+		value.Evidence = s.filterVisibleEvidence(value.Evidence)
 		sortEvidenceByScore(value.Evidence)
 		if len(value.Evidence) == 0 {
 			continue

@@ -14,8 +14,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/config"
+	awscfg "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	retrievalconfig "github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/artifact"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
@@ -144,8 +145,13 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 			pool.Close()
 			return nil, errors.New("invalid private vector endpoint")
 		}
+		minimumSearchScore, err := retrievalconfig.LoadMinimumSearchScore()
+		if err != nil {
+			pool.Close()
+			return nil, err
+		}
 		httpClient := &http.Client{Timeout: 90 * time.Second, CheckRedirect: rejectRedirect}
-		index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, "evidence_v2", secret.QdrantAPIKey, httpClient)
+		index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, "evidence_v2", secret.QdrantAPIKey, httpClient, minimumSearchScore)
 		if err != nil {
 			pool.Close()
 			return nil, err
@@ -187,6 +193,10 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 	if err = validatePrivateEndpoint(ctx, secret.QdrantURL); err != nil {
 		return nil, errors.New("invalid private vector endpoint")
 	}
+	minimumSearchScore, err := retrievalconfig.LoadMinimumSearchScore()
+	if err != nil {
+		return nil, err
+	}
 	pool, err := pgxpool.New(ctx, secret.PostgresDSN)
 	if err != nil {
 		return nil, errors.New("configure retrieval database")
@@ -203,7 +213,7 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
-	index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, "evidence_v2", secret.QdrantAPIKey, httpClient)
+	index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, "evidence_v2", secret.QdrantAPIKey, httpClient, minimumSearchScore)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -250,13 +260,17 @@ func NewCleanupRuntime(ctx context.Context) (*Runtime, error) {
 	if err = validatePrivateEndpoint(ctx, secret.QdrantURL); err != nil {
 		return nil, errors.New("invalid private vector endpoint")
 	}
+	minimumSearchScore, err := retrievalconfig.LoadMinimumSearchScore()
+	if err != nil {
+		return nil, err
+	}
 	pool, err := pgxpool.New(ctx, secret.PostgresDSN)
 	if err != nil {
 		return nil, errors.New("configure retrieval database")
 	}
 	records := repository.NewPostgres(pool)
 	httpClient := &http.Client{Timeout: 90 * time.Second, CheckRedirect: rejectRedirect}
-	index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, "evidence_v2", secret.QdrantAPIKey, httpClient)
+	index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, "evidence_v2", secret.QdrantAPIKey, httpClient, minimumSearchScore)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -483,7 +497,7 @@ func loadSecret(ctx context.Context, arn string) (Secret, error) {
 	if arn == "" {
 		return Secret{}, errors.New("runtime secret ARN is required")
 	}
-	awsConfiguration, err := config.LoadDefaultConfig(ctx)
+	awsConfiguration, err := awscfg.LoadDefaultConfig(ctx)
 	if err != nil {
 		return Secret{}, errors.New("load AWS configuration")
 	}

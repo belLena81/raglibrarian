@@ -176,6 +176,7 @@ func TestOpenAIReportsProviderErrorBodyOnlyWhenEnabled(t *testing.T) {
 	client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusBadGateway,
+			Status:     "502 Bad Gateway",
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body:       io.NopCloser(strings.NewReader(`upstream failed`)),
 		}, nil
@@ -186,7 +187,7 @@ func TestOpenAIReportsProviderErrorBodyOnlyWhenEnabled(t *testing.T) {
 		wantDetail   string
 	}{
 		{name: "disabled", logErrorBody: false, wantDetail: "provider_http_status_502"},
-		{name: "enabled", logErrorBody: true, wantDetail: "upstream failed"},
+		{name: "enabled", logErrorBody: true, wantDetail: "502 Bad Gateway"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			adapter, err := NewOpenAI("https://provider", "test-model", "synthetic-key", client, limit, test.logErrorBody)

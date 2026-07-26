@@ -23,7 +23,7 @@ import (
 func TestSearchQualityBenchmark(t *testing.T) {
 	embedder := newQualityEmbedder(t)
 	store := newQualityQdrant(t, embedder)
-	searcher, err := application.NewSearcher(embedder, store, qualityVisibility{})
+	searcher, err := application.NewSearcher(embedder, store, qualityVisibility{}, 0.6)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
@@ -73,7 +73,7 @@ func newQualityEmbedder(t *testing.T) *embedding.TEI {
 func newQualityQdrant(t *testing.T, embedder *embedding.TEI) *vector.Qdrant {
 	t.Helper()
 	client := &http.Client{Transport: qualityQdrantTransport{points: qualityCorpus(t, embedder)}}
-	store, err := vector.NewQdrant("http://qdrant-quality.test", "quality", client)
+	store, err := vector.NewQdrant("http://qdrant-quality.test", "quality", client, 0.6)
 	if err != nil {
 		t.Fatalf("NewQdrant() error = %v", err)
 	}
