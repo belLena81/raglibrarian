@@ -497,18 +497,19 @@ func validLambdaManifestPayload(t *testing.T) []byte {
 	t.Helper()
 	source := sha256.Sum256([]byte("synthetic source"))
 	processing := sha256.Sum256([]byte("processing profile"))
+	profile := domain.SupportedIndexProfile()
 	manifest := &ingestionv1.ChunkManifestV1{
 		SchemaVersion:          "v1",
 		BookId:                 "book-1",
 		SourceSha256:           source[:],
 		ProcessingConfigDigest: processing[:],
-		ExtractionVersion:      "poppler-layout-v1",
-		NormalizationVersion:   "nfc-v1",
-		TokenizerVersion:       "cl100k_base-v1",
-		ChunkingVersion:        "chapter-page-window-v1",
-		StructureVersion:       "chapter-boundary-v1",
-		MaximumTokens:          800,
-		OverlapTokens:          120,
+		ExtractionVersion:      profile.ExtractionVersion,
+		NormalizationVersion:   profile.NormalizationVersion,
+		TokenizerVersion:       profile.TokenizerVersion,
+		ChunkingVersion:        profile.ChunkingVersion,
+		StructureVersion:       profile.StructureVersion,
+		MaximumTokens:          uint32(profile.MaximumTokens),
+		OverlapTokens:          uint32(profile.OverlapTokens),
 		PageCount:              1,
 		ChunkCount:             1,
 		GeneratedAt:            timestamppb.New(time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)),

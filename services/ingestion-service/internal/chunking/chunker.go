@@ -18,7 +18,7 @@ const (
 	NormalizationVersion = "nfc-v1"
 	ChunkingVersion      = "chapter-page-window-v1"
 	StructureVersion     = "chapter-boundary-v1"
-	DefaultMaximumTokens = 800
+	DefaultMaximumTokens = 512
 	DefaultOverlapTokens = 120
 	DefaultTargetPages   = 2
 	DefaultMaximumPages  = 3

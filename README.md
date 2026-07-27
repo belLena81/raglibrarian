@@ -13,7 +13,7 @@ OCR.
 
 Ingestion uses a chapter-aware page-window chunking profile. The default
 passage target is two pages, with a hard maximum of three pages, 120-token
-overlap, and an 800-token embedding input cap. Chapter or part boundaries flush
+overlap, and a 512-token embedding input cap. Chapter or part boundaries flush
 the current passage; overlap from a previous chapter is never carried into the
 next chapter. This is a fixed versioned cross-service profile; tuning requires
 introducing and validating a new supported profile so Catalog, Ingestion, and

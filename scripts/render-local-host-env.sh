@@ -180,6 +180,7 @@ export CATALOG_MINIO_SECRET_KEY_FILE="$root_dir/$secret_dir/catalog_minio_secret
 export CATALOG_RABBITMQ_URI_FILE="$root_dir/$host_secret_dir/catalog_rabbitmq_uri"
 export CATALOG_INGESTION_RABBITMQ_URI_FILE="$root_dir/$host_secret_dir/catalog_ingestion_rabbitmq_uri"
 export CATALOG_RETRIEVAL_RABBITMQ_URI_FILE="$root_dir/$host_secret_dir/catalog_retrieval_rabbitmq_uri"
+export CATALOG_PREVIEW_TIMEOUT="${CATALOG_PREVIEW_TIMEOUT:-5s}"
 export CATALOG_TLS_CERT_FILE="$root_dir/$cert_dir/catalog-service.crt"
 export CATALOG_TLS_KEY_FILE="$root_dir/$cert_dir/catalog-service.key"
 

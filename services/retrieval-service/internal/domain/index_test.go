@@ -9,10 +9,10 @@ import (
 
 func TestSupportedIndexProfileDigestIsStable(t *testing.T) {
 	profile := SupportedIndexProfile()
-	if profile.Model != "BAAI/bge-base-en-v1.5" || profile.Dimensions != 768 || profile.Distance != "cosine" {
+	if profile.Model != "BAAI/bge-base-en-v1.5" || profile.Dimensions != 768 || profile.Distance != "cosine" || profile.Pooling != "cls" || profile.MaximumTokens != 512 {
 		t.Fatalf("unexpected supported profile: %#v", profile)
 	}
-	if got := hex.EncodeToString(profile.Digest[:]); got != "4b088f0e9387fae246ee175e76ab0e3c16cb82dfa3a00438b3a1f9a71aa6f5b6" {
+	if got := hex.EncodeToString(profile.Digest[:]); got != "5ba059650ec508283e2ba1ff8b2fb8215d50267d14e1724a5a8c078f255a69b1" {
 		t.Fatalf("profile digest = %s", got)
 	}
 }

@@ -196,7 +196,7 @@ func TestDecodeBatchRetainsManifestValidationContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeBatch() error = %v", err)
 	}
-	if work.FirstChunkOrder != 7 || work.LastChunkOrder != 7 || work.ManifestPageCount != 2 || work.MaximumTokens != 800 || work.StructureVersion != profile.StructureVersion {
+	if work.FirstChunkOrder != 7 || work.LastChunkOrder != 7 || work.ManifestPageCount != 2 || work.MaximumTokens != uint32(profile.MaximumTokens) || work.StructureVersion != profile.StructureVersion {
 		t.Fatalf("DecodeBatch() work = %#v", work)
 	}
 }
@@ -205,11 +205,12 @@ func validManifestPayloads(t *testing.T) ([]byte, []byte) {
 	t.Helper()
 	source := sha256.Sum256([]byte("synthetic source"))
 	processing := sha256.Sum256([]byte("processing profile"))
+	profile := domain.SupportedIndexProfile()
 	generated := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
 	directory := "books/book-1/" + hex.EncodeToString(source[:]) + "/" + hex.EncodeToString(processing[:]) + "/"
 	manifest := &ingestionv1.ChunkManifestV1{SchemaVersion: "v1", BookId: "book-1", SourceSha256: source[:], ProcessingConfigDigest: processing[:],
-		ExtractionVersion: "poppler-layout-v1", NormalizationVersion: "nfc-v1", TokenizerVersion: "cl100k_base-v1", ChunkingVersion: "chapter-page-window-v1",
-		StructureVersion: "chapter-boundary-v1", MaximumTokens: 800, OverlapTokens: 120, PageCount: 1, ChunkCount: 1, GeneratedAt: timestamppb.New(generated),
+		ExtractionVersion: profile.ExtractionVersion, NormalizationVersion: profile.NormalizationVersion, TokenizerVersion: profile.TokenizerVersion, ChunkingVersion: profile.ChunkingVersion,
+		StructureVersion: profile.StructureVersion, MaximumTokens: uint32(profile.MaximumTokens), OverlapTokens: uint32(profile.OverlapTokens), PageCount: 1, ChunkCount: 1, GeneratedAt: timestamppb.New(generated),
 		Shards: []*ingestionv1.ChunkShardDescriptorV1{{Reference: directory + "shards/000000.pb.zst", Sha256: source[:], CompressedByteSize: 10, UncompressedByteSize: 20, ChunkCount: 1, FirstChunkOrder: 0, LastChunkOrder: 0}}}
 	manifestPayload, err := proto.MarshalOptions{Deterministic: true}.Marshal(manifest)
 	if err != nil {

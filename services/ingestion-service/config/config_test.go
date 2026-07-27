@@ -18,7 +18,7 @@ func TestLoadUsesBoundedProductionDefaults(t *testing.T) {
 	if value.MemoryLimitBytes != 2<<30 || value.ParserSandboxMemoryBytes != 1536<<20 {
 		t.Fatalf("unexpected parser memory defaults: %#v", value)
 	}
-	if value.ChunkMaximumTokens != 800 || value.ChunkOverlapTokens != 120 || value.ChunkTargetPages != 2 || value.ChunkMaximumPages != 3 {
+	if value.ChunkMaximumTokens != 512 || value.ChunkOverlapTokens != 120 || value.ChunkTargetPages != 2 || value.ChunkMaximumPages != 3 {
 		t.Fatalf("unexpected chunk profile defaults: %#v", value)
 	}
 	if value.SourceBucket == value.ArtifactBucket {
@@ -36,7 +36,7 @@ func TestLoadRejectsUnsupportedM4ProcessingProfile(t *testing.T) {
 		{name: "source envelope", key: "INGESTION_MAX_SOURCE_BYTES", value: "52428800"},
 		{name: "page envelope", key: "INGESTION_MAX_PAGES", value: "1001"},
 		{name: "manifest envelope", key: "INGESTION_MAX_MANIFEST_BYTES", value: "1048577"},
-		{name: "chunk token profile", key: "INGESTION_CHUNK_MAX_TOKENS", value: "801"},
+		{name: "chunk token profile", key: "INGESTION_CHUNK_MAX_TOKENS", value: "513"},
 		{name: "chunk overlap profile", key: "INGESTION_CHUNK_OVERLAP_TOKENS", value: "121"},
 		{name: "chunk target pages profile", key: "INGESTION_CHUNK_TARGET_PAGES", value: "3"},
 		{name: "chunk maximum pages profile", key: "INGESTION_CHUNK_MAX_PAGES", value: "4"},

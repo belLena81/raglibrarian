@@ -230,6 +230,10 @@ if ! grep -Fq 'export EDGE_CATALOG_PREVIEW_DEADLINE="${EDGE_CATALOG_PREVIEW_DEAD
   echo "host env renderer does not export the catalog preview deadline" >&2
   exit 1
 fi
+if ! grep -Fq 'export CATALOG_PREVIEW_TIMEOUT="${CATALOG_PREVIEW_TIMEOUT:-5s}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export the catalog preview timeout" >&2
+  exit 1
+fi
 if ! grep -Fq 'bash ./scripts/stop-local-host-services.sh' "$root_dir/scripts/run-local-host-services.sh"; then
   echo "host services launcher does not stop stale screen sessions before restart" >&2
   exit 1

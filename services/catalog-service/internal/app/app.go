@@ -96,7 +96,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		PreviewConcurrency: cfg.PreviewConcurrency,
 		PreviewTimeout:     cfg.PreviewTimeout,
 	})
-	catalogv1.RegisterCatalogServiceServer(server, cataloggrpc.NewServer(service, diagnostics, readiness))
+	catalogv1.RegisterCatalogServiceServer(server, cataloggrpc.NewServer(service, diagnostics, cfg.PreviewTimeout, readiness))
 	healthServer := health.NewServer()
 	recorder := metrics.New(diagnostics)
 	updateHealth := func() {

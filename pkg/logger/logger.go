@@ -93,7 +93,7 @@ var allowedFieldNames = map[string]struct{}{
 	"request_id": {}, "method": {}, "route": {}, "route_template": {}, "status": {}, "outcome": {}, "duration": {}, "duration_ms": {},
 	"request_bytes": {}, "response_bytes": {}, "operation": {}, "queue": {}, "event_type": {}, "content_type": {}, "code": {}, "grpc_code": {}, "stage": {}, "reason": {}, "reason_code": {}, "reason_detail": {}, "error_code": {},
 	"stack_fingerprint": {}, "stack_trace": {}, "actor_id": {}, "book_id": {}, "checksum_sha256": {}, "request_url": {}, "request_path": {}, "request_model": {}, "request_body_sha256": {},
-	"request_body_preview": {}, "response_body_sha256": {}, "response_body_preview": {}, "byte_size": {}, "tag_count": {}, "page_size": {}, "result_count": {}, "role": {}, "account_status": {},
+	"request_body_preview": {}, "response_body_sha256": {}, "response_body_preview": {}, "response_body_raw_prefix": {}, "response_body_raw_prefix_bytes": {}, "byte_size": {}, "tag_count": {}, "page_size": {}, "result_count": {}, "role": {}, "account_status": {},
 	"segment_count": {}, "summary_length": {},
 }
 
@@ -153,6 +153,9 @@ func validDiagnosticField(key string, fieldType zapcore.FieldType, value string)
 	if key == "summary" {
 		return fieldType == zapcore.StringType && len(value) <= 1024 && value != "" && !strings.ContainsAny(value, "=\t\r\n")
 	}
+	if key == "response_body_raw_prefix" {
+		return fieldType == zapcore.StringType && len(value) > 0 && len(value) <= 131072 && !strings.ContainsAny(value, "=\t\r\n")
+	}
 	if key == "reason_detail" {
 		return fieldType == zapcore.StringType && len(value) <= 256 && value != "" && !strings.ContainsAny(value, "=\t\r\n")
 	}
@@ -186,7 +189,7 @@ func validDiagnosticField(key string, fieldType zapcore.FieldType, value string)
 		return fieldType == zapcore.StringType && len(value) <= 256 && !strings.ContainsAny(value, "=\t\r\n")
 	case "actor_id", "book_id":
 		return fieldType == zapcore.StringType && opaqueIDPattern.MatchString(value)
-	case "byte_size", "tag_count", "page_size", "result_count":
+	case "byte_size", "tag_count", "page_size", "result_count", "response_body_raw_prefix_bytes":
 		return integerField(fieldType) && parseBoundedInt(value, 0, 1<<53-1)
 	case "segment_count", "summary_length":
 		return integerField(fieldType) && parseBoundedInt(value, 0, 1<<53-1)

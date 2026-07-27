@@ -102,7 +102,7 @@ func TestReaderRetainsChunkContractFields(t *testing.T) {
 		TokenizerVersion:     "cl100k_base-v1",
 		ChunkingVersion:      "chapter-page-window-v1",
 		StructureVersion:     "chapter-boundary-v1",
-		MaximumTokens:        800,
+		MaximumTokens:        512,
 		OverlapTokens:        120,
 	})
 	if err != nil {

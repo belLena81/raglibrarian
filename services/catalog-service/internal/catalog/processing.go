@@ -46,7 +46,7 @@ func newM5ProfileDigest(extractionVersion string) [sha256.Size]byte {
 		"5e233c43ad83ba072172bca158a7c7dec46302a0",
 		"768",
 		"cosine",
-		"mean",
+		"cls",
 		"normalized",
 		"retrieval-index-v2",
 		extractionVersion,
@@ -54,7 +54,7 @@ func newM5ProfileDigest(extractionVersion string) [sha256.Size]byte {
 		"cl100k_base-v1",
 		"chapter-page-window-v1",
 		"chapter-boundary-v1",
-		"800",
+		"512",
 		"120",
 		"v1",
 	}
@@ -70,7 +70,7 @@ func newProcessingProfile(extractionVersion string) processingProfile {
 		tokenizerVersion:     "cl100k_base-v1",
 		chunkingVersion:      "chapter-page-window-v1",
 		structureVersion:     "chapter-boundary-v1",
-		maximumTokens:        800,
+		maximumTokens:        512,
 		overlapTokens:        120,
 	}
 	// The final values are M4's maximum chunks, chunks per shard, and maximum

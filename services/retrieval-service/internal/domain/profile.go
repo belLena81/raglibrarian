@@ -61,7 +61,7 @@ func SupportedIndexProfileForMediaType(mediaType string) (IndexProfile, bool) {
 		EmbeddingRevision,
 		"768",
 		"cosine",
-		"mean",
+		"cls",
 		"normalized",
 		"retrieval-index-v2",
 		extractionVersion,
@@ -69,18 +69,18 @@ func SupportedIndexProfileForMediaType(mediaType string) (IndexProfile, bool) {
 		"cl100k_base-v1",
 		"chapter-page-window-v1",
 		"chapter-boundary-v1",
-		"800",
+		"512",
 		"120",
 		"v1",
 	}
 	preimage := strings.Join(values, "\x00") + "\x00"
 	return IndexProfile{ // #nosec G101 -- this is a public model compatibility profile, not a credential.
 		Name: name, Model: EmbeddingModel, Revision: EmbeddingRevision,
-		Dimensions: EmbeddingDimensions, Distance: "cosine", Pooling: "mean", Normalized: true,
+		Dimensions: EmbeddingDimensions, Distance: "cosine", Pooling: "cls", Normalized: true,
 		IndexSchema: "retrieval-index-v2", ExtractionVersion: extractionVersion,
 		NormalizationVersion: "nfc-v1", TokenizerVersion: "cl100k_base-v1",
 		ChunkingVersion: "chapter-page-window-v1", StructureVersion: "chapter-boundary-v1",
-		MaximumTokens: 800, OverlapTokens: 120, ManifestSchema: "v1",
+		MaximumTokens: 512, OverlapTokens: 120, ManifestSchema: "v1",
 		Digest: sha256.Sum256([]byte(preimage)),
 	}, true
 }

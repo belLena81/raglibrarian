@@ -10,11 +10,11 @@ import (
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/chunking"
 )
 
-const m4ConfigDigestHex = "be3874808ffbf7af34a295e1076b36a0e78929411d89ab80bca19abad221f355"
+const m4ConfigDigestHex = "23a35a6f4f9485df637c85efa3e5b005858d3318d58ffab1c90a66cd4d4849e9"
 
 func TestM4ProcessingProfileDigestIsStable(t *testing.T) {
 	factory, err := NewProcessingFactory(factoryTokenizer{}, factoryStore{}, chunking.Policy{
-		MaximumTokens: 800,
+		MaximumTokens: 512,
 		OverlapTokens: 120,
 		TargetPages:   2,
 		MaximumPages:  3,

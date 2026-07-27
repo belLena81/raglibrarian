@@ -243,6 +243,7 @@ services:
       CATALOG_RABBITMQ_URI_FILE: /run/secrets/catalog_rabbitmq_uri
       CATALOG_INGESTION_RABBITMQ_URI_FILE: /run/secrets/catalog_ingestion_rabbitmq_uri
       CATALOG_RETRIEVAL_RABBITMQ_URI_FILE: /run/secrets/catalog_retrieval_rabbitmq_uri
+      CATALOG_PREVIEW_TIMEOUT: "${CATALOG_PREVIEW_TIMEOUT:-5s}"
       INTERNAL_TLS_CA_FILE: /run/secrets/internal_ca
       CATALOG_TLS_CERT_FILE: /run/secrets/catalog_tls_cert
       CATALOG_TLS_KEY_FILE: /run/secrets/catalog_tls_key
@@ -331,7 +332,7 @@ services:
 
   edge-api-2:
     <<: *edge-api-service
-    profiles: ["m4-ha"]
+    profiles: ["raglibrarian"]
     ports:
       - "127.0.0.1:${EDGE_SECONDARY_PORT:-8081}:8080"
     environment:
@@ -497,7 +498,7 @@ services:
       - --port
       - "8080"
       - --pooling
-      - mean
+      - cls
     volumes:
       - ${M5_MODEL_DIR:-./.dev/models/m8-bge-base-en-v1_5}:/data/model:ro
     networks:

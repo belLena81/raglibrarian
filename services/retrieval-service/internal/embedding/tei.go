@@ -23,7 +23,8 @@ import (
 const maximumResponseBytes = 8 << 20
 const providerBatchSize = 8
 const bgeQueryInstruction = "Represent this sentence for searching relevant passages: "
-const providerTruncateInputs = true
+const providerTruncateInputs = false
+const teiFailureDetailHTTPStatus = "provider_http_status"
 
 type TEI struct {
 	endpoint       string
@@ -117,10 +118,7 @@ func (t *TEI) embed(ctx context.Context, inputs any, expected int, operation str
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, maximumResponseBytes))
-		detail := sanitizeEmbeddingDetail(string(body))
-		if detail == "" {
-			detail = sanitizeEmbeddingDetail(response.Status)
-		}
+		detail := teiFailureDetailHTTPStatus
 		t.logResponseBody(operation, response, body)
 		return nil, t.failure(operation, fmt.Sprintf("provider_http_status_%d", response.StatusCode), "response", detail, response.StatusCode, requestBytes, len(body), started, fmt.Errorf("embedding dependency status %d", response.StatusCode))
 	}
@@ -213,10 +211,14 @@ func (t *TEI) logResponseBody(operation string, response *http.Response, body []
 	}
 	if t.rawResponseLog.Enabled && t.rawResponseLog.MaximumBytes > 0 {
 		limit := min(t.rawResponseLog.MaximumBytes, len(body))
-		fields = append(fields, zap.ByteString("response_body_raw_prefix", body[:limit]))
+		fields = append(fields, zap.String("response_body_raw_prefix", sanitizeRawResponsePrefix(body[:limit])))
 		fields = append(fields, zap.Int("response_body_raw_prefix_bytes", limit))
 	}
 	t.log.Info("retrieval.embedding.provider.response", fields...)
+}
+
+func sanitizeRawResponsePrefix(body []byte) string {
+	return hex.EncodeToString(body)
 }
 
 func (t *TEI) wait(ctx context.Context) (time.Duration, error) {

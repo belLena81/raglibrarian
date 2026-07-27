@@ -43,14 +43,14 @@ func TestProcessingServiceValidatesAndAppliesReadyEvent(t *testing.T) {
 }
 
 func TestSupportedM4ProfileDigestMatchesProducerContract(t *testing.T) {
-	const expected = "be3874808ffbf7af34a295e1076b36a0e78929411d89ab80bca19abad221f355"
+	const expected = "23a35a6f4f9485df637c85efa3e5b005858d3318d58ffab1c90a66cd4d4849e9"
 	if digest := hex.EncodeToString(supportedM4Profile.configDigest[:]); digest != expected {
 		t.Fatalf("M4 config digest = %q, want %q", digest, expected)
 	}
 }
 
 func TestSupportedM5ProfileDigestMatchesProducerContract(t *testing.T) {
-	const expected = "4b088f0e9387fae246ee175e76ab0e3c16cb82dfa3a00438b3a1f9a71aa6f5b6"
+	const expected = "5ba059650ec508283e2ba1ff8b2fb8215d50267d14e1724a5a8c078f255a69b1"
 	if digest := hex.EncodeToString(supportedM5ProfileDigest[:]); digest != expected {
 		t.Fatalf("M5 profile digest = %q, want %q", digest, expected)
 	}

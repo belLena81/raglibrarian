@@ -50,7 +50,7 @@ func TestPlannerRejectsIncompatibleManifestProfile(t *testing.T) {
 	repository := newMemoryPlanningRepository()
 	planner := newTestPlanner(t, repository)
 	event := validManifestEvent()
-	event.Manifest.MaximumTokens = 801
+	event.Manifest.MaximumTokens = 513
 	if err := planner.HandleManifest(context.Background(), event); !errors.Is(err, ErrUnsupportedIndexProfile) {
 		t.Fatalf("HandleManifest() error = %v", err)
 	}
@@ -122,6 +122,7 @@ func validMetadataEvent() MetadataEvent {
 }
 
 func validManifestEvent() ManifestEvent {
+	profile := domain.SupportedIndexProfile()
 	processingDigest := sum(7)
 	processingDigestHex := "0700000000000000000000000000000000000000000000000000000000000000"
 	prefix := "books/book-1/0100000000000000000000000000000000000000000000000000000000000000/" + processingDigestHex + "/"
@@ -130,8 +131,8 @@ func validManifestEvent() ManifestEvent {
 		Producer: "ingestion-service", SchemaVersion: "v1", IdempotencyKey: "book-1:" + processingDigestHex + ":ready", OccurredAt: time.Date(2026, 7, 20, 9, 5, 0, 0, time.UTC), PayloadDigest: sum(4),
 		Manifest: Manifest{SchemaVersion: "v1", BookID: "book-1", SourceSHA256: sum(1), ManifestSHA256: sum(2),
 			ProcessingConfigDigest: processingDigest, PageCount: 2, ChunkCount: 3, GeneratedAt: time.Date(2026, 7, 20, 9, 4, 0, 0, time.UTC),
-			ExtractionVersion: "poppler-layout-v1", NormalizationVersion: "nfc-v1", TokenizerVersion: "cl100k_base-v1",
-			ChunkingVersion: "chapter-page-window-v1", StructureVersion: "chapter-boundary-v1", MaximumTokens: 800, OverlapTokens: 120,
+			ExtractionVersion: profile.ExtractionVersion, NormalizationVersion: profile.NormalizationVersion, TokenizerVersion: profile.TokenizerVersion,
+			ChunkingVersion: profile.ChunkingVersion, StructureVersion: profile.StructureVersion, MaximumTokens: uint32(profile.MaximumTokens), OverlapTokens: uint32(profile.OverlapTokens),
 			Shards: []Shard{{Reference: prefix + "shards/000000.pb.zst", SHA256: sum(5), CompressedBytes: 10, UncompressedBytes: 20, ChunkCount: 2, FirstChunkOrder: 0, LastChunkOrder: 1},
 				{Reference: prefix + "shards/000001.pb.zst", SHA256: sum(6), CompressedBytes: 11, UncompressedBytes: 21, ChunkCount: 1, FirstChunkOrder: 2, LastChunkOrder: 2}}}}
 }

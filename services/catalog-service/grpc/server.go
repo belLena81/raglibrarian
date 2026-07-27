@@ -22,18 +22,24 @@ import (
 
 type Server struct {
 	catalogv1.UnimplementedCatalogServiceServer
-	service     *catalog.Service
-	diagnostics *diagnostic.Recorder
-	readiness   interface{ CheckReady(context.Context) error }
+	service        *catalog.Service
+	diagnostics    *diagnostic.Recorder
+	readiness      interface{ CheckReady(context.Context) error }
+	previewTimeout time.Duration
 }
 
-func NewServer(service *catalog.Service, diagnostics *diagnostic.Recorder, readiness ...interface{ CheckReady(context.Context) error }) *Server {
+func NewServer(service *catalog.Service, diagnostics *diagnostic.Recorder, previewTimeout time.Duration, readiness ...interface{ CheckReady(context.Context) error }) *Server {
 	if service == nil || diagnostics == nil {
 		panic("cataloggrpc: service and diagnostics are required")
 	}
 	server := &Server{service: service, diagnostics: diagnostics}
 	if len(readiness) == 1 {
 		server.readiness = readiness[0]
+	}
+	if previewTimeout <= 0 {
+		server.previewTimeout = 5 * time.Second
+	} else {
+		server.previewTimeout = previewTimeout
 	}
 	return server
 }
@@ -154,7 +160,7 @@ func (s *Server) GetBook(ctx context.Context, request *catalogv1.GetBookRequest)
 		s.diagnostics.OperationRejected("get_book", requestID, actor, "unauthorized_actor")
 		return nil, status.Error(codes.PermissionDenied, "actor is not authorized")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, s.previewTimeout)
 	defer cancel()
 	book, err := s.service.GetBook(ctx, request.BookId)
 	if err != nil {
