@@ -18,11 +18,8 @@ ingestion_files=(
   ingestion_migration_password
   ingestion_runtime_password
   ingestion_cleanup_password
-  ingestion_e2e_password
   ingestion_migration_pgpass
   ingestion_runtime_dsn
-  ingestion_e2e_dsn
-  ingestion_e2e_container_dsn
   ingestion_cleanup_dsn
 )
 
@@ -68,19 +65,15 @@ if [[ "$ingestion_state" == missing ]]; then
   ingestion_migration_password=$(openssl rand -hex 32)
   ingestion_runtime_password=$(openssl rand -hex 32)
   ingestion_cleanup_password=$(openssl rand -hex 32)
-  ingestion_e2e_password=$(openssl rand -hex 32)
 
   printf '%s\n' "$ingestion_migration_password" > "$dir/ingestion_migration_password"
   printf '%s\n' "$ingestion_runtime_password" > "$dir/ingestion_runtime_password"
   printf '%s\n' "$ingestion_cleanup_password" > "$dir/ingestion_cleanup_password"
-  printf '%s\n' "$ingestion_e2e_password" > "$dir/ingestion_e2e_password"
   printf 'postgres:5432:ingestion:ingestion_migrator:%s\n' "$ingestion_migration_password" > "$dir/ingestion_migration_pgpass"
   printf 'postgres://ingestion_runtime:%s@postgres:5432/ingestion?sslmode=disable\n' "$ingestion_runtime_password" > "$dir/ingestion_runtime_dsn"
-  printf 'postgres://ingestion_e2e:%s@127.0.0.1:5432/ingestion?sslmode=disable\n' "$ingestion_e2e_password" > "$dir/ingestion_e2e_dsn"
-  printf 'postgres://ingestion_e2e:%s@postgres:5432/ingestion?sslmode=disable\n' "$ingestion_e2e_password" > "$dir/ingestion_e2e_container_dsn"
   printf 'postgres://ingestion_cleanup:%s@postgres:5432/ingestion?sslmode=disable\n' "$ingestion_cleanup_password" > "$dir/ingestion_cleanup_dsn"
   chmod 400 "${ingestion_files[@]/#/$dir/}"
-  unset ingestion_migration_password ingestion_runtime_password ingestion_cleanup_password ingestion_e2e_password
+  unset ingestion_migration_password ingestion_runtime_password ingestion_cleanup_password
 fi
 
 echo "Generated complete service database development credentials in $dir"

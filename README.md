@@ -139,13 +139,20 @@ Internet-ready hardening follows it.
 
 ## Security model
 
-Local development generates the key pair into owner-readable files with
-`make dev-secrets`:
+Local development generates the runtime key pair into owner-readable files with
+`make dev-secrets`. Test-only credentials for unit, e2e, and CI flows come from
+`make test-secrets`:
 
 - `IDENTITY_SIGNING_KEY`: a private Ed25519 key. Configure it only in
   `identity-service`.
 - `EDGE_VERIFY_KEY`: the corresponding public key. Configure it only in
   `edge-api`.
+
+`make test-secrets` populates the isolated e2e/CI secret set:
+
+- ingestion e2e Postgres, MinIO, and RabbitMQ credentials
+- retrieval e2e Postgres and RabbitMQ credentials
+- `answer_llm_test_api_key` for deterministic M6 test runs
 
 Never commit either value, local certificates, connection strings, tokens, or
 book content. The signing key is mounted only into Identity; Edge receives only
@@ -229,6 +236,7 @@ lint and generate them explicitly after changing a `.proto` contract.
 cp .env.example .env
 make local-reset  # optional only if you are cleaning stale local state
 make dev-secrets
+make test-secrets
 make bootstrap-verifier
 make dev-certs
 make app-bootstrap
@@ -247,10 +255,6 @@ applies Identity migrations with the migration-only role, and brings up the same
 runtime used for current development at loopback `:8080`.
 A disposable Mailpit SMTP fixture is private to the backend network; its inspection
 UI is loopback-only on `:8025`.
-If you do not yet have the Hugging Face `hf` CLI available, use
-`make local-run-stub` for a full-stack local boot that swaps in the CI-compatible
-TEI/provider stubs and does not fetch model files.
-To stop that stub run, use `make local-stop-stub`.
 `make dev` is an alias for this workflow.
 For a deliberate fresh baseline, run `make local-reset` before `make local-run`.
 For Retrieval model bootstrapping, use `make app-bootstrap`; it will reuse or
@@ -297,6 +301,7 @@ make vuln        # govulncheck per module
 make proto-check # Buf contract lint
 make proto-breaking # reject protobuf changes that break main
 make dev-secrets-test # fresh and additive local-secret upgrade regressions
+make test-secrets # populate test-only e2e and CI credentials
 make m4-worker-recovery-test # controlled local worker-down recovery contract
 make contract-test # live mTLS, database, and broker-recovery contracts
 make minio-runtime-test # live object-storage cleanup and pagination contracts

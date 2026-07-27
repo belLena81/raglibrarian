@@ -14,23 +14,18 @@ secret values in `.env`:
 make local-reset  # optional if you are migrating an older local baseline
 cp .env.example .env
 make dev-secrets
+make test-secrets
 make bootstrap-verifier
 make dev-certs
 make m5-model-bootstrap
 make compose-config
 make stack-up
 ```
-If model bootstrap is blocked by a missing `hf` CLI, run:
-
-```bash
-make local-run-stub
-```
-This keeps all M4/M5/M6 services up in one run using the CI Compose override stubs.
-
 Files under `.dev/secrets` and `.dev/certs` are generated with owner-only
 permissions and ignored by Git. Do not print, copy into issue trackers, or
-commit their contents. `make dev-secrets` intentionally does not create a
-bootstrap verifier. Run `make bootstrap-verifier`; it accepts exactly 32 bytes
+commit their contents. `make dev-secrets` intentionally does not create the
+bootstrap verifier or test-only e2e credentials. Run `make bootstrap-verifier`;
+it accepts exactly 32 bytes
 from an echo-disabled terminal, refuses overwrite, and persists only the
 domain-separated hash.
 

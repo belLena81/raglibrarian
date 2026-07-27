@@ -14,69 +14,77 @@ done
 test_root=$(mktemp -d /tmp/raglibrarian-secret-tests.XXXXXX)
 trap 'rm -rf "$test_root"' EXIT
 
-m4_files=(
+m4_runtime_files=(
   ingestion_migration_password ingestion_runtime_password ingestion_cleanup_password
-  ingestion_e2e_password ingestion_migration_pgpass ingestion_runtime_dsn
-  ingestion_e2e_dsn ingestion_e2e_container_dsn ingestion_cleanup_dsn
+  ingestion_migration_pgpass ingestion_runtime_dsn ingestion_cleanup_dsn
   ingestion_minio_access_key ingestion_minio_secret_key
   ingestion_cleanup_minio_access_key ingestion_cleanup_minio_secret_key
-  ingestion_e2e_minio_access_key ingestion_e2e_minio_secret_key
   catalog_ingestion_rabbitmq_uri ingestion_rabbitmq_uri
-  ingestion_e2e_rabbitmq_uri ingestion_e2e_rabbitmq_container_uri
   edge_status_rabbitmq_uri_1 edge_status_rabbitmq_uri_2
   rabbitmq_definitions.json rabbitmq.conf
 )
 
-m5_files=(
+m5_runtime_files=(
   retrieval_migration_password retrieval_runtime_password retrieval_search_password retrieval_planner_password
-  retrieval_indexer_password retrieval_dispatcher_password retrieval_cleanup_password retrieval_e2e_password
+  retrieval_indexer_password retrieval_dispatcher_password retrieval_cleanup_password
   retrieval_migration_pgpass retrieval_runtime_dsn retrieval_runtime_host_dsn retrieval_search_dsn
   retrieval_planner_dsn retrieval_planner_host_dsn retrieval_cleanup_dsn retrieval_cleanup_host_dsn
-  retrieval_e2e_dsn retrieval_e2e_container_dsn retrieval_minio_access_key
-  retrieval_minio_secret_key retrieval_consumer_rabbitmq_uri retrieval_publisher_rabbitmq_uri
-  catalog_retrieval_rabbitmq_uri retrieval_e2e_rabbitmq_uri retrieval_e2e_rabbitmq_container_uri
-  retrieval_qdrant_api_key retrieval_qdrant_read_api_key
+  retrieval_minio_access_key retrieval_minio_secret_key retrieval_consumer_rabbitmq_uri retrieval_publisher_rabbitmq_uri
+  catalog_retrieval_rabbitmq_uri retrieval_qdrant_api_key retrieval_qdrant_read_api_key
 )
 
-assert_complete_and_private() {
+test_files=(
+  ingestion_e2e_password ingestion_e2e_dsn ingestion_e2e_container_dsn
+  ingestion_e2e_minio_access_key ingestion_e2e_minio_secret_key
+  ingestion_e2e_rabbitmq_uri ingestion_e2e_rabbitmq_container_uri
+  retrieval_e2e_password retrieval_e2e_dsn retrieval_e2e_container_dsn
+  retrieval_e2e_rabbitmq_uri retrieval_e2e_rabbitmq_container_uri
+  answer_llm_test_api_key
+)
+
+assert_runtime_and_private() {
   local dir=$1
   local file
   bash ./scripts/check-m4-dev-secrets.sh "$dir"
+  bash ./scripts/check-test-dev-secrets.sh "$dir"
   [[ "$(stat -c '%a' "$dir")" == 700 ]] || {
     echo "secret directory permissions are not 0700: $dir" >&2
     exit 1
   }
-  for file in "${m4_files[@]}"; do
+  for file in "${m4_runtime_files[@]}"; do
     [[ "$(stat -c '%a' "$dir/$file")" == 400 ]] || {
-      echo "secret permissions are not 0400: $dir/$file" >&2
+      echo "M4 secret permissions are not 0400: $dir/$file" >&2
       exit 1
     }
   done
-  jq -e '
-    [.permissions[] | select(.user == "ingestion_e2e")] == [{
-      user: "ingestion_e2e",
-      vhost: "/",
-      configure: "^$",
-      write: "^raglibrarian\\.events\\.v1$",
-      read: "^ingestion\\.book-uploaded\\.dlq\\.v1$"
-    }]
-  ' "$dir/rabbitmq_definitions.json" >/dev/null || {
-    echo "ingestion_e2e RabbitMQ permissions exceed the release-test boundary" >&2
-    exit 1
-  }
-  for file in "${m5_files[@]}"; do
+  for file in "${m5_runtime_files[@]}"; do
     [[ "$(stat -c '%a' "$dir/$file")" == 400 ]] || {
       echo "M5 secret permissions are not 0400: $dir/$file" >&2
+      exit 1
+    }
+  done
+  for file in "${test_files[@]}"; do
+    [[ "$(stat -c '%a' "$dir/$file")" == 400 ]] || {
+      echo "test secret permissions are not 0400: $dir/$file" >&2
       exit 1
     }
   done
   bash ./scripts/check-m5-dev-secrets.sh "$dir"
 }
 
+ensure_test_secrets() {
+  local dir=$1
+  if [[ -r "$dir/ingestion_e2e_password" && -r "$dir/retrieval_e2e_password" && -r "$dir/answer_llm_test_api_key" ]]; then
+    return 0
+  fi
+  bash ./scripts/generate-test-secrets.sh "$dir" >/dev/null
+}
+
 # Fresh checkout: the normal generator must produce the complete M4 set.
 fresh_dir="$test_root/fresh"
 bash ./scripts/generate-dev-secrets.sh "$fresh_dir" >/dev/null
-assert_complete_and_private "$fresh_dir"
+ensure_test_secrets "$fresh_dir"
+assert_runtime_and_private "$fresh_dir"
 
 # Existing complete M5 installations predate the role-specific test DSNs.
 # Upgrade must derive only those files from the existing passwords, without
@@ -95,7 +103,7 @@ bash ./scripts/ensure-m5-dev-secrets.sh "$legacy_m5_dir" >/dev/null
   exit 1
 }
 unset planner_password_before cleanup_password_before
-assert_complete_and_private "$legacy_m5_dir"
+assert_runtime_and_private "$legacy_m5_dir"
 
 # Identity-only upgrade: the M3 generator adds non-database M4 credentials,
 # then the additive helpers must fill the complete M4 and M5 sets without
@@ -104,7 +112,8 @@ identity_dir="$test_root/identity-upgrade"
 bash ./scripts/generate-catalog-dev-secrets.sh "$identity_dir" >/dev/null
 bash ./scripts/ensure-m4-dev-secrets.sh "$identity_dir" >/dev/null
 bash ./scripts/ensure-m5-dev-secrets.sh "$identity_dir" >/dev/null
-assert_complete_and_private "$identity_dir"
+ensure_test_secrets "$identity_dir"
+assert_runtime_and_private "$identity_dir"
 
 # Shuffled but semantically valid topologies from older local state should be
 # normalized by the M5 ensure path, so strict-order checks continue to pass.
@@ -125,7 +134,8 @@ bash ./scripts/ensure-m5-dev-secrets.sh "$reordered_m5_dir" >/dev/null
   echo "M5 role passwords were rotated during shuffled topology recovery" >&2
   exit 1
 }
-assert_complete_and_private "$reordered_m5_dir"
+ensure_test_secrets "$reordered_m5_dir"
+assert_runtime_and_private "$reordered_m5_dir"
 unset planner_password_before cleanup_password_before
 
 # Legacy M3-only upgrade: M4 adds its non-database and ingestion credentials
@@ -139,7 +149,8 @@ printf '%s\n' 'management.load_definitions = /etc/rabbitmq/definitions.json' > "
 chmod 400 "$m3_dir/rabbitmq_definitions.json" "$m3_dir/rabbitmq.conf"
 bash ./scripts/ensure-m4-dev-secrets.sh "$m3_dir" >/dev/null
 bash ./scripts/ensure-m5-dev-secrets.sh "$m3_dir" >/dev/null
-assert_complete_and_private "$m3_dir"
+ensure_test_secrets "$m3_dir"
+assert_runtime_and_private "$m3_dir"
 for file in catalog_migration_password catalog_runtime_password catalog_migration_pgpass catalog_runtime_dsn; do
   [[ -r "$m3_dir/$file" ]] || { echo "Catalog database secret is missing after M3 upgrade: $file" >&2; exit 1; }
 done
@@ -162,6 +173,20 @@ if bash ./scripts/generate-catalog-database-dev-secrets.sh "$identity_dir" >/dev
   echo "complete database secret set was unexpectedly overwritten" >&2
   exit 1
 fi
+
+partial_test_dir="$test_root/partial-test"
+mkdir -p "$partial_test_dir"
+chmod 700 "$partial_test_dir"
+printf '%s\n' sentinel > "$partial_test_dir/ingestion_e2e_password"
+chmod 400 "$partial_test_dir/ingestion_e2e_password"
+if bash ./scripts/generate-test-secrets.sh "$partial_test_dir" >/dev/null 2>&1; then
+  echo "partial test secret set was unexpectedly accepted" >&2
+  exit 1
+fi
+[[ "$(cat "$partial_test_dir/ingestion_e2e_password")" == sentinel ]] || {
+  echo "existing test secret was modified" >&2
+  exit 1
+}
 
 partial_m4_dir="$test_root/partial-m4"
 mkdir -p "$partial_m4_dir"
@@ -217,6 +242,6 @@ if bash ./scripts/check-m4-dev-secrets.sh "$fresh_dir" >/dev/null 2>&1; then
 fi
 rm "$fresh_dir/ingestion_runtime_password"
 mv "$fresh_dir/ingestion_runtime_password.real" "$fresh_dir/ingestion_runtime_password"
-assert_complete_and_private "$fresh_dir"
+assert_runtime_and_private "$fresh_dir"
 
 echo "Development secret generation and upgrade regressions passed"

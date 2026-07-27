@@ -4,7 +4,7 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer dev local-run local-run-stub local-run-host local-infra-up local-stop local-stop-host local-stop-stub local-reset tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-m5-integration-test m4-m5-m6-integration-test release-local-stack release-local-test m4-worker-recovery-test m4-e2e m4-performance-smoke m4-sse-load m4-soak m5-contract-test m5-contract-only-test m5-contract-ci-test m5-integration-test m5-search-quality-test m5-search-quality-test-real m5-worker-recovery-test m5-e2e m5-performance-smoke m6-contract-test m6-answer-quality-test m6-answer-quality-test-real m6-e2e m6-performance-smoke m6-integration-test m7-e2e m7-integration-test contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down migrate-retrieval-up migrate-retrieval-down infra-up infra-down stack-up m6-stack-up keygen proto dev-certs dev-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-m5 dev-secrets-m6 dev-secrets-test m6-dev-config-test m5-model-bootstrap m5-model-bootstrap-test bootstrap-verifier compose-config m5-mode-policy sam-validate sam-package-check sam-m5-validate sam-m5-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-build-ci image-scan image-scan-ci image-scan-images security-check security-check-ci full-gates integration-gates smtp-url
+.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer dev local-run local-run-host local-infra-up local-stop local-stop-host local-reset tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-m5-integration-test m4-m5-m6-integration-test release-local-stack release-local-test m4-worker-recovery-test m4-e2e m4-performance-smoke m4-sse-load m4-soak m5-contract-test m5-contract-only-test m5-contract-ci-test m5-integration-test m5-search-quality-test m5-search-quality-test-real m5-worker-recovery-test m5-e2e m5-performance-smoke m6-contract-test m6-answer-quality-test m6-answer-quality-test-real m6-e2e m6-performance-smoke m6-integration-test m7-e2e m7-integration-test contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down migrate-retrieval-up migrate-retrieval-down infra-up infra-down stack-up m6-stack-up keygen proto dev-certs dev-secrets test-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-m5 dev-secrets-m6 dev-secrets-test m6-dev-config-test m5-model-bootstrap m5-model-bootstrap-test bootstrap-verifier compose-config m5-mode-policy sam-validate sam-package-check sam-m5-validate sam-m5-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-build-ci image-scan image-scan-ci image-scan-images security-check security-check-ci full-gates integration-gates smtp-url
 
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
 HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
@@ -23,6 +23,7 @@ M5_SEARCH_QUALITY_REQUIRE_MODEL ?= false
 INTEGRATION_COMPOSE_FILES ?=
 TEST_COMPOSE_FILES ?=
 TEST_RESET_STATE ?= true
+TEST_SECRET_TARGETS := contract-test e2e m4-contract-test m4-integration-test m4-m5-integration-test m4-m5-m6-integration-test m4-worker-recovery-test m4-e2e m4-performance-smoke m4-sse-load m4-soak m5-contract-test m5-contract-only-test m5-contract-ci-test m5-integration-test m5-search-quality-test m5-search-quality-test-real m5-e2e m5-performance-smoke m5-worker-recovery-test m6-contract-test m6-answer-quality-test m6-answer-quality-test-real m6-e2e m6-performance-smoke m7-e2e m7-integration-test release-local-stack release-local-test
 M4_E2E_INGESTION_POSTGRES_DSN_FILE ?= $(CURDIR)/.dev/secrets/ingestion_e2e_dsn
 M4_E2E_MINIO_ENDPOINT ?= 127.0.0.1:9000
 M4_E2E_MINIO_INSECURE ?= true
@@ -60,6 +61,7 @@ MODULES := \
 # target that compiles or analyzes those packages.
 GO_PROTO_TARGETS := test test-race lint fmt fmt-check vet vuln build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer tidy e2e m6-answer-quality-test m6-e2e m6-performance-smoke m7-e2e
 $(GO_PROTO_TARGETS): proto-generate
+$(TEST_SECRET_TARGETS): test-secrets
 
 # Guard: abort if not run from the workspace root.
 _require_root:
@@ -205,17 +207,11 @@ local-infra-up: _require_root
 local-run-host: _require_root
 	bash ./scripts/run-local-host-services.sh
 
-local-run-stub: _require_root
-	bash ./scripts/run-local-stub.sh
-
 local-stop: _require_root
 	bash ./scripts/stop-local.sh
 
 local-stop-host: _require_root
 	bash ./scripts/stop-local.sh
-
-local-stop-stub: _require_root
-	COMPOSE_PROJECT_NAME=$${COMPOSE_PROJECT_NAME:-raglibrarian-local} docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian down -v --remove-orphans
 
 local-reset: _require_root
 	@rm -f .dev/ui.pid .dev/ui.log
@@ -631,6 +627,14 @@ dev-secrets-m5: _require_root
 dev-secrets-m6: _require_root
 	@echo "Generating an ephemeral M6 test-provider credential..."
 	bash ./scripts/ensure-m6-dev-secret.sh
+
+test-secrets: _require_root
+	@secret_dir="$${SECRET_DIR:-.dev/secrets}"; \
+	if [ ! -r "$$secret_dir/identity_runtime_dsn" ] || [ ! -r "$$secret_dir/rabbitmq_definitions.json" ]; then \
+		echo "Runtime secrets are missing; generating them first."; \
+		$(MAKE) dev-secrets; \
+	fi; \
+	bash ./scripts/generate-test-secrets.sh "$$secret_dir"
 
 m5-model-bootstrap: _require_root
 	bash ./scripts/bootstrap-m5-model.sh

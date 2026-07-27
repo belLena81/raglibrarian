@@ -13,13 +13,11 @@ definitions="$dir/rabbitmq_definitions.json"
 }
 
 files=(
-  retrieval_migration_password retrieval_runtime_password retrieval_search_password retrieval_planner_password retrieval_indexer_password retrieval_dispatcher_password retrieval_cleanup_password retrieval_e2e_password
+  retrieval_migration_password retrieval_runtime_password retrieval_search_password retrieval_planner_password retrieval_indexer_password retrieval_dispatcher_password retrieval_cleanup_password
   retrieval_migration_pgpass retrieval_runtime_dsn retrieval_runtime_host_dsn retrieval_search_dsn
   retrieval_planner_dsn retrieval_planner_host_dsn retrieval_cleanup_dsn retrieval_cleanup_host_dsn
-  retrieval_e2e_dsn retrieval_e2e_container_dsn
   retrieval_minio_access_key retrieval_minio_secret_key retrieval_consumer_rabbitmq_uri
-  retrieval_publisher_rabbitmq_uri catalog_retrieval_rabbitmq_uri retrieval_e2e_rabbitmq_uri
-  retrieval_e2e_rabbitmq_container_uri retrieval_qdrant_api_key retrieval_qdrant_read_api_key
+  retrieval_publisher_rabbitmq_uri catalog_retrieval_rabbitmq_uri retrieval_qdrant_api_key retrieval_qdrant_read_api_key
 )
 for file in "${files[@]}"; do
   [[ ! -e "$dir/$file" ]] || { echo "refusing to overwrite existing development secret: $dir/$file" >&2; exit 1; }
@@ -32,11 +30,9 @@ retrieval_planner_password=$(openssl rand -hex 32)
 retrieval_indexer_password=$(openssl rand -hex 32)
 retrieval_dispatcher_password=$(openssl rand -hex 32)
 retrieval_cleanup_password=$(openssl rand -hex 32)
-retrieval_e2e_password=$(openssl rand -hex 32)
 retrieval_consumer_password=$(openssl rand -hex 32)
 retrieval_publisher_password=$(openssl rand -hex 32)
 catalog_retrieval_password=$(openssl rand -hex 32)
-retrieval_e2e_rabbitmq_password=$(openssl rand -hex 32)
 retrieval_minio_secret_key=$(openssl rand -hex 32)
 
 printf '%s\n' "$retrieval_migration_password" > "$dir/retrieval_migration_password"
@@ -46,7 +42,6 @@ printf '%s\n' "$retrieval_planner_password" > "$dir/retrieval_planner_password"
 printf '%s\n' "$retrieval_indexer_password" > "$dir/retrieval_indexer_password"
 printf '%s\n' "$retrieval_dispatcher_password" > "$dir/retrieval_dispatcher_password"
 printf '%s\n' "$retrieval_cleanup_password" > "$dir/retrieval_cleanup_password"
-printf '%s\n' "$retrieval_e2e_password" > "$dir/retrieval_e2e_password"
 printf 'postgres:5432:retrieval:retrieval_migrator:%s\n' "$retrieval_migration_password" > "$dir/retrieval_migration_pgpass"
 printf 'postgres://retrieval_runtime:%s@postgres:5432/retrieval?sslmode=disable\n' "$retrieval_runtime_password" > "$dir/retrieval_runtime_dsn"
 printf 'postgres://retrieval_runtime:%s@127.0.0.1:5432/retrieval?sslmode=disable\n' "$retrieval_runtime_password" > "$dir/retrieval_runtime_host_dsn"
@@ -55,15 +50,11 @@ printf 'postgres://retrieval_planner:%s@postgres:5432/retrieval?sslmode=disable\
 printf 'postgres://retrieval_planner:%s@127.0.0.1:5432/retrieval?sslmode=disable\n' "$retrieval_planner_password" > "$dir/retrieval_planner_host_dsn"
 printf 'postgres://retrieval_cleanup:%s@postgres:5432/retrieval?sslmode=disable\n' "$retrieval_cleanup_password" > "$dir/retrieval_cleanup_dsn"
 printf 'postgres://retrieval_cleanup:%s@127.0.0.1:5432/retrieval?sslmode=disable\n' "$retrieval_cleanup_password" > "$dir/retrieval_cleanup_host_dsn"
-printf 'postgres://retrieval_e2e:%s@127.0.0.1:5432/retrieval?sslmode=disable\n' "$retrieval_e2e_password" > "$dir/retrieval_e2e_dsn"
-printf 'postgres://retrieval_e2e:%s@postgres:5432/retrieval?sslmode=disable\n' "$retrieval_e2e_password" > "$dir/retrieval_e2e_container_dsn"
 printf '%s\n' retrieval-service > "$dir/retrieval_minio_access_key"
 printf '%s\n' "$retrieval_minio_secret_key" > "$dir/retrieval_minio_secret_key"
 printf 'amqp://retrieval_consumer:%s@rabbitmq:5672/\n' "$retrieval_consumer_password" > "$dir/retrieval_consumer_rabbitmq_uri"
 printf 'amqp://retrieval_publisher:%s@rabbitmq:5672/\n' "$retrieval_publisher_password" > "$dir/retrieval_publisher_rabbitmq_uri"
 printf 'amqp://catalog_retrieval:%s@rabbitmq:5672/\n' "$catalog_retrieval_password" > "$dir/catalog_retrieval_rabbitmq_uri"
-printf 'amqp://retrieval_e2e:%s@127.0.0.1:5672/\n' "$retrieval_e2e_rabbitmq_password" > "$dir/retrieval_e2e_rabbitmq_uri"
-printf 'amqp://retrieval_e2e:%s@rabbitmq:5672/\n' "$retrieval_e2e_rabbitmq_password" > "$dir/retrieval_e2e_rabbitmq_container_uri"
 openssl rand -hex 32 > "$dir/retrieval_qdrant_api_key"
 openssl rand -hex 32 > "$dir/retrieval_qdrant_read_api_key"
 
@@ -72,19 +63,16 @@ trap 'rm -f "$updated"' EXIT
 jq \
   --arg consumer "$retrieval_consumer_password" \
   --arg publisher "$retrieval_publisher_password" \
-  --arg catalog "$catalog_retrieval_password" \
-  --arg e2e "$retrieval_e2e_rabbitmq_password" '
+  --arg catalog "$catalog_retrieval_password" '
   .users += [
     {name:"retrieval_consumer",password:$consumer,tags:""},
     {name:"retrieval_publisher",password:$publisher,tags:""},
-    {name:"catalog_retrieval",password:$catalog,tags:""},
-    {name:"retrieval_e2e",password:$e2e,tags:""}
+    {name:"catalog_retrieval",password:$catalog,tags:""}
   ] |
   .permissions += [
     {user:"retrieval_consumer",vhost:"/",configure:"^$",write:"^$",read:"^(retrieval\\.(book-uploaded|chunks-ready|book-lifecycle|index-batch)\\.v1)$"},
     {user:"retrieval_publisher",vhost:"/",configure:"^$",write:"^(raglibrarian\\.retrieval\\.(events|retry|source-return)\\.v1)$",read:"^$"},
-    {user:"catalog_retrieval",vhost:"/",configure:"^$",write:"^$",read:"^catalog\\.retrieval-terminal\\.v1$"},
-    {user:"retrieval_e2e",vhost:"/",configure:"^$",write:"^(raglibrarian\\.events\\.v1|raglibrarian\\.ingestion\\.events\\.v1)$",read:"^(retrieval\\..*|catalog\\.retrieval-terminal)\\.dlq\\.v1$"}
+    {user:"catalog_retrieval",vhost:"/",configure:"^$",write:"^$",read:"^catalog\\.retrieval-terminal\\.v1$"}
   ] |
   .exchanges += [
     {name:"raglibrarian.retrieval.events.v1",vhost:"/",type:"topic",durable:true,auto_delete:false,internal:false,arguments:{}},
@@ -147,7 +135,7 @@ mv -f "$updated" "$definitions"
 bash ./scripts/canonicalize-m5-rabbitmq-topology.sh "$dir"
 trap - EXIT
 unset retrieval_migration_password retrieval_runtime_password retrieval_search_password retrieval_planner_password retrieval_indexer_password
-unset retrieval_dispatcher_password retrieval_cleanup_password retrieval_e2e_password
+unset retrieval_dispatcher_password retrieval_cleanup_password
 unset retrieval_consumer_password retrieval_publisher_password catalog_retrieval_password
-unset retrieval_e2e_rabbitmq_password retrieval_minio_secret_key
+unset retrieval_minio_secret_key
 echo "Generated additive M5 development credentials in $dir"
