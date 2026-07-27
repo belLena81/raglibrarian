@@ -54,7 +54,7 @@ func defaultPreviewBook(ctx context.Context, book Book, objects OriginalObjectSt
 	if err = os.MkdirAll(outputDir, 0o700); err != nil {
 		return "", err
 	}
-	tmp, err := os.Create(filepath.Join(inputDir, "source"+suffix))
+	tmp, err := os.Create(filepath.Join(inputDir, "source"+suffix)) // #nosec G304 -- path is created inside an exclusive temp directory.
 	if err != nil {
 		return "", err
 	}
@@ -97,7 +97,7 @@ func previewPDFFragment(ctx context.Context, sourcePath, outputDir string) (stri
 	if err := previewSandboxCommand(ctx, "/usr/bin/pdfunite", append(pagePaths, fragmentPath)...); err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(fragmentPath)
+	data, err := os.ReadFile(fragmentPath) // #nosec G304 -- path is derived from exclusive temp-directory output.
 	if err != nil {
 		return "", err
 	}
@@ -260,7 +260,7 @@ func previewSandboxPath() string {
 }
 
 func runCommand(ctx context.Context, path string, args ...string) error {
-	command := exec.CommandContext(ctx, path, args...)
+	command := exec.CommandContext(ctx, path, args...) // #nosec G204,G702 -- sandbox path comes from trusted local configuration for the preview wrapper.
 	var stderr bytes.Buffer
 	command.Stdout = io.Discard
 	command.Stderr = &stderr

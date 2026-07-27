@@ -87,11 +87,12 @@ func writePreviewEPUB(path string, totalEntries int) error {
 	writer := zip.NewWriter(file)
 	for index := 0; index < totalEntries; index++ {
 		name := fmt.Sprintf("entry-%05d.txt", index)
-		if index == 0 {
+		switch index {
+		case 0:
 			name = "mimetype"
-		} else if index == 1 {
+		case 1:
 			name = "META-INF/container.xml"
-		} else if index == 2 {
+		case 2:
 			name = "EPUB/content.opf"
 		}
 		entry, err := writer.Create(name)

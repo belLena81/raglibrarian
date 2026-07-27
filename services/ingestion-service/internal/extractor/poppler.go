@@ -227,7 +227,7 @@ func (p *Poppler) dumpRawText(output []byte) error {
 		return err
 	}
 	sum := sha256.Sum256(output)
-	_, _ = fmt.Fprintf(os.Stderr, "ingestion raw pdftotext dump path=%s bytes=%d sha256=%s\n", path, len(output), hex.EncodeToString(sum[:]))
+	_, _ = fmt.Fprintf(os.Stderr, "ingestion raw pdftotext dump path=%s bytes=%d sha256=%s\n", path, len(output), hex.EncodeToString(sum[:])) // #nosec G705 -- diagnostic trace is gated by explicit opt-in env.
 	return nil
 }
 
@@ -252,7 +252,7 @@ func ensureRawTextDumpDirectory(path string) error {
 		return errors.New("raw text dump directory is not private")
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat.Uid != uint32(os.Geteuid()) {
+	if !ok || int64(stat.Uid) != int64(os.Geteuid()) {
 		return errors.New("raw text dump directory owner mismatch")
 	}
 	return nil

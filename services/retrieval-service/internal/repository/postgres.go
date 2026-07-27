@@ -152,7 +152,7 @@ func (r *Postgres) prepareReindexJob(ctx context.Context, tx pgx.Tx, event appli
 		ORDER BY lifecycle_version DESC, created_at DESC, id DESC
 		LIMIT 1
 		FOR UPDATE`,
-		event.BookID, int64(event.LifecycleVersion), event.SourceSHA256[:], event.ManifestSHA256[:], profileDigest[:]).
+		event.BookID, int64(event.LifecycleVersion), event.SourceSHA256[:], event.ManifestSHA256[:], profileDigest[:]). // #nosec G115 -- lifecycle versions originate as validated int64 protobuf fields.
 		Scan(&existingJobID, &existingState)
 	if errors.Is(queryErr, pgx.ErrNoRows) {
 		_, queryErr = tx.Exec(ctx, `INSERT INTO retrieval.index_jobs

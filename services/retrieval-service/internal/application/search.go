@@ -210,33 +210,10 @@ func trimEvidence(values []Evidence, limit int) []Evidence {
 	return values[:limit]
 }
 
-func trimDocuments(values []DocumentResult, limit int) []DocumentResult {
-	if len(values) <= limit {
-		return values
-	}
-	return values[:limit]
-}
-
 func (s *Searcher) filterVisibleEvidence(values []Evidence) []Evidence {
 	results := make([]Evidence, 0, len(values))
 	for _, value := range values {
 		if value.Score < s.minimumVisibleScore {
-			continue
-		}
-		results = append(results, value)
-	}
-	return results
-}
-
-func (s *Searcher) filterVisibleDocuments(values []DocumentResult) []DocumentResult {
-	results := make([]DocumentResult, 0, len(values))
-	for _, value := range values {
-		if value.Score < s.minimumVisibleScore {
-			continue
-		}
-		value.Evidence = s.filterVisibleEvidence(value.Evidence)
-		sortEvidenceByScore(value.Evidence)
-		if len(value.Evidence) == 0 {
 			continue
 		}
 		results = append(results, value)

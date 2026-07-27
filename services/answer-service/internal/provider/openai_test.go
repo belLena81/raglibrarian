@@ -26,8 +26,8 @@ func TestOpenAIGeneratesStrictStructuredSegments(t *testing.T) {
 			t.Errorf("unexpected request path or authorization")
 		}
 		var body map[string]any
-		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-			t.Errorf("decode request: %v", err)
+		if decodeErr := json.NewDecoder(request.Body).Decode(&body); decodeErr != nil {
+			t.Errorf("decode request: %v", decodeErr)
 		}
 		format, ok := body["response_format"].(map[string]any)
 		if !ok || format["type"] != "json_object" {
@@ -80,8 +80,8 @@ func TestOpenAIFallsBackToPlainTextCitationPreamble(t *testing.T) {
 		}
 		call++
 		var body map[string]any
-		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-			t.Fatalf("decode request: %v", err)
+		if decodeErr := json.NewDecoder(request.Body).Decode(&body); decodeErr != nil {
+			t.Fatalf("decode request: %v", decodeErr)
 		}
 		switch call {
 		case 1:
@@ -137,8 +137,8 @@ func TestOpenAIFallsBackToPlainTextWhenJSONModeIsRejected(t *testing.T) {
 	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		call++
 		var body map[string]any
-		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-			t.Fatalf("decode request: %v", err)
+		if decodeErr := json.NewDecoder(request.Body).Decode(&body); decodeErr != nil {
+			t.Fatalf("decode request: %v", decodeErr)
 		}
 		switch call {
 		case 1:

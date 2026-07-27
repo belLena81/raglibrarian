@@ -195,7 +195,7 @@ func traceParserSandboxExec(path string, arguments []string, sourcePath string) 
 		return
 	}
 	_, _ = fmt.Fprintln(os.Stderr, "parser_sandbox_exec_trace")
-	_, _ = fmt.Fprintf(os.Stderr, "path=%s argc=%d source=%s env_source=%t\n", path, len(arguments), sourcePath, strings.TrimSpace(sourcePath) != "")
+	_, _ = fmt.Fprintf(os.Stderr, "path=%s argc=%d source=%s env_source=%t\n", path, len(arguments), sourcePath, strings.TrimSpace(sourcePath) != "") // #nosec G705 -- trace-only diagnostics are gated by explicit opt-in env.
 }
 
 func traceParserSandboxValidationFailure(arguments []string, err error) {
@@ -203,7 +203,7 @@ func traceParserSandboxValidationFailure(arguments []string, err error) {
 		return
 	}
 	_, _ = fmt.Fprintln(os.Stderr, "parser_sandbox_validation_trace")
-	_, _ = fmt.Fprintf(os.Stderr, "argc=%d error=%s\n", len(arguments), err.Error())
+	_, _ = fmt.Fprintf(os.Stderr, "argc=%d error=%s\n", len(arguments), err.Error()) // #nosec G705 -- trace-only diagnostics are gated by explicit opt-in env.
 }
 
 // applyFilesystemPolicy installs a fail-closed Landlock allowlist. The parser
@@ -356,7 +356,7 @@ func restrictWithLandlock(ruleset uintptr) error {
 }
 
 func addLandlockPathRule(ruleset uintptr, path string, access uint64) error {
-	file, err := os.Open(path) // #nosec G304 -- every path is either the validated source or a fixed runtime allowlist entry.
+	file, err := os.Open(path) // #nosec G304,G703 -- every path is either the validated source or a fixed runtime allowlist entry.
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil

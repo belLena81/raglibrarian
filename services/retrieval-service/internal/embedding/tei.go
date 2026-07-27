@@ -119,13 +119,13 @@ func (t *TEI) embed(ctx context.Context, inputs any, expected int, operation str
 		if response.StatusCode == http.StatusUnprocessableEntity {
 			if chunkInputs, ok := inputs.([]string); ok && len(chunkInputs) > 1 && operation == "embed_documents" {
 				mid := len(chunkInputs) / 2
-				left, err := t.embed(ctx, chunkInputs[:mid], mid, operation, truncate)
-				if err != nil {
-					return nil, err
+				left, leftErr := t.embed(ctx, chunkInputs[:mid], mid, operation, truncate)
+				if leftErr != nil {
+					return nil, leftErr
 				}
-				right, err := t.embed(ctx, chunkInputs[mid:], len(chunkInputs)-mid, operation, truncate)
-				if err != nil {
-					return nil, err
+				right, rightErr := t.embed(ctx, chunkInputs[mid:], len(chunkInputs)-mid, operation, truncate)
+				if rightErr != nil {
+					return nil, rightErr
 				}
 				return append(left, right...), nil
 			}
@@ -133,24 +133,24 @@ func (t *TEI) embed(ctx context.Context, inputs any, expected int, operation str
 				return t.embed(ctx, inputs, expected, operation, true)
 			}
 		}
-		body, _ := io.ReadAll(io.LimitReader(response.Body, maximumResponseBytes))
+		responseBody, _ := io.ReadAll(io.LimitReader(response.Body, maximumResponseBytes))
 		detail := teiFailureDetailHTTPStatus
-		t.logResponseBody(operation, response, body)
-		return nil, t.failure(operation, fmt.Sprintf("provider_http_status_%d", response.StatusCode), "response", detail, response.StatusCode, requestBytes, len(body), started, fmt.Errorf("embedding dependency status %d", response.StatusCode))
+		t.logResponseBody(operation, response, responseBody)
+		return nil, t.failure(operation, fmt.Sprintf("provider_http_status_%d", response.StatusCode), "response", detail, response.StatusCode, requestBytes, len(responseBody), started, fmt.Errorf("embedding dependency status %d", response.StatusCode))
 	}
-	body, err = io.ReadAll(io.LimitReader(response.Body, maximumResponseBytes+1))
-	if err != nil || len(body) > maximumResponseBytes {
-		return nil, t.failure(operation, "invalid_embedding_response", "response", "read_response_failed", response.StatusCode, requestBytes, len(body), started, errors.New("invalid embedding response"))
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, maximumResponseBytes+1))
+	if err != nil || len(responseBody) > maximumResponseBytes {
+		return nil, t.failure(operation, "invalid_embedding_response", "response", "read_response_failed", response.StatusCode, requestBytes, len(responseBody), started, errors.New("invalid embedding response"))
 	}
-	t.logResponseBody(operation, response, body)
+	t.logResponseBody(operation, response, responseBody)
 	var vectors [][]float32
-	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder := json.NewDecoder(bytes.NewReader(responseBody))
 	if err = decoder.Decode(&vectors); err != nil || len(vectors) != expected {
-		return nil, t.failure(operation, "invalid_embedding_response", "validation", sanitizeEmbeddingDetail(errString(err)), response.StatusCode, requestBytes, len(body), started, errors.New("invalid embedding response"))
+		return nil, t.failure(operation, "invalid_embedding_response", "validation", sanitizeEmbeddingDetail(errString(err)), response.StatusCode, requestBytes, len(responseBody), started, errors.New("invalid embedding response"))
 	}
 	for _, vector := range vectors {
 		if len(vector) != domain.EmbeddingDimensions {
-			return nil, t.failure(operation, "invalid_embedding_response", "validation", fmt.Sprintf("invalid_vector_dimensions got=%d want=%d", len(vector), domain.EmbeddingDimensions), response.StatusCode, requestBytes, len(body), started, errors.New("invalid embedding response"))
+			return nil, t.failure(operation, "invalid_embedding_response", "validation", fmt.Sprintf("invalid_vector_dimensions got=%d want=%d", len(vector), domain.EmbeddingDimensions), response.StatusCode, requestBytes, len(responseBody), started, errors.New("invalid embedding response"))
 		}
 	}
 	if t.log != nil {
@@ -160,8 +160,8 @@ func (t *TEI) embed(ctx context.Context, inputs any, expected int, operation str
 			zap.Int("response_vectors", len(vectors)),
 			zap.Int64("duration_ms", time.Since(started).Milliseconds()),
 			zap.Int("status_code", response.StatusCode),
-			zap.Int("response_bytes", len(body)),
-			zap.String("response_body_sha256", digestHex(body)),
+			zap.Int("response_bytes", len(responseBody)),
+			zap.String("response_body_sha256", digestHex(responseBody)),
 		)
 	}
 	return vectors, nil

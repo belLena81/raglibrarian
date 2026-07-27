@@ -39,37 +39,6 @@ const (
 )
 
 var epubFailureTokenCleaner = regexp.MustCompile(`[^a-z0-9]+`)
-var epubXHTMLEntityReplacer = strings.NewReplacer(
-	"&nbsp;", "\u00a0",
-	"&iexcl;", "\u00a1",
-	"&cent;", "\u00a2",
-	"&pound;", "\u00a3",
-	"&yen;", "\u00a5",
-	"&brvbar;", "\u00a6",
-	"&sect;", "\u00a7",
-	"&uml;", "\u00a8",
-	"&copy;", "\u00a9",
-	"&ordf;", "\u00aa",
-	"&laquo;", "\u00ab",
-	"&reg;", "\u00ae",
-	"&macr;", "\u00af",
-	"&deg;", "\u00b0",
-	"&plusmn;", "\u00b1",
-	"&sup2;", "\u00b2",
-	"&sup3;", "\u00b3",
-	"&acute;", "\u00b4",
-	"&micro;", "\u00b5",
-	"&para;", "\u00b6",
-	"&middot;", "\u00b7",
-	"&cedil;", "\u00b8",
-	"&sup1;", "\u00b9",
-	"&ordm;", "\u00ba",
-	"&raquo;", "\u00bb",
-	"&frac14;", "\u00bc",
-	"&frac12;", "\u00bd",
-	"&frac34;", "\u00be",
-	"&iquest;", "\u00bf",
-)
 
 // EPUBArchiveLimits bounds every attacker-controlled archive dimension before
 // extraction. The parser binary has an additional OS resource sandbox.
@@ -463,7 +432,7 @@ func normalizeEPUBXHTMLEntities(contents []byte) []byte {
 			continue
 		}
 		for _, r := range unescaped {
-			output.WriteString(fmt.Sprintf("&#%d;", r))
+			fmt.Fprintf(&output, "&#%d;", r)
 		}
 		index += semicolon + 1
 	}

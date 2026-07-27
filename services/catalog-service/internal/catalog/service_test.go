@@ -637,8 +637,8 @@ func TestGetBookBoundsPreviewConcurrency(t *testing.T) {
 
 	firstDone := make(chan error, 1)
 	go func() {
-		_, err := service.GetBook(context.Background(), book.ID)
-		firstDone <- err
+		_, getErr := service.GetBook(context.Background(), book.ID)
+		firstDone <- getErr
 	}()
 	select {
 	case <-started:

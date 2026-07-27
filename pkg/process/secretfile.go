@@ -13,13 +13,8 @@ const azureSecretMount = "/mnt/secrets"
 // accepted everywhere; Azure Container Apps' immutable 0444 files are accepted
 // only as direct children of its canonical secret mount.
 func OpenSecretFile(path string, maximum int64) (*os.File, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0) // #nosec G304 -- operator-supplied secret path.
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0) // #nosec G304 -- operator-supplied secret path; O_NOFOLLOW and file validation bound it.
 	if err != nil {
-		return nil, errors.New("invalid secret file")
-	}
-	file := os.NewFile(uintptr(fd), path)
-	if file == nil {
-		_ = syscall.Close(fd)
 		return nil, errors.New("invalid secret file")
 	}
 	opened, err := file.Stat()
