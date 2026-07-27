@@ -2,17 +2,19 @@ package domain
 
 import (
 	"crypto/sha256"
-	"strings"
+	"strconv"
+
+	"github.com/belLena81/raglibrarian/pkg/indexprofile"
 )
 
 const (
-	IndexProfileName     = "m8-bge-base-pdf-v1"
-	EPUBIndexProfileName = "m8-bge-base-epub-v1"
-	MediaTypePDF         = "application/pdf"
-	MediaTypeEPUB        = "application/epub+zip"
-	EmbeddingModel       = "BAAI/bge-base-en-v1.5"
-	EmbeddingRevision    = "5e233c43ad83ba072172bca158a7c7dec46302a0"
-	EmbeddingDimensions  = 768
+	IndexProfileName     = indexprofile.PDFProfileName
+	EPUBIndexProfileName = indexprofile.EPUBProfileName
+	MediaTypePDF         = indexprofile.MediaTypePDF
+	MediaTypeEPUB        = indexprofile.MediaTypeEPUB
+	EmbeddingModel       = indexprofile.EmbeddingModel
+	EmbeddingRevision    = indexprofile.EmbeddingRevision
+	EmbeddingDimensions  = indexprofile.EmbeddingDimensions
 )
 
 // IndexProfile freezes every compatibility input that affects stored evidence.
@@ -47,49 +49,48 @@ func SupportedIndexProfile() IndexProfile {
 // intentionally represented separately by CollectionSchemaDigest.
 func SupportedIndexProfileForMediaType(mediaType string) (IndexProfile, bool) {
 	name := IndexProfileName
-	extractionVersion := "poppler-layout-v1"
+	extractionVersion := indexprofile.ExtractionPDF
 	switch mediaType {
 	case MediaTypePDF:
 	case MediaTypeEPUB:
 		name = EPUBIndexProfileName
-		extractionVersion = "epub-spine-v1"
+		extractionVersion = indexprofile.ExtractionEPUB
 	default:
 		return IndexProfile{}, false
 	}
-	values := []string{
+	digest := indexprofile.Digest(
 		EmbeddingModel,
 		EmbeddingRevision,
-		"768",
-		"cosine",
-		"cls",
-		"normalized",
-		"retrieval-index-v2",
+		strconv.Itoa(EmbeddingDimensions),
+		indexprofile.DistanceCosine,
+		indexprofile.PoolingCLS,
+		indexprofile.NormalizationNormalized,
+		indexprofile.IndexSchema,
 		extractionVersion,
-		"nfc-v1",
-		"cl100k_base-v1",
-		"chapter-page-window-v1",
-		"chapter-boundary-v1",
-		"512",
-		"120",
-		"v1",
-	}
-	preimage := strings.Join(values, "\x00") + "\x00"
+		indexprofile.NormalizationNFC,
+		indexprofile.TokenizerCL100K,
+		indexprofile.ChunkingChapterPageWindow,
+		indexprofile.StructureChapterBoundary,
+		strconv.Itoa(indexprofile.MaximumTokens),
+		strconv.Itoa(indexprofile.OverlapTokens),
+		indexprofile.ManifestSchema,
+	)
 	return IndexProfile{ // #nosec G101 -- this is a public model compatibility profile, not a credential.
 		Name: name, Model: EmbeddingModel, Revision: EmbeddingRevision,
-		Dimensions: EmbeddingDimensions, Distance: "cosine", Pooling: "cls", Normalized: true,
-		IndexSchema: "retrieval-index-v2", ExtractionVersion: extractionVersion,
-		NormalizationVersion: "nfc-v1", TokenizerVersion: "cl100k_base-v1",
-		ChunkingVersion: "chapter-page-window-v1", StructureVersion: "chapter-boundary-v1",
-		MaximumTokens: 512, OverlapTokens: 120, ManifestSchema: "v1",
-		Digest: sha256.Sum256([]byte(preimage)),
+		Dimensions: EmbeddingDimensions, Distance: indexprofile.DistanceCosine, Pooling: indexprofile.PoolingCLS, Normalized: true,
+		IndexSchema: indexprofile.IndexSchema, ExtractionVersion: extractionVersion,
+		NormalizationVersion: indexprofile.NormalizationNFC, TokenizerVersion: indexprofile.TokenizerCL100K,
+		ChunkingVersion: indexprofile.ChunkingChapterPageWindow, StructureVersion: indexprofile.StructureChapterBoundary,
+		MaximumTokens: indexprofile.MaximumTokens, OverlapTokens: indexprofile.OverlapTokens, ManifestSchema: indexprofile.ManifestSchema,
+		Digest: digest,
 	}, true
 }
 
 func SupportedIndexProfileForExtraction(extractionVersion string) (IndexProfile, bool) {
 	switch extractionVersion {
-	case "poppler-layout-v1":
+	case indexprofile.ExtractionPDF:
 		return SupportedIndexProfileForMediaType(MediaTypePDF)
-	case "epub-spine-v1":
+	case indexprofile.ExtractionEPUB:
 		return SupportedIndexProfileForMediaType(MediaTypeEPUB)
 	default:
 		return IndexProfile{}, false
@@ -99,12 +100,11 @@ func SupportedIndexProfileForExtraction(extractionVersion string) (IndexProfile,
 // CollectionSchemaDigest freezes only the properties that affect whether
 // evidence profiles can safely share a Qdrant collection.
 func CollectionSchemaDigest() [sha256.Size]byte {
-	values := []string{
+	return indexprofile.Digest(
 		EmbeddingModel,
 		EmbeddingRevision,
-		"768",
-		"cosine",
-		"retrieval-index-v2",
-	}
-	return sha256.Sum256([]byte(strings.Join(values, "\x00") + "\x00"))
+		strconv.Itoa(EmbeddingDimensions),
+		indexprofile.DistanceCosine,
+		indexprofile.IndexSchema,
+	)
 }

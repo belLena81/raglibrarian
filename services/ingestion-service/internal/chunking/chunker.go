@@ -10,16 +10,17 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/belLena81/raglibrarian/pkg/indexprofile"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/domain"
 	"golang.org/x/text/unicode/norm"
 )
 
 const (
-	NormalizationVersion = "nfc-v1"
-	ChunkingVersion      = "chapter-page-window-v1"
-	StructureVersion     = "chapter-boundary-v1"
-	DefaultMaximumTokens = 512
-	DefaultOverlapTokens = 120
+	NormalizationVersion = indexprofile.NormalizationNFC
+	ChunkingVersion      = indexprofile.ChunkingChapterPageWindow
+	StructureVersion     = indexprofile.StructureChapterBoundary
+	DefaultMaximumTokens = indexprofile.MaximumTokens
+	DefaultOverlapTokens = indexprofile.OverlapTokens
 	DefaultTargetPages   = 2
 	DefaultMaximumPages  = 3
 )

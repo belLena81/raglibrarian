@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.97.3
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.43.1
 	github.com/belLena81/raglibrarian/pkg/grpcauth v0.0.0-00010101000000-000000000000
+	github.com/belLena81/raglibrarian/pkg/indexprofile v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/pkg/internaltls v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/pkg/logger v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/pkg/process v0.0.0-00010101000000-000000000000
@@ -69,6 +70,7 @@ require (
 
 replace (
 	github.com/belLena81/raglibrarian/pkg/grpcauth => ../../pkg/grpcauth
+	github.com/belLena81/raglibrarian/pkg/indexprofile => ../../pkg/indexprofile
 	github.com/belLena81/raglibrarian/pkg/internaltls => ../../pkg/internaltls
 	github.com/belLena81/raglibrarian/pkg/logger => ../../pkg/logger
 	github.com/belLena81/raglibrarian/pkg/process => ../../pkg/process

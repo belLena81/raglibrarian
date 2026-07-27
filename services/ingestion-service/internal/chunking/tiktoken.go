@@ -9,10 +9,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/belLena81/raglibrarian/pkg/indexprofile"
 	tiktoken "github.com/pkoukk/tiktoken-go"
 )
 
-const TokenizerVersion = "cl100k_base-v1" // #nosec G101 -- public tokenizer identifier, not a credential.
+const TokenizerVersion = indexprofile.TokenizerCL100K // #nosec G101 -- public tokenizer identifier, not a credential.
 
 type localBPELoader struct{ path string }
 
