@@ -95,7 +95,7 @@ func assertSearchQuality(t *testing.T, result application.SearchResult) {
 		t.Fatal("quality benchmark returned no document-level matches")
 	}
 	document := result.Documents[0]
-	if document.DocumentID != "document-retry" || document.BookID != "book-retry" || document.ChunkCount == 0 ||
+	if document.DocumentID != "book-retry:job-retry" || document.BookID != "book-retry" || document.ChunkCount == 0 ||
 		document.PageStart < 1 || document.PageEnd < document.PageStart || document.Score < 0.05 || len(document.Evidence) == 0 {
 		t.Fatalf("top document did not satisfy document benchmark: %#v", document)
 	}
@@ -258,7 +258,7 @@ func qualityCorpus(t *testing.T, embedder *embedding.TEI) []qualityPoint {
 		{
 			Text: "How do deterministic retries remain safe? Deterministic output makes retries harmless because replayed work reaches the same manifest.",
 			Payload: qualityPayload{
-				DocumentID:       "document-retry",
+				DocumentID:       "book-retry:job-retry",
 				JobID:            "job-retry",
 				BookID:           "book-retry",
 				Title:            "Synthetic Systems",
