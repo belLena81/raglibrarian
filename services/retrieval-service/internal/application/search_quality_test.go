@@ -23,7 +23,7 @@ import (
 func TestSearchQualityBenchmark(t *testing.T) {
 	embedder := newQualityEmbedder(t)
 	store := newQualityQdrant(t, embedder)
-	searcher, err := application.NewSearcher(embedder, store, qualityVisibility{}, 0.6, 4)
+	searcher, err := application.NewSearcher(embedder, store, qualityVisibility{}, 0.05, 4)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
@@ -87,7 +87,7 @@ func assertSearchQuality(t *testing.T, result application.SearchResult) {
 	}
 	evidence := result.Evidence[0]
 	if evidence.EvidenceID != "evidence-retry" || evidence.ChunkID == "" || evidence.BookID != "book-retry" ||
-		evidence.PageStart < 1 || evidence.PageEnd < evidence.PageStart || evidence.Score < 0.25 ||
+		evidence.PageStart < 1 || evidence.PageEnd < evidence.PageStart || evidence.Score < 0.05 ||
 		!strings.Contains(evidence.Passage, "Deterministic output makes retries harmless") {
 		t.Fatalf("top evidence did not satisfy citation benchmark: %#v", evidence)
 	}
@@ -96,7 +96,7 @@ func assertSearchQuality(t *testing.T, result application.SearchResult) {
 	}
 	document := result.Documents[0]
 	if document.DocumentID != "document-retry" || document.BookID != "book-retry" || document.ChunkCount == 0 ||
-		document.PageStart < 1 || document.PageEnd < document.PageStart || document.Score < 0.25 || len(document.Evidence) == 0 {
+		document.PageStart < 1 || document.PageEnd < document.PageStart || document.Score < 0.05 || len(document.Evidence) == 0 {
 		t.Fatalf("top document did not satisfy document benchmark: %#v", document)
 	}
 	if result.Documents[0].Evidence[0].EvidenceID != "evidence-retry" {

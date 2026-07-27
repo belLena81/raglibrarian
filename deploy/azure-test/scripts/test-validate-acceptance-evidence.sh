@@ -64,7 +64,7 @@ write_evidence worker "$expected_commit"
 expect_failure "malformed expected commit" "$validator" "$evidence_file" worker bad
 expect_failure "uppercase expected commit" "$validator" "$evidence_file" worker ABCDEF0123456789ABCDEF0123456789ABCDEF01
 
-jq '.diagnostic = "Bearer abcdefghijklmnopqrstuvwxyz"' "$evidence_file" > "${evidence_file}.secret"
+jq '.diagnostic = "password=redacted"' "$evidence_file" > "${evidence_file}.secret"
 mv "${evidence_file}.secret" "$evidence_file"
 expect_failure "secret-like evidence text" "$validator" "$evidence_file" worker "$expected_commit"
 
