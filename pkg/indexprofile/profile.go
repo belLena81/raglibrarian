@@ -11,7 +11,7 @@ const (
 	MediaTypePDF              = "application/pdf"
 	MediaTypeEPUB             = "application/epub+zip"
 	EmbeddingModel            = "BAAI/bge-base-en-v1.5"
-	EmbeddingRevision         = "5e233c43ad83ba072172bca158a7c7dec46302a0"
+	EmbeddingRevision         = "5e233c43ad83ba072172bca158a7c7dec46302a0" //gitleaks:allow -- public model revision, not a credential.
 	EmbeddingDimensions       = 768
 	DistanceCosine            = "cosine"
 	PoolingCLS                = "cls"
