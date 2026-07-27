@@ -1,2 +1,3 @@
 936a2125d0097094dd6daa205124a967176a1959:services/catalog-service/internal/catalog/processing.go:generic-api-key:53
 936a2125d0097094dd6daa205124a967176a1959:services/retrieval-service/internal/domain/profile.go:generic-api-key:49
+719c48554ce90fa818aca94a8225abd100e22d64:scripts/ensure-local-host-assets.sh:generic-api-key:15
