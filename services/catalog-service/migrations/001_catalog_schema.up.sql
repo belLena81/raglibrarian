@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS catalog.books (
     object_reference          TEXT UNIQUE,
     checksum                  BYTEA       CHECK (checksum IS NULL OR octet_length(checksum) = 32),
     byte_size                 BIGINT      CHECK (byte_size IS NULL OR byte_size > 0),
-    media_type                TEXT        CHECK (media_type IN ('application/pdf', 'application/epub+zip')),
+    media_type                TEXT,
     actor_id                  TEXT,
     processing_stage          TEXT        DEFAULT 'queued' CHECK (processing_stage IN ('queued', 'extracting', 'chunks_ready', 'indexed', 'failed')),
     processing_failure_category TEXT      DEFAULT '' CHECK (processing_failure_category IN ('', 'encrypted_document', 'extraction_not_permitted',
@@ -30,9 +30,6 @@ CREATE TABLE IF NOT EXISTS catalog.books (
     artifacts_deleted          BOOLEAN     NOT NULL DEFAULT FALSE,
     index_deleted              BOOLEAN     NOT NULL DEFAULT FALSE,
 
-    CONSTRAINT books_media_type_check CHECK (
-        media_type IN ('application/pdf', 'application/epub+zip')
-    ),
     CONSTRAINT books_manifest_pair_check CHECK (
         (manifest_reference IS NULL AND manifest_sha256 IS NULL)
         OR (manifest_reference IS NOT NULL AND manifest_reference <> '' AND octet_length(manifest_sha256) = 32)
@@ -52,6 +49,25 @@ CREATE TABLE IF NOT EXISTS catalog.books (
             AND processing_failure_category IS NOT NULL)
     )
 );
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_constraint c
+        JOIN pg_catalog.pg_class t ON t.oid = c.conrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
+        WHERE n.nspname = 'catalog'
+          AND t.relname = 'books'
+          AND c.conname = 'books_media_type_check'
+          AND c.contype = 'c'
+    ) THEN
+        ALTER TABLE catalog.books
+            ADD CONSTRAINT books_media_type_check CHECK (
+                media_type IN ('application/pdf', 'application/epub+zip')
+            );
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS books_created_at_id_idx
     ON catalog.books (created_at, id);

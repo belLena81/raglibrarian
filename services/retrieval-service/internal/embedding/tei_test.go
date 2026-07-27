@@ -18,7 +18,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-func TestTEIEmbedsWithoutProviderTruncation(t *testing.T) {
+func TestTEIEmbedsQueryWithProviderTruncation(t *testing.T) {
 	client, err := NewTEI("https://tei.example", &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Path != "/embed" || request.Method != http.MethodPost {
 			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
@@ -30,7 +30,7 @@ func TestTEIEmbedsWithoutProviderTruncation(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if body.Inputs != bgeQueryInstruction+"replication" || body.Truncate {
+		if body.Inputs != bgeQueryInstruction+"replication" || !body.Truncate {
 			t.Fatalf("unexpected body: %#v", body)
 		}
 		vector := make([]float32, domain.EmbeddingDimensions)
@@ -242,6 +242,98 @@ func TestTEIEmbedDocumentsBatchesEightInputsAndPreservesOrder(t *testing.T) {
 		if got := vectors[index][0]; got != float32(len(input)) {
 			t.Fatalf("vector[%d][0] = %v, want %d", index, got, len(input))
 		}
+	}
+}
+
+func TestTEIEmbedDocumentsSplitsOversizedBatchOn422(t *testing.T) {
+	requests := make([][]string, 0, 8)
+	client, err := NewTEI("https://tei.example", &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		var body struct {
+			Inputs []string `json:"inputs"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requests = append(requests, append([]string(nil), body.Inputs...))
+		if len(body.Inputs) > 1 {
+			return httpResponse(http.StatusUnprocessableEntity, `{"error":"payload too large"}`), nil
+		}
+		vector := make([]float32, domain.EmbeddingDimensions)
+		payload, err := json.Marshal([][]float32{vector})
+		if err != nil {
+			t.Fatalf("marshal response: %v", err)
+		}
+		return httpResponse(http.StatusOK, string(payload)), nil
+	})}, zap.NewNop(), nil)
+	if err != nil {
+		t.Fatalf("NewTEI() error = %v", err)
+	}
+	vectors, err := client.EmbedDocuments(context.Background(), []string{"one", "two", "three", "four"})
+	if err != nil {
+		t.Fatalf("EmbedDocuments() error = %v", err)
+	}
+	if len(vectors) != 4 {
+		t.Fatalf("vector count = %d, want 4", len(vectors))
+	}
+	if len(requests) <= 2 {
+		t.Fatalf("request count = %d, want > 2", len(requests))
+	}
+	if !slices.Equal(requests[0], []string{"one", "two", "three", "four"}) {
+		t.Fatalf("first request = %#v, want %#v", requests[0], []string{"one", "two", "three", "four"})
+	}
+	if !slices.Equal(requests[1], []string{"one", "two"}) {
+		t.Fatalf("first split request = %#v, want %#v", requests[1], []string{"one", "two"})
+	}
+}
+
+func TestTEIEmbedDocumentsRetriesSingleOversizedChunkWithTruncation(t *testing.T) {
+	requests := make([]struct {
+		Inputs   []string
+		Truncate bool
+	}, 0, 3)
+	client, err := NewTEI("https://tei.example", &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		var body struct {
+			Inputs   []string `json:"inputs"`
+			Truncate bool     `json:"truncate"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requests = append(requests, struct {
+			Inputs   []string
+			Truncate bool
+		}{Inputs: append([]string(nil), body.Inputs...), Truncate: body.Truncate})
+		if len(body.Inputs) != 1 {
+			return httpResponse(http.StatusBadRequest, `{"error":"invalid split"}`), nil
+		}
+		if !body.Truncate {
+			return httpResponse(http.StatusUnprocessableEntity, `{"error":"payload too large"}`), nil
+		}
+		vector := make([]float32, domain.EmbeddingDimensions)
+		payload, err := json.Marshal([][]float32{vector})
+		if err != nil {
+			t.Fatalf("marshal response: %v", err)
+		}
+		return httpResponse(http.StatusOK, string(payload)), nil
+	})}, zap.NewNop(), nil)
+	if err != nil {
+		t.Fatalf("NewTEI() error = %v", err)
+	}
+	vectors, err := client.EmbedDocuments(context.Background(), []string{"single very long chunk that must be truncated server side"})
+	if err != nil {
+		t.Fatalf("EmbedDocuments() error = %v", err)
+	}
+	if len(vectors) != 1 {
+		t.Fatalf("vector count = %d, want 1", len(vectors))
+	}
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if !slices.Equal(requests[0].Inputs, []string{"single very long chunk that must be truncated server side"}) || requests[0].Truncate {
+		t.Fatalf("first request = %#v", requests[0])
+	}
+	if !slices.Equal(requests[1].Inputs, []string{"single very long chunk that must be truncated server side"}) || !requests[1].Truncate {
+		t.Fatalf("retry request = %#v", requests[1])
 	}
 }
 

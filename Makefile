@@ -770,7 +770,7 @@ security-check-ci: secret-scan dockerfile-lint image-scan-ci ui-audit
 full-gates: fmt-check vet lint test test-race arch-check vuln proto-check proto-breaking dev-secrets-test m6-dev-config-test compose-config m5-mode-policy sam-m5-validate ui-check security-check
 
 integration-gates: compose-config
-	docker compose --profile raglibrarian --profile m4-ha up -d --build --wait --wait-timeout 180
+	docker compose --profile raglibrarian up -d --build --wait --wait-timeout 180
 	$(MAKE) contract-test minio-runtime-test m4-integration-test
 
 smtp-url:

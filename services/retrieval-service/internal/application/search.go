@@ -121,7 +121,29 @@ func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.
 		return SearchResult{}, err
 	}
 	documents := documentsFromEvidence(results)
+	documents = s.attachDocumentChunkCounts(ctx, query, vector, documents)
 	return SearchResult{Evidence: results, Documents: documents}, nil
+}
+
+func (s *Searcher) attachDocumentChunkCounts(ctx context.Context, query domain.SearchQuery, vector []float32, documents []DocumentResult) []DocumentResult {
+	if len(documents) == 0 {
+		return documents
+	}
+	documentMetadata, err := s.store.SearchDocuments(ctx, query, vector, len(documents), 0)
+	if err != nil || len(documentMetadata.Documents) == 0 {
+		return documents
+	}
+	chunkCounts := make(map[string]uint32, len(documentMetadata.Documents))
+	for _, document := range documentMetadata.Documents {
+		chunkCounts[document.DocumentID] = document.ChunkCount
+	}
+	for index := range documents {
+		documentID := documents[index].DocumentID
+		if chunkCount, found := chunkCounts[documentID]; found {
+			documents[index].ChunkCount = chunkCount
+		}
+	}
+	return documents
 }
 
 func (s *Searcher) searchVisibleEvidence(ctx context.Context, query domain.SearchQuery, vector []float32, assessmentCache *searchAssessmentCache) ([]Evidence, error) {
@@ -307,7 +329,7 @@ func documentsFromEvidence(values []Evidence) []DocumentResult {
 				MediaType:  evidence.MediaType,
 				Year:       evidence.Year,
 				Tags:       append([]string{}, evidence.Tags...),
-				ChunkCount: 1,
+				ChunkCount: 0,
 				PageStart:  evidence.PageStart,
 				PageEnd:    evidence.PageEnd,
 				Score:      evidence.Score,
@@ -319,7 +341,6 @@ func documentsFromEvidence(values []Evidence) []DocumentResult {
 		}
 		document := &documents[index]
 		document.Evidence = append(document.Evidence, evidence)
-		document.ChunkCount = uint32(len(document.Evidence))
 		if evidence.Score > document.Score {
 			document.Score = evidence.Score
 		}

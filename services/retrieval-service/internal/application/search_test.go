@@ -345,7 +345,7 @@ func TestSearcherBuildsDocumentGroupsOnlyFromAcceptedEvidence(t *testing.T) {
 			{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Passage: "visible passage", Score: 0.81},
 		},
 		documents: []DocumentResult{
-			{DocumentID: "document-low", JobID: "job-1", BookID: "book-1", ChunkCount: 1, Score: 0.46, Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "visible passage", Score: 0.81}}},
+			{DocumentID: "book-1:job-1", JobID: "job-1", BookID: "book-1", ChunkCount: 42, Score: 0.46, Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "visible passage", Score: 0.81}}},
 			{DocumentID: "document-high", JobID: "job-2", BookID: "book-2", ChunkCount: 1, Score: 0.67, Evidence: []Evidence{{EvidenceID: "evidence-2", Passage: "better visible passage", Score: 0.78}}},
 		},
 	}
@@ -358,11 +358,38 @@ func TestSearcherBuildsDocumentGroupsOnlyFromAcceptedEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
-	if len(result.Documents) != 1 || result.Documents[0].DocumentID != "book-1:job-1" || result.Documents[0].Evidence[0].EvidenceID != "evidence-1" {
+	if len(result.Documents) != 1 || result.Documents[0].DocumentID != "book-1:job-1" || result.Documents[0].Evidence[0].EvidenceID != "evidence-1" || result.Documents[0].ChunkCount != 42 {
 		t.Fatalf("documents = %#v", result.Documents)
 	}
-	if store.documentCalls != 0 {
-		t.Fatalf("document search calls = %d, want 0", store.documentCalls)
+	if store.documentCalls != 1 {
+		t.Fatalf("document search calls = %d, want 1", store.documentCalls)
+	}
+}
+
+func TestSearcherUsesAuthoritativeDocumentChunkCountFromSearchDocuments(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{
+		results: []Evidence{
+			{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Passage: "indexed chunk one", Score: 0.91},
+		},
+		documents: []DocumentResult{
+			{DocumentID: "book-1:job-1", JobID: "job-1", BookID: "book-1", ChunkCount: 42, Score: 0.91},
+		},
+	}
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 4)
+	if err != nil {
+		t.Fatalf("NewSearcher() error = %v", err)
+	}
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 5})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Documents) != 1 || result.Documents[0].ChunkCount != 42 {
+		t.Fatalf("document chunk_count = %#v", result.Documents)
+	}
+	if store.documentCalls != 1 {
+		t.Fatalf("document search calls = %d, want 1", store.documentCalls)
 	}
 }
 
@@ -471,10 +498,10 @@ func TestSearcherBackfillsAfterVisibilityFiltering(t *testing.T) {
 	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "visible-1" || len(result.Documents) != 1 || result.Documents[0].DocumentID != "book-1:indexed-1" {
 		t.Fatalf("unexpected visible results: %#v", result)
 	}
-	if store.calls != 2 || store.documentCalls != 0 {
-		t.Fatalf("search pages evidence/documents = %d/%d, want 2/0", store.calls, store.documentCalls)
+	if store.calls != 2 || store.documentCalls != 1 {
+		t.Fatalf("search pages evidence/documents = %d/%d, want 2/1", store.calls, store.documentCalls)
 	}
-	if len(store.requests) != 2 || store.requests[0].limit != 2 || store.requests[0].offset != 0 || store.requests[1].limit != 2 || store.requests[1].offset != 2 {
+	if len(store.requests) != 3 || store.requests[0].limit != 2 || store.requests[0].offset != 0 || store.requests[1].limit != 2 || store.requests[1].offset != 2 || store.requests[2].limit != 1 || store.requests[2].offset != 0 {
 		t.Fatalf("unexpected paging requests: %#v", store.requests)
 	}
 }

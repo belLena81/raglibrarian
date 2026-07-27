@@ -23,7 +23,6 @@ import (
 const maximumResponseBytes = 8 << 20
 const providerBatchSize = 8
 const bgeQueryInstruction = "Represent this sentence for searching relevant passages: "
-const providerTruncateInputs = false
 const teiFailureDetailHTTPStatus = "provider_http_status"
 
 type TEI struct {
@@ -55,7 +54,7 @@ func NewTEIWithOptions(endpoint string, client *http.Client, log *zap.Logger, li
 }
 
 func (t *TEI) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
-	vectors, err := t.embed(ctx, bgeQueryInstruction+text, 1, "embed_query")
+	vectors, err := t.embed(ctx, bgeQueryInstruction+text, 1, "embed_query", true)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +71,7 @@ func (t *TEI) EmbedDocuments(ctx context.Context, texts []string) ([][]float32, 
 		if end > len(texts) {
 			end = len(texts)
 		}
-		vectors, err := t.embed(ctx, texts[start:end], end-start, "embed_documents")
+		vectors, err := t.embed(ctx, texts[start:end], end-start, "embed_documents", false)
 		if err != nil {
 			return nil, err
 		}
@@ -81,7 +80,7 @@ func (t *TEI) EmbedDocuments(ctx context.Context, texts []string) ([][]float32, 
 	return result, nil
 }
 
-func (t *TEI) embed(ctx context.Context, inputs any, expected int, operation string) ([][]float32, error) {
+func (t *TEI) embed(ctx context.Context, inputs any, expected int, operation string, truncate bool) ([][]float32, error) {
 	started := time.Now()
 	if wait, err := t.wait(ctx); err != nil {
 		return nil, t.failure(operation, "provider_rate_limited", "throttle", sanitizeEmbeddingDetail(wait.String()), 0, 0, 0, started, err)
@@ -94,7 +93,7 @@ func (t *TEI) embed(ctx context.Context, inputs any, expected int, operation str
 	body, err := json.Marshal(struct {
 		Inputs   any  `json:"inputs"`
 		Truncate bool `json:"truncate"`
-	}{Inputs: inputs, Truncate: providerTruncateInputs})
+	}{Inputs: inputs, Truncate: truncate})
 	if err != nil {
 		return nil, t.failure(operation, "request_encode_failed", "request", "", 0, 0, 0, started, errors.New("encode embedding request"))
 	}
@@ -117,6 +116,23 @@ func (t *TEI) embed(ctx context.Context, inputs any, expected int, operation str
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
+		if response.StatusCode == http.StatusUnprocessableEntity {
+			if chunkInputs, ok := inputs.([]string); ok && len(chunkInputs) > 1 && operation == "embed_documents" {
+				mid := len(chunkInputs) / 2
+				left, err := t.embed(ctx, chunkInputs[:mid], mid, operation, truncate)
+				if err != nil {
+					return nil, err
+				}
+				right, err := t.embed(ctx, chunkInputs[mid:], len(chunkInputs)-mid, operation, truncate)
+				if err != nil {
+					return nil, err
+				}
+				return append(left, right...), nil
+			}
+			if operation == "embed_documents" && !truncate {
+				return t.embed(ctx, inputs, expected, operation, true)
+			}
+		}
 		body, _ := io.ReadAll(io.LimitReader(response.Body, maximumResponseBytes))
 		detail := teiFailureDetailHTTPStatus
 		t.logResponseBody(operation, response, body)

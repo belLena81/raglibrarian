@@ -107,12 +107,12 @@ jobs:
       - name: Validate and start the local stack
         run: |
           make compose-config
-          docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile raglibrarian config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian config --quiet
           POSTGRES_PORT=5432 MINIO_API_PORT=9000 RABBITMQ_AMQP_PORT=5672 EDGE_RETRIEVAL_READINESS_REQUIRED=true \
-            docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile raglibrarian up -d --build --wait --wait-timeout 300
+            docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian up -d --build --wait --wait-timeout 300
       - name: Configure host-side integration clients
         run: |
-          compose=(docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile raglibrarian)
+          compose=(docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian)
           container_ip() {
             local service="$1"
             local container_id
@@ -198,10 +198,10 @@ jobs:
           exit 1
       - name: Show container state
         if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile raglibrarian ps --all
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian ps --all
       - name: Tear down stack
         if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile m4-ha --profile raglibrarian down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian down -v
 
   m4-performance:
     if: github.event_name == 'schedule'
@@ -220,7 +220,7 @@ jobs:
             | openssl dgst -sha256 -binary > .dev/secrets/identity_bootstrap_verifier
           chmod 400 .dev/secrets/e2e_bootstrap_code .dev/secrets/identity_bootstrap_verifier
       - name: Start isolated M4 stack
-        run: docker compose --profile m4-ha up -d --build --wait --wait-timeout 240
+        run: docker compose --profile raglibrarian up -d --build --wait --wait-timeout 240
       - name: Run M4 performance smoke and soak suites
         env:
           E2E_BASE_URL: http://127.0.0.1:8080
@@ -242,7 +242,7 @@ jobs:
           M4_E2E_REFRESH_COOKIE_FILE="$token_dir/refresh" make m4-soak
       - name: Show container state and logs
         if: failure()
-        run: docker compose --profile m4-ha ps --all
+        run: docker compose --profile raglibrarian ps --all
       - name: Tear down stack
         if: always()
-        run: docker compose --profile m4-ha down -v
+        run: docker compose --profile raglibrarian down -v
