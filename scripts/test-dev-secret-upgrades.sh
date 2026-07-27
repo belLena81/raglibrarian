@@ -74,16 +74,15 @@ assert_runtime_and_private() {
 
 ensure_test_secrets() {
   local dir=$1
-  if [[ -r "$dir/ingestion_e2e_password" && -r "$dir/retrieval_e2e_password" && -r "$dir/answer_llm_test_api_key" ]]; then
-    return 0
-  fi
-  bash ./scripts/generate-test-secrets.sh "$dir" >/dev/null
+  bash ./scripts/ensure-test-dev-secrets.sh "$dir" >/dev/null
 }
 
 # Fresh checkout: the normal generator must produce the complete M4 set.
 fresh_dir="$test_root/fresh"
 bash ./scripts/generate-dev-secrets.sh "$fresh_dir" >/dev/null
 ensure_test_secrets "$fresh_dir"
+assert_runtime_and_private "$fresh_dir"
+bash ./scripts/ensure-test-dev-secrets.sh "$fresh_dir" >/dev/null
 assert_runtime_and_private "$fresh_dir"
 
 # Existing complete M5 installations predate the role-specific test DSNs.
@@ -187,6 +186,10 @@ fi
   echo "existing test secret was modified" >&2
   exit 1
 }
+if bash ./scripts/ensure-test-dev-secrets.sh "$partial_test_dir" >/dev/null 2>&1; then
+  echo "partial test secret set was unexpectedly accepted by ensure helper" >&2
+  exit 1
+fi
 
 partial_m4_dir="$test_root/partial-m4"
 mkdir -p "$partial_m4_dir"

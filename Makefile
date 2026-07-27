@@ -634,7 +634,7 @@ test-secrets: _require_root
 		echo "Runtime secrets are missing; generating them first."; \
 		$(MAKE) dev-secrets; \
 	fi; \
-	bash ./scripts/generate-test-secrets.sh "$$secret_dir"
+	bash ./scripts/ensure-test-dev-secrets.sh "$$secret_dir"
 
 m5-model-bootstrap: _require_root
 	bash ./scripts/bootstrap-m5-model.sh

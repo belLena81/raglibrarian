@@ -156,6 +156,7 @@ fi
 
 bash ./scripts/ensure-m4-dev-secrets.sh "$secret_dir"
 bash ./scripts/ensure-m5-dev-secrets.sh "$secret_dir"
+bash ./scripts/ensure-test-dev-secrets.sh "$secret_dir"
 bash ./scripts/ensure-m6-answer-provider-key.sh "$secret_dir"
 
 if [[ ! -r "$secret_dir/identity_bootstrap_verifier" ]]; then
