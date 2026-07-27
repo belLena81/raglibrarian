@@ -13,6 +13,7 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/process"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/config"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/bootstrap"
+	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/chunking"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/transport"
 )
 
@@ -87,7 +88,15 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	go func() { cleanupErrors <- runtime.Cleaner.Run(ctx) }()
 	consumerErrors := make(chan error, 1)
 	go func() { consumerErrors <- consumer.Run(ctx, cfg.WorkConcurrency) }()
-	logger.Info("ingestion worker started")
+	logger.Info("ingestion worker started",
+		"chunking_version", chunking.ChunkingVersion,
+		"structure_version", chunking.StructureVersion,
+		"chunk_maximum_tokens", cfg.ChunkMaximumTokens,
+		"chunk_overlap_tokens", cfg.ChunkOverlapTokens,
+		"chunk_target_pages", cfg.ChunkTargetPages,
+		"chunk_maximum_pages", cfg.ChunkMaximumPages,
+		"parser_sandbox_memory_bytes", cfg.ParserSandboxMemoryBytes,
+	)
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -44,19 +44,29 @@ func (f *fakeProvider) Generate(ctx context.Context, input ProviderRequest) ([]d
 	return f.segments, f.err
 }
 
-func TestAnswerSelectsBoundedDeduplicatedEvidenceInRankingOrder(t *testing.T) {
+func TestAnswerSelectsOnlyTopPrimaryEvidenceForSynthesis(t *testing.T) {
 	limits := DefaultLimits()
 	limits.MaximumEvidence = 2
 	limits.MaximumEvidenceBytes = 8
 	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"e-1"}}}}
 	search := domain.SearchResult{
-		Results:   []domain.Evidence{{EvidenceID: "e-1", Passage: "first"}, {EvidenceID: "oversized", Passage: "this passage is oversized"}},
+		Results: []domain.Evidence{{
+			EvidenceID: "e-1",
+			Passage:    "first",
+			Book:       domain.BookMetadata{Title: "Book", Author: "Author"},
+			PageStart:  10,
+			PageEnd:    12,
+		}, {EvidenceID: "e-2", Passage: "second"}},
 		Documents: []domain.DocumentResult{{Evidence: []domain.Evidence{{EvidenceID: "e-1", Passage: "duplicate"}, {EvidenceID: "e-2", Passage: "second"}}}},
 	}
 	service := newTestService(t, &fakeRetriever{result: search}, provider, limits)
 	result, err := service.Answer(context.Background(), validRequest())
-	if err != nil || result.Answer == nil || len(provider.input.Evidence) != 2 || provider.input.Evidence[0].EvidenceID != "e-1" || provider.input.Evidence[1].EvidenceID != "e-2" {
+	if err != nil || result.Answer == nil || len(provider.input.Evidence) != 1 || provider.input.Evidence[0].EvidenceID != "e-1" ||
+		provider.input.Evidence[0].Title != "Book" || provider.input.Evidence[0].PageStart != 10 {
 		t.Fatalf("Answer() = %#v, %v; context=%#v", result, err, provider.input.Evidence)
+	}
+	if result.Answer.Segments[0].Text != "This is described in Book by Author, pages 10-12: answer" {
+		t.Fatalf("answer text = %q", result.Answer.Segments[0].Text)
 	}
 }
 
@@ -102,7 +112,7 @@ func TestAnswerFiltersEvidenceBeforeSynthesisUsingMinimumScore(t *testing.T) {
 	if err != nil || result.Answer == nil {
 		t.Fatalf("Answer() = %#v, %v", result, err)
 	}
-	if len(provider.input.Evidence) != 2 || provider.input.Evidence[0].EvidenceID != "high" || provider.input.Evidence[1].EvidenceID != "high-doc" {
+	if len(provider.input.Evidence) != 1 || provider.input.Evidence[0].EvidenceID != "high" {
 		t.Fatalf("provider evidence = %#v", provider.input.Evidence)
 	}
 	if len(result.Search.Results) != 1 || result.Search.Results[0].EvidenceID != "high" {
@@ -110,6 +120,32 @@ func TestAnswerFiltersEvidenceBeforeSynthesisUsingMinimumScore(t *testing.T) {
 	}
 	if len(result.Search.Documents) != 1 || len(result.Search.Documents[0].Evidence) != 1 || result.Search.Documents[0].Evidence[0].EvidenceID != "high-doc" {
 		t.Fatalf("search documents = %#v", result.Search.Documents)
+	}
+}
+
+func TestAnswerFallsBackToTopDocumentEvidenceWhenPrimaryResultsAreEmpty(t *testing.T) {
+	retriever := &fakeRetriever{result: domain.SearchResult{
+		Query: "question",
+		Documents: []domain.DocumentResult{{
+			DocumentID: "doc-1",
+			Evidence: []domain.Evidence{{
+				EvidenceID: "doc-evidence",
+				Passage:    "document evidence",
+				Book:       domain.BookMetadata{Title: "Document Book"},
+				PageStart:  3,
+				PageEnd:    3,
+			}},
+		}},
+	}}
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "document synopsis", EvidenceIDs: []string{"doc-evidence"}}}}
+	service := newTestService(t, retriever, provider, DefaultLimits())
+
+	result, err := service.Answer(context.Background(), validRequest())
+	if err != nil || result.Answer == nil || len(provider.input.Evidence) != 1 || provider.input.Evidence[0].EvidenceID != "doc-evidence" {
+		t.Fatalf("Answer() = %#v, %v; context=%#v", result, err, provider.input.Evidence)
+	}
+	if result.Answer.Segments[0].Text != "This is described in Document Book, page 3: document synopsis" {
+		t.Fatalf("answer text = %q", result.Answer.Segments[0].Text)
 	}
 }
 

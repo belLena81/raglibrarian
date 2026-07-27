@@ -153,6 +153,282 @@ func TestChunkerCarriesStructureAcrossPagesAndSpansPages(t *testing.T) {
 	}
 }
 
+func TestChunkerLimitsChunksToConfiguredPageWindow(t *testing.T) {
+	chunker, err := New(textPreservingTokenizer{}, Policy{MaximumTokens: 100, OverlapTokens: 2, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks := make([]domain.Chunk, 0, 2)
+	for _, page := range []Page{
+		{Number: 1, Text: "one"},
+		{Number: 2, Text: "two"},
+		{Number: 3, Text: "three"},
+		{Number: 4, Text: "four"},
+	} {
+		var emitted []domain.Chunk
+		emitted, err = chunker.AddPage("book-1", page)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chunks = append(chunks, emitted...)
+	}
+	final, err := chunker.Finish("book-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks = append(chunks, final...)
+	if len(chunks) != 2 {
+		t.Fatalf("expected page-window chunk plus tail, got %d", len(chunks))
+	}
+	if chunks[0].PageStart() != 1 || chunks[0].PageEnd() != 3 {
+		t.Fatalf("first chunk pages = %d-%d", chunks[0].PageStart(), chunks[0].PageEnd())
+	}
+	if chunks[1].PageStart() < 3 || chunks[1].PageEnd() != 4 {
+		t.Fatalf("tail chunk pages = %d-%d", chunks[1].PageStart(), chunks[1].PageEnd())
+	}
+}
+
+func TestChunkerCapsPageWindowChunksByMaximumTokens(t *testing.T) {
+	chunker, err := New(wordTokenizer{}, Policy{MaximumTokens: 4, OverlapTokens: 1, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks := make([]domain.Chunk, 0, 3)
+	for _, page := range []Page{
+		{Number: 1, Text: "one two"},
+		{Number: 2, Text: "three four"},
+		{Number: 3, Text: "five six"},
+		{Number: 4, Text: "seven"},
+	} {
+		var emitted []domain.Chunk
+		emitted, err = chunker.AddPage("book-1", page)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chunks = append(chunks, emitted...)
+	}
+	final, err := chunker.Finish("book-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks = append(chunks, final...)
+	for _, chunk := range chunks {
+		if chunk.TokenEnd()-chunk.TokenStart() > 4 {
+			t.Fatalf("chunk exceeded token cap: %d-%d", chunk.TokenStart(), chunk.TokenEnd())
+		}
+	}
+	for index := 1; index < len(chunks); index++ {
+		previous := chunks[index-1]
+		chunk := chunks[index]
+		if chunk.TokenEnd() <= previous.TokenEnd() || chunk.TokenStart() > previous.TokenEnd() ||
+			previous.TokenEnd()-chunk.TokenStart() > 1 {
+			t.Fatalf("invalid adjacent bounds: previous=%d-%d current=%d-%d", previous.TokenStart(), previous.TokenEnd(), chunk.TokenStart(), chunk.TokenEnd())
+		}
+	}
+}
+
+func TestChunkerDoesNotRetainOversizedOverlapForShortSparsePageWindow(t *testing.T) {
+	chunker, err := New(wordTokenizer{}, Policy{MaximumTokens: 800, OverlapTokens: 120, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks := make([]domain.Chunk, 0, 2)
+	for _, page := range []Page{
+		{Number: 2, Text: "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen"},
+		{Number: 4, Text: "   "},
+		{Number: 5, Text: "eighteen"},
+	} {
+		var emitted []domain.Chunk
+		emitted, err = chunker.AddPage("book-1", page)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chunks = append(chunks, emitted...)
+	}
+	final, err := chunker.Finish("book-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks = append(chunks, final...)
+	if len(chunks) != 2 {
+		t.Fatalf("expected sparse page-window chunk plus tail, got %d", len(chunks))
+	}
+	if chunks[0].TokenStart() != 0 || chunks[0].TokenEnd() != 17 {
+		t.Fatalf("first chunk token bounds = %d-%d", chunks[0].TokenStart(), chunks[0].TokenEnd())
+	}
+	if chunks[1].TokenStart() != 17 || chunks[1].TokenEnd() != 18 {
+		t.Fatalf("tail chunk token bounds = %d-%d", chunks[1].TokenStart(), chunks[1].TokenEnd())
+	}
+}
+
+func TestChunkerDropsOverlapOnlyRemainderAfterPageWindowEmit(t *testing.T) {
+	chunker, err := New(wordTokenizer{}, Policy{MaximumTokens: 800, OverlapTokens: 120, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks := make([]domain.Chunk, 0, 3)
+	for _, page := range []Page{
+		{Number: 1, Text: strings.Repeat("word ", 17)},
+		{Number: 2, Text: strings.Repeat("word ", 65)},
+		{Number: 3, Text: strings.Repeat("word ", 60)},
+		{Number: 4, Text: strings.Repeat("word ", 60)},
+		{Number: 5, Text: "tail"},
+	} {
+		var emitted []domain.Chunk
+		emitted, err = chunker.AddPage("book-1", page)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chunks = append(chunks, emitted...)
+	}
+	final, err := chunker.Finish("book-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks = append(chunks, final...)
+	if len(chunks) != 3 {
+		t.Fatalf("expected advancing page-window chunks and final tail, got %d", len(chunks))
+	}
+	if chunks[0].TokenStart() != 0 || chunks[0].TokenEnd() != 142 {
+		t.Fatalf("chunk token bounds = %d-%d", chunks[0].TokenStart(), chunks[0].TokenEnd())
+	}
+	if chunks[1].TokenStart() != 22 || chunks[1].TokenEnd() != 202 {
+		t.Fatalf("second chunk token bounds = %d-%d", chunks[1].TokenStart(), chunks[1].TokenEnd())
+	}
+	if chunks[2].TokenStart() != 82 || chunks[2].TokenEnd() != 203 {
+		t.Fatalf("tail chunk token bounds = %d-%d", chunks[2].TokenStart(), chunks[2].TokenEnd())
+	}
+	for index := 1; index < len(chunks); index++ {
+		if chunks[index].TokenEnd() <= chunks[index-1].TokenEnd() {
+			t.Fatalf("chunk %d did not advance token end: previous=%d-%d current=%d-%d", index, chunks[index-1].TokenStart(), chunks[index-1].TokenEnd(), chunks[index].TokenStart(), chunks[index].TokenEnd())
+		}
+	}
+}
+
+func TestChunkerDropsOverlapOnlyTailAtFinish(t *testing.T) {
+	chunker, err := New(wordTokenizer{}, Policy{MaximumTokens: 4, OverlapTokens: 2, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitted, err := chunker.AddPage("book-1", Page{Number: 1, Text: "one two three four five six"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := chunker.Finish("book-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks := append(emitted, final...)
+	if len(chunks) != 2 {
+		t.Fatalf("expected first window plus final new tail, got %d", len(chunks))
+	}
+	if chunks[0].TokenStart() != 0 || chunks[0].TokenEnd() != 4 {
+		t.Fatalf("first chunk token bounds = %d-%d", chunks[0].TokenStart(), chunks[0].TokenEnd())
+	}
+	if chunks[1].TokenStart() != 2 || chunks[1].TokenEnd() != 6 {
+		t.Fatalf("tail chunk token bounds = %d-%d", chunks[1].TokenStart(), chunks[1].TokenEnd())
+	}
+
+	chunker, err = New(wordTokenizer{}, Policy{MaximumTokens: 4, OverlapTokens: 2, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitted, err = chunker.AddPage("book-1", Page{Number: 1, Text: "one two three four five six"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	more, err := chunker.AddPage("book-1", Page{Number: 1, Text: "seven eight"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitted = append(emitted, more...)
+	final, err = chunker.Finish("book-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks = append(emitted, final...)
+	if len(chunks) != 3 {
+		t.Fatalf("expected two windows plus final new tail, got %d", len(chunks))
+	}
+	for index := 1; index < len(chunks); index++ {
+		previous := chunks[index-1]
+		chunk := chunks[index]
+		if chunk.TokenEnd() <= previous.TokenEnd() {
+			t.Fatalf("chunk %d did not advance token end: previous=%d-%d current=%d-%d", index, previous.TokenStart(), previous.TokenEnd(), chunk.TokenStart(), chunk.TokenEnd())
+		}
+	}
+}
+
+func TestChunkerDropsOverlapOnlyTailBeforeNewChapter(t *testing.T) {
+	chunker, err := New(textPreservingTokenizer{}, Policy{MaximumTokens: 100, OverlapTokens: 2, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks := make([]domain.Chunk, 0, 2)
+	for _, page := range []Page{
+		{Number: 1, Text: "one"},
+		{Number: 2, Text: "two"},
+		{Number: 3, Text: "three"},
+		{Number: 4, Text: "Chapter I Start"},
+	} {
+		var emitted []domain.Chunk
+		emitted, err = chunker.AddPage("book-1", page)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chunks = append(chunks, emitted...)
+	}
+	final, err := chunker.Finish("book-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks = append(chunks, final...)
+	if len(chunks) != 2 {
+		t.Fatalf("expected previous window and new chapter only, got %d", len(chunks))
+	}
+	if chunks[0].PageEnd() != 3 {
+		t.Fatalf("previous chapter chunk ended on page %d", chunks[0].PageEnd())
+	}
+	if chunks[1].PageStart() != 4 || chunks[1].Chapter() != "Chapter I Start" {
+		t.Fatalf("new chapter chunk = text=%q pages=%d-%d chapter=%q", chunks[1].Text(), chunks[1].PageStart(), chunks[1].PageEnd(), chunks[1].Chapter())
+	}
+}
+
+func TestChunkerDropsLargeBoundaryOverlapOnlyTailBeforeNewChapter(t *testing.T) {
+	chunker, err := New(wordTokenizer{}, Policy{MaximumTokens: 185, OverlapTokens: 120, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks := make([]domain.Chunk, 0, 2)
+	emitted, err := chunker.AddPage("book-1", Page{Number: 1, Text: strings.Repeat("word ", 202)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks = append(chunks, emitted...)
+	emitted, err = chunker.AddPage("book-1", Page{Number: 2, Text: "Chapter I Start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks = append(chunks, emitted...)
+	final, err := chunker.Finish("book-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks = append(chunks, final...)
+	if len(chunks) != 3 {
+		t.Fatalf("expected two windows plus new chapter, got %d", len(chunks))
+	}
+	if chunks[0].TokenStart() != 0 || chunks[0].TokenEnd() != 185 {
+		t.Fatalf("first chunk token bounds = %d-%d", chunks[0].TokenStart(), chunks[0].TokenEnd())
+	}
+	if chunks[1].TokenStart() != 65 || chunks[1].TokenEnd() != 202 {
+		t.Fatalf("second chunk token bounds = %d-%d", chunks[1].TokenStart(), chunks[1].TokenEnd())
+	}
+	if chunks[2].TokenStart() != 202 || chunks[2].Chapter() != "Chapter I Start" {
+		t.Fatalf("new chapter chunk = token_start=%d chapter=%q", chunks[2].TokenStart(), chunks[2].Chapter())
+	}
+}
+
 func TestChunkerPreservesCrossPageSeparation(t *testing.T) {
 	chunkDocument := func(t *testing.T) []domain.Chunk {
 		t.Helper()

@@ -19,6 +19,11 @@ import (
 const landlockPreflightArgument = "--landlock-preflight"
 
 const (
+	defaultParserSandboxMemoryBytes = 1536 << 20
+	maximumParserSandboxMemoryBytes = 8 << 30
+)
+
+const (
 	defaultPDFInfoPath     = "/usr/bin/pdfinfo"
 	defaultPDFToTextPath   = "/usr/bin/pdftotext"
 	defaultPDFSeparatePath = "/usr/bin/pdfseparate"
@@ -38,9 +43,8 @@ func main() {
 		traceParserSandboxValidationFailure(os.Args[1:], err)
 		os.Exit(120)
 	}
-	if applyLimits() != nil {
-		os.Exit(121)
-	}
+	argv := append([]string{path}, arguments...)
+	environment := parserSandboxEnvironment(sourcePath)
 	if applyFilesystemPolicy(path, sourcePath, workspaceDir) != nil {
 		os.Exit(122)
 	}
@@ -48,7 +52,10 @@ func main() {
 		os.Exit(123)
 	}
 	traceParserSandboxExec(path, arguments, sourcePath)
-	if err = syscall.Exec(path, append([]string{path}, arguments...), parserSandboxEnvironment(sourcePath)); err != nil { // #nosec G204 G702 -- path and argv match the fixed Poppler allowlist above.
+	if applyLimits() != nil {
+		os.Exit(121)
+	}
+	if err = syscall.Exec(path, argv, environment); err != nil { // #nosec G204 G702 -- path and argv match the fixed Poppler allowlist above.
 		os.Exit(124)
 	}
 }
@@ -379,16 +386,32 @@ func parserSandboxLimits() []struct {
 	resource int
 	value    uint64
 } {
+	memoryLimit := uint64(parserSandboxMemoryLimitBytes()) // #nosec G115 -- parserSandboxMemoryLimitBytes returns a positive bounded value.
 	return []struct {
 		resource int
 		value    uint64
 	}{
 		{unix.RLIMIT_CPU, 60},
-		{unix.RLIMIT_AS, 805306368},
+		// Go-based parsers such as epub-parser need more virtual address space
+		// than their live heap suggests. Keep this configurable and aligned
+		// with the worker memory overcommit guard.
+		{unix.RLIMIT_AS, memoryLimit},
 		{unix.RLIMIT_NOFILE, 64},
 		{unix.RLIMIT_CORE, 0},
 		{unix.RLIMIT_FSIZE, 67108864},
 	}
+}
+
+func parserSandboxMemoryLimitBytes() int64 {
+	value := strings.TrimSpace(os.Getenv("INGESTION_PARSER_SANDBOX_MEMORY_BYTES"))
+	if value == "" {
+		return defaultParserSandboxMemoryBytes
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < defaultParserSandboxMemoryBytes || parsed > maximumParserSandboxMemoryBytes {
+		return defaultParserSandboxMemoryBytes
+	}
+	return parsed
 }
 
 func applySeccomp() error {

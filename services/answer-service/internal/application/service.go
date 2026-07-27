@@ -4,6 +4,7 @@ package application
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -188,29 +189,47 @@ func filterSearchByMinimumEvidenceScore(search domain.SearchResult, minimumEvide
 }
 
 func selectEvidence(search domain.SearchResult, limits Limits) []domain.ContextEvidence {
-	selected := make([]domain.ContextEvidence, 0, limits.MaximumEvidence)
+	selected := make([]domain.ContextEvidence, 0, 1)
 	seen := make(map[string]struct{})
 	total := 0
-	add := func(value domain.Evidence) {
-		if len(selected) >= limits.MaximumEvidence || value.EvidenceID == "" || !utf8.ValidString(value.Passage) || len(value.Passage) == 0 || len(value.Passage) > limits.MaximumEvidenceBytes {
-			return
+	add := func(value domain.Evidence) bool {
+		if len(selected) >= 1 || value.EvidenceID == "" || !utf8.ValidString(value.Passage) || len(value.Passage) == 0 || len(value.Passage) > limits.MaximumEvidenceBytes {
+			return false
 		}
 		if _, found := seen[value.EvidenceID]; found || total+len(value.Passage) > limits.MaximumContextBytes {
-			return
+			return false
 		}
 		seen[value.EvidenceID] = struct{}{}
 		total += len(value.Passage)
-		selected = append(selected, domain.ContextEvidence{EvidenceID: value.EvidenceID, Passage: value.Passage})
+		selected = append(selected, contextEvidence(value))
+		return true
 	}
 	for _, value := range search.Results {
-		add(value)
+		if add(value) {
+			return selected
+		}
 	}
 	for _, document := range search.Documents {
 		for _, value := range document.Evidence {
-			add(value)
+			if add(value) {
+				return selected
+			}
 		}
 	}
 	return selected
+}
+
+func contextEvidence(value domain.Evidence) domain.ContextEvidence {
+	return domain.ContextEvidence{
+		EvidenceID: value.EvidenceID,
+		Passage:    value.Passage,
+		Title:      value.Book.Title,
+		Author:     value.Book.Author,
+		Chapter:    value.Chapter,
+		Section:    value.Section,
+		PageStart:  value.PageStart,
+		PageEnd:    value.PageEnd,
+	}
 }
 
 func validateSegments(values []domain.AnswerSegment, evidence []domain.ContextEvidence, limits Limits) ([]domain.AnswerSegment, error) {
@@ -229,7 +248,8 @@ func validateSegments(values []domain.AnswerSegment, evidence []domain.ContextEv
 			len(value.EvidenceIDs) == 0 || len(value.EvidenceIDs) > limits.MaximumCitations {
 			return nil, errors.New("invalid provider output")
 		}
-		total += len(text)
+		groundedText := groundedSegmentText(text, value.EvidenceIDs, evidence)
+		total += len(groundedText)
 		if total > limits.MaximumAnswerBytes {
 			return nil, errors.New("invalid provider output")
 		}
@@ -245,9 +265,51 @@ func validateSegments(values []domain.AnswerSegment, evidence []domain.ContextEv
 			seen[id] = struct{}{}
 			citations = append(citations, id)
 		}
-		result = append(result, domain.AnswerSegment{Text: text, EvidenceIDs: citations})
+		result = append(result, domain.AnswerSegment{Text: groundedText, EvidenceIDs: citations})
 	}
 	return result, nil
+}
+
+func groundedSegmentText(text string, evidenceIDs []string, evidence []domain.ContextEvidence) string {
+	if len(evidenceIDs) == 0 {
+		return text
+	}
+	var selected domain.ContextEvidence
+	for _, value := range evidence {
+		if value.EvidenceID == evidenceIDs[0] {
+			selected = value
+			break
+		}
+	}
+	title := humanField(selected.Title)
+	if title == "" {
+		return text
+	}
+	pages := pageRange(selected.PageStart, selected.PageEnd)
+	location := title
+	if author := humanField(selected.Author); author != "" {
+		location += " by " + author
+	}
+	if pages != "" {
+		location += ", " + pages
+	}
+	return "This is described in " + location + ": " + text
+}
+
+func humanField(value string) string {
+	return strings.Join(strings.FieldsFunc(value, func(char rune) bool {
+		return unicode.IsSpace(char) || unicode.IsControl(char) || unicode.Is(unicode.Cf, char)
+	}), " ")
+}
+
+func pageRange(start, end uint32) string {
+	if start == 0 && end == 0 {
+		return ""
+	}
+	if end == 0 || end == start {
+		return fmt.Sprintf("page %d", start)
+	}
+	return fmt.Sprintf("pages %d-%d", start, end)
 }
 
 func unsafeAnswerRune(value rune) bool {

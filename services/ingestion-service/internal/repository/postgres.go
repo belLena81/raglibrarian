@@ -18,8 +18,9 @@ import (
 )
 
 type Postgres struct {
-	pool *pgxpool.Pool
-	wake chan struct{}
+	pool    *pgxpool.Pool
+	wake    chan struct{}
+	profile chunking.Policy
 }
 
 type PendingOutboxEvent struct {
@@ -36,10 +37,23 @@ type PendingRetryDispatch struct {
 }
 
 func NewPostgres(pool *pgxpool.Pool) *Postgres {
+	return NewPostgresWithProfile(pool, chunking.Policy{
+		MaximumTokens: chunking.DefaultMaximumTokens,
+		OverlapTokens: chunking.DefaultOverlapTokens,
+		TargetPages:   chunking.DefaultTargetPages,
+		MaximumPages:  chunking.DefaultMaximumPages,
+		MaximumChunks: 1,
+	})
+}
+
+func NewPostgresWithProfile(pool *pgxpool.Pool, profile chunking.Policy) *Postgres {
 	if pool == nil {
 		panic("ingestion repository: pool is required")
 	}
-	return &Postgres{pool: pool, wake: make(chan struct{}, 1)}
+	if profile.MaximumTokens < 1 || profile.OverlapTokens < 0 || profile.OverlapTokens >= profile.MaximumTokens {
+		panic("ingestion repository: invalid chunking profile")
+	}
+	return &Postgres{pool: pool, wake: make(chan struct{}, 1), profile: profile}
 }
 
 func (r *Postgres) Wake() <-chan struct{} { return r.wake }
@@ -91,7 +105,7 @@ func (r *Postgres) Accept(ctx context.Context, event application.UploadedEvent, 
 		if !constantEqual(existingDigest, payloadDigest[:]) || !constantEqual(existingSource, event.SourceSHA256[:]) {
 			return domain.ProcessingJob{}, false, application.ErrConflictingEvent
 		}
-		existingJob, loadErr := loadJobForUpdate(ctx, tx, event.BookID, event.SourceSHA256, proposed.ConfigDigest())
+		existingJob, loadErr := loadJobForUpdate(ctx, tx, event.BookID, event.SourceSHA256, proposed.ConfigDigest(), r.profile)
 		if errors.Is(loadErr, pgx.ErrNoRows) {
 			return domain.ProcessingJob{}, false, application.ErrConflictingEvent
 		}
@@ -132,7 +146,7 @@ func (r *Postgres) Accept(ctx context.Context, event application.UploadedEvent, 
 	command, err = tx.Exec(ctx, `INSERT INTO ingestion.jobs
 	    (id,book_id,source_sha256,processing_config_digest,structure_version,maximum_tokens,overlap_tokens,state,attempts,lease_owner,lease_expires_at,created_at,updated_at,lifecycle_version)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-		ON CONFLICT(book_id,source_sha256,processing_config_digest) DO NOTHING`, proposed.ID(), proposed.BookID(), sourceSHA256[:], configDigestBytes(proposed.ConfigDigest()), chunking.StructureVersion, chunking.DefaultMaximumTokens, chunking.DefaultOverlapTokens, proposed.State(), proposed.Attempts(), proposed.LeaseOwner(), proposed.LeaseExpiresAt(), proposed.CreatedAt(), proposed.UpdatedAt(), event.LifecycleVersion)
+		ON CONFLICT(book_id,source_sha256,processing_config_digest) DO NOTHING`, proposed.ID(), proposed.BookID(), sourceSHA256[:], configDigestBytes(proposed.ConfigDigest()), chunking.StructureVersion, r.profile.MaximumTokens, r.profile.OverlapTokens, proposed.State(), proposed.Attempts(), proposed.LeaseOwner(), proposed.LeaseExpiresAt(), proposed.CreatedAt(), proposed.UpdatedAt(), event.LifecycleVersion)
 	if err != nil {
 		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: insert job: %w", err)
 	}
@@ -143,7 +157,7 @@ func (r *Postgres) Accept(ctx context.Context, event application.UploadedEvent, 
 		return proposed, false, nil
 	}
 	prefix := fmt.Sprintf("books/%s/%x/%x/", proposed.BookID(), proposed.SourceSHA256(), configBytes)
-	_, err = tx.Exec(ctx, `INSERT INTO ingestion.artifact_sets(job_id,prefix,structure_version,maximum_tokens,overlap_tokens,updated_at,lifecycle_version) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(job_id) DO NOTHING`, proposed.ID(), prefix, chunking.StructureVersion, chunking.DefaultMaximumTokens, chunking.DefaultOverlapTokens, proposed.CreatedAt(), event.LifecycleVersion)
+	_, err = tx.Exec(ctx, `INSERT INTO ingestion.artifact_sets(job_id,prefix,structure_version,maximum_tokens,overlap_tokens,updated_at,lifecycle_version) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(job_id) DO NOTHING`, proposed.ID(), prefix, chunking.StructureVersion, r.profile.MaximumTokens, r.profile.OverlapTokens, proposed.CreatedAt(), event.LifecycleVersion)
 	if err != nil {
 		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: register artifact set: %w", err)
 	}
@@ -282,7 +296,7 @@ func recoveryDispatchTime(err error) (time.Time, bool) {
 	return deferred.RetryAt, true
 }
 
-func loadJobForUpdate(ctx context.Context, tx pgx.Tx, bookID string, sourceSHA256 [32]byte, configDigest string) (domain.ProcessingJob, error) {
+func loadJobForUpdate(ctx context.Context, tx pgx.Tx, bookID string, sourceSHA256 [32]byte, configDigest string, profile chunking.Policy) (domain.ProcessingJob, error) {
 	var id, state, leaseOwner, failure, manifestReference string
 	var source, manifestSHA, persistedDigest []byte
 	var attempts int
@@ -296,7 +310,7 @@ func loadJobForUpdate(ctx context.Context, tx pgx.Tx, bookID string, sourceSHA25
 	if err != nil {
 		return domain.ProcessingJob{}, err
 	}
-	if structureVersion != chunking.StructureVersion || maximumTokens != chunking.DefaultMaximumTokens || overlapTokens != chunking.DefaultOverlapTokens || !constantEqual(persistedDigest, configDigestBytes(configDigest)) {
+	if structureVersion != chunking.StructureVersion || maximumTokens != profile.MaximumTokens || overlapTokens != profile.OverlapTokens || !constantEqual(persistedDigest, configDigestBytes(configDigest)) {
 		return domain.ProcessingJob{}, application.ErrUnsupportedProcessingProfile
 	}
 	var sourceSum, manifestSum [32]byte
@@ -357,7 +371,7 @@ func (r *Postgres) Complete(ctx context.Context, job domain.ProcessingJob, claim
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO ingestion.artifact_sets(job_id,prefix,manifest_reference,manifest_sha256,structure_version,maximum_tokens,overlap_tokens,committed_at,updated_at)
 	    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8)
-	    ON CONFLICT(job_id) DO UPDATE SET manifest_reference=EXCLUDED.manifest_reference,manifest_sha256=EXCLUDED.manifest_sha256,committed_at=EXCLUDED.committed_at,updated_at=EXCLUDED.updated_at`, job.ID(), prefix, result.ManifestReference, result.ManifestSHA256[:], chunking.StructureVersion, chunking.DefaultMaximumTokens, chunking.DefaultOverlapTokens, job.UpdatedAt())
+	    ON CONFLICT(job_id) DO UPDATE SET manifest_reference=EXCLUDED.manifest_reference,manifest_sha256=EXCLUDED.manifest_sha256,committed_at=EXCLUDED.committed_at,updated_at=EXCLUDED.updated_at`, job.ID(), prefix, result.ManifestReference, result.ManifestSHA256[:], chunking.StructureVersion, r.profile.MaximumTokens, r.profile.OverlapTokens, job.UpdatedAt())
 	if err != nil {
 		return fmt.Errorf("ingestion: commit artifact set: %w", err)
 	}

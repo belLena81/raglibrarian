@@ -466,8 +466,8 @@ func validChunkWithPosition(text string, order uint64, pageStart, pageEnd uint32
 		ExtractionVersion:    "poppler-layout-v1",
 		NormalizationVersion: "nfc-v1",
 		TokenizerVersion:     "cl100k_base-v1",
-		ChunkingVersion:      "token-window-v2",
-		StructureVersion:     "heading-carry-v1",
+		ChunkingVersion:      "chapter-page-window-v1",
+		StructureVersion:     "chapter-boundary-v1",
 	}
 }
 

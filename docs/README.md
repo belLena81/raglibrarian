@@ -242,9 +242,18 @@ Implementation:
 - Consume `BookUploadedV1` idempotently. Read originals through read-only
   credentials and write derived artifacts only to an Ingestion-owned location.
 - Preserve book, chapter, section, page range, chunk order, token bounds,
-  extraction/structure/chunking profile, and checksums for every chunk. Carry
-  chapter and section context across pages and permit bounded cross-page chunks
-  without losing exact source spans.
+  extraction/structure/chunking profile, and checksums for every chunk. Use the
+  `chapter-page-window-v1` profile by default: target two source pages, cap a
+  passage at three source pages and 800 embedding-input tokens, keep 120-token
+  overlap only inside the same chapter, and flush without overlap at chapter or
+  part boundaries. Treat these values as a fixed versioned cross-service
+  contract; do not tune them with Ingestion-only runtime overrides.
+- Keep the chunk sequence validator and overlap-only cleanup in place. They are
+  part of the Retrieval embedding/indexing contract, not defensive duplication:
+  Ingestion previously produced an overlap-only tail whose `token_end` did not
+  advance, and Retrieval correctly rejected the manifest before indexing. Future
+  chunker refactors must prove every emitted chunk has sequential order,
+  monotonically advancing token bounds, and overlap no larger than the profile.
 - Emit `BookChunksReadyV1` with a versioned manifest reference, or
   `BookProcessingFailedV1` with a sanitized category. Catalog consumes these
   events to update status without reading Ingestion storage.
@@ -297,6 +306,10 @@ Implementation:
 - Version embedding provider, model, dimensions, chunking, and index schema
   through the Retrieval index profile digest; reject incompatible writes and
   queries.
+- Treat manifest integrity validation as an embedding/indexing gate. Retrieval
+  must reject stale profiles, non-advancing chunk windows, duplicate batch
+  inputs, or dimension mismatches before upserting Qdrant vectors or emitting
+  `BookIndexedV1`.
 - Bound manifest work into idempotent chunk batches so a Lambda invocation does
   not approach its payload, memory, temporary-storage, or duration limits.
   Reserved concurrency protects the embedding provider and Qdrant.
@@ -336,9 +349,65 @@ Implementation:
 
 - Introduce a stateless Answer service with provider-neutral `LLMProvider` and
   Retrieval client ports.
-- Retrieval-side summary prompting already asks for grounded answers against
-  the user question and uses a configurable output-token budget; the retrieval
-  service test suite passes with that change.
+- Retrieval-side LLM calls assess individual passages against the user
+  question. The model must return structured relevance, not a whole-book or
+  document summary. A high vector score is not sufficient when the configured
+  LLM says the passage is irrelevant.
+- Retrieval excludes passages assessed as irrelevant, including meta responses
+  such as "the user is asking..." or "the passage does not contain...". Search
+  backfills from later vector candidates until the requested limit is filled or
+  the candidate scan budget is exhausted.
+- `limit` means the final primary evidence budget after vector-score filtering,
+  index visibility checks, and LLM relevance exclusions. With `limit: 5`, the
+  response contains at most five accepted primary evidence passages; fewer may
+  be returned when fewer relevant passages remain.
+- Book matches are grouping metadata derived from accepted passages only. They
+  must not introduce additional supporting passages and must not trigger
+  whole-book or document-level LLM summaries.
+- Missing, invalid, irrelevant, meta, or unsafe provider assessment output is
+  hidden from summaries rather than displayed as a fallback passage retelling.
+  If the Retrieval summary provider is disabled, search remains vector-only and
+  uses deterministic local passage summaries.
+- `RETRIEVAL_SUMMARY_LLM_MAX_CALLS` bounds passage assessment calls per search.
+  Its default is sized to cover Retrieval's candidate scan budget so LLM
+  exclusions can still backfill to the requested result limit under normal
+  conditions.
+- TEI embedding diagnostics always log response byte count and SHA-256 digest.
+  Set `RETRIEVAL_TEI_LOG_RAW_RESPONSE=true` only for local diagnosis when the
+  embedding provider response body itself must be inspected; the raw prefix is
+  bounded by `RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES` and defaults to 4096
+  bytes. Do not enable this in shared or production logs.
+- Ingestion host mode sets `INGESTION_COMMAND_FAILURE_TRACE=1` so parser
+  command failures include bounded raw parser stderr in the service log. This
+  is limited to command diagnostics. For local owner-controlled debugging, set
+  `INGESTION_DEBUG_DUMP_PDFTEXT_DIR` to an absolute private directory to write
+  the raw `pdftotext` stdout stream as a `0600` file; the service log records
+  only the dump path, byte count, and SHA-256. Keep the setting empty in shared
+  and production environments. If a streaming page consumer fails after
+  `pdftotext` starts successfully, preserve and log the downstream stage error
+  instead of relabeling it as a parser failure.
+- `INGESTION_PARSER_SANDBOX_MEMORY_BYTES` defaults to 1536 MiB. Keep it aligned
+  with `INGESTION_MEMORY_LIMIT_BYTES` and `INGESTION_WORK_CONCURRENCY`: EPUB
+  parsing runs a Go child process inside `parser_sandbox`, and the Go runtime
+  needs more virtual address space than its live heap suggests. A lower
+  `RLIMIT_AS` can surface as `epub_parser_invalid_args` or a Go runtime
+  out-of-memory stack even when the EPUB is within archive limits.
+- EPUB parser sandbox incident note: if the first attempt fails with
+  `epub_parser_invalid_args` but bounded command stderr shows a Go runtime
+  out-of-memory stack, treat it as a sandbox address-space budget problem, not
+  as malformed EPUB argv. Keep the 1536 MiB default and the worker overcommit
+  guard unless a replacement parser/runtime is proven with live EPUB uploads.
+- Answer synthesis receives only the top accepted passage after Retrieval
+  exclusions and minimum-score filtering. Answer service owns the final
+  human-readable citation format: book title, author when available, page range,
+  and one short provider-generated synopsis.
+- Chunking/model tuning must be evaluated with quality fixtures before changing
+  defaults. Compare at least the current profile, a one-page profile with
+  10-15% overlap, and a two-page/three-page-max profile. Measure Recall@5,
+  Precision@5 after LLM exclusions, answer citation support rate, provider call
+  count, TEI latency/errors, and indexed chunk-count growth. Promote any chosen
+  change as a new versioned profile accepted by Catalog, Ingestion, and
+  Retrieval together.
 - Add an optional query mode that defaults to search. Extend responses
   additively with an optional `answer` while retaining evidence results.
 - Validate every generated citation against retrieved result IDs. Unavailable

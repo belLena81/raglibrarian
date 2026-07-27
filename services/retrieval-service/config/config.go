@@ -19,6 +19,7 @@ import (
 const (
 	defaultMinimumSearchScore = 0.6
 	minimumSearchScoreKey     = "RETRIEVAL_MINIMUM_SEARCH_SCORE"
+	defaultSummaryLLMMaxCalls = 100
 )
 
 type Config struct {
@@ -41,6 +42,8 @@ type Config struct {
 	SummaryLLMRequestsPerMinute int
 	SummaryLLMAPIKeyFile        string
 	SummaryLLMCAFile            string
+	TEILogRawResponse           bool
+	TEILogRawResponseMaxBytes   int
 	TLS                         internaltls.Files
 	RunAs                       process.Identity
 }
@@ -51,6 +54,8 @@ type WorkerConfig struct {
 	MinIOInsecure                                                 bool
 	TEIURL, QdrantURL, QdrantCollection, QdrantAPIKey             string
 	TEIRequestsPerSecond                                          int
+	TEILogRawResponse                                             bool
+	TEILogRawResponseMaxBytes                                     int
 	MinimumSearchScore                                            float64
 	MetricsAddress                                                string
 	ServerlessInvocationTimeout                                   time.Duration
@@ -82,10 +87,12 @@ func Load() (Config, error) {
 	dependencyTimeout, dependencyTimeoutErr := optionalDuration("RETRIEVAL_DEPENDENCY_TIMEOUT", searchTimeout)
 	summaryTimeout, summaryTimeoutErr := optionalDuration("RETRIEVAL_SUMMARY_LLM_TIMEOUT", searchTimeout)
 	summaryMaxOutputTokens, summaryMaxOutputTokensErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_OUTPUT_TOKENS", 64, 256)
-	summaryMaxCalls, summaryMaxCallsErr := nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_MAX_CALLS", 4, 1000)
+	summaryMaxCalls, summaryMaxCallsErr := nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_MAX_CALLS", defaultSummaryLLMMaxCalls, 1000)
 	minimumSearchScore, minimumSearchScoreErr := LoadMinimumSearchScore()
 	summaryLLMRequestsPerMinute, summaryLLMRequestsPerMinuteErr := nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_REQUESTS_PER_MINUTE", 15, 1000)
 	teiRequestsPerSecond, teiRequestsPerSecondErr := nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000)
+	teiLogRawResponse, teiLogRawResponseErr := optionalBool("RETRIEVAL_TEI_LOG_RAW_RESPONSE", false)
+	teiLogRawResponseMaxBytes, teiLogRawResponseMaxBytesErr := nonNegativeInteger("RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", 4096, 64<<10)
 	configuration.SearchTimeout = searchTimeout
 	configuration.DependencyTimeout = dependencyTimeout
 	configuration.SummaryLLMTimeout = summaryTimeout
@@ -94,10 +101,12 @@ func Load() (Config, error) {
 	configuration.MinimumSearchScore = minimumSearchScore
 	configuration.SummaryLLMRequestsPerMinute = summaryLLMRequestsPerMinute
 	configuration.TEIRequestsPerSecond = teiRequestsPerSecond
+	configuration.TEILogRawResponse = teiLogRawResponse
+	configuration.TEILogRawResponseMaxBytes = teiLogRawResponseMaxBytes
 	if configuration.GRPCAddress == "" || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
 		configuration.PostgresDSNFile == "" || configuration.QdrantAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || uidErr != nil || gidErr != nil ||
-		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || teiRequestsPerSecondErr != nil || configuration.SummaryLLMTimeout > configuration.SearchTimeout ||
+		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || teiRequestsPerSecondErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || configuration.SummaryLLMTimeout > configuration.SearchTimeout ||
 		!validSummaryProviderConfiguration(configuration) {
 		return Config{}, errors.New("invalid retrieval configuration")
 	}
@@ -210,15 +219,17 @@ func LoadWorker() (WorkerConfig, error) {
 	minioInsecure, insecureErr := strconv.ParseBool(os.Getenv("RETRIEVAL_MINIO_INSECURE"))
 	serverlessInvocationTimeout, timeoutErr := boundedDuration(os.Getenv("RETRIEVAL_SERVERLESS_INVOCATION_TIMEOUT"), 10*time.Second, 13*time.Minute, 3*time.Minute)
 	teiRequestsPerSecond, teiRequestsPerSecondErr := nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000)
+	teiLogRawResponse, teiLogRawResponseErr := optionalBool("RETRIEVAL_TEI_LOG_RAW_RESPONSE", false)
+	teiLogRawResponseMaxBytes, teiLogRawResponseMaxBytesErr := nonNegativeInteger("RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", 4096, 64<<10)
 	minimumSearchScore, minimumSearchScoreErr := LoadMinimumSearchScore()
 	configuration := WorkerConfig{DSN: dsn, ConsumerRabbitURI: consumerURI, PublisherRabbitURI: publisherURI,
 		MinIOEndpoint: os.Getenv("RETRIEVAL_MINIO_ENDPOINT"), MinIOAccessKey: accessKey, MinIOSecretKey: secretKey, ArtifactBucket: os.Getenv("RETRIEVAL_ARTIFACT_BUCKET"), MinIOInsecure: minioInsecure,
 		TEIURL: os.Getenv("RETRIEVAL_TEI_URL"), QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: "evidence_v2", QdrantAPIKey: qdrantAPIKey,
-		TEIRequestsPerSecond: teiRequestsPerSecond,
-		MinimumSearchScore:   minimumSearchScore,
-		MetricsAddress:       optional("RETRIEVAL_WORKER_METRICS_ADDR", os.Getenv("RETRIEVAL_METRICS_ADDR")), ServerlessInvocationTimeout: serverlessInvocationTimeout, Concurrency: concurrency, RunAs: process.Identity{UID: uid, GID: gid}}
+		TEIRequestsPerSecond: teiRequestsPerSecond, TEILogRawResponse: teiLogRawResponse, TEILogRawResponseMaxBytes: teiLogRawResponseMaxBytes,
+		MinimumSearchScore: minimumSearchScore,
+		MetricsAddress:     optional("RETRIEVAL_WORKER_METRICS_ADDR", os.Getenv("RETRIEVAL_METRICS_ADDR")), ServerlessInvocationTimeout: serverlessInvocationTimeout, Concurrency: concurrency, RunAs: process.Identity{UID: uid, GID: gid}}
 	configuration.TEIRequestsPerSecond = teiRequestsPerSecond
-	if uidErr != nil || gidErr != nil || concurrencyErr != nil || concurrency > 16 || insecureErr != nil || timeoutErr != nil || teiRequestsPerSecondErr != nil || minimumSearchScoreErr != nil || configuration.MinIOEndpoint == "" ||
+	if uidErr != nil || gidErr != nil || concurrencyErr != nil || concurrency > 16 || insecureErr != nil || timeoutErr != nil || teiRequestsPerSecondErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || minimumSearchScoreErr != nil || configuration.MinIOEndpoint == "" ||
 		configuration.ArtifactBucket == "" || configuration.MetricsAddress == "" || !privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) {
 		return WorkerConfig{}, errors.New("invalid retrieval worker configuration")
 	}
@@ -269,6 +280,18 @@ func nonNegativeInteger(key string, fallback, maximum int) (int, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed < 0 || parsed > maximum {
 		return 0, errors.New("invalid integer")
+	}
+	return parsed, nil
+}
+
+func optionalBool(key string, fallback bool) (bool, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, errors.New("invalid boolean")
 	}
 	return parsed, nil
 }

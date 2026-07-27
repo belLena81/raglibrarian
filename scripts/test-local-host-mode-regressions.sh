@@ -214,7 +214,7 @@ if ! grep -Fq 'retrieval_summary_provider_max_output_tokens="${RETRIEVAL_SUMMARY
   echo "host env renderer does not default retrieval summary max output tokens" >&2
   exit 1
 fi
-if ! grep -Fq 'export RETRIEVAL_SUMMARY_LLM_MAX_CALLS="${RETRIEVAL_SUMMARY_LLM_MAX_CALLS:-4}"' "$root_dir/scripts/render-local-host-env.sh"; then
+if ! grep -Fq 'export RETRIEVAL_SUMMARY_LLM_MAX_CALLS="${RETRIEVAL_SUMMARY_LLM_MAX_CALLS:-100}"' "$root_dir/scripts/render-local-host-env.sh"; then
   echo "host env renderer does not export retrieval summary max calls" >&2
   exit 1
 fi

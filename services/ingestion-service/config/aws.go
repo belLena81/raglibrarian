@@ -108,6 +108,10 @@ func loadAWS(ctx context.Context) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	chunkMaximumTokens, chunkOverlapTokens, chunkTargetPages, chunkMaximumPages, err := chunkPolicyValues()
+	if err != nil {
+		return Config{}, err
+	}
 	maximumPages, err := boundedInt64("INGESTION_MAX_PAGES", 500, 500)
 	if err != nil {
 		return Config{}, err
@@ -136,7 +140,14 @@ func loadAWS(ctx context.Context) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if int64(workConcurrency)*(768<<20)+(256<<20) > memoryLimit {
+	parserMemory, err := boundedInt64("INGESTION_PARSER_SANDBOX_MEMORY_BYTES", defaultParserSandboxMemoryBytes, maximumParserSandboxMemoryBytes)
+	if err != nil {
+		return Config{}, err
+	}
+	if parserMemory < defaultParserSandboxMemoryBytes {
+		return Config{}, fmt.Errorf("INGESTION_PARSER_SANDBOX_MEMORY_BYTES must be at least %d", defaultParserSandboxMemoryBytes)
+	}
+	if int64(workConcurrency)*parserMemory+(256<<20) > memoryLimit {
 		return Config{}, fmt.Errorf("INGESTION_WORK_CONCURRENCY exceeds INGESTION_MEMORY_LIMIT_BYTES")
 	}
 	timeout, err := boundedDuration("INGESTION_PROCESSING_TIMEOUT", time.Minute, 13*time.Minute+30*time.Second, 12*time.Minute+30*time.Second)
@@ -168,19 +179,42 @@ func loadAWS(ctx context.Context) (Config, error) {
 		return Config{}, err
 	}
 	return Config{
-		RuntimeBackend: "aws", DSN: dsn, RabbitURI: rabbitURI, SourceBucket: sourceBucket,
-		ArtifactBucket: artifactBucket, AWSRegion: region, KMSKeyARN: kmsKey, MetricsAddress: metrics,
-		TokenizerFile: tokenizerFile, PDFInfoPath: optional("INGESTION_PDFINFO_PATH", "/usr/bin/pdfinfo"),
-		PDFTextPath:        optional("INGESTION_PDFTOTEXT_PATH", "/usr/bin/pdftotext"),
-		EPUBParserPath:     optional("INGESTION_EPUB_PARSER_PATH", "/usr/local/bin/epub-parser"),
-		TemporaryDirectory: "/tmp",
-		Queue:              optional("INGESTION_QUEUE", "ingestion.book-uploaded.v1"), ResultExchange: optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
-		WorkConcurrency: workConcurrency, MaximumAttempts: maximumAttempts, MaximumChunks: maximumChunks,
-		MaximumSourceBytes: maximumSource, MaximumExtractedBytes: maximumExtracted, MaximumPageBytes: maximumPage,
-		MaximumManifestBytes: maximumManifest, MaximumTemporaryBytes: maximumTemporary, MaximumPages: uint32(maximumPages), // #nosec G115 -- bounded above.
-		MemoryLimitBytes:  memoryLimit,
-		ProcessingTimeout: timeout, JobLease: lease, OutboxInterval: outboxInterval, CleanupInterval: cleanupInterval,
-		OrphanGracePeriod: grace, RunAs: process.Identity{UID: uid, GID: gid},
+		RuntimeBackend:           "aws",
+		DSN:                      dsn,
+		RabbitURI:                rabbitURI,
+		SourceBucket:             sourceBucket,
+		ArtifactBucket:           artifactBucket,
+		AWSRegion:                region,
+		KMSKeyARN:                kmsKey,
+		MetricsAddress:           metrics,
+		TokenizerFile:            tokenizerFile,
+		PDFInfoPath:              optional("INGESTION_PDFINFO_PATH", "/usr/bin/pdfinfo"),
+		PDFTextPath:              optional("INGESTION_PDFTOTEXT_PATH", "/usr/bin/pdftotext"),
+		EPUBParserPath:           optional("INGESTION_EPUB_PARSER_PATH", "/usr/local/bin/epub-parser"),
+		TemporaryDirectory:       "/tmp",
+		Queue:                    optional("INGESTION_QUEUE", "ingestion.book-uploaded.v1"),
+		ResultExchange:           optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
+		WorkConcurrency:          workConcurrency,
+		MaximumAttempts:          maximumAttempts,
+		MaximumChunks:            maximumChunks,
+		ChunkMaximumTokens:       chunkMaximumTokens,
+		ChunkOverlapTokens:       chunkOverlapTokens,
+		ChunkTargetPages:         chunkTargetPages,
+		ChunkMaximumPages:        chunkMaximumPages,
+		MaximumSourceBytes:       maximumSource,
+		MaximumExtractedBytes:    maximumExtracted,
+		MaximumPageBytes:         maximumPage,
+		MaximumManifestBytes:     maximumManifest,
+		MaximumTemporaryBytes:    maximumTemporary,
+		MaximumPages:             uint32(maximumPages), // #nosec G115 -- bounded above.
+		MemoryLimitBytes:         memoryLimit,
+		ParserSandboxMemoryBytes: parserMemory,
+		ProcessingTimeout:        timeout,
+		JobLease:                 lease,
+		OutboxInterval:           outboxInterval,
+		CleanupInterval:          cleanupInterval,
+		OrphanGracePeriod:        grace,
+		RunAs:                    process.Identity{UID: uid, GID: gid},
 	}, nil
 }
 

@@ -15,6 +15,12 @@ func TestLoadUsesBoundedProductionDefaults(t *testing.T) {
 	if value.MaximumSourceBytes != 25<<20 || value.MaximumPages != 500 || value.MaximumChunks != 50_000 || value.MaximumManifestBytes != 1<<20 || value.WorkConcurrency != 1 {
 		t.Fatalf("unexpected defaults: %#v", value)
 	}
+	if value.MemoryLimitBytes != 2<<30 || value.ParserSandboxMemoryBytes != 1536<<20 {
+		t.Fatalf("unexpected parser memory defaults: %#v", value)
+	}
+	if value.ChunkMaximumTokens != 800 || value.ChunkOverlapTokens != 120 || value.ChunkTargetPages != 2 || value.ChunkMaximumPages != 3 {
+		t.Fatalf("unexpected chunk profile defaults: %#v", value)
+	}
 	if value.SourceBucket == value.ArtifactBucket {
 		t.Fatal("source and artifact buckets must be isolated")
 	}
@@ -30,6 +36,10 @@ func TestLoadRejectsUnsupportedM4ProcessingProfile(t *testing.T) {
 		{name: "source envelope", key: "INGESTION_MAX_SOURCE_BYTES", value: "52428800"},
 		{name: "page envelope", key: "INGESTION_MAX_PAGES", value: "501"},
 		{name: "manifest envelope", key: "INGESTION_MAX_MANIFEST_BYTES", value: "1048577"},
+		{name: "chunk token profile", key: "INGESTION_CHUNK_MAX_TOKENS", value: "801"},
+		{name: "chunk overlap profile", key: "INGESTION_CHUNK_OVERLAP_TOKENS", value: "121"},
+		{name: "chunk target pages profile", key: "INGESTION_CHUNK_TARGET_PAGES", value: "3"},
+		{name: "chunk maximum pages profile", key: "INGESTION_CHUNK_MAX_PAGES", value: "4"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -50,12 +60,50 @@ func TestLoadRejectsTemporaryDirectoryOutsideSandbox(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsAbsolutePDFTextDebugDumpDirectory(t *testing.T) {
+	setRequiredEnvironment(t)
+	t.Setenv("INGESTION_DEBUG_DUMP_PDFTEXT_DIR", "/tmp/raglibrarian-pdftotext-debug")
+	value, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.DebugDumpPDFTextDirectory != "/tmp/raglibrarian-pdftotext-debug" {
+		t.Fatalf("DebugDumpPDFTextDirectory = %q", value.DebugDumpPDFTextDirectory)
+	}
+}
+
+func TestLoadRejectsUnsafePDFTextDebugDumpDirectory(t *testing.T) {
+	tests := []string{
+		"relative/path",
+		"/",
+		"/tmp/debug\nother",
+		"/tmp/debug\tother",
+	}
+	for _, value := range tests {
+		t.Run(value, func(t *testing.T) {
+			setRequiredEnvironment(t)
+			t.Setenv("INGESTION_DEBUG_DUMP_PDFTEXT_DIR", value)
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load() accepted debug dump dir %q", value)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsParserMemoryOvercommit(t *testing.T) {
 	setRequiredEnvironment(t)
 	t.Setenv("INGESTION_WORK_CONCURRENCY", "2")
-	t.Setenv("INGESTION_MEMORY_LIMIT_BYTES", "1073741824")
+	t.Setenv("INGESTION_MEMORY_LIMIT_BYTES", "2147483648")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected parser memory overcommit to fail closed")
+	}
+}
+
+func TestLoadRejectsParserSandboxMemoryBelowEPUBSafeDefault(t *testing.T) {
+	setRequiredEnvironment(t)
+	t.Setenv("INGESTION_PARSER_SANDBOX_MEMORY_BYTES", "805306368")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected parser sandbox memory below EPUB-safe default to fail closed")
 	}
 }
 

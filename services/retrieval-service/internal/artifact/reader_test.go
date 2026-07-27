@@ -100,8 +100,8 @@ func TestReaderRetainsChunkContractFields(t *testing.T) {
 		ExtractionVersion:    "poppler-layout-v1",
 		NormalizationVersion: "nfc-v1",
 		TokenizerVersion:     "cl100k_base-v1",
-		ChunkingVersion:      "token-window-v2",
-		StructureVersion:     "heading-carry-v1",
+		ChunkingVersion:      "chapter-page-window-v1",
+		StructureVersion:     "chapter-boundary-v1",
 		MaximumTokens:        800,
 		OverlapTokens:        120,
 	})
@@ -112,7 +112,7 @@ func TestReaderRetainsChunkContractFields(t *testing.T) {
 		t.Fatalf("len(chunks) = %d, want 1", len(chunks))
 	}
 	chunk := chunks[0]
-	if chunk.Order != 7 || chunk.TokenStart != 13 || chunk.TokenEnd != 21 || chunk.ExtractionVersion != "poppler-layout-v1" || chunk.ChunkingVersion != "token-window-v2" {
+	if chunk.Order != 7 || chunk.TokenStart != 13 || chunk.TokenEnd != 21 || chunk.ExtractionVersion != "poppler-layout-v1" || chunk.ChunkingVersion != "chapter-page-window-v1" {
 		t.Fatalf("chunk = %#v", chunk)
 	}
 }
@@ -159,8 +159,8 @@ func validShardUncompressed(t *testing.T) []byte {
 		ExtractionVersion:    "poppler-layout-v1",
 		NormalizationVersion: "nfc-v1",
 		TokenizerVersion:     "cl100k_base-v1",
-		ChunkingVersion:      "token-window-v2",
-		StructureVersion:     "heading-carry-v1",
+		ChunkingVersion:      "chapter-page-window-v1",
+		StructureVersion:     "chapter-boundary-v1",
 	})
 }
 

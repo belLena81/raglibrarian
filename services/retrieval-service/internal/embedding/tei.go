@@ -4,6 +4,8 @@ package embedding
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,18 +26,31 @@ const bgeQueryInstruction = "Represent this sentence for searching relevant pass
 const providerTruncateInputs = true
 
 type TEI struct {
-	endpoint string
-	client   *http.Client
-	log      *zap.Logger
-	limit    *throttle.Limiter
+	endpoint       string
+	client         *http.Client
+	log            *zap.Logger
+	limit          *throttle.Limiter
+	rawResponseLog RawResponseLog
+}
+
+type RawResponseLog struct {
+	Enabled      bool
+	MaximumBytes int
 }
 
 func NewTEI(endpoint string, client *http.Client, log *zap.Logger, limit *throttle.Limiter) (*TEI, error) {
+	return NewTEIWithOptions(endpoint, client, log, limit, RawResponseLog{})
+}
+
+func NewTEIWithOptions(endpoint string, client *http.Client, log *zap.Logger, limit *throttle.Limiter, rawResponseLog RawResponseLog) (*TEI, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || client == nil {
 		return nil, errors.New("invalid TEI configuration")
 	}
-	return &TEI{endpoint: strings.TrimRight(endpoint, "/"), client: client, log: log, limit: limit}, nil
+	if rawResponseLog.MaximumBytes < 0 || rawResponseLog.MaximumBytes > 64<<10 {
+		return nil, errors.New("invalid TEI diagnostics configuration")
+	}
+	return &TEI{endpoint: strings.TrimRight(endpoint, "/"), client: client, log: log, limit: limit, rawResponseLog: rawResponseLog}, nil
 }
 
 func (t *TEI) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
@@ -68,7 +83,7 @@ func (t *TEI) EmbedDocuments(ctx context.Context, texts []string) ([][]float32, 
 func (t *TEI) embed(ctx context.Context, inputs any, expected int, operation string) ([][]float32, error) {
 	started := time.Now()
 	if wait, err := t.wait(ctx); err != nil {
-		return nil, t.failure(operation, "provider_rate_limited", "throttle", sanitizeEmbeddingDetail(wait.String()), 0, 0, started, err)
+		return nil, t.failure(operation, "provider_rate_limited", "throttle", sanitizeEmbeddingDetail(wait.String()), 0, 0, 0, started, err)
 	} else if wait > 0 && t.log != nil {
 		t.log.Info("retrieval.embedding.request.throttled",
 			zap.String("operation", operation),
@@ -80,12 +95,12 @@ func (t *TEI) embed(ctx context.Context, inputs any, expected int, operation str
 		Truncate bool `json:"truncate"`
 	}{Inputs: inputs, Truncate: providerTruncateInputs})
 	if err != nil {
-		return nil, t.failure(operation, "request_encode_failed", "request", "", 0, 0, started, errors.New("encode embedding request"))
+		return nil, t.failure(operation, "request_encode_failed", "request", "", 0, 0, 0, started, errors.New("encode embedding request"))
 	}
 	requestBytes := len(body)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, t.endpoint+"/embed", bytes.NewReader(body))
 	if err != nil {
-		return nil, t.failure(operation, "request_create_failed", "request", "", 0, requestBytes, started, errors.New("create embedding request"))
+		return nil, t.failure(operation, "request_create_failed", "request", "", 0, requestBytes, 0, started, errors.New("create embedding request"))
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if t.log != nil {
@@ -97,7 +112,7 @@ func (t *TEI) embed(ctx context.Context, inputs any, expected int, operation str
 	}
 	response, err := t.client.Do(request) // #nosec G704 -- NewTEI accepts only a validated operator-controlled private endpoint.
 	if err != nil {
-		return nil, t.failure(operation, classifyEmbeddingRequestError(err), "request", sanitizeEmbeddingDetail(err.Error()), 0, requestBytes, started, err)
+		return nil, t.failure(operation, classifyEmbeddingRequestError(err), "request", sanitizeEmbeddingDetail(err.Error()), 0, requestBytes, 0, started, err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
@@ -106,16 +121,22 @@ func (t *TEI) embed(ctx context.Context, inputs any, expected int, operation str
 		if detail == "" {
 			detail = sanitizeEmbeddingDetail(response.Status)
 		}
-		return nil, t.failure(operation, fmt.Sprintf("provider_http_status_%d", response.StatusCode), "response", detail, response.StatusCode, requestBytes, started, fmt.Errorf("embedding dependency status %d", response.StatusCode))
+		t.logResponseBody(operation, response, body)
+		return nil, t.failure(operation, fmt.Sprintf("provider_http_status_%d", response.StatusCode), "response", detail, response.StatusCode, requestBytes, len(body), started, fmt.Errorf("embedding dependency status %d", response.StatusCode))
 	}
+	body, err = io.ReadAll(io.LimitReader(response.Body, maximumResponseBytes+1))
+	if err != nil || len(body) > maximumResponseBytes {
+		return nil, t.failure(operation, "invalid_embedding_response", "response", "read_response_failed", response.StatusCode, requestBytes, len(body), started, errors.New("invalid embedding response"))
+	}
+	t.logResponseBody(operation, response, body)
 	var vectors [][]float32
-	decoder := json.NewDecoder(io.LimitReader(response.Body, maximumResponseBytes))
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err = decoder.Decode(&vectors); err != nil || len(vectors) != expected {
-		return nil, t.failure(operation, "invalid_embedding_response", "validation", "", response.StatusCode, requestBytes, started, errors.New("invalid embedding response"))
+		return nil, t.failure(operation, "invalid_embedding_response", "validation", sanitizeEmbeddingDetail(errString(err)), response.StatusCode, requestBytes, len(body), started, errors.New("invalid embedding response"))
 	}
 	for _, vector := range vectors {
 		if len(vector) != domain.EmbeddingDimensions {
-			return nil, t.failure(operation, "invalid_embedding_response", "validation", "", response.StatusCode, requestBytes, started, errors.New("invalid embedding response"))
+			return nil, t.failure(operation, "invalid_embedding_response", "validation", fmt.Sprintf("invalid_vector_dimensions got=%d want=%d", len(vector), domain.EmbeddingDimensions), response.StatusCode, requestBytes, len(body), started, errors.New("invalid embedding response"))
 		}
 	}
 	if t.log != nil {
@@ -125,6 +146,8 @@ func (t *TEI) embed(ctx context.Context, inputs any, expected int, operation str
 			zap.Int("response_vectors", len(vectors)),
 			zap.Int64("duration_ms", time.Since(started).Milliseconds()),
 			zap.Int("status_code", response.StatusCode),
+			zap.Int("response_bytes", len(body)),
+			zap.String("response_body_sha256", digestHex(body)),
 		)
 	}
 	return vectors, nil
@@ -150,7 +173,7 @@ func (t *TEI) CheckReady(ctx context.Context) error {
 	return errors.New("embedding dependency unavailable")
 }
 
-func (t *TEI) failure(operation, code, stage, detail string, statusCode, requestBytes int, started time.Time, err error) error {
+func (t *TEI) failure(operation, code, stage, detail string, statusCode, requestBytes, responseBytes int, started time.Time, err error) error {
 	if t.log != nil {
 		fields := []zap.Field{
 			zap.String("operation", operation),
@@ -167,9 +190,33 @@ func (t *TEI) failure(operation, code, stage, detail string, statusCode, request
 		if requestBytes > 0 {
 			fields = append(fields, zap.Int("request_bytes", requestBytes))
 		}
+		if responseBytes > 0 {
+			fields = append(fields, zap.Int("response_bytes", responseBytes))
+		}
 		t.log.Warn("retrieval.embedding.request.failed", fields...)
 	}
 	return err
+}
+
+func (t *TEI) logResponseBody(operation string, response *http.Response, body []byte) {
+	if t.log == nil {
+		return
+	}
+	fields := []zap.Field{
+		zap.String("operation", operation),
+		zap.Int("status_code", response.StatusCode),
+		zap.Int("response_bytes", len(body)),
+		zap.String("response_body_sha256", digestHex(body)),
+	}
+	if contentType := strings.TrimSpace(response.Header.Get("Content-Type")); contentType != "" {
+		fields = append(fields, zap.String("content_type", contentType))
+	}
+	if t.rawResponseLog.Enabled && t.rawResponseLog.MaximumBytes > 0 {
+		limit := min(t.rawResponseLog.MaximumBytes, len(body))
+		fields = append(fields, zap.ByteString("response_body_raw_prefix", body[:limit]))
+		fields = append(fields, zap.Int("response_body_raw_prefix_bytes", limit))
+	}
+	t.log.Info("retrieval.embedding.provider.response", fields...)
 }
 
 func (t *TEI) wait(ctx context.Context) (time.Duration, error) {
@@ -188,6 +235,18 @@ func sanitizeEmbeddingDetail(value string) string {
 		value = string([]rune(value)[:160])
 	}
 	return value
+}
+
+func digestHex(value []byte) string {
+	sum := sha256.Sum256(value)
+	return hex.EncodeToString(sum[:])
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func classifyEmbeddingRequestError(err error) string {

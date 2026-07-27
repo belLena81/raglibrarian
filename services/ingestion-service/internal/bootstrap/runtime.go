@@ -187,14 +187,17 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		cleanup()
 		return nil, err
 	}
+	chunkPolicy := chunking.Policy{
+		MaximumTokens: cfg.ChunkMaximumTokens,
+		OverlapTokens: cfg.ChunkOverlapTokens,
+		TargetPages:   cfg.ChunkTargetPages,
+		MaximumPages:  cfg.ChunkMaximumPages,
+		MaximumChunks: cfg.MaximumChunks,
+	}
 	processingFactory, err := application.NewProcessingFactory(
 		tokenizer,
 		artifactStore,
-		chunking.Policy{
-			MaximumTokens: 800,
-			OverlapTokens: 120,
-			MaximumChunks: cfg.MaximumChunks,
-		},
+		chunkPolicy,
 		artifact.Limits{
 			ChunksPerShard:       256,
 			MaximumShardBytes:    4 << 20,
@@ -205,7 +208,7 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		cleanup()
 		return nil, err
 	}
-	events, err := transport.NewProtoEventFactory(newID)
+	events, err := transport.NewProtoEventFactoryWithProfile(newID, chunkPolicy)
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -215,10 +218,10 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		cleanup()
 		return nil, errors.New("worker identity unavailable")
 	}
-	repo := repository.NewPostgres(pool)
+	repo := repository.NewPostgresWithProfile(pool, chunkPolicy)
 	recorder := &metrics.Recorder{}
 	diagnosticsLogger := diagnostic.New(nil)
-	pdfExtractor := extractor.NewPoppler(
+	pdfExtractor := extractor.NewPopplerWithOptions(
 		cfg.PDFInfoPath,
 		cfg.PDFTextPath,
 		extractor.Limits{
@@ -227,6 +230,7 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 			MaximumExtractedBytes: cfg.MaximumExtractedBytes,
 		},
 		nil,
+		cfg.DebugDumpPDFTextDirectory,
 	)
 	epubExtractor := extractor.NewEPUB(
 		cfg.EPUBParserPath,

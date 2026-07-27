@@ -16,10 +16,12 @@ import (
 
 const (
 	NormalizationVersion = "nfc-v1"
-	ChunkingVersion      = "token-window-v2"
-	StructureVersion     = "heading-carry-v1"
+	ChunkingVersion      = "chapter-page-window-v1"
+	StructureVersion     = "chapter-boundary-v1"
 	DefaultMaximumTokens = 800
 	DefaultOverlapTokens = 120
+	DefaultTargetPages   = 2
+	DefaultMaximumPages  = 3
 )
 
 var ErrChunkLimit = errors.New("chunk limit exceeded")
@@ -33,6 +35,8 @@ type Policy struct {
 	MaximumTokens int
 	OverlapTokens int
 	MaximumChunks int
+	TargetPages   int
+	MaximumPages  int
 }
 
 type Page struct {
@@ -64,10 +68,18 @@ type Chunker struct {
 	buffer     []bufferedToken
 	structure  StructureContext
 	finished   bool
+	emittedEnd uint64
 }
 
 func New(tokenizer Tokenizer, policy Policy) (*Chunker, error) {
-	if tokenizer == nil || policy.MaximumTokens < 1 || policy.OverlapTokens < 0 || policy.OverlapTokens >= policy.MaximumTokens || policy.MaximumChunks < 1 {
+	if policy.TargetPages == 0 {
+		policy.TargetPages = DefaultTargetPages
+	}
+	if policy.MaximumPages == 0 {
+		policy.MaximumPages = DefaultMaximumPages
+	}
+	if tokenizer == nil || policy.MaximumTokens < 1 || policy.OverlapTokens < 0 || policy.OverlapTokens >= policy.MaximumTokens ||
+		policy.MaximumChunks < 1 || policy.TargetPages < 1 || policy.MaximumPages < policy.TargetPages {
 		return nil, errors.New("invalid chunking policy")
 	}
 	return &Chunker{tokenizer: tokenizer, policy: policy}, nil
@@ -85,6 +97,9 @@ func (c *Chunker) AddPage(bookID string, page Page) ([]domain.Chunk, error) {
 	heading := detectHeading(text)
 	result := make([]domain.Chunk, 0, 2)
 	if heading.Chapter != "" || heading.Section != "" {
+		if c.overlapOnly() {
+			c.buffer = c.buffer[:0]
+		}
 		flushed, err := c.flushBoundary(bookID)
 		if err != nil {
 			return nil, err
@@ -110,13 +125,31 @@ func (c *Chunker) AddPage(bookID string, page Page) ([]domain.Chunk, error) {
 		c.buffer = append(c.buffer, bufferedToken{value: token, page: page.Number, global: c.nextToken})
 		c.nextToken++
 	}
-	for len(c.buffer) > c.policy.MaximumTokens {
-		chunk, err := c.emit(bookID, c.policy.MaximumTokens)
+	for len(c.buffer) > c.policy.MaximumTokens || c.pageSpan() > c.policy.MaximumPages {
+		window := min(c.policy.MaximumTokens, c.pageWindowSize(c.policy.MaximumPages))
+		if window <= 0 {
+			return nil, errors.New("invalid chunking window")
+		}
+		if c.windowOverlapOnly(window) {
+			c.advanceWindow(window)
+			continue
+		}
+		chunk, err := c.emit(bookID, window)
 		if err != nil {
 			return nil, err
 		}
 		result = append(result, chunk)
-		c.advanceWindow(c.policy.MaximumTokens - c.policy.OverlapTokens)
+		advance := window - c.policy.OverlapTokens
+		if advance <= 0 {
+			advance = window
+		}
+		c.advanceWindow(advance)
+		if c.overlapOnly() {
+			c.buffer = c.buffer[:0]
+		}
+	}
+	if c.overlapOnly() {
+		c.buffer = c.buffer[:0]
 	}
 	return result, nil
 }
@@ -128,6 +161,9 @@ func (c *Chunker) Finish(bookID string) ([]domain.Chunk, error) {
 		return nil, errors.New("chunker already finished")
 	}
 	c.finished = true
+	if c.overlapOnly() {
+		c.buffer = c.buffer[:0]
+	}
 	return c.flushBoundary(bookID)
 }
 
@@ -145,6 +181,9 @@ func (c *Chunker) flushBoundary(bookID string) ([]domain.Chunk, error) {
 			c.buffer = c.buffer[:0]
 		} else {
 			c.advanceWindow(c.policy.MaximumTokens - c.policy.OverlapTokens)
+			if c.overlapOnly() {
+				c.buffer = c.buffer[:0]
+			}
 		}
 	}
 	return result, nil
@@ -185,12 +224,52 @@ func (c *Chunker) emit(bookID string, size int) (domain.Chunk, error) {
 	}
 	c.nextOrder++
 	c.chunkCount++
+	c.emittedEnd = tokenEnd
 	return chunk, nil
 }
 
 func (c *Chunker) advanceWindow(count int) {
 	copy(c.buffer, c.buffer[count:])
 	c.buffer = c.buffer[:len(c.buffer)-count]
+}
+
+func (c *Chunker) pageSpan() int {
+	if len(c.buffer) == 0 {
+		return 0
+	}
+	return int(c.buffer[len(c.buffer)-1].page-c.buffer[0].page) + 1
+}
+
+func (c *Chunker) pageWindowSize(maximumPages int) int {
+	if len(c.buffer) == 0 {
+		return 0
+	}
+	lastPage := c.buffer[0].page + uint32(maximumPages) - 1 // #nosec G115 -- maximumPages is validated positive and small.
+	for index, token := range c.buffer {
+		if token.page > lastPage {
+			return index
+		}
+	}
+	return len(c.buffer)
+}
+
+func (c *Chunker) overlapOnly() bool {
+	if len(c.buffer) == 0 || c.emittedEnd == 0 {
+		return false
+	}
+	for _, token := range c.buffer {
+		if token.global >= c.emittedEnd {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Chunker) windowOverlapOnly(size int) bool {
+	if size <= 0 || size > len(c.buffer) || c.emittedEnd == 0 {
+		return false
+	}
+	return c.buffer[size-1].global < c.emittedEnd
 }
 
 func Normalize(value string) string {

@@ -41,13 +41,13 @@ func TestSearcherReturnsRankedEvidence(t *testing.T) {
 		t.Fatalf("Search() error = %v", err)
 	}
 	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "evidence-1" || result.Evidence[0].Summary != "Replication keeps copies." ||
-		len(result.Documents) != 1 || result.Documents[0].DocumentID != "document-1" || result.Documents[0].Summary != "Replication keeps copies." ||
+		len(result.Documents) != 1 || result.Documents[0].DocumentID != "book-1:job-1" || result.Documents[0].Summary != "" ||
 		store.query.Question() != "replication" || embedder.calls != 1 {
 		t.Fatalf("unexpected results: %#v", result)
 	}
 }
 
-func TestSearcherUsesProviderSummariesAndFallsBack(t *testing.T) {
+func TestSearcherUsesProviderAssessmentsAndDoesNotSummarizeDocuments(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{
 		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Deterministic retries keep search stable.", Score: 0.91}},
@@ -60,8 +60,8 @@ func TestSearcherUsesProviderSummariesAndFallsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
-	provider := &stubSummaryProvider{response: func(value SummaryRequest) string {
-		return "summary: " + strings.TrimSpace(value.Question) + " | " + strings.TrimSpace(value.Passage)
+	provider := &stubSummaryProvider{response: func(value SummaryRequest) EvidenceAssessment {
+		return EvidenceAssessment{Relevant: true, Summary: "summary: " + strings.TrimSpace(value.Question) + " | " + strings.TrimSpace(value.Passage)}
 	}}
 	searcher.SetSummaryProvider(provider)
 
@@ -72,9 +72,9 @@ func TestSearcherUsesProviderSummariesAndFallsBack(t *testing.T) {
 	if len(result.Evidence) != 1 || result.Evidence[0].Summary != "summary: replication | Deterministic retries keep search stable." {
 		t.Fatalf("provider-backed evidence summary missing: %#v", result.Evidence)
 	}
-	if len(result.Documents) != 1 || result.Documents[0].Summary != "summary: replication | Deterministic retries keep search stable." || len(result.Documents[0].Evidence) != 1 ||
+	if len(result.Documents) != 1 || result.Documents[0].Summary != "" || len(result.Documents[0].Evidence) != 1 ||
 		result.Documents[0].Evidence[0].Summary != "summary: replication | Deterministic retries keep search stable." {
-		t.Fatalf("provider-backed document summary missing: %#v", result.Documents)
+		t.Fatalf("document grouping should contain only accepted evidence without book summary: %#v", result.Documents)
 	}
 	if provider.calls() != 1 {
 		t.Fatalf("provider calls = %d, want 1", provider.calls())
@@ -82,64 +82,31 @@ func TestSearcherUsesProviderSummariesAndFallsBack(t *testing.T) {
 	if len(provider.requests) != 1 || provider.requests[0].Question != "replication" || provider.requests[0].Passage != "Deterministic retries keep search stable." {
 		t.Fatalf("provider requests missing question/passage: %#v", provider.requests)
 	}
-
-	searcher.SetSummaryProvider(&stubSummaryProvider{err: errors.New("provider failed")})
-	fallback, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: " replication ", Limit: 3})
-	if err != nil {
-		t.Fatalf("fallback Search() error = %v", err)
-	}
-	if len(fallback.Evidence) != 1 || fallback.Evidence[0].Summary != "Deterministic retries keep search stable." || len(fallback.Documents) != 1 || fallback.Documents[0].Summary != "Deterministic retries keep search stable." {
-		t.Fatalf("local fallback summary missing: %#v", fallback)
-	}
 }
 
-func TestSearcherDoesNotClipProviderOrFallbackSummaries(t *testing.T) {
+func TestSearcherExcludesEvidenceWhenProviderAssessmentFails(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
-	longSentence := strings.TrimSpace(strings.Repeat("Detailed JavaScript guidance sentence without clipping. ", 8))
 	store := &stubEvidenceStore{
-		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: longSentence, Score: 0.91}},
-		documents: []DocumentResult{{
-			DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", ChunkCount: 1, Score: 0.91,
-			Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: longSentence, Score: 0.91}},
-		}},
+		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Provider must assess this passage.", Score: 0.91}},
 	}
 	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 4)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
 
-	provider := &stubSummaryProvider{response: func(value SummaryRequest) string {
-		return longSentence
-	}}
-	searcher.SetSummaryProvider(provider)
+	searcher.SetSummaryProvider(&stubSummaryProvider{err: errors.New("provider failed")})
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 3})
 	if err != nil {
-		t.Fatalf("provider Search() error = %v", err)
+		t.Fatalf("Search() error = %v", err)
 	}
-	if got := result.Evidence[0].Summary; got != longSentence {
-		t.Fatalf("provider evidence summary = %q, want full long summary", got)
-	}
-	if got := result.Documents[0].Summary; got != longSentence {
-		t.Fatalf("provider document summary = %q, want full long summary", got)
-	}
-
-	searcher.SetSummaryProvider(&stubSummaryProvider{err: errors.New("provider failed")})
-	fallback, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 3})
-	if err != nil {
-		t.Fatalf("fallback Search() error = %v", err)
-	}
-	if got := fallback.Evidence[0].Summary; got != longSentence {
-		t.Fatalf("fallback evidence summary = %q, want full long summary", got)
-	}
-	if got := fallback.Documents[0].Summary; got != longSentence {
-		t.Fatalf("fallback document summary = %q, want full long summary", got)
+	if len(result.Evidence) != 0 || len(result.Documents) != 0 {
+		t.Fatalf("provider assessment failure should exclude evidence: %#v", result)
 	}
 }
 
-func TestSearcherCapsProviderSummaryCallsPerSearch(t *testing.T) {
+func TestSearcherExcludesIrrelevantProviderAssessmentsAndBackfills(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	results := make([]Evidence, 0, 5)
-	documents := make([]DocumentResult, 0, 5)
 	for index := 0; index < 5; index++ {
 		evidenceID := strings.Join([]string{"evidence", string(rune('a' + index))}, "-")
 		passage := strings.Join([]string{"evidence", string(rune('a' + index)), "passage"}, " ")
@@ -151,28 +118,17 @@ func TestSearcherCapsProviderSummaryCallsPerSearch(t *testing.T) {
 			Passage:    passage,
 			Score:      0.91,
 		})
-		documentID := strings.Join([]string{"document", string(rune('a' + index))}, "-")
-		docPassage := strings.Join([]string{"document", string(rune('a' + index)), "passage"}, " ")
-		documents = append(documents, DocumentResult{
-			DocumentID: documentID,
-			JobID:      "job-" + documentID,
-			BookID:     "book-" + documentID,
-			Title:      "Systems",
-			ChunkCount: 1,
-			Score:      0.91,
-			Evidence:   []Evidence{{EvidenceID: evidenceID + "-doc", Passage: docPassage, Score: 0.91}},
-		})
 	}
-	store := &stubEvidenceStore{
-		results:   results,
-		documents: documents,
-	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 4)
+	store := &stubEvidenceStore{results: results}
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 5)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
-	provider := &stubSummaryProvider{response: func(value SummaryRequest) string {
-		return "summary: " + strings.TrimSpace(value.Passage)
+	provider := &stubSummaryProvider{response: func(value SummaryRequest) EvidenceAssessment {
+		if strings.Contains(value.Passage, "evidence a") || strings.Contains(value.Passage, "evidence c") {
+			return EvidenceAssessment{Relevant: false}
+		}
+		return EvidenceAssessment{Relevant: true, Summary: "summary: " + strings.TrimSpace(value.Passage)}
 	}}
 	searcher.SetSummaryProvider(provider)
 
@@ -180,63 +136,52 @@ func TestSearcherCapsProviderSummaryCallsPerSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
-	if len(result.Evidence) != 5 || len(result.Documents) != 5 {
-		t.Fatalf("unexpected result counts: %#v", result)
+	if got := []string{result.Evidence[0].EvidenceID, result.Evidence[1].EvidenceID, result.Evidence[2].EvidenceID}; got[0] != "evidence-b" || got[1] != "evidence-d" || got[2] != "evidence-e" {
+		t.Fatalf("accepted evidence = %#v", got)
 	}
-	if provider.calls() != 4 {
-		t.Fatalf("provider calls = %d, want 4", provider.calls())
+	if len(result.Evidence) != 3 || len(result.Documents) != 3 {
+		t.Fatalf("irrelevant evidence should be excluded from results and document groups: %#v", result)
+	}
+	if provider.calls() != 5 {
+		t.Fatalf("provider calls = %d, want 5", provider.calls())
 	}
 }
 
-func TestSearcherUsesConfiguredProviderSummaryCallLimit(t *testing.T) {
+func TestSearcherBackfillsAfterProviderExclusions(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
-	results := make([]Evidence, 0, 3)
-	documents := make([]DocumentResult, 0, 3)
-	for index := 0; index < 3; index++ {
-		evidenceID := strings.Join([]string{"evidence", string(rune('a' + index))}, "-")
-		passage := strings.Join([]string{"evidence", string(rune('a' + index)), "passage"}, " ")
-		results = append(results, Evidence{
-			EvidenceID: evidenceID,
-			JobID:      "job-" + evidenceID,
-			BookID:     "book-" + evidenceID,
-			Title:      "Systems",
-			Passage:    passage,
-			Score:      0.91,
-		})
-		documentID := strings.Join([]string{"document", string(rune('a' + index))}, "-")
-		docPassage := strings.Join([]string{"document", string(rune('a' + index)), "passage"}, " ")
-		documents = append(documents, DocumentResult{
-			DocumentID: documentID,
-			JobID:      "job-" + documentID,
-			BookID:     "book-" + documentID,
-			Title:      "Systems",
-			ChunkCount: 1,
-			Score:      0.91,
-			Evidence:   []Evidence{{EvidenceID: evidenceID + "-doc", Passage: docPassage, Score: 0.91}},
-		})
-	}
 	store := &stubEvidenceStore{
-		results:   results,
-		documents: documents,
+		resultsByPage: [][]Evidence{
+			{
+				{EvidenceID: "irrelevant-1", JobID: "job-1", BookID: "book-1", Passage: "off topic one", Score: 0.99},
+				{EvidenceID: "irrelevant-2", JobID: "job-2", BookID: "book-2", Passage: "off topic two", Score: 0.98},
+			},
+			{
+				{EvidenceID: "relevant-1", JobID: "job-3", BookID: "book-3", Passage: "relevant one", Score: 0.80},
+				{EvidenceID: "relevant-2", JobID: "job-4", BookID: "book-4", Passage: "relevant two", Score: 0.79},
+			},
+		},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 2)
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 4)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
-	provider := &stubSummaryProvider{response: func(value SummaryRequest) string {
-		return "summary: " + strings.TrimSpace(value.Passage)
+	provider := &stubSummaryProvider{response: func(value SummaryRequest) EvidenceAssessment {
+		if strings.HasPrefix(value.Passage, "relevant ") {
+			return EvidenceAssessment{Relevant: true, Summary: value.Passage}
+		}
+		return EvidenceAssessment{Relevant: false}
 	}}
 	searcher.SetSummaryProvider(provider)
 
-	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 3})
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 1})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
-	if len(result.Evidence) != 3 || len(result.Documents) != 3 {
-		t.Fatalf("unexpected result counts: %#v", result)
+	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "relevant-1" {
+		t.Fatalf("unexpected backfilled evidence: %#v", result.Evidence)
 	}
-	if provider.calls() != 2 {
-		t.Fatalf("provider calls = %d, want 2", provider.calls())
+	if store.calls != 2 {
+		t.Fatalf("evidence pages = %d, want 2", store.calls)
 	}
 }
 
@@ -273,12 +218,12 @@ func TestSearcherFiltersLowScoringEvidenceBeforeReturningResults(t *testing.T) {
 	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "high-1" || result.Evidence[0].Score < 0.6 {
 		t.Fatalf("low-scoring evidence was not filtered: %#v", result.Evidence)
 	}
-	if len(result.Documents) != 1 || result.Documents[0].DocumentID != "doc-high" || len(result.Documents[0].Evidence) != 1 || result.Documents[0].Evidence[0].EvidenceID != "high-1" {
+	if len(result.Documents) != 1 || result.Documents[0].DocumentID != "book-high:job-high-1" || len(result.Documents[0].Evidence) != 1 || result.Documents[0].Evidence[0].EvidenceID != "high-1" {
 		t.Fatalf("low-scoring document evidence was not filtered: %#v", result.Documents)
 	}
 }
 
-func TestSearcherFiltersLowScoringDocumentsEvenWhenEvidenceIsVisible(t *testing.T) {
+func TestSearcherBuildsDocumentGroupsOnlyFromAcceptedEvidence(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{
 		results: []Evidence{
@@ -298,8 +243,11 @@ func TestSearcherFiltersLowScoringDocumentsEvenWhenEvidenceIsVisible(t *testing.
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
-	if len(result.Documents) != 1 || result.Documents[0].DocumentID != "document-high" {
+	if len(result.Documents) != 1 || result.Documents[0].DocumentID != "book-1:job-1" || result.Documents[0].Evidence[0].EvidenceID != "evidence-1" {
 		t.Fatalf("documents = %#v", result.Documents)
+	}
+	if store.documentCalls != 0 {
+		t.Fatalf("document search calls = %d, want 0", store.documentCalls)
 	}
 }
 
@@ -337,15 +285,12 @@ func TestSearcherSortsEvidenceDocumentsAndSupportingPassagesByScore(t *testing.T
 	if got := []string{result.Evidence[0].EvidenceID, result.Evidence[1].EvidenceID, result.Evidence[2].EvidenceID}; got[0] != "evidence-high" || got[1] != "evidence-mid" || got[2] != "evidence-low" {
 		t.Fatalf("evidence ordering = %#v", got)
 	}
-	if got := []string{result.Documents[0].DocumentID, result.Documents[1].DocumentID}; got[0] != "document-high" || got[1] != "document-low" {
+	if got := []string{result.Documents[0].DocumentID, result.Documents[1].DocumentID, result.Documents[2].DocumentID}; got[0] != "book-2:job-2" || got[1] != "book-3:job-3" || got[2] != "book-1:job-1" {
 		t.Fatalf("document ordering = %#v", got)
-	}
-	if got := []string{result.Documents[1].Evidence[0].EvidenceID, result.Documents[1].Evidence[1].EvidenceID}; got[0] != "support-high" || got[1] != "support-low" {
-		t.Fatalf("supporting evidence ordering = %#v", got)
 	}
 }
 
-func TestSearcherSkipsEmptyPassagesForSummaries(t *testing.T) {
+func TestSearcherSkipsEmptyPassagesForAssessments(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{
 		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Passage: "   ", Score: 0.91}},
@@ -368,8 +313,8 @@ func TestSearcherSkipsEmptyPassagesForSummaries(t *testing.T) {
 	if provider.calls() != 0 {
 		t.Fatalf("provider calls = %d, want 0", provider.calls())
 	}
-	if len(result.Evidence) != 1 || result.Evidence[0].Summary != "" || len(result.Documents) != 1 || result.Documents[0].Summary != "" {
-		t.Fatalf("empty passages should not produce summaries: %#v", result)
+	if len(result.Evidence) != 0 || len(result.Documents) != 0 {
+		t.Fatalf("empty passages should not produce results: %#v", result)
 	}
 }
 
@@ -408,38 +353,14 @@ func TestSearcherBackfillsAfterVisibilityFiltering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
-	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "visible-1" || len(result.Documents) != 1 || result.Documents[0].DocumentID != "visible-document-1" {
+	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "visible-1" || len(result.Documents) != 1 || result.Documents[0].DocumentID != "book-1:indexed-1" {
 		t.Fatalf("unexpected visible results: %#v", result)
 	}
-	if store.calls != 2 || store.documentCalls != 2 {
-		t.Fatalf("search pages evidence/documents = %d/%d, want 2/2", store.calls, store.documentCalls)
+	if store.calls != 2 || store.documentCalls != 0 {
+		t.Fatalf("search pages evidence/documents = %d/%d, want 2/0", store.calls, store.documentCalls)
 	}
-	if len(store.requests) != 4 || store.requests[0].limit != 2 || store.requests[0].offset != 0 || store.requests[1].limit != 2 || store.requests[1].offset != 2 {
+	if len(store.requests) != 2 || store.requests[0].limit != 2 || store.requests[0].offset != 0 || store.requests[1].limit != 2 || store.requests[1].offset != 2 {
 		t.Fatalf("unexpected paging requests: %#v", store.requests)
-	}
-}
-
-func TestSearcherContinuesDocumentPaginationAfterHydrationDropsCandidates(t *testing.T) {
-	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
-	store := &stubEvidenceStore{documentPages: []DocumentPage{
-		{Exhausted: false},
-		{Documents: []DocumentResult{{DocumentID: "document-2", JobID: "job-2", BookID: "book-2", ChunkCount: 1, Score: 0.8, Evidence: []Evidence{{EvidenceID: "evidence-2", Score: 0.8}}}}, Exhausted: true},
-	}}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 4)
-	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
-	}
-
-	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 1})
-
-	if err != nil {
-		t.Fatalf("Search() error = %v", err)
-	}
-	if len(result.Documents) != 1 || result.Documents[0].DocumentID != "document-2" {
-		t.Fatalf("documents = %#v", result.Documents)
-	}
-	if store.documentCalls != 2 {
-		t.Fatalf("document calls = %d, want 2", store.documentCalls)
 	}
 }
 
@@ -544,21 +465,21 @@ func (v filteringVisibility) FilterIndexedDocuments(_ context.Context, values []
 type stubSummaryProvider struct {
 	mu       sync.Mutex
 	requests []SummaryRequest
-	response func(SummaryRequest) string
+	response func(SummaryRequest) EvidenceAssessment
 	err      error
 }
 
-func (s *stubSummaryProvider) Summarize(_ context.Context, value SummaryRequest) (string, error) {
+func (s *stubSummaryProvider) Assess(_ context.Context, value SummaryRequest) (EvidenceAssessment, error) {
 	s.mu.Lock()
 	s.requests = append(s.requests, value)
 	response := s.response
 	err := s.err
 	s.mu.Unlock()
 	if err != nil {
-		return "", err
+		return EvidenceAssessment{}, err
 	}
 	if response == nil {
-		return value.Passage, nil
+		return EvidenceAssessment{Relevant: true, Summary: value.Passage}, nil
 	}
 	return response(value), nil
 }

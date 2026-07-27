@@ -47,7 +47,10 @@ func main() {
 		log.Print("retrieval server could not configure embedding throttle")
 		os.Exit(1)
 	}
-	embedder, err := embedding.NewTEI(configuration.TEIURL, httpClient, serviceLogger, teiLimiter)
+	embedder, err := embedding.NewTEIWithOptions(configuration.TEIURL, httpClient, serviceLogger, teiLimiter, embedding.RawResponseLog{
+		Enabled:      configuration.TEILogRawResponse,
+		MaximumBytes: configuration.TEILogRawResponseMaxBytes,
+	})
 	if err != nil {
 		log.Print("retrieval server could not configure embedding dependency")
 		os.Exit(1)

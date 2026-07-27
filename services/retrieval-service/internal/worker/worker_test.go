@@ -87,6 +87,12 @@ func TestRejectionReasonMapsFailureCategoryAndCommonErrors(t *testing.T) {
 	if got := rejectionReason(application.Failure(domain.FailureIndexingTimeout, errors.New("tei timeout"))); got != "indexing_timeout" {
 		t.Fatalf("rejectionReason() = %q, want %q", got, "indexing_timeout")
 	}
+	if got := rejectionReason(application.Failure(domain.FailureManifestIntegrity, errors.New("invalid chunk"))); got != "manifest_integrity" {
+		t.Fatalf("rejectionReason() = %q, want %q", got, "manifest_integrity")
+	}
+	if got := rejectionReason(application.Failure(domain.FailureResourceLimit, errors.New("too large"))); got != "resource_limit_exceeded" {
+		t.Fatalf("rejectionReason() = %q, want %q", got, "resource_limit_exceeded")
+	}
 	if got := rejectionReason(application.ErrConflictingEvent); got != "conflicting_event" {
 		t.Fatalf("rejectionReason() = %q, want %q", got, "conflicting_event")
 	}

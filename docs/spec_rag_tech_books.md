@@ -227,14 +227,29 @@ Ingestion adapter after the PDF workflow is stable.
 The parser preserves document structure where available:
 
 ```text
-book -> chapter -> section -> overlapping token-bounded chunks
+book -> chapter -> section -> chapter-aware page-window chunks
 ```
 
 Each chunk records the book ID, stable chunk ID, chapter/section label, page
 range, order, token bounds, content checksum, extraction version, and chunking
-version. Exact window and overlap defaults are configuration owned by
-Ingestion and captured in the manifest; changing them creates a new version
-rather than silently rewriting indexed evidence.
+version. Exact window and overlap defaults are owned by the versioned
+cross-service profile and captured in the manifest; changing them creates a new
+supported profile rather than silently rewriting indexed evidence.
+
+The default chunking profile is `chapter-page-window-v1`: target two source
+pages, cap a passage at three source pages and 800 embedding-input tokens, and
+use 120-token overlap only inside the same chapter. A chapter or part boundary
+flushes the active passage and drops overlap-only tails so text from a previous
+chapter is never injected into the next chapter. Smaller or larger profiles may
+be tested, but they must be promoted only as a new Catalog/Ingestion/Retrieval
+profile after fixture-based quality comparison.
+
+Incident guardrail: Ingestion must reject non-advancing chunk sequences before
+publishing `BookChunksReadyV1`. A prior failure emitted an overlap-only tail
+with the same `token_end` as the previous chunk; Retrieval then correctly
+failed manifest integrity and never reached stable embedding/index publication.
+Do not remove the processor sequence check, the chunker overlap-only tail
+cleanup, or the manifest/profile compatibility fields as refactoring cleanup.
 
 Malformed, encrypted, unsupported, or resource-exhausting documents produce a
 sanitized failure event after bounded retries. Raw text is never placed in log
@@ -242,6 +257,11 @@ messages, tracing attributes, broker error fields, or DLQ diagnostic headers.
 Preflight rejects work that cannot meet the configured Lambda budget before
 expensive parsing. The portable-worker deployment alternative uses the
 identical application contract and produces the same events.
+EPUB parsing runs through the same `parser_sandbox` boundary as PDF parsing but
+executes a Go child parser. The sandbox address-space limit must remain high
+enough for Go runtime virtual-memory reservations; an `epub_parser_invalid_args`
+detail accompanied by a Go runtime out-of-memory stack is a sandbox budget
+failure, not an argv or malformed-document signal.
 
 ### Retrieval
 
@@ -250,6 +270,16 @@ document embedding from the normalized chunk-vector centroid, and upserts both
 vector levels idempotently. The collection schema records embedding
 provider/model, dimensions, distance metric, chunking version, and index
 version. Incompatible data fails before a partial index is advertised.
+Manifest integrity and index profile checks are part of the embedding boundary:
+they prevent invalid chunk order, duplicate token windows, stale extraction
+versions, and model/dimension drift from reaching Qdrant. These checks are
+required even when Ingestion already validates its own manifest.
+
+Embedding model changes are separate compatibility changes. The current local
+profile uses the pinned private TEI model `BAAI/bge-base-en-v1.5` at 768
+dimensions with cosine distance. A different model, dimension count, pooling
+mode, or distance metric requires a new Retrieval index profile and usually a
+new Qdrant collection or full reindex.
 
 The index application divides a manifest into bounded idempotent batches.
 Reserved concurrency prevents Lambda bursts from overwhelming the embedding

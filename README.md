@@ -11,9 +11,29 @@ grounded answers. Free-tier LLM usage is intentionally bounded, so grounded
 answers can take up to 5 minutes in free environments. It does not perform
 OCR.
 
-Current verification as of July 26, 2026: the Retrieval service package test
-suite passes after the grounded-summary prompt and token-budget update, and
-the touched host-mode shell scripts pass syntax checks.
+Ingestion uses a chapter-aware page-window chunking profile. The default
+passage target is two pages, with a hard maximum of three pages, 120-token
+overlap, and an 800-token embedding input cap. Chapter or part boundaries flush
+the current passage; overlap from a previous chapter is never carried into the
+next chapter. This is a fixed versioned cross-service profile; tuning requires
+introducing and validating a new supported profile so Catalog, Ingestion, and
+Retrieval agree on the same digest and limits.
+
+Retrieval treats vector similarity as a candidate signal, not final relevance,
+when the optional Retrieval LLM provider is configured. Each retrieved passage
+must pass passage-level LLM relevance assessment before it is returned. Passages
+the model identifies as unrelated, including meta responses such as "the user is
+asking..." or "the passage does not contain...", are excluded and Retrieval
+backfills from later candidates until the requested evidence limit is filled or
+the candidate scan budget is exhausted. Book matches are grouping metadata
+derived from accepted passages only; the system does not request whole-book or
+document-level LLM summaries. Grounded answers synthesize from the top accepted
+passage only and render a deterministic book/page citation plus a short
+synopsis.
+
+Current verification as of July 27, 2026: Ingestion, Retrieval, and Answer
+service tests pass for the chapter-aware chunking profile, Retrieval relevance
+filtering, and top-passage grounded answer synthesis.
 
 ## Architecture decision
 
@@ -146,7 +166,7 @@ values. See [OPERATIONS.md](OPERATIONS.md) for rotation and migration guidance.
 | `POST` | `/auth/refresh` | Refresh cookie | Rotates the refresh token and returns a replacement access token. |
 | `GET` | `/auth/me` | Bearer token | Returns the authoritative current principal after validating the live Identity session. |
 | `POST` | `/auth/logout` | Bearer token | Revokes the Identity session and clears the refresh cookie. |
-| `POST` | `/query` | Bearer token | Validates the session, then returns bounded semantic evidence. Optional `mode: "answer"` adds validated grounded answer segments or safely degrades to evidence only; omitted mode defaults to `search`. `/query/` remains compatible. |
+| `POST` | `/query` | Bearer token | Validates the session, then returns bounded semantic evidence. `limit` is the final primary evidence budget after score, visibility, and configured LLM relevance exclusions. Optional `mode: "answer"` adds validated grounded answer segments or safely degrades to evidence only; omitted mode defaults to `search`. `/query/` remains compatible. |
 
 Request JSON is strict. Client-supplied `role` and `user_id` fields are
 rejected; identity comes only from verified token claims.

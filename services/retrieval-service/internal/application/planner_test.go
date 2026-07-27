@@ -131,7 +131,7 @@ func validManifestEvent() ManifestEvent {
 		Manifest: Manifest{SchemaVersion: "v1", BookID: "book-1", SourceSHA256: sum(1), ManifestSHA256: sum(2),
 			ProcessingConfigDigest: processingDigest, PageCount: 2, ChunkCount: 3, GeneratedAt: time.Date(2026, 7, 20, 9, 4, 0, 0, time.UTC),
 			ExtractionVersion: "poppler-layout-v1", NormalizationVersion: "nfc-v1", TokenizerVersion: "cl100k_base-v1",
-			ChunkingVersion: "token-window-v2", StructureVersion: "heading-carry-v1", MaximumTokens: 800, OverlapTokens: 120,
+			ChunkingVersion: "chapter-page-window-v1", StructureVersion: "chapter-boundary-v1", MaximumTokens: 800, OverlapTokens: 120,
 			Shards: []Shard{{Reference: prefix + "shards/000000.pb.zst", SHA256: sum(5), CompressedBytes: 10, UncompressedBytes: 20, ChunkCount: 2, FirstChunkOrder: 0, LastChunkOrder: 1},
 				{Reference: prefix + "shards/000001.pb.zst", SHA256: sum(6), CompressedBytes: 11, UncompressedBytes: 21, ChunkCount: 1, FirstChunkOrder: 2, LastChunkOrder: 2}}}}
 }

@@ -27,7 +27,7 @@ func NewProcessingFactory(tokenizer chunking.Tokenizer, store artifact.Store, po
 		MediaTypePDF:  extractor.ExtractionVersion,
 		MediaTypeEPUB: extractor.EPUBExtractionVersion,
 	} {
-		digests[mediaType] = sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%d", extractionVersion, chunking.NormalizationVersion, chunking.TokenizerVersion, chunking.ChunkingVersion, chunking.StructureVersion, policy.MaximumTokens, policy.OverlapTokens, policy.MaximumChunks, limits.ChunksPerShard, limits.MaximumShardBytes)))
+		digests[mediaType] = sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d", extractionVersion, chunking.NormalizationVersion, chunking.TokenizerVersion, chunking.ChunkingVersion, chunking.StructureVersion, policy.MaximumTokens, policy.OverlapTokens, policy.TargetPages, policy.MaximumPages, policy.MaximumChunks, limits.ChunksPerShard, limits.MaximumShardBytes)))
 	}
 	return &ProcessingFactory{tokenizer: tokenizer, store: store, policy: policy, limits: limits, digests: digests}, nil
 }

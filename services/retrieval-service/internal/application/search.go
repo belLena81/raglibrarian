@@ -9,8 +9,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 )
 
@@ -82,6 +80,11 @@ type SummaryRequest struct {
 	Passage  string
 }
 
+type EvidenceAssessment struct {
+	Relevant bool
+	Summary  string
+}
+
 func NewSearcher(embedder QueryEmbedder, store EvidenceStore, visibility IndexVisibility, minimumVisibleScore float64, summaryCallLimit int) (*Searcher, error) {
 	if embedder == nil || store == nil || visibility == nil || summaryCallLimit < 0 {
 		return nil, errors.New("invalid searcher configuration")
@@ -101,7 +104,7 @@ func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.
 	if !actor.CanSearch() {
 		return SearchResult{}, ErrSearchForbidden
 	}
-	summaryCache := newSearchSummaryCache(s.summaryCallLimit, s.summaryTimeout)
+	assessmentCache := newSearchAssessmentCache(s.summaryCallLimit, s.summaryTimeout)
 	query, err := domain.NewSearchQuery(input)
 	if err != nil {
 		return SearchResult{}, err
@@ -113,19 +116,17 @@ func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.
 	if len(vector) != domain.EmbeddingDimensions {
 		return SearchResult{}, errors.New("invalid embedding dimensions")
 	}
-	results, err := s.searchVisibleEvidence(ctx, query, vector, summaryCache)
+	results, err := s.searchVisibleEvidence(ctx, query, vector, assessmentCache)
 	if err != nil {
 		return SearchResult{}, err
 	}
-	documents, err := s.searchVisibleDocuments(ctx, query, vector, summaryCache)
-	if err != nil {
-		return SearchResult{}, err
-	}
+	documents := documentsFromEvidence(results)
 	return SearchResult{Evidence: results, Documents: documents}, nil
 }
 
-func (s *Searcher) searchVisibleEvidence(ctx context.Context, query domain.SearchQuery, vector []float32, summaryCache *searchSummaryCache) ([]Evidence, error) {
+func (s *Searcher) searchVisibleEvidence(ctx context.Context, query domain.SearchQuery, vector []float32, assessmentCache *searchAssessmentCache) ([]Evidence, error) {
 	results := make([]Evidence, 0, query.Limit())
+	seen := make(map[string]struct{})
 	for offset, pageLimit := 0, searchPageLimit(query.Limit()); len(results) < query.Limit() && offset < maximumSearchCandidates; offset += pageLimit {
 		candidateLimit := searchCandidateLimit(pageLimit, offset)
 		candidates, err := s.store.Search(ctx, query, vector, candidateLimit, offset)
@@ -138,74 +139,31 @@ func (s *Searcher) searchVisibleEvidence(ctx context.Context, query domain.Searc
 		if err != nil {
 			return nil, errors.New("validate index visibility")
 		}
-		results = append(results, visible...)
+		for _, value := range visible {
+			if len(results) >= query.Limit() {
+				break
+			}
+			if value.EvidenceID == "" {
+				continue
+			}
+			if _, found := seen[value.EvidenceID]; found {
+				continue
+			}
+			assessment, ok := s.assessEvidence(ctx, query.Question(), value, assessmentCache)
+			if !ok || !assessment.Relevant {
+				continue
+			}
+			value.Summary = assessment.Summary
+			seen[value.EvidenceID] = struct{}{}
+			results = append(results, value)
+		}
 		if candidateCount < candidateLimit {
 			break
 		}
 	}
 	sortEvidenceByScore(results)
 	results = trimEvidence(results, query.Limit())
-	s.populateEvidenceSummaries(ctx, query.Question(), results, summaryCache)
 	return results, nil
-}
-
-func (s *Searcher) searchVisibleDocuments(ctx context.Context, query domain.SearchQuery, vector []float32, summaryCache *searchSummaryCache) ([]DocumentResult, error) {
-	results := make([]DocumentResult, 0, query.Limit())
-	for offset, pageLimit := 0, searchPageLimit(query.Limit()); len(results) < query.Limit() && offset < maximumSearchCandidates; offset += pageLimit {
-		candidateLimit := searchCandidateLimit(pageLimit, offset)
-		page, err := s.store.SearchDocuments(ctx, query, vector, candidateLimit, offset)
-		if err != nil {
-			return nil, errors.New("search documents")
-		}
-		page.Documents = s.filterVisibleDocuments(page.Documents)
-		visible, err := s.visibility.FilterIndexedDocuments(ctx, page.Documents)
-		if err != nil {
-			return nil, errors.New("validate document visibility")
-		}
-		results = append(results, visible...)
-		if page.Exhausted {
-			break
-		}
-	}
-	sortDocumentsByScore(results)
-	results = trimDocuments(results, query.Limit())
-	s.populateDocumentSummaries(ctx, query.Question(), results, summaryCache)
-	return results, nil
-}
-
-func (s *Searcher) populateEvidenceSummaries(ctx context.Context, question string, results []Evidence, summaryCache *searchSummaryCache) {
-	if len(results) == 0 {
-		return
-	}
-	group, groupContext := errgroup.WithContext(ctx)
-	group.SetLimit(4)
-	for index := range results {
-		index := index
-		group.Go(func() error {
-			results[index].Summary = s.summarizeEvidence(groupContext, question, results[index], summaryCache)
-			return nil
-		})
-	}
-	_ = group.Wait()
-}
-
-func (s *Searcher) populateDocumentSummaries(ctx context.Context, question string, results []DocumentResult, summaryCache *searchSummaryCache) {
-	if len(results) == 0 {
-		return
-	}
-	group, groupContext := errgroup.WithContext(ctx)
-	group.SetLimit(4)
-	for index := range results {
-		index := index
-		group.Go(func() error {
-			for evidenceIndex := range results[index].Evidence {
-				results[index].Evidence[evidenceIndex].Summary = s.summarizeEvidence(groupContext, question, results[index].Evidence[evidenceIndex], summaryCache)
-			}
-			results[index].Summary = s.summarizeDocument(groupContext, question, results[index], summaryCache)
-			return nil
-		})
-	}
-	_ = group.Wait()
 }
 
 func searchPageLimit(limit int) int {
@@ -290,23 +248,11 @@ func sortDocumentsByScore(values []DocumentResult) {
 	})
 }
 
-func (s *Searcher) summarizeEvidence(ctx context.Context, question string, value Evidence, summaryCache *searchSummaryCache) string {
-	return s.summarizeText(ctx, SummaryRequest{Question: question, Passage: value.Passage}, summaryCache)
-}
-
-func (s *Searcher) summarizeDocument(ctx context.Context, question string, value DocumentResult, summaryCache *searchSummaryCache) string {
-	input := normalizeDocumentSummaryInput(value)
-	if input == "" {
-		return ""
+func (s *Searcher) assessEvidence(ctx context.Context, question string, value Evidence, assessmentCache *searchAssessmentCache) (EvidenceAssessment, bool) {
+	if assessmentCache == nil {
+		return localAssessment(value.Passage)
 	}
-	return s.summarizeText(ctx, SummaryRequest{Question: question, Passage: input}, summaryCache)
-}
-
-func (s *Searcher) summarizeText(ctx context.Context, request SummaryRequest, summaryCache *searchSummaryCache) string {
-	if summaryCache == nil {
-		return summarizeText(normalizeSummaryInput(request.Passage))
-	}
-	return summaryCache.summarize(ctx, s.summaryProvider, request)
+	return assessmentCache.assess(ctx, s.summaryProvider, SummaryRequest{Question: question, Passage: value.Passage})
 }
 
 func normalizeSummaryInput(value string) string {
@@ -326,21 +272,6 @@ func normalizeProviderSummary(value string) string {
 	return strings.TrimSpace(strings.Join(strings.Fields(value), " "))
 }
 
-func normalizeDocumentSummaryInput(value DocumentResult) string {
-	parts := make([]string, 0, 2)
-	for _, evidence := range value.Evidence {
-		part := normalizeSummaryInput(evidence.Passage)
-		if part == "" {
-			continue
-		}
-		parts = append(parts, part)
-		if len(parts) >= 2 {
-			break
-		}
-	}
-	return strings.Join(parts, " ")
-}
-
 func summarizeText(value string) string {
 	normalized := strings.Join(strings.Fields(value), " ")
 	if normalized == "" {
@@ -349,26 +280,81 @@ func summarizeText(value string) string {
 	return strings.TrimSpace(normalized)
 }
 
-type searchSummaryCache struct {
+func localAssessment(passage string) (EvidenceAssessment, bool) {
+	summary := summarizeText(normalizeSummaryInput(passage))
+	if summary == "" {
+		return EvidenceAssessment{}, false
+	}
+	return EvidenceAssessment{Relevant: true, Summary: summary}, true
+}
+
+func documentsFromEvidence(values []Evidence) []DocumentResult {
+	documents := make([]DocumentResult, 0, len(values))
+	byDocumentID := make(map[string]int)
+	for _, evidence := range values {
+		documentID := evidence.BookID + ":" + evidence.JobID
+		if documentID == ":" {
+			continue
+		}
+		index, found := byDocumentID[documentID]
+		if !found {
+			document := DocumentResult{
+				DocumentID: documentID,
+				JobID:      evidence.JobID,
+				BookID:     evidence.BookID,
+				Title:      evidence.Title,
+				Author:     evidence.Author,
+				MediaType:  evidence.MediaType,
+				Year:       evidence.Year,
+				Tags:       append([]string{}, evidence.Tags...),
+				ChunkCount: 1,
+				PageStart:  evidence.PageStart,
+				PageEnd:    evidence.PageEnd,
+				Score:      evidence.Score,
+				Evidence:   []Evidence{evidence},
+			}
+			byDocumentID[documentID] = len(documents)
+			documents = append(documents, document)
+			continue
+		}
+		document := &documents[index]
+		document.Evidence = append(document.Evidence, evidence)
+		document.ChunkCount = uint32(len(document.Evidence))
+		if evidence.Score > document.Score {
+			document.Score = evidence.Score
+		}
+		if document.PageStart == 0 || (evidence.PageStart > 0 && evidence.PageStart < document.PageStart) {
+			document.PageStart = evidence.PageStart
+		}
+		if evidence.PageEnd > document.PageEnd {
+			document.PageEnd = evidence.PageEnd
+		}
+	}
+	sortDocumentsByScore(documents)
+	return documents
+}
+
+type searchAssessmentCache struct {
 	mu             sync.Mutex
 	remaining      int
 	summaryTimeout time.Duration
-	entries        map[string]*searchSummaryEntry
+	entries        map[string]*searchAssessmentEntry
 }
 
-type searchSummaryEntry struct {
-	ready   chan struct{}
-	summary string
+type searchAssessmentEntry struct {
+	ready      chan struct{}
+	assessment EvidenceAssessment
+	ok         bool
 }
 
-func newSearchSummaryCache(limit int, summaryTimeout time.Duration) *searchSummaryCache {
-	return &searchSummaryCache{remaining: limit, summaryTimeout: summaryTimeout, entries: make(map[string]*searchSummaryEntry)}
+func newSearchAssessmentCache(limit int, summaryTimeout time.Duration) *searchAssessmentCache {
+	return &searchAssessmentCache{remaining: limit, summaryTimeout: summaryTimeout, entries: make(map[string]*searchAssessmentEntry)}
 }
 
-func (c *searchSummaryCache) summarize(ctx context.Context, provider SummaryProvider, request SummaryRequest) string {
+func (c *searchAssessmentCache) assess(ctx context.Context, provider SummaryProvider, request SummaryRequest) (EvidenceAssessment, bool) {
 	normalizedPassage := normalizeSummaryInput(request.Passage)
 	if normalizedPassage == "" {
-		return ""
+		return EvidenceAssessment{}, false
 	}
 	normalizedQuestion := normalizeSummaryInput(request.Question)
 	if normalizedQuestion == "" {
@@ -381,9 +367,9 @@ func (c *searchSummaryCache) summarize(ctx context.Context, provider SummaryProv
 		ready := entry.ready
 		c.mu.Unlock()
 		<-ready
-		return entry.summary
+		return entry.assessment, entry.ok
 	}
-	entry := &searchSummaryEntry{ready: make(chan struct{})}
+	entry := &searchAssessmentEntry{ready: make(chan struct{})}
 	c.entries[key] = entry
 	useProvider := provider != nil && c.remaining > 0
 	if useProvider {
@@ -391,28 +377,34 @@ func (c *searchSummaryCache) summarize(ctx context.Context, provider SummaryProv
 	}
 	c.mu.Unlock()
 
-	summary := summarizeText(normalizedPassage)
-	if useProvider {
-		summaryContext := ctx
+	assessment, ok := localAssessment(normalizedPassage)
+	if provider != nil && !useProvider {
+		assessment = EvidenceAssessment{}
+		ok = false
+	} else if useProvider {
+		assessment = EvidenceAssessment{}
+		ok = false
+		assessmentContext := ctx
 		cancel := func() {}
 		if c.summaryTimeout > 0 {
-			summaryContext, cancel = context.WithTimeout(ctx, c.summaryTimeout)
+			assessmentContext, cancel = context.WithTimeout(ctx, c.summaryTimeout)
 		}
 		defer cancel()
-		if providerSummary, err := provider.Summarize(summaryContext, SummaryRequest{Question: normalizedQuestion, Passage: normalizedPassage}); err == nil {
-			if sanitized := normalizeProviderSummary(providerSummary); sanitized != "" {
-				summary = sanitized
-			}
+		if providerAssessment, err := provider.Assess(assessmentContext, SummaryRequest{Question: normalizedQuestion, Passage: normalizedPassage}); err == nil {
+			providerAssessment.Summary = normalizeProviderSummary(providerAssessment.Summary)
+			assessment = providerAssessment
+			ok = true
 		}
 	}
 
 	c.mu.Lock()
-	entry.summary = summary
+	entry.assessment = assessment
+	entry.ok = ok
 	close(entry.ready)
 	c.mu.Unlock()
-	return summary
+	return assessment, ok
 }
 
 type SummaryProvider interface {
-	Summarize(context.Context, SummaryRequest) (string, error)
+	Assess(context.Context, SummaryRequest) (EvidenceAssessment, error)
 }

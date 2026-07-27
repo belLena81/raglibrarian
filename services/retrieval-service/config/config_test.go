@@ -69,8 +69,8 @@ func TestLoadAcceptsOptionalSummaryProviderConfiguration(t *testing.T) {
 	if configuration.SummaryLLMRequestsPerMinute != 15 {
 		t.Fatalf("SummaryLLMRequestsPerMinute = %d, want 15", configuration.SummaryLLMRequestsPerMinute)
 	}
-	if configuration.SummaryLLMMaxCalls != 4 {
-		t.Fatalf("SummaryLLMMaxCalls = %d, want 4", configuration.SummaryLLMMaxCalls)
+	if configuration.SummaryLLMMaxCalls != 100 {
+		t.Fatalf("SummaryLLMMaxCalls = %d, want 100", configuration.SummaryLLMMaxCalls)
 	}
 	if configuration.SummaryLLMMaxOutputTokens != 64 {
 		t.Fatalf("SummaryLLMMaxOutputTokens = %d, want 64", configuration.SummaryLLMMaxOutputTokens)
@@ -105,8 +105,8 @@ func TestLoadDefaultsSummaryProviderRateLimit(t *testing.T) {
 	if configuration.SummaryLLMRequestsPerMinute != 15 {
 		t.Fatalf("SummaryLLMRequestsPerMinute = %d, want 15", configuration.SummaryLLMRequestsPerMinute)
 	}
-	if configuration.SummaryLLMMaxCalls != 4 {
-		t.Fatalf("SummaryLLMMaxCalls = %d, want 4", configuration.SummaryLLMMaxCalls)
+	if configuration.SummaryLLMMaxCalls != 100 {
+		t.Fatalf("SummaryLLMMaxCalls = %d, want 100", configuration.SummaryLLMMaxCalls)
 	}
 	if configuration.SearchTimeout != 2*time.Minute {
 		t.Fatalf("SearchTimeout = %s, want 2m", configuration.SearchTimeout)
@@ -146,8 +146,8 @@ func TestLoadDefaultsSearchTimeoutAndMinimumScore(t *testing.T) {
 	if configuration.MinimumSearchScore != 0.6 {
 		t.Fatalf("MinimumSearchScore = %g, want 0.6", configuration.MinimumSearchScore)
 	}
-	if configuration.SummaryLLMMaxCalls != 4 {
-		t.Fatalf("SummaryLLMMaxCalls = %d, want 4", configuration.SummaryLLMMaxCalls)
+	if configuration.SummaryLLMMaxCalls != 100 {
+		t.Fatalf("SummaryLLMMaxCalls = %d, want 100", configuration.SummaryLLMMaxCalls)
 	}
 }
 
@@ -264,6 +264,56 @@ func TestLoadRejectsInvalidThrottleConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadParsesTEIRawResponseDiagnostics(t *testing.T) {
+	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+	t.Setenv("RETRIEVAL_TEI_LOG_RAW_RESPONSE", "true")
+	t.Setenv("RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", "1024")
+
+	configuration, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !configuration.TEILogRawResponse || configuration.TEILogRawResponseMaxBytes != 1024 {
+		t.Fatalf("unexpected TEI diagnostics config: %#v", configuration)
+	}
+}
+
+func TestLoadRejectsInvalidTEIRawResponseDiagnostics(t *testing.T) {
+	tests := []struct {
+		key   string
+		value string
+	}{
+		{key: "RETRIEVAL_TEI_LOG_RAW_RESPONSE", value: "sometimes"},
+		{key: "RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", value: "65537"},
+	}
+	for _, test := range tests {
+		t.Run(test.key, func(t *testing.T) {
+			t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+			t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+			t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+			t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+			t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+			t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+			t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+			t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+			t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+			t.Setenv(test.key, test.value)
+
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load() accepted %s=%s", test.key, test.value)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsInvalidMinimumSearchScore(t *testing.T) {
 	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
 	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
@@ -340,6 +390,38 @@ func TestLoadWorkerDefaultsFreeTierTEIRateLimit(t *testing.T) {
 	}
 	if configuration.TEIRequestsPerSecond != 0 {
 		t.Fatalf("TEIRequestsPerSecond = %d, want 0", configuration.TEIRequestsPerSecond)
+	}
+}
+
+func TestLoadWorkerParsesTEIRawResponseDiagnostics(t *testing.T) {
+	setWorkerEnvironment(t)
+	t.Setenv("RETRIEVAL_TEI_LOG_RAW_RESPONSE", "true")
+	t.Setenv("RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", "1024")
+	configuration, err := LoadWorker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !configuration.TEILogRawResponse || configuration.TEILogRawResponseMaxBytes != 1024 {
+		t.Fatalf("unexpected TEI diagnostics config: %#v", configuration)
+	}
+}
+
+func TestLoadWorkerRejectsInvalidTEIRawResponseDiagnostics(t *testing.T) {
+	tests := []struct {
+		key   string
+		value string
+	}{
+		{key: "RETRIEVAL_TEI_LOG_RAW_RESPONSE", value: "sometimes"},
+		{key: "RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", value: "65537"},
+	}
+	for _, test := range tests {
+		t.Run(test.key, func(t *testing.T) {
+			setWorkerEnvironment(t)
+			t.Setenv(test.key, test.value)
+			if _, err := LoadWorker(); err == nil {
+				t.Fatalf("LoadWorker() accepted %s=%s", test.key, test.value)
+			}
+		})
 	}
 }
 

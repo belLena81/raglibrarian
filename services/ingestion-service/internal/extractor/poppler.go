@@ -5,6 +5,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -65,6 +67,24 @@ type commandError struct {
 func (e *commandError) Error() string { return "extractor command failed" }
 func (e *commandError) Unwrap() error { return e.cause }
 
+type consumerError struct{ cause error }
+
+func (e *consumerError) Error() string { return "page consumer failed" }
+func (e *consumerError) Unwrap() error { return e.cause }
+
+func IsConsumerError(err error) bool {
+	var target *consumerError
+	return errors.As(err, &target)
+}
+
+func ConsumerCause(err error) (error, bool) {
+	var target *consumerError
+	if errors.As(err, &target) {
+		return target.cause, true
+	}
+	return nil, false
+}
+
 func FailureCategory(err error) (domain.FailureCategory, bool) {
 	var target *categorizedError
 	if errors.As(err, &target) {
@@ -93,6 +113,17 @@ func FailureDetail(err error) (string, bool) {
 			case "parser_command_failed":
 				return specificCommandFailureDetail(detailed.detail), true
 			}
+			if detailed.detail != "epub_parser_failed" && strings.HasPrefix(detail, "parser_command_exit_") {
+				if diagnostic, ok := commandDiagnosticDetail(detailed.cause); ok {
+					return detailed.detail + "_" + diagnostic, true
+				}
+				return detailed.detail + "_" + detail, true
+			}
+		}
+		if detailed.detail != "epub_parser_failed" {
+			if detail, ok := commandDiagnosticDetail(detailed.cause); ok {
+				return detailed.detail + "_" + detail, true
+			}
 		}
 		if detailed.detail == "epub_parser_failed" {
 			if detail, ok := epubFailureDetail(detailed.cause); ok {
@@ -109,17 +140,22 @@ func FailureDetail(err error) (string, bool) {
 }
 
 type Poppler struct {
-	pdfInfoPath string
-	pdfTextPath string
-	limits      Limits
-	runner      Runner
+	pdfInfoPath    string
+	pdfTextPath    string
+	limits         Limits
+	runner         Runner
+	rawTextDumpDir string
 }
 
 func NewPoppler(pdfInfoPath, pdfTextPath string, limits Limits, runner Runner) *Poppler {
+	return NewPopplerWithOptions(pdfInfoPath, pdfTextPath, limits, runner, "")
+}
+
+func NewPopplerWithOptions(pdfInfoPath, pdfTextPath string, limits Limits, runner Runner, rawTextDumpDir string) *Poppler {
 	if runner == nil {
 		runner = SandboxedExecRunner{delegate: ExecRunner{}}
 	}
-	return &Poppler{pdfInfoPath: pdfInfoPath, pdfTextPath: pdfTextPath, limits: limits, runner: runner}
+	return &Poppler{pdfInfoPath: pdfInfoPath, pdfTextPath: pdfTextPath, limits: limits, runner: runner, rawTextDumpDir: strings.TrimSpace(rawTextDumpDir)}
 }
 
 func (p *Poppler) Extract(ctx context.Context, sourcePath string, consume func(Page) error) (DocumentInfo, error) {
@@ -135,8 +171,24 @@ func (p *Poppler) Extract(ctx context.Context, sourcePath string, consume func(P
 		return DocumentInfo{}, err
 	}
 	args := []string{"-layout", "-enc", "UTF-8", sourcePath, "-"}
+	if p.rawTextDumpDir != "" {
+		output, runErr := p.runner.Run(ctx, p.pdfTextPath, args, p.limits.MaximumExtractedBytes+int64(info.PageCount))
+		if runErr != nil {
+			return DocumentInfo{}, detailedFailure("pdftotext_failed", classifyCommandError(ctx, runErr))
+		}
+		if dumpErr := p.dumpRawText(output); dumpErr != nil {
+			return DocumentInfo{}, detailedFailure("pdftotext_dump_failed", &categorizedError{category: domain.FailureInternalProcessing, cause: dumpErr})
+		}
+		if err = p.consumeTextOutput(output, info.PageCount, consume); err != nil {
+			return DocumentInfo{}, err
+		}
+		return info, nil
+	}
 	if streamer, ok := p.runner.(pageStreamer); ok {
 		if err = streamer.StreamPages(ctx, p.pdfTextPath, args, p.limits, info.PageCount, consume); err != nil {
+			if IsConsumerError(err) {
+				return DocumentInfo{}, err
+			}
 			return DocumentInfo{}, detailedFailure("pdftotext_failed", classifyStreamError(ctx, err))
 		}
 		return info, nil
@@ -145,31 +197,93 @@ func (p *Poppler) Extract(ctx context.Context, sourcePath string, consume func(P
 	if err != nil {
 		return DocumentInfo{}, detailedFailure("pdftotext_failed", classifyCommandError(ctx, err))
 	}
-	if int64(len(output)) > p.limits.MaximumExtractedBytes+int64(info.PageCount) {
-		return DocumentInfo{}, &categorizedError{category: domain.FailureResourceLimitExceeded}
+	if err = p.consumeTextOutput(output, info.PageCount, consume); err != nil {
+		return DocumentInfo{}, err
+	}
+	return info, nil
+}
+
+func (p *Poppler) dumpRawText(output []byte) error {
+	if p.rawTextDumpDir == "" {
+		return nil
+	}
+	if err := ensureRawTextDumpDirectory(p.rawTextDumpDir); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(p.rawTextDumpDir, "pdftotext-*.txt")
+	if err != nil {
+		return err
+	}
+	path := file.Name()
+	if chmodErr := file.Chmod(0o600); chmodErr != nil {
+		_ = file.Close()
+		return chmodErr
+	}
+	if _, err = file.Write(output); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err = file.Close(); err != nil {
+		return err
+	}
+	sum := sha256.Sum256(output)
+	_, _ = fmt.Fprintf(os.Stderr, "ingestion raw pdftotext dump path=%s bytes=%d sha256=%s\n", path, len(output), hex.EncodeToString(sum[:]))
+	return nil
+}
+
+func ensureRawTextDumpDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if mkdirErr := os.MkdirAll(path, 0o700); mkdirErr != nil {
+			return mkdirErr
+		}
+		info, err = os.Lstat(path)
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("raw text dump directory is a symlink")
+	}
+	if !info.IsDir() {
+		return errors.New("raw text dump path is not a directory")
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return errors.New("raw text dump directory is not private")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != uint32(os.Geteuid()) {
+		return errors.New("raw text dump directory owner mismatch")
+	}
+	return nil
+}
+
+func (p *Poppler) consumeTextOutput(output []byte, expectedPages uint32, consume func(Page) error) error {
+	if int64(len(output)) > p.limits.MaximumExtractedBytes+int64(expectedPages) {
+		return &categorizedError{category: domain.FailureResourceLimitExceeded}
 	}
 	parts := bytes.Split(output, []byte{'\f'})
 	if len(parts) > 0 && len(parts[len(parts)-1]) == 0 {
 		parts = parts[:len(parts)-1]
 	}
 	extractedPages := uint32(len(parts)) // #nosec G115 -- bounded by configured page count and output size.
-	if extractedPages != info.PageCount {
-		return DocumentInfo{}, &categorizedError{category: domain.FailureMalformedDocument}
+	if extractedPages != expectedPages {
+		return &categorizedError{category: domain.FailureMalformedDocument}
 	}
 	var extracted int64
 	for index, content := range parts {
 		if int64(len(content)) > p.limits.MaximumPageBytes {
-			return DocumentInfo{}, &categorizedError{category: domain.FailureResourceLimitExceeded}
+			return &categorizedError{category: domain.FailureResourceLimitExceeded}
 		}
 		extracted += int64(len(content))
 		if extracted > p.limits.MaximumExtractedBytes {
-			return DocumentInfo{}, &categorizedError{category: domain.FailureResourceLimitExceeded}
+			return &categorizedError{category: domain.FailureResourceLimitExceeded}
 		}
-		if err = consume(Page{Number: uint32(index + 1), Text: string(content)}); err != nil {
-			return DocumentInfo{}, err
+		if consumeErr := consume(Page{Number: uint32(index + 1), Text: string(content)}); consumeErr != nil {
+			return consumeErr
 		}
 	}
-	return info, nil
+	return nil
 }
 
 func classifyStreamError(ctx context.Context, err error) error {
@@ -288,6 +402,9 @@ func commandFailureDetail(err error) (string, bool) {
 		case 125, 126, 127:
 			return commandExitDetail(exitErr.ExitCode()), true
 		}
+		if exitErr.ExitCode() > 0 {
+			return fmt.Sprintf("parser_command_exit_%d", exitErr.ExitCode()), true
+		}
 	}
 	return "", false
 }
@@ -323,6 +440,34 @@ func commandStderrFailureDetail(stderr []byte) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func commandDiagnosticDetail(err error) (string, bool) {
+	var commandErr *commandError
+	if !errors.As(err, &commandErr) {
+		return "", false
+	}
+	parts := []string{"parser_command_failed"}
+	var exitErr *exec.ExitError
+	switch {
+	case errors.As(commandErr.cause, &exitErr):
+		if exitErr.ExitCode() > 0 {
+			parts = append(parts, fmt.Sprintf("exit_%d", exitErr.ExitCode()))
+		}
+		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			parts = append(parts, fmt.Sprintf("signal_%d", status.Signal()))
+		}
+	case errors.Is(commandErr.cause, exec.ErrNotFound):
+		parts = append(parts, "exec_not_found")
+	default:
+		parts = append(parts, "unknown")
+	}
+	if len(commandErr.stderr) > 0 {
+		sum := sha256.Sum256(commandErr.stderr)
+		parts = append(parts, fmt.Sprintf("stderr_bytes_%d", len(commandErr.stderr)))
+		parts = append(parts, "stderr_sha256_"+hex.EncodeToString(sum[:])[:16])
+	}
+	return strings.Join(parts, "_"), true
 }
 
 func commandExitDetail(code int) string {
@@ -437,6 +582,7 @@ func (ExecRunner) StreamPages(ctx context.Context, path string, args []string, l
 		if errors.Is(streamErr, errIncompletePageStream) {
 			waitErr := command.Wait()
 			if waitErr != nil {
+				traceCommandFailure(path, args, stderr.Bytes(), waitErr)
 				return newCommandError(waitErr, stderr.Bytes())
 			}
 			return streamErr
@@ -446,6 +592,7 @@ func (ExecRunner) StreamPages(ctx context.Context, path string, args []string, l
 		return streamErr
 	}
 	if err = command.Wait(); err != nil {
+		traceCommandFailure(path, args, stderr.Bytes(), err)
 		return newCommandError(err, stderr.Bytes())
 	}
 	return nil
@@ -473,7 +620,7 @@ func consumePageStream(input io.Reader, limits Limits, expectedPages uint32, con
 				return &categorizedError{category: domain.FailureMalformedDocument}
 			}
 			if consumeErr := consume(Page{Number: pageNumber, Text: string(page)}); consumeErr != nil {
-				return consumeErr
+				return &consumerError{cause: consumeErr}
 			}
 			page = page[:0]
 		}
@@ -549,7 +696,7 @@ func traceableCommandFailure(path string, stderr []byte, err error) bool {
 		return true
 	}
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
+	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
 		return true
 	}
 	return false

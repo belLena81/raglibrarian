@@ -68,12 +68,28 @@ func FailureDetail(err error) string {
 	}
 	var staged stagedError
 	if errors.As(err, &staged) {
-		return staged.detail
+		return stagedFailureDetail(staged)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "processing_timeout"
 	}
 	return ""
+}
+
+func stagedFailureDetail(err stagedError) string {
+	if err.detail != "chunk_sequence_invalid" || err.cause == nil {
+		return err.detail
+	}
+	cause := strings.TrimSpace(err.cause.Error())
+	if cause == "" {
+		return err.detail
+	}
+	cause = strings.Join(strings.Fields(cause), "_")
+	const maximumDetailLength = 512
+	if len(cause) > maximumDetailLength {
+		cause = cause[:maximumDetailLength]
+	}
+	return err.detail + "_" + cause
 }
 
 type DeferredError struct {
@@ -405,6 +421,30 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, ada
 		}
 	}()
 	var chunkCount uint32
+	var previousChunk domain.Chunk
+	var havePreviousChunk bool
+	validateAndAddChunk := func(value domain.Chunk) error {
+		if havePreviousChunk {
+			overlapTooLarge := false
+			if value.TokenStart() < previousChunk.TokenEnd() {
+				overlapTooLarge = previousChunk.TokenEnd()-value.TokenStart() > uint64(chunking.DefaultOverlapTokens)
+			}
+			if value.Order() != previousChunk.Order()+1 ||
+				value.TokenStart() < previousChunk.TokenStart() ||
+				value.TokenEnd() <= previousChunk.TokenEnd() ||
+				overlapTooLarge {
+				return stage("chunk_sequence_invalid", fmt.Errorf("invalid chunk sequence previous_order=%d order=%d previous_token_start=%d previous_token_end=%d token_start=%d token_end=%d overlap_tokens=%d",
+					previousChunk.Order(), value.Order(), previousChunk.TokenStart(), previousChunk.TokenEnd(), value.TokenStart(), value.TokenEnd(), chunking.DefaultOverlapTokens))
+			}
+		}
+		if err = writer.Add(ctx, value); err != nil {
+			return stage("artifact_add_failed", err)
+		}
+		chunkCount++
+		previousChunk = value
+		havePreviousChunk = true
+		return nil
+	}
 	extractStarted := p.now()
 	info, err := adapter.Extractor.Extract(ctx, sourcePath, func(page extractor.Page) error {
 		chunks, chunkErr := chunker.AddPage(event.BookID, chunking.Page{Number: page.Number, Text: page.Text})
@@ -412,10 +452,9 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, ada
 			return stage("chunk_page_failed", chunkErr)
 		}
 		for _, value := range chunks {
-			if chunkErr = writer.Add(ctx, value); chunkErr != nil {
-				return stage("artifact_add_failed", chunkErr)
+			if chunkErr = validateAndAddChunk(value); chunkErr != nil {
+				return chunkErr
 			}
-			chunkCount++
 		}
 		return nil
 	})
@@ -428,10 +467,9 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, ada
 		return artifact.Result{}, stage("chunk_finalize_failed", err)
 	}
 	for _, value := range remaining {
-		if err = writer.Add(ctx, value); err != nil {
-			return artifact.Result{}, stage("artifact_add_failed", err)
+		if err = validateAndAddChunk(value); err != nil {
+			return artifact.Result{}, err
 		}
-		chunkCount++
 	}
 	p.observer.ObservePhase(PhaseExtractChunk, p.now().Sub(extractStarted))
 	if chunkCount == 0 {
@@ -522,6 +560,9 @@ func classify(err error, ctx context.Context) (domain.FailureCategory, bool) {
 }
 
 func extractorFailureDetail(err error) string {
+	if cause, ok := extractor.ConsumerCause(err); ok {
+		return FailureDetail(cause)
+	}
 	if detail, ok := extractor.FailureDetail(err); ok {
 		return detail
 	}

@@ -208,8 +208,8 @@ func validManifestPayloads(t *testing.T) ([]byte, []byte) {
 	generated := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
 	directory := "books/book-1/" + hex.EncodeToString(source[:]) + "/" + hex.EncodeToString(processing[:]) + "/"
 	manifest := &ingestionv1.ChunkManifestV1{SchemaVersion: "v1", BookId: "book-1", SourceSha256: source[:], ProcessingConfigDigest: processing[:],
-		ExtractionVersion: "poppler-layout-v1", NormalizationVersion: "nfc-v1", TokenizerVersion: "cl100k_base-v1", ChunkingVersion: "token-window-v2",
-		StructureVersion: "heading-carry-v1", MaximumTokens: 800, OverlapTokens: 120, PageCount: 1, ChunkCount: 1, GeneratedAt: timestamppb.New(generated),
+		ExtractionVersion: "poppler-layout-v1", NormalizationVersion: "nfc-v1", TokenizerVersion: "cl100k_base-v1", ChunkingVersion: "chapter-page-window-v1",
+		StructureVersion: "chapter-boundary-v1", MaximumTokens: 800, OverlapTokens: 120, PageCount: 1, ChunkCount: 1, GeneratedAt: timestamppb.New(generated),
 		Shards: []*ingestionv1.ChunkShardDescriptorV1{{Reference: directory + "shards/000000.pb.zst", Sha256: source[:], CompressedByteSize: 10, UncompressedByteSize: 20, ChunkCount: 1, FirstChunkOrder: 0, LastChunkOrder: 0}}}
 	manifestPayload, err := proto.MarshalOptions{Deterministic: true}.Marshal(manifest)
 	if err != nil {

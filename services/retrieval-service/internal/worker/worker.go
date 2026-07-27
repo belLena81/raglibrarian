@@ -129,7 +129,10 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 		pool.Close()
 		return nil, err
 	}
-	embedder, err := embedding.NewTEI(configuration.TEIURL, httpClient, log, teiLimiter)
+	embedder, err := embedding.NewTEIWithOptions(configuration.TEIURL, httpClient, log, teiLimiter, embedding.RawResponseLog{
+		Enabled:      configuration.TEILogRawResponse,
+		MaximumBytes: configuration.TEILogRawResponseMaxBytes,
+	})
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -836,16 +839,14 @@ func (r *Runtime) dispatchOutbox(ctx context.Context, publisher *rabbitmq.Publis
 }
 
 func rejectionReason(err error) string {
-	if application.FailureCategory(err) == domain.FailureEmbeddingUnavailable {
-		return "embedding_unavailable"
-	}
+	category := application.FailureCategory(err)
 	switch {
-	case application.FailureCategory(err) == domain.FailureIndexingTimeout:
-		return "indexing_timeout"
 	case errors.Is(err, application.ErrConflictingEvent):
 		return "conflicting_event"
 	case errors.Is(err, application.ErrInvalidEvent):
 		return "invalid_event"
+	case category != domain.FailureInternalIndexing:
+		return reasonFromCategory(category)
 	default:
 		return "unknown_failure"
 	}

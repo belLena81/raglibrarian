@@ -124,6 +124,12 @@ type SearchResult struct {
 type ContextEvidence struct {
 	EvidenceID string `json:"evidence_id"`
 	Passage    string `json:"passage"`
+	Title      string `json:"title"`
+	Author     string `json:"author"`
+	Chapter    string `json:"chapter,omitempty"`
+	Section    string `json:"section,omitempty"`
+	PageStart  uint32 `json:"page_start,omitempty"`
+	PageEnd    uint32 `json:"page_end,omitempty"`
 }
 
 type AnswerSegment struct {

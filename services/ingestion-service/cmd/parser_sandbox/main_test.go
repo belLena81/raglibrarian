@@ -57,6 +57,24 @@ func TestParserSandboxLimitsDoNotRestrictProcessCount(t *testing.T) {
 	}
 }
 
+func TestParserSandboxMemoryLimitUsesEPUBSafeDefault(t *testing.T) {
+	t.Setenv("INGESTION_PARSER_SANDBOX_MEMORY_BYTES", "")
+	for _, limit := range parserSandboxLimits() {
+		if limit.resource == unix.RLIMIT_AS && limit.value != uint64(defaultParserSandboxMemoryBytes) {
+			t.Fatalf("RLIMIT_AS = %d, want %d", limit.value, defaultParserSandboxMemoryBytes)
+		}
+	}
+}
+
+func TestParserSandboxMemoryLimitAcceptsBoundedOverride(t *testing.T) {
+	t.Setenv("INGESTION_PARSER_SANDBOX_MEMORY_BYTES", "2147483648")
+	for _, limit := range parserSandboxLimits() {
+		if limit.resource == unix.RLIMIT_AS && limit.value != 2147483648 {
+			t.Fatalf("RLIMIT_AS = %d, want 2147483648", limit.value)
+		}
+	}
+}
+
 func TestNegotiatedLandlockAccessPropagatesABIQueryFailure(t *testing.T) {
 	want := errors.New("Landlock ABI query failed")
 	_, err := negotiatedLandlockAccess(func() (uintptr, error) {

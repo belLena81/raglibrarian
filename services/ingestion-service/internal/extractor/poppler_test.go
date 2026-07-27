@@ -3,6 +3,7 @@ package extractor
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -23,6 +24,19 @@ type failingRunner struct{ err error }
 
 func (r failingRunner) Run(context.Context, string, []string, int64) ([]byte, error) {
 	return nil, r.err
+}
+
+type streamingRunner struct {
+	info   []byte
+	stream string
+}
+
+func (r streamingRunner) Run(context.Context, string, []string, int64) ([]byte, error) {
+	return r.info, nil
+}
+
+func (r streamingRunner) StreamPages(_ context.Context, _ string, _ []string, limits Limits, expectedPages uint32, consume func(Page) error) error {
+	return consumePageStream(strings.NewReader(r.stream), limits, expectedPages, consume)
 }
 
 func TestVerifySandboxReportsUnavailable(t *testing.T) {
@@ -200,6 +214,145 @@ func TestStreamPagesDistinguishesMalformedOutputFromUnexpectedParserExit(t *test
 				t.Fatalf("expected %q, got %q", test.expected, category)
 			}
 		})
+	}
+}
+
+func TestStreamPagesPreservesPopplerExitDetail(t *testing.T) {
+	err := (ExecRunner{}).StreamPages(
+		context.Background(),
+		"sh",
+		[]string{"-c", "printf 'first'; exit 42"},
+		Limits{MaximumPageBytes: 32, MaximumExtractedBytes: 64},
+		1,
+		func(Page) error { return nil },
+	)
+	if err == nil {
+		t.Fatal("expected command failure")
+	}
+	detail, ok := FailureDetail(detailedFailure("pdftotext_failed", classifyStreamError(context.Background(), err)))
+	if !ok || detail != "pdftotext_failed_parser_command_failed_exit_42" {
+		t.Fatalf("FailureDetail(pdftotext stream exit) = %q, %t", detail, ok)
+	}
+}
+
+func TestPopplerDoesNotRelabelPageConsumerFailureAsPDFToTextFailure(t *testing.T) {
+	consumerFailure := errors.New("chunk sequence failed")
+	extractor := NewPoppler("pdfinfo", "pdftotext", Limits{MaximumPages: 10, MaximumPageBytes: 1024, MaximumExtractedBytes: 2048}, streamingRunner{
+		info:   []byte("Pages: 1\nEncrypted: no\n"),
+		stream: "first page\f",
+	})
+	_, err := extractor.Extract(context.Background(), "source.pdf", func(Page) error {
+		return consumerFailure
+	})
+	if !errors.Is(err, consumerFailure) {
+		t.Fatalf("Extract() error = %v, want consumer failure", err)
+	}
+	if detail, ok := FailureDetail(err); ok && strings.Contains(detail, "pdftotext") {
+		t.Fatalf("consumer failure was relabeled as parser failure: %q", detail)
+	}
+}
+
+func TestPopplerDebugDumpWritesRawPDFTextOutputPrivately(t *testing.T) {
+	dumpDir := t.TempDir()
+	if err := os.Chmod(dumpDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{outputs: [][]byte{
+		[]byte("Pages: 1\nEncrypted: no\n"),
+		[]byte("first page\f"),
+	}}
+	extractor := NewPopplerWithOptions("pdfinfo", "pdftotext", Limits{MaximumPages: 10, MaximumPageBytes: 1024, MaximumExtractedBytes: 2048}, runner, dumpDir)
+	_, err := extractor.Extract(context.Background(), "source.pdf", func(Page) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dumpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("dump entries = %d, want 1", len(entries))
+	}
+	path := dumpDir + "/" + entries[0].Name()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "first page\f" {
+		t.Fatalf("dump contents = %q", string(contents))
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("dump mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestPopplerDebugDumpRejectsSymlinkDirectory(t *testing.T) {
+	target := t.TempDir()
+	if err := os.Chmod(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := t.TempDir() + "/dump-link"
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	runner := &fakeRunner{outputs: [][]byte{
+		[]byte("Pages: 1\nEncrypted: no\n"),
+		[]byte("first page\f"),
+	}}
+	extractor := NewPopplerWithOptions("pdfinfo", "pdftotext", Limits{MaximumPages: 10, MaximumPageBytes: 1024, MaximumExtractedBytes: 2048}, runner, link)
+	_, err := extractor.Extract(context.Background(), "source.pdf", func(Page) error {
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "pdftotext_dump_failed") {
+		t.Fatalf("Extract() error = %v, want dump failure", err)
+	}
+}
+
+func TestPopplerDebugDumpRejectsSharedDirectory(t *testing.T) {
+	dumpDir := t.TempDir()
+	if err := os.Chmod(dumpDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(dumpDir, 0o700)
+	})
+	runner := &fakeRunner{outputs: [][]byte{
+		[]byte("Pages: 1\nEncrypted: no\n"),
+		[]byte("first page\f"),
+	}}
+	extractor := NewPopplerWithOptions("pdfinfo", "pdftotext", Limits{MaximumPages: 10, MaximumPageBytes: 1024, MaximumExtractedBytes: 2048}, runner, dumpDir)
+	_, err := extractor.Extract(context.Background(), "source.pdf", func(Page) error {
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "pdftotext_dump_failed") {
+		t.Fatalf("Extract() error = %v, want dump failure", err)
+	}
+}
+
+func TestFailureDetailIncludesSanitizedCommandDiagnostics(t *testing.T) {
+	exitErr := exec.Command("sh", "-c", "printf 'runtime loader failure' >&2; exit 9").Run() // #nosec G204 -- fixed synthetic test input.
+	err := detailedFailure("pdftotext_failed", classifyStreamError(context.Background(), &commandError{
+		cause:  exitErr,
+		stderr: []byte("runtime loader failure"),
+	}))
+	detail, ok := FailureDetail(err)
+	if !ok {
+		t.Fatal("FailureDetail() ok = false")
+	}
+	if !strings.HasPrefix(detail, "pdftotext_failed_parser_command_failed_exit_9") {
+		t.Fatalf("FailureDetail() = %q", detail)
+	}
+	if !strings.Contains(detail, "stderr_bytes_22") || !strings.Contains(detail, "stderr_sha256_") {
+		t.Fatalf("FailureDetail() missing stderr digest metadata: %q", detail)
+	}
+	if strings.Contains(detail, "loader") || strings.Contains(detail, "runtime") {
+		t.Fatalf("FailureDetail() exposed stderr text: %q", detail)
 	}
 }
 

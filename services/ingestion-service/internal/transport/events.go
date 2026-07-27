@@ -73,13 +73,29 @@ func DecodeDeletion(payload []byte) (application.DeletionEvent, error) {
 
 const sha256Size = 32
 
-type ProtoEventFactory struct{ newID application.IDGenerator }
+type ProtoEventFactory struct {
+	newID   application.IDGenerator
+	profile chunking.Policy
+}
 
 func NewProtoEventFactory(newID application.IDGenerator) (*ProtoEventFactory, error) {
+	return NewProtoEventFactoryWithProfile(newID, chunking.Policy{
+		MaximumTokens: chunking.DefaultMaximumTokens,
+		OverlapTokens: chunking.DefaultOverlapTokens,
+		TargetPages:   chunking.DefaultTargetPages,
+		MaximumPages:  chunking.DefaultMaximumPages,
+		MaximumChunks: 1,
+	})
+}
+
+func NewProtoEventFactoryWithProfile(newID application.IDGenerator, profile chunking.Policy) (*ProtoEventFactory, error) {
 	if newID == nil {
 		return nil, errors.New("event ID generator is required")
 	}
-	return &ProtoEventFactory{newID: newID}, nil
+	if profile.MaximumTokens < 1 || profile.OverlapTokens < 0 || profile.OverlapTokens >= profile.MaximumTokens {
+		return nil, errors.New("invalid chunking profile")
+	}
+	return &ProtoEventFactory{newID: newID, profile: profile}, nil
 }
 
 func (f *ProtoEventFactory) Started(source application.UploadedEvent, job domain.ProcessingJob, now time.Time) (application.OutboxEvent, error) {
@@ -96,7 +112,7 @@ func (f *ProtoEventFactory) Ready(source application.UploadedEvent, job domain.P
 	if err != nil {
 		return application.OutboxEvent{}, errors.New("generate event ID")
 	}
-	message := &ingestionv1.BookChunksReadyV1{EventId: id, BookId: source.BookID, SourceSha256: source.SourceSHA256[:], ManifestReference: result.ManifestReference, ManifestSha256: result.ManifestSHA256[:], ManifestByteSize: result.ManifestByteSize, PageCount: result.PageCount, ChunkCount: result.ChunkCount, ExtractionVersion: source.ExtractionVersion, NormalizationVersion: chunking.NormalizationVersion, TokenizerVersion: chunking.TokenizerVersion, ChunkingVersion: chunking.ChunkingVersion, StructureVersion: chunking.StructureVersion, MaximumTokens: chunking.DefaultMaximumTokens, OverlapTokens: chunking.DefaultOverlapTokens, CorrelationId: source.CorrelationID, OccurredAt: timestamppb.New(now), CausationId: source.EventID, Producer: "ingestion-service", SchemaVersion: "v1", IdempotencyKey: fmt.Sprintf("%s:%s:ready", source.BookID, job.ConfigDigest()), LifecycleVersion: source.LifecycleVersion}
+	message := &ingestionv1.BookChunksReadyV1{EventId: id, BookId: source.BookID, SourceSha256: source.SourceSHA256[:], ManifestReference: result.ManifestReference, ManifestSha256: result.ManifestSHA256[:], ManifestByteSize: result.ManifestByteSize, PageCount: result.PageCount, ChunkCount: result.ChunkCount, ExtractionVersion: source.ExtractionVersion, NormalizationVersion: chunking.NormalizationVersion, TokenizerVersion: chunking.TokenizerVersion, ChunkingVersion: chunking.ChunkingVersion, StructureVersion: chunking.StructureVersion, MaximumTokens: uint32(f.profile.MaximumTokens), OverlapTokens: uint32(f.profile.OverlapTokens), CorrelationId: source.CorrelationID, OccurredAt: timestamppb.New(now), CausationId: source.EventID, Producer: "ingestion-service", SchemaVersion: "v1", IdempotencyKey: fmt.Sprintf("%s:%s:ready", source.BookID, job.ConfigDigest()), LifecycleVersion: source.LifecycleVersion}
 	return marshalOutbox(id, ReadyRoute, now, message)
 }
 

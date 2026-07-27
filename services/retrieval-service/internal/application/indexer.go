@@ -136,37 +136,30 @@ func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
 		return Failure(domain.FailureManifestIntegrity, errors.Join(errors.New("read shard"), err))
 	}
 	if len(chunks) != int(work.ChunkCount) {
-		return Failure(domain.FailureManifestIntegrity, errors.New("invalid shard chunk count"))
+		return Failure(domain.FailureManifestIntegrity, fmt.Errorf("invalid shard chunk count: expected=%d actual=%d first_order=%d last_order=%d", work.ChunkCount, len(chunks), work.FirstChunkOrder, work.LastChunkOrder))
 	}
 	texts := make([]string, len(chunks))
 	nextOrder := work.FirstChunkOrder
 	var previous Chunk
 	for index, chunk := range chunks {
-		if chunk.BookID != work.BookID || !safeID(chunk.ChunkID) || chunk.Text == "" || !utf8.ValidString(chunk.Text) ||
-			!utf8.ValidString(chunk.Chapter) || !utf8.ValidString(chunk.Section) || chunk.ContentSHA256 != sha256.Sum256([]byte(chunk.Text)) ||
-			chunk.PageStart < 1 || chunk.PageEnd < chunk.PageStart || chunk.PageEnd > work.ManifestPageCount ||
-			chunk.Order != nextOrder || chunk.TokenEnd <= chunk.TokenStart ||
-			chunk.TokenEnd-chunk.TokenStart > uint64(work.MaximumTokens) ||
-			chunk.ExtractionVersion != work.ExtractionVersion || chunk.NormalizationVersion != work.NormalizationVersion ||
-			chunk.TokenizerVersion != work.TokenizerVersion || chunk.ChunkingVersion != work.ChunkingVersion ||
-			chunk.StructureVersion != work.StructureVersion {
-			return Failure(domain.FailureManifestIntegrity, errors.New("invalid chunk"))
+		if reason := validateChunk(work, chunk, nextOrder); reason != "" {
+			return Failure(domain.FailureManifestIntegrity, fmt.Errorf("invalid chunk: %s order=%d page_start=%d page_end=%d token_start=%d token_end=%d", reason, chunk.Order, chunk.PageStart, chunk.PageEnd, chunk.TokenStart, chunk.TokenEnd))
 		}
 		if index > 0 {
 			if chunk.TokenStart < previous.TokenStart || chunk.TokenEnd <= previous.TokenEnd || chunk.TokenStart > previous.TokenEnd ||
 				previous.TokenEnd-chunk.TokenStart > uint64(work.OverlapTokens) {
-				return Failure(domain.FailureManifestIntegrity, errors.New("invalid chunk"))
+				return Failure(domain.FailureManifestIntegrity, fmt.Errorf("invalid chunk: adjacent_bounds previous_order=%d order=%d previous_token_start=%d previous_token_end=%d token_start=%d token_end=%d overlap_tokens=%d", previous.Order, chunk.Order, previous.TokenStart, previous.TokenEnd, chunk.TokenStart, chunk.TokenEnd, work.OverlapTokens))
 			}
 		}
 		if len(chunk.Text) > 32<<10 || len(chunk.Chapter) > 1024 || len(chunk.Section) > 1024 {
-			return Failure(domain.FailureResourceLimit, errors.New("invalid chunk"))
+			return Failure(domain.FailureResourceLimit, fmt.Errorf("invalid chunk: resource_limit order=%d text_bytes=%d chapter_bytes=%d section_bytes=%d", chunk.Order, len(chunk.Text), len(chunk.Chapter), len(chunk.Section)))
 		}
 		texts[index] = chunk.Text
 		previous = chunk
 		nextOrder++
 	}
 	if nextOrder != work.LastChunkOrder+1 {
-		return Failure(domain.FailureManifestIntegrity, errors.New("invalid chunk"))
+		return Failure(domain.FailureManifestIntegrity, fmt.Errorf("invalid chunk: final_order_mismatch next_order=%d expected_next_order=%d first_order=%d chunk_count=%d", nextOrder, work.LastChunkOrder+1, work.FirstChunkOrder, work.ChunkCount))
 	}
 	vectors, err := i.embedder.EmbedDocuments(ctx, texts)
 	if err != nil || len(vectors) != len(chunks) {
@@ -204,6 +197,49 @@ func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
 		return i.finalizeDocument(ctx, work)
 	}
 	return nil
+}
+
+func validateChunk(work BatchWork, chunk Chunk, expectedOrder uint64) string {
+	switch {
+	case chunk.BookID != work.BookID:
+		return "book_mismatch"
+	case !safeID(chunk.ChunkID):
+		return "invalid_chunk_id"
+	case chunk.Text == "":
+		return "empty_text"
+	case !utf8.ValidString(chunk.Text):
+		return "invalid_text_utf8"
+	case !utf8.ValidString(chunk.Chapter):
+		return "invalid_chapter_utf8"
+	case !utf8.ValidString(chunk.Section):
+		return "invalid_section_utf8"
+	case chunk.ContentSHA256 != sha256.Sum256([]byte(chunk.Text)):
+		return "content_sha256_mismatch"
+	case chunk.PageStart < 1:
+		return "invalid_page_start"
+	case chunk.PageEnd < chunk.PageStart:
+		return "invalid_page_range"
+	case chunk.PageEnd > work.ManifestPageCount:
+		return "page_end_exceeds_manifest"
+	case chunk.Order != expectedOrder:
+		return "unexpected_order"
+	case chunk.TokenEnd <= chunk.TokenStart:
+		return "invalid_token_range"
+	case chunk.TokenEnd-chunk.TokenStart > uint64(work.MaximumTokens):
+		return "token_span_exceeds_maximum"
+	case chunk.ExtractionVersion != work.ExtractionVersion:
+		return "extraction_version_mismatch"
+	case chunk.NormalizationVersion != work.NormalizationVersion:
+		return "normalization_version_mismatch"
+	case chunk.TokenizerVersion != work.TokenizerVersion:
+		return "tokenizer_version_mismatch"
+	case chunk.ChunkingVersion != work.ChunkingVersion:
+		return "chunking_version_mismatch"
+	case chunk.StructureVersion != work.StructureVersion:
+		return "structure_version_mismatch"
+	default:
+		return ""
+	}
 }
 
 func (i *Indexer) finalizeDocument(ctx context.Context, work BatchWork) error {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"testing"
@@ -85,8 +86,8 @@ func (processorStreamingRunner) Run(context.Context, string, []string, int64) ([
 	return []byte("Pages: 1\nEncrypted: no\n"), nil
 }
 
-func (processorStreamingRunner) StreamPages(_ context.Context, _ string, _ []string, _ extractor.Limits, _ uint32, consume func(extractor.Page) error) error {
-	return consume(extractor.Page{Number: 1, Text: "synthetic"})
+func (processorStreamingRunner) StreamPages(ctx context.Context, _ string, _ []string, limits extractor.Limits, expectedPages uint32, consume func(extractor.Page) error) error {
+	return (extractor.ExecRunner{}).StreamPages(ctx, "sh", []string{"-c", "printf 'synthetic\\f'"}, limits, expectedPages, consume)
 }
 
 func (e *processorExtractor) Extract(ctx context.Context, sourcePath string, consume func(extractor.Page) error) (extractor.DocumentInfo, error) {
@@ -112,6 +113,19 @@ func (processorChunker) AddPage(string, chunking.Page) ([]domain.Chunk, error) {
 
 func (processorChunker) Finish(string) ([]domain.Chunk, error) { return nil, nil }
 
+type processorSequenceChunker struct {
+	add    []domain.Chunk
+	finish []domain.Chunk
+}
+
+func (c processorSequenceChunker) AddPage(string, chunking.Page) ([]domain.Chunk, error) {
+	return c.add, nil
+}
+
+func (c processorSequenceChunker) Finish(string) ([]domain.Chunk, error) {
+	return c.finish, nil
+}
+
 type processorWriter struct {
 	result      artifact.Result
 	addErr      error
@@ -135,10 +149,16 @@ func (w *processorWriter) Abort(context.Context) error {
 }
 
 type processorFactory struct {
-	writer *processorWriter
+	writer  *processorWriter
+	chunker Chunker
 }
 
-func (processorFactory) NewChunker() (Chunker, error) { return processorChunker{}, nil }
+func (f processorFactory) NewChunker() (Chunker, error) {
+	if f.chunker != nil {
+		return f.chunker, nil
+	}
+	return processorChunker{}, nil
+}
 
 func (f processorFactory) NewArtifactWriter(UploadedEvent, time.Time) (ArtifactWriter, error) {
 	return f.writer, nil
@@ -243,6 +263,28 @@ func TestFailureDetailReturnsStageDetail(t *testing.T) {
 	}
 }
 
+func TestFailureDetailIncludesChunkSequenceDiagnostics(t *testing.T) {
+	err := stage("chunk_sequence_invalid", errors.New("invalid chunk sequence previous_order=1 order=2 previous_token_start=10 previous_token_end=20 token_start=25 token_end=30 overlap_tokens=120"))
+	want := "chunk_sequence_invalid_invalid_chunk_sequence_previous_order=1_order=2_previous_token_start=10_previous_token_end=20_token_start=25_token_end=30_overlap_tokens=120"
+	if got := FailureDetail(err); got != want {
+		t.Fatalf("FailureDetail() = %q, want %q", got, want)
+	}
+}
+
+func TestProcessorAcceptsChunkSequenceGapAtSemanticBoundary(t *testing.T) {
+	first := processorTestChunk(t, 0, 0, 10)
+	second := processorTestChunk(t, 1, 12, 20)
+	processor, repository, writer, _, _, _ := newTestProcessor(t, processorOptions{
+		chunker: processorSequenceChunker{add: []domain.Chunk{first, second}},
+	})
+	if err := processor.Process(context.Background(), validProcessorEvent()); err != nil {
+		t.Fatal(err)
+	}
+	if repository.completes != 1 || repository.fails != 0 || writer.adds != 2 {
+		t.Fatalf("gap sequence result: repo=%#v writer=%#v", repository, writer)
+	}
+}
+
 func TestProcessorPersistsRetryAndFinalTimeout(t *testing.T) {
 	retrying, retryRepository, retryWriter, _, _, _ := newTestProcessor(t, processorOptions{sourceErr: errors.New("source unavailable"), maximumAttempts: 2})
 	err := retrying.Process(context.Background(), validProcessorEvent())
@@ -314,9 +356,13 @@ func TestProcessorDoesNotRetryStreamingLimitFailures(t *testing.T) {
 				extractor.Limits{MaximumPages: 2, MaximumPageBytes: 32, MaximumExtractedBytes: 64},
 				processorStreamingRunner{},
 			)
+			stagedErr := stage("chunk_page_failed", test.err)
 			_, extractErr := pdfExtractor.Extract(context.Background(), "source.pdf", func(extractor.Page) error {
-				return test.err
+				return stagedErr
 			})
+			if got := extractorFailureDetail(extractErr); got != "chunk_page_failed" {
+				t.Fatalf("extractorFailureDetail() = %q, want chunk_page_failed", got)
+			}
 			processor, repository, writer, _, _, _ := newTestProcessor(t, processorOptions{
 				extractErr:      extractErr,
 				maximumAttempts: 2,
@@ -418,6 +464,7 @@ type processorOptions struct {
 	readyErr        error
 	addErr          error
 	finalizeErr     error
+	chunker         Chunker
 }
 
 func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *processorRepository, *processorWriter, *processorEvents, *processorDiagnostics, *processorExtractor) {
@@ -454,7 +501,7 @@ func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *proc
 		repository,
 		processorSource{contents: contents, size: int64(len(contents)), err: options.sourceErr},
 		extractors,
-		processorFactory{writer: writer},
+		processorFactory{writer: writer, chunker: options.chunker},
 		events,
 		func() (string, error) { return "job-1", nil },
 		func() time.Time { return now },
@@ -493,6 +540,24 @@ func validProcessorEvent() UploadedEvent {
 		OccurredAt:       time.Date(2026, 7, 19, 11, 0, 0, 0, time.UTC),
 		Payload:          []byte("synthetic-protobuf-payload"),
 	}
+}
+
+func processorTestChunk(t *testing.T, order, tokenStart, tokenEnd uint64) domain.Chunk {
+	t.Helper()
+	chunk, err := domain.NewChunk(domain.ChunkInput{
+		ID:         fmt.Sprintf("chunk-%d", order),
+		BookID:     "book-1",
+		Order:      order,
+		Text:       fmt.Sprintf("chunk text %d", order),
+		PageStart:  1,
+		PageEnd:    1,
+		TokenStart: tokenStart,
+		TokenEnd:   tokenEnd,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return chunk
 }
 
 func boolPointer(value bool) *bool { return &value }

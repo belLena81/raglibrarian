@@ -103,6 +103,61 @@ func TestTEILogsHTTPStatusFailures(t *testing.T) {
 	}
 }
 
+func TestTEILogsResponseDigestWithoutRawBodyByDefault(t *testing.T) {
+	observed, logs := observer.New(zap.InfoLevel)
+	payload, err := json.Marshal([][]float32{make([]float32, domain.EmbeddingDimensions)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewTEI("https://tei.example", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return httpResponse(http.StatusOK, string(payload)), nil
+	})}, zap.New(observed), nil)
+	if err != nil {
+		t.Fatalf("NewTEI() error = %v", err)
+	}
+
+	_, err = client.EmbedDocuments(context.Background(), []string{"first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := logs.FilterMessage("retrieval.embedding.provider.response").All()[0].ContextMap()
+	if fields["response_bytes"] != int64(len(payload)) {
+		t.Fatalf("response_bytes = %#v", fields["response_bytes"])
+	}
+	if _, ok := fields["response_body_sha256"].(string); !ok {
+		t.Fatalf("response_body_sha256 = %#v", fields["response_body_sha256"])
+	}
+	if _, ok := fields["response_body_raw_prefix"]; ok {
+		t.Fatalf("raw response logged by default: %#v", fields)
+	}
+}
+
+func TestTEILogsBoundedRawResponsePrefixWhenEnabled(t *testing.T) {
+	observed, logs := observer.New(zap.InfoLevel)
+	payload, err := json.Marshal([][]float32{make([]float32, domain.EmbeddingDimensions)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewTEIWithOptions("https://tei.example", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return httpResponse(http.StatusOK, string(payload)), nil
+	})}, zap.New(observed), nil, RawResponseLog{Enabled: true, MaximumBytes: 16})
+	if err != nil {
+		t.Fatalf("NewTEIWithOptions() error = %v", err)
+	}
+
+	_, err = client.EmbedDocuments(context.Background(), []string{"first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := logs.FilterMessage("retrieval.embedding.provider.response").All()[0].ContextMap()
+	if fields["response_body_raw_prefix_bytes"] != int64(16) {
+		t.Fatalf("response_body_raw_prefix_bytes = %#v", fields["response_body_raw_prefix_bytes"])
+	}
+	if raw, ok := fields["response_body_raw_prefix"].(string); !ok || raw != string(payload[:16]) {
+		t.Fatalf("response_body_raw_prefix = %#v", fields["response_body_raw_prefix"])
+	}
+}
+
 func TestTEIEmbedDocumentsBatchesEightInputsAndPreservesOrder(t *testing.T) {
 	requests := make([][]string, 0, 2)
 	client, err := NewTEI("https://tei.example", &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {

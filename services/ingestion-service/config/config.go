@@ -12,6 +12,12 @@ import (
 	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/process"
+	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/chunking"
+)
+
+const (
+	defaultParserSandboxMemoryBytes = int64(1536 << 20)
+	maximumParserSandboxMemoryBytes = int64(8 << 30)
 )
 
 type Config struct {
@@ -20,12 +26,14 @@ type Config struct {
 	SourceBucket, ArtifactBucket, MinIOCAFile, MetricsAddress                   string
 	AWSRegion, KMSKeyARN                                                        string
 	TokenizerFile, PDFInfoPath, PDFTextPath, EPUBParserPath, TemporaryDirectory string
+	DebugDumpPDFTextDirectory                                                   string
 	Queue, ResultExchange                                                       string
 	MinIOInsecure                                                               bool
 	WorkConcurrency, MaximumAttempts, MaximumChunks                             int
+	ChunkMaximumTokens, ChunkOverlapTokens, ChunkTargetPages, ChunkMaximumPages int
 	MaximumSourceBytes, MaximumExtractedBytes, MaximumPageBytes                 int64
 	MaximumManifestBytes, MaximumTemporaryBytes                                 int64
-	MemoryLimitBytes                                                            int64
+	MemoryLimitBytes, ParserSandboxMemoryBytes                                  int64
 	MaximumPages                                                                uint32
 	ProcessingTimeout, JobLease, OutboxInterval                                 time.Duration
 	CleanupInterval, OrphanGracePeriod                                          time.Duration
@@ -192,8 +200,9 @@ func loadLocal() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	// One parser uses a 768 MiB address-space budget. Horizontal worker scaling
-	// provides concurrency without overcommitting a 1 GiB task.
+	// One parser uses a configurable 1536 MiB default address-space budget.
+	// Horizontal worker scaling provides concurrency without overcommitting the
+	// worker memory envelope.
 	workConcurrency, err := boundedInt("INGESTION_WORK_CONCURRENCY", 1, 16)
 	if err != nil {
 		return Config{}, err
@@ -203,6 +212,10 @@ func loadLocal() (Config, error) {
 		return Config{}, err
 	}
 	maximumChunks, err := fixedInt("INGESTION_MAX_CHUNKS", 50_000)
+	if err != nil {
+		return Config{}, err
+	}
+	chunkMaximumTokens, chunkOverlapTokens, chunkTargetPages, chunkMaximumPages, err := chunkPolicyValues()
 	if err != nil {
 		return Config{}, err
 	}
@@ -233,11 +246,17 @@ func loadLocal() (Config, error) {
 	if maximumTemporary < maximumSource {
 		return Config{}, fmt.Errorf("INGESTION_MAX_TEMP_BYTES must be at least INGESTION_MAX_SOURCE_BYTES")
 	}
-	memoryLimit, err := boundedInt64("INGESTION_MEMORY_LIMIT_BYTES", 1<<30, 64<<30)
+	memoryLimit, err := boundedInt64("INGESTION_MEMORY_LIMIT_BYTES", 2<<30, 64<<30)
 	if err != nil {
 		return Config{}, err
 	}
-	const parserMemory = int64(768 << 20)
+	parserMemory, err := boundedInt64("INGESTION_PARSER_SANDBOX_MEMORY_BYTES", defaultParserSandboxMemoryBytes, maximumParserSandboxMemoryBytes)
+	if err != nil {
+		return Config{}, err
+	}
+	if parserMemory < defaultParserSandboxMemoryBytes {
+		return Config{}, fmt.Errorf("INGESTION_PARSER_SANDBOX_MEMORY_BYTES must be at least %d", defaultParserSandboxMemoryBytes)
+	}
 	const runtimeHeadroom = int64(256 << 20)
 	if int64(workConcurrency)*parserMemory+runtimeHeadroom > memoryLimit {
 		return Config{}, fmt.Errorf("INGESTION_WORK_CONCURRENCY exceeds INGESTION_MEMORY_LIMIT_BYTES")
@@ -278,41 +297,51 @@ func loadLocal() (Config, error) {
 	if temporaryDirectory != "/tmp" {
 		return Config{}, fmt.Errorf("INGESTION_TEMP_DIR must be /tmp")
 	}
+	debugDumpPDFTextDirectory := strings.TrimSpace(os.Getenv("INGESTION_DEBUG_DUMP_PDFTEXT_DIR"))
+	if debugDumpPDFTextDirectory != "" && (!strings.HasPrefix(debugDumpPDFTextDirectory, "/") || debugDumpPDFTextDirectory == "/" || containsASCIIControl(debugDumpPDFTextDirectory)) {
+		return Config{}, fmt.Errorf("INGESTION_DEBUG_DUMP_PDFTEXT_DIR must be an absolute debug directory")
+	}
 	return Config{
-		RuntimeBackend:        "local",
-		DSN:                   dsn,
-		RabbitURI:             rabbitURI,
-		MinIOEndpoint:         endpoint,
-		MinIOAccessKey:        accessKey,
-		MinIOSecretKey:        secretKey,
-		SourceBucket:          sourceBucket,
-		ArtifactBucket:        artifactBucket,
-		MinIOCAFile:           caFile,
-		MetricsAddress:        metrics,
-		TokenizerFile:         tokenizerFile,
-		PDFInfoPath:           optional("INGESTION_PDFINFO_PATH", "/usr/bin/pdfinfo"),
-		PDFTextPath:           optional("INGESTION_PDFTOTEXT_PATH", "/usr/bin/pdftotext"),
-		EPUBParserPath:        optional("INGESTION_EPUB_PARSER_PATH", "/usr/local/bin/epub-parser"),
-		TemporaryDirectory:    temporaryDirectory,
-		Queue:                 optional("INGESTION_QUEUE", "ingestion.book-uploaded.v1"),
-		ResultExchange:        optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
-		MinIOInsecure:         insecure,
-		WorkConcurrency:       workConcurrency,
-		MaximumAttempts:       maximumAttempts,
-		MaximumChunks:         maximumChunks,
-		MaximumSourceBytes:    maximumSource,
-		MaximumExtractedBytes: maximumExtracted,
-		MaximumPageBytes:      maximumPage,
-		MaximumManifestBytes:  maximumManifest,
-		MaximumTemporaryBytes: maximumTemporary,
-		MemoryLimitBytes:      memoryLimit,
-		MaximumPages:          maximumPages,
-		ProcessingTimeout:     timeout,
-		JobLease:              lease,
-		OutboxInterval:        outboxInterval,
-		CleanupInterval:       cleanupInterval,
-		OrphanGracePeriod:     orphanGracePeriod,
-		RunAs:                 process.Identity{UID: uid, GID: gid},
+		RuntimeBackend:            "local",
+		DSN:                       dsn,
+		RabbitURI:                 rabbitURI,
+		MinIOEndpoint:             endpoint,
+		MinIOAccessKey:            accessKey,
+		MinIOSecretKey:            secretKey,
+		SourceBucket:              sourceBucket,
+		ArtifactBucket:            artifactBucket,
+		MinIOCAFile:               caFile,
+		MetricsAddress:            metrics,
+		TokenizerFile:             tokenizerFile,
+		PDFInfoPath:               optional("INGESTION_PDFINFO_PATH", "/usr/bin/pdfinfo"),
+		PDFTextPath:               optional("INGESTION_PDFTOTEXT_PATH", "/usr/bin/pdftotext"),
+		EPUBParserPath:            optional("INGESTION_EPUB_PARSER_PATH", "/usr/local/bin/epub-parser"),
+		TemporaryDirectory:        temporaryDirectory,
+		DebugDumpPDFTextDirectory: debugDumpPDFTextDirectory,
+		Queue:                     optional("INGESTION_QUEUE", "ingestion.book-uploaded.v1"),
+		ResultExchange:            optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
+		MinIOInsecure:             insecure,
+		WorkConcurrency:           workConcurrency,
+		MaximumAttempts:           maximumAttempts,
+		MaximumChunks:             maximumChunks,
+		ChunkMaximumTokens:        chunkMaximumTokens,
+		ChunkOverlapTokens:        chunkOverlapTokens,
+		ChunkTargetPages:          chunkTargetPages,
+		ChunkMaximumPages:         chunkMaximumPages,
+		MaximumSourceBytes:        maximumSource,
+		MaximumExtractedBytes:     maximumExtracted,
+		MaximumPageBytes:          maximumPage,
+		MaximumManifestBytes:      maximumManifest,
+		MaximumTemporaryBytes:     maximumTemporary,
+		MemoryLimitBytes:          memoryLimit,
+		ParserSandboxMemoryBytes:  parserMemory,
+		MaximumPages:              maximumPages,
+		ProcessingTimeout:         timeout,
+		JobLease:                  lease,
+		OutboxInterval:            outboxInterval,
+		CleanupInterval:           cleanupInterval,
+		OrphanGracePeriod:         orphanGracePeriod,
+		RunAs:                     process.Identity{UID: uid, GID: gid},
 	}, nil
 }
 
@@ -334,6 +363,26 @@ func readSecret(key string, maximum int) (string, error) {
 	return value, nil
 }
 
+func chunkPolicyValues() (int, int, int, int, error) {
+	maximumTokens, err := fixedInt("INGESTION_CHUNK_MAX_TOKENS", chunking.DefaultMaximumTokens)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	overlapTokens, err := fixedInt("INGESTION_CHUNK_OVERLAP_TOKENS", chunking.DefaultOverlapTokens)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	targetPages, err := fixedInt("INGESTION_CHUNK_TARGET_PAGES", chunking.DefaultTargetPages)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	maximumPages, err := fixedInt("INGESTION_CHUNK_MAX_PAGES", chunking.DefaultMaximumPages)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	return maximumTokens, overlapTokens, targetPages, maximumPages, nil
+}
+
 func required(key string) (string, error) {
 	value := os.Getenv(key)
 	if value == "" {
@@ -347,6 +396,16 @@ func optional(key, fallback string) string {
 	}
 	return fallback
 }
+
+func containsASCIIControl(value string) bool {
+	for _, char := range value {
+		if char < 0x20 || char == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
 func strictBool(key string, fallback bool) (bool, error) {
 	value := optional(key, strconv.FormatBool(fallback))
 	if value != "true" && value != "false" {

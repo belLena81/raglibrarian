@@ -12,7 +12,7 @@ func TestSupportedIndexProfileDigestIsStable(t *testing.T) {
 	if profile.Model != "BAAI/bge-base-en-v1.5" || profile.Dimensions != 768 || profile.Distance != "cosine" {
 		t.Fatalf("unexpected supported profile: %#v", profile)
 	}
-	if got := hex.EncodeToString(profile.Digest[:]); got != "e084ab877256e8cf1d974e4c4e3a05435a17b0015176ad64f16f05fc10f1c8b2" {
+	if got := hex.EncodeToString(profile.Digest[:]); got != "4b088f0e9387fae246ee175e76ab0e3c16cb82dfa3a00438b3a1f9a71aa6f5b6" {
 		t.Fatalf("profile digest = %s", got)
 	}
 }

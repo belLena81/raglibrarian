@@ -16,7 +16,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func TestOpenAIGenerateSummarizesText(t *testing.T) {
+func TestOpenAIAssessesRelevantEvidence(t *testing.T) {
 	var requestPath string
 	var requestModel string
 	var requestFormat string
@@ -30,22 +30,22 @@ func TestOpenAIGenerateSummarizesText(t *testing.T) {
 	adapter, err := NewOpenAI("https://openrouter.ai/", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		requestPath = request.URL.Path
 		requestModel, requestFormat, requestMaxTokens, requestSystemPolicy, requestContent = decodeSummaryRequest(t, request.Body)
-		return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":"{\"summary\":\" concise summary \"}"}}]}`), nil
+		return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":"{\"relevant\":true,\"summary\":\" concise summary \"}"}}]}`), nil
 	})}, zap.NewNop(), limit, 64)
 	if err != nil {
 		t.Fatalf("NewOpenAI() error = %v", err)
 	}
 
-	summary, err := adapter.Summarize(context.Background(), application.SummaryRequest{Question: "How do retries help?", Passage: "  Deterministic retries keep search stable.  "})
+	assessment, err := adapter.Assess(context.Background(), application.SummaryRequest{Question: "How do retries help?", Passage: "  Deterministic retries keep search stable.  "})
 	if err != nil {
-		t.Fatalf("Summarize() error = %v", err)
+		t.Fatalf("Assess() error = %v", err)
 	}
-	if summary != "concise summary" {
-		t.Fatalf("Summarize() = %q, want concise summary", summary)
+	if !assessment.Relevant || assessment.Summary != "concise summary" {
+		t.Fatalf("Assess() = %#v, want relevant concise summary", assessment)
 	}
 	if requestPath != "/api/v1/chat/completions" || requestModel != "test-model" || requestFormat != "json_object" || requestMaxTokens != 64 ||
-		!strings.Contains(strings.ToLower(requestSystemPolicy), "grounded answer to the user's question") ||
-		!strings.Contains(strings.ToLower(requestSystemPolicy), "do not retell the whole passage") ||
+		!strings.Contains(strings.ToLower(requestSystemPolicy), "assess whether the supplied passage directly answers") ||
+		!strings.Contains(strings.ToLower(requestSystemPolicy), "relevant false") ||
 		!strings.Contains(requestContent, "How do retries help?") ||
 		!strings.Contains(requestContent, "Deterministic retries keep search stable.") {
 		t.Fatalf("unexpected request: path=%q model=%q format=%q system=%q content=%q", requestPath, requestModel, requestFormat, requestSystemPolicy, requestContent)
@@ -67,7 +67,7 @@ func TestOpenAIChatCompletionPathNormalization(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			adapter, err := NewOpenAI(test.baseURL, "model", "key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-				return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":"{\"summary\":\"summary\"}"}}]}`), nil
+				return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":"{\"relevant\":true,\"summary\":\"summary\"}"}}]}`), nil
 			})}, zap.NewNop(), nil, 64)
 			if err != nil {
 				t.Fatalf("NewOpenAI() error = %v", err)
@@ -115,12 +115,12 @@ func TestOpenAIRequestFailureLogsDiagnostics(t *testing.T) {
 		t.Fatalf("NewOpenAI() error = %v", err)
 	}
 
-	_, err = adapter.Summarize(context.Background(), application.SummaryRequest{
+	_, err = adapter.Assess(context.Background(), application.SummaryRequest{
 		Question: "How do retries help?",
 		Passage:  "Deterministic retries keep search stable.",
 	})
 	if err == nil {
-		t.Fatal("Summarize() error = nil, want provider failure")
+		t.Fatal("Assess() error = nil, want provider failure")
 	}
 
 	value := output.String()
@@ -150,7 +150,7 @@ func TestOpenAIRequestFailureLogsDiagnostics(t *testing.T) {
 	}
 }
 
-func TestOpenAIRejectsInvalidCandidateSummaries(t *testing.T) {
+func TestOpenAIRejectsInvalidCandidateAssessments(t *testing.T) {
 	tests := []struct {
 		name   string
 		body   string
@@ -158,13 +158,18 @@ func TestOpenAIRejectsInvalidCandidateSummaries(t *testing.T) {
 	}{
 		{
 			name:   "missing summary field",
-			body:   `{"choices":[{"message":{"content":"{\"text\":\"concise summary\"}"}}]}`,
+			body:   `{"choices":[{"message":{"content":"{\"relevant\":true,\"text\":\"concise summary\"}"}}]}`,
 			detail: "candidate_json_shape_invalid",
 		},
 		{
 			name:   "meta response",
-			body:   `{"choices":[{"message":{"content":"{\"summary\":\"The user asks how to start coding in JavaScript.\"}"}}]}`,
+			body:   `{"choices":[{"message":{"content":"{\"relevant\":true,\"summary\":\"The user asks how to start coding in JavaScript.\"}"}}]}`,
 			detail: "candidate_meta_response",
+		},
+		{
+			name:   "plain text irrelevance explanation",
+			body:   `{"choices":[{"message":{"content":"The user is asking about string operations. The passage is about C++ add-ons."}}]}`,
+			detail: "candidate_plain_text_response",
 		},
 	}
 
@@ -177,16 +182,16 @@ func TestOpenAIRejectsInvalidCandidateSummaries(t *testing.T) {
 				t.Fatalf("NewOpenAI() error = %v", err)
 			}
 
-			_, err = adapter.Summarize(context.Background(), application.SummaryRequest{
+			_, err = adapter.Assess(context.Background(), application.SummaryRequest{
 				Question: "How do retries help?",
 				Passage:  "Deterministic retries keep search stable.",
 			})
 			if err == nil {
-				t.Fatal("Summarize() error = nil, want provider failure")
+				t.Fatal("Assess() error = nil, want provider failure")
 			}
 			var providerErr *providerError
 			if !errors.As(err, &providerErr) {
-				t.Fatalf("Summarize() error = %T, want *providerError", err)
+				t.Fatalf("Assess() error = %T, want *providerError", err)
 			}
 			if providerErr.ReasonCode() != "invalid_provider_response" || providerErr.ReasonDetail() != test.detail {
 				t.Fatalf("error reason = (%q, %q), want (%q, %q)", providerErr.ReasonCode(), providerErr.ReasonDetail(), "invalid_provider_response", test.detail)
@@ -195,65 +200,62 @@ func TestOpenAIRejectsInvalidCandidateSummaries(t *testing.T) {
 	}
 }
 
-func TestOpenAIAcceptsPlainTextCandidateSummary(t *testing.T) {
+func TestOpenAIAssessesIrrelevantEvidence(t *testing.T) {
 	adapter, err := NewOpenAI("https://openrouter.ai/", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":" concise summary without JSON "}}]}`), nil
+		return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":"{\"relevant\":false}"}}]}`), nil
 	})}, zap.NewNop(), nil, 64)
 	if err != nil {
 		t.Fatalf("NewOpenAI() error = %v", err)
 	}
 
-	summary, err := adapter.Summarize(context.Background(), application.SummaryRequest{
+	assessment, err := adapter.Assess(context.Background(), application.SummaryRequest{
 		Question: "How do retries help?",
 		Passage:  "Deterministic retries keep search stable.",
 	})
 	if err != nil {
-		t.Fatalf("Summarize() error = %v", err)
+		t.Fatalf("Assess() error = %v", err)
 	}
-	if summary != "concise summary without JSON" {
-		t.Fatalf("Summarize() = %q, want plain text candidate", summary)
+	if assessment.Relevant || assessment.Summary != "" {
+		t.Fatalf("Assess() = %#v, want irrelevant without summary", assessment)
 	}
 }
 
-func TestOpenAISalvagesPlainTextMetaPrefixedSummary(t *testing.T) {
+func TestOpenAIRejectsIrrelevantAssessmentWithSummary(t *testing.T) {
 	adapter, err := NewOpenAI("https://openrouter.ai/", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":"The user asks: \"JavaScript: How to start coding\". The passage is about learning JS basics. Start by writing JavaScript code and building a solid foundation."}}]}`), nil
+		return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":"{\"relevant\":false,\"summary\":\"The passage is unrelated.\"}"}}]}`), nil
 	})}, zap.NewNop(), nil, 64)
 	if err != nil {
 		t.Fatalf("NewOpenAI() error = %v", err)
 	}
 
-	summary, err := adapter.Summarize(context.Background(), application.SummaryRequest{
+	_, err = adapter.Assess(context.Background(), application.SummaryRequest{
 		Question: "JavaScript: How to start coding",
 		Passage:  "Start by writing JavaScript code and building a solid foundation.",
 	})
-	if err != nil {
-		t.Fatalf("Summarize() error = %v", err)
-	}
-	if summary != "Start by writing JavaScript code and building a solid foundation." {
-		t.Fatalf("Summarize() = %q, want salvaged summary", summary)
+	if err == nil {
+		t.Fatal("Assess() error = nil, want invalid provider response")
 	}
 }
 
-func TestOpenAIAcceptsFlexibleSummaryLength(t *testing.T) {
+func TestOpenAIAcceptsFlexibleAssessmentSummaryLength(t *testing.T) {
 	longSummary := strings.TrimSpace(strings.Repeat("Detailed JavaScript guidance sentence. ", 12))
 	adapter, err := NewOpenAI("https://openrouter.ai/", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		body := `{"choices":[{"message":{"content":"{\"summary\":\"` + longSummary + `\"}"}}]}`
+		body := `{"choices":[{"message":{"content":"{\"relevant\":true,\"summary\":\"` + longSummary + `\"}"}}]}`
 		return httpResponse(http.StatusOK, body), nil
 	})}, zap.NewNop(), nil, 64)
 	if err != nil {
 		t.Fatalf("NewOpenAI() error = %v", err)
 	}
 
-	summary, err := adapter.Summarize(context.Background(), application.SummaryRequest{
+	assessment, err := adapter.Assess(context.Background(), application.SummaryRequest{
 		Question: "How do I start?",
 		Passage:  "Detailed guidance.",
 	})
 	if err != nil {
-		t.Fatalf("Summarize() error = %v", err)
+		t.Fatalf("Assess() error = %v", err)
 	}
-	if summary != longSummary {
-		t.Fatalf("Summarize() = %q, want full long summary", summary)
+	if !assessment.Relevant || assessment.Summary != longSummary {
+		t.Fatalf("Assess() = %#v, want full long summary", assessment)
 	}
 }
 
