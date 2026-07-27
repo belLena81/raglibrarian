@@ -371,10 +371,42 @@ Implementation:
 - Book matches are grouping metadata derived from accepted passages only. They
   must not introduce additional supporting passages and must not trigger
   whole-book or document-level LLM summaries.
-- Missing, invalid, irrelevant, meta, or unsafe provider assessment output is
-  hidden from summaries rather than displayed as a fallback passage retelling.
+- Valid JSON assessments retain structured relevance filtering. With
+  `RETRIEVAL_SUMMARY_LLM_OUTPUT_MODE=json_or_plain`, a bounded, sanitized plain
+  text response is treated as the summary for an already score-filtered
+  passage. Set `strict_json` to require the structured relevance contract.
+
+  This compatibility decision is needed because some OpenAI-compatible,
+  especially free-tier, models return a successful chat completion as plain
+  text even when asked for `response_format: {"type":"json_object"}`. Treating
+  every such response as a provider failure exhausts the configured candidate
+  scan and can turn otherwise available retrieval evidence into an unavailable
+  search result. `json_or_plain` preserves answers for those providers without
+  exposing raw model output: only a non-empty, bounded summary that passes the
+  meta/refusal/instruction filters is displayed. It deliberately treats that
+  accepted summary as relevant for the passage already admitted by Retrieval's
+  score and index-visibility filters. Deployments that require the model to
+  make the relevance decision must set `strict_json` and use a provider that
+  honors the structured-output contract.
+
+  A provider error or rejected provider reply does not make search unavailable:
+  Retrieval discards that model output, opens a per-search provider circuit,
+  and uses deterministic local summaries for the failed and remaining
+  score-filtered candidates. An explicit, valid `relevant:false` assessment is
+  still honored and excluded. This prevents a misbehaving or rate-limited
+  optional enrichment provider from consuming the entire search deadline while
+  preserving the distinction between a valid negative assessment and a failed
+  assessment.
+
+  `RETRIEVAL_SUMMARY_LLM_MAX_CALLS` is an external-call budget, not an evidence
+  exclusion policy. A value of `0`, or exhaustion of a positive budget, uses
+  the same deterministic local-summary path for remaining candidates rather
+  than returning an empty result set.
+
   If the Retrieval summary provider is disabled, search remains vector-only and
-  uses deterministic local passage summaries.
+  uses deterministic local passage summaries. Configuring an external provider
+  sends the question and passage to that provider; do not configure one unless
+  its data-handling policy is approved for the indexed content.
 - `RETRIEVAL_SUMMARY_LLM_MAX_CALLS` bounds passage assessment calls per search.
   Its default is sized to cover Retrieval's candidate scan budget so LLM
   exclusions can still backfill to the requested result limit under normal

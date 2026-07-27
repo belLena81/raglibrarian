@@ -75,6 +75,9 @@ func TestLoadAcceptsOptionalSummaryProviderConfiguration(t *testing.T) {
 	if configuration.SummaryLLMMaxOutputTokens != 64 {
 		t.Fatalf("SummaryLLMMaxOutputTokens = %d, want 64", configuration.SummaryLLMMaxOutputTokens)
 	}
+	if configuration.SummaryLLMOutputMode != "json_or_plain" {
+		t.Fatalf("SummaryLLMOutputMode = %q, want json_or_plain", configuration.SummaryLLMOutputMode)
+	}
 	if configuration.SearchTimeout != 25*time.Second {
 		t.Fatalf("SearchTimeout = %s, want 25s", configuration.SearchTimeout)
 	}
@@ -214,6 +217,45 @@ func TestLoadOverridesSummaryProviderMaxOutputTokens(t *testing.T) {
 	}
 	if configuration.SummaryLLMMaxOutputTokens != 48 {
 		t.Fatalf("SummaryLLMMaxOutputTokens = %d, want 48", configuration.SummaryLLMMaxOutputTokens)
+	}
+}
+
+func TestLoadOverridesSummaryProviderOutputMode(t *testing.T) {
+	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+	t.Setenv("RETRIEVAL_SUMMARY_LLM_OUTPUT_MODE", " STRICT_JSON ")
+	t.Setenv("RETRIEVAL_SEARCH_TIMEOUT", "25s")
+
+	configuration, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if configuration.SummaryLLMOutputMode != "strict_json" {
+		t.Fatalf("SummaryLLMOutputMode = %q, want strict_json", configuration.SummaryLLMOutputMode)
+	}
+}
+
+func TestLoadRejectsInvalidSummaryProviderOutputMode(t *testing.T) {
+	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+	t.Setenv("RETRIEVAL_SUMMARY_LLM_OUTPUT_MODE", "plain_text")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted an invalid summary provider output mode")
 	}
 }
 

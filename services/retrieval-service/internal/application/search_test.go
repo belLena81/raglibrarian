@@ -84,23 +84,138 @@ func TestSearcherUsesProviderAssessmentsAndDoesNotSummarizeDocuments(t *testing.
 	}
 }
 
-func TestSearcherExcludesEvidenceWhenProviderAssessmentFails(t *testing.T) {
+func TestSearcherFallsBackToLocalAssessmentsAfterProviderFailure(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{
-		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Provider must assess this passage.", Score: 0.91}},
+		results: []Evidence{
+			{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Provider must assess this passage.", Score: 0.91},
+			{EvidenceID: "evidence-2", JobID: "job-2", BookID: "book-2", Title: "Systems", Passage: "Keep local evidence after failure.", Score: 0.90},
+		},
 	}
 	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 4)
 	if err != nil {
 		t.Fatalf("NewSearcher() error = %v", err)
 	}
 
-	searcher.SetSummaryProvider(&stubSummaryProvider{err: errors.New("provider failed")})
+	provider := &stubSummaryProvider{err: errors.New("provider failed")}
+	searcher.SetSummaryProvider(provider)
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 3})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
+	if len(result.Evidence) != 2 {
+		t.Fatalf("local fallback evidence = %#v", result.Evidence)
+	}
+	got := []string{result.Evidence[0].EvidenceID, result.Evidence[1].EvidenceID}
+	if got[0] != "evidence-1" || got[1] != "evidence-2" {
+		t.Fatalf("local fallback evidence = %#v", result.Evidence)
+	}
+	if result.Evidence[0].Summary != "Provider must assess this passage." || result.Evidence[1].Summary != "Keep local evidence after failure." {
+		t.Fatalf("local fallback summaries = %#v", result.Evidence)
+	}
+	if provider.calls() != 1 {
+		t.Fatalf("provider calls = %d, want 1 after first failure", provider.calls())
+	}
+}
+
+func TestSearcherUsesLocalAssessmentsWhenProviderCallsAreDisabled(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{results: []Evidence{{
+		EvidenceID: "evidence-1",
+		JobID:      "job-1",
+		BookID:     "book-1",
+		Passage:    "Use local evidence without provider calls.",
+		Score:      0.91,
+	}}}
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 0)
+	if err != nil {
+		t.Fatalf("NewSearcher() error = %v", err)
+	}
+	provider := &stubSummaryProvider{}
+	searcher.SetSummaryProvider(provider)
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 3})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].Summary != "Use local evidence without provider calls." {
+		t.Fatalf("local-only result = %#v", result.Evidence)
+	}
+	if provider.calls() != 0 {
+		t.Fatalf("provider calls = %d, want 0", provider.calls())
+	}
+}
+
+func TestSearcherFallsBackToLocalAssessmentAfterProviderBudgetIsExhausted(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{results: []Evidence{
+		{EvidenceID: "irrelevant", JobID: "job-1", BookID: "book-1", Passage: "irrelevant evidence", Score: 0.91},
+		{EvidenceID: "local", JobID: "job-2", BookID: "book-2", Passage: "keep this locally assessed evidence", Score: 0.90},
+	}}
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 1)
+	if err != nil {
+		t.Fatalf("NewSearcher() error = %v", err)
+	}
+	provider := &stubSummaryProvider{response: func(SummaryRequest) EvidenceAssessment {
+		return EvidenceAssessment{Relevant: false}
+	}}
+	searcher.SetSummaryProvider(provider)
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 3})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "local" || result.Evidence[0].Summary != "keep this locally assessed evidence" {
+		t.Fatalf("result after provider budget exhaustion = %#v", result.Evidence)
+	}
+	if provider.calls() != 1 {
+		t.Fatalf("provider calls = %d, want 1", provider.calls())
+	}
+}
+
+func TestSearcherDoesNotFallbackWhenParentContextIsCanceled(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{results: []Evidence{{
+		EvidenceID: "evidence-1",
+		JobID:      "job-1",
+		BookID:     "book-1",
+		Passage:    "Do not return canceled provider work.",
+		Score:      0.91,
+	}}}
+	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 1)
+	if err != nil {
+		t.Fatalf("NewSearcher() error = %v", err)
+	}
+	searcher.SetSummaryProvider(&stubSummaryProvider{err: context.Canceled})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := searcher.Search(ctx, domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 3})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
 	if len(result.Evidence) != 0 || len(result.Documents) != 0 {
-		t.Fatalf("provider assessment failure should exclude evidence: %#v", result)
+		t.Fatalf("canceled parent context must not use a local fallback: %#v", result)
+	}
+}
+
+func TestSearchAssessmentCacheDoesNotOpenCircuitForCanceledParentContext(t *testing.T) {
+	cache := newSearchAssessmentCache(2, 0)
+	provider := &stubSummaryProvider{err: context.Canceled}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if assessment, ok := cache.assess(ctx, provider, SummaryRequest{Question: "replication", Passage: "canceled passage"}); ok || assessment != (EvidenceAssessment{}) {
+		t.Fatalf("canceled assessment = %#v, %t", assessment, ok)
+	}
+
+	provider.err = nil
+	assessment, ok := cache.assess(context.Background(), provider, SummaryRequest{Question: "replication", Passage: "fresh passage"})
+	if !ok || !assessment.Relevant || assessment.Summary != "fresh passage" {
+		t.Fatalf("assessment after canceled parent context = %#v, %t", assessment, ok)
+	}
+	if provider.calls() != 1 {
+		t.Fatalf("provider calls = %d, want 1", provider.calls())
 	}
 }
 

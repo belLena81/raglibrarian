@@ -218,6 +218,14 @@ if ! grep -Fq 'export RETRIEVAL_SUMMARY_LLM_MAX_CALLS="${RETRIEVAL_SUMMARY_LLM_M
   echo "host env renderer does not export retrieval summary max calls" >&2
   exit 1
 fi
+if ! grep -Fq 'retrieval_summary_provider_output_mode="${RETRIEVAL_SUMMARY_LLM_OUTPUT_MODE:-json_or_plain}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not default retrieval summary output mode" >&2
+  exit 1
+fi
+if ! grep -Fq 'export RETRIEVAL_SUMMARY_LLM_OUTPUT_MODE="$retrieval_summary_provider_output_mode"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export retrieval summary output mode" >&2
+  exit 1
+fi
 if ! grep -Fq 'export EDGE_CATALOG_PREVIEW_DEADLINE="${EDGE_CATALOG_PREVIEW_DEADLINE:-5s}"' "$root_dir/scripts/render-local-host-env.sh"; then
   echo "host env renderer does not export the catalog preview deadline" >&2
   exit 1

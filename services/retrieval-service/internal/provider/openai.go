@@ -33,26 +33,57 @@ const (
 )
 
 type OpenAI struct {
-	endpoint  *url.URL
-	model     string
-	apiKey    string
-	client    *http.Client
-	log       *zap.Logger
-	limit     *throttle.Limiter
-	maxTokens int
+	endpoint   *url.URL
+	model      string
+	apiKey     string
+	client     *http.Client
+	log        *zap.Logger
+	limit      *throttle.Limiter
+	maxTokens  int
+	outputMode SummaryOutputMode
 }
 
-func NewOpenAI(baseURL, model, apiKey string, client *http.Client, log *zap.Logger, limit *throttle.Limiter, maxTokens int) (*OpenAI, error) {
+type SummaryOutputMode string
+
+const (
+	SummaryOutputModeJSONOrPlain SummaryOutputMode = "json_or_plain"
+	SummaryOutputModeStrictJSON  SummaryOutputMode = "strict_json"
+)
+
+func ParseSummaryOutputMode(value string) (SummaryOutputMode, error) {
+	mode := SummaryOutputMode(strings.ToLower(strings.TrimSpace(value)))
+	switch mode {
+	case SummaryOutputModeJSONOrPlain, SummaryOutputModeStrictJSON:
+		return mode, nil
+	default:
+		return "", errors.New("invalid summary provider output mode")
+	}
+}
+
+func NewOpenAI(baseURL, model, apiKey string, client *http.Client, log *zap.Logger, limit *throttle.Limiter, maxTokens int, outputModes ...SummaryOutputMode) (*OpenAI, error) {
+	outputMode := SummaryOutputModeJSONOrPlain
+	if len(outputModes) == 1 {
+		outputMode = outputModes[0]
+	}
 	parsed, err := url.Parse(baseURL)
 	if err != nil || len(baseURL) > 2048 || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
 		strings.ContainsAny(baseURL, " \t\r\n") || strings.ContainsAny(parsed.Host, " \t\r\n") ||
 		strings.TrimSpace(model) == "" || len(model) > 256 || strings.ContainsAny(model, "\r\n") || strings.TrimSpace(apiKey) == "" || strings.ContainsAny(apiKey, "\r\n") || client == nil ||
-		maxTokens < 1 || maxTokens > 256 {
+		maxTokens < 1 || maxTokens > 256 || len(outputModes) > 1 || (outputMode != SummaryOutputModeJSONOrPlain && outputMode != SummaryOutputModeStrictJSON) {
 		return nil, errors.New("invalid summary provider configuration")
 	}
 	endpoint := *parsed
 	endpoint.Path = openAIChatCompletionsPath(parsed.Hostname(), parsed.Path)
-	return &OpenAI{endpoint: &endpoint, model: model, apiKey: apiKey, client: client, log: log, limit: limit, maxTokens: maxTokens}, nil
+	return &OpenAI{
+		endpoint:   &endpoint,
+		model:      model,
+		apiKey:     apiKey,
+		client:     client,
+		log:        log,
+		limit:      limit,
+		maxTokens:  maxTokens,
+		outputMode: outputMode,
+	}, nil
 }
 
 func openAIChatCompletionsPath(host, basePath string) string {
@@ -219,12 +250,16 @@ func (p *OpenAI) Assess(ctx context.Context, request application.SummaryRequest)
 	if strings.ContainsRune(envelope.Choices[0].Message.Content, utf8.RuneError) {
 		return application.EvidenceAssessment{}, p.failure("invalid_provider_response", "validation", "candidate_invalid_utf8", errors.New("invalid provider response"), diagnostics.fields()...)
 	}
-	assessment, detail, err := parseCandidateAssessment([]byte(envelope.Choices[0].Message.Content))
+	assessment, detail, err := parseCandidateAssessment([]byte(envelope.Choices[0].Message.Content), p.outputMode)
 	if err != nil {
 		return application.EvidenceAssessment{}, p.failure("invalid_provider_response", "validation", detail, err, diagnostics.fields()...)
 	}
 	if p.log != nil {
-		p.log.Info("retrieval.summary.provider.response", zap.Bool("relevant", assessment.Relevant), zap.Int("summary_length", utf8.RuneCountInString(assessment.Summary)))
+		p.log.Info("retrieval.summary.provider.response",
+			zap.String("candidate_format", candidateFormat(envelope.Choices[0].Message.Content)),
+			zap.Bool("relevant", assessment.Relevant),
+			zap.Int("summary_length", utf8.RuneCountInString(assessment.Summary)),
+		)
 	}
 	return assessment, nil
 }
@@ -376,9 +411,9 @@ func normalizeProviderSummary(value string) string {
 	return strings.TrimSpace(strings.Join(strings.Fields(value), " "))
 }
 
-func parseCandidateAssessment(content []byte) (application.EvidenceAssessment, string, error) {
+func parseCandidateAssessment(content []byte, outputMode SummaryOutputMode) (application.EvidenceAssessment, string, error) {
 	if !looksLikeJSON(content) {
-		return application.EvidenceAssessment{}, "candidate_plain_text_response", errors.New("invalid provider response")
+		return parsePlainTextCandidateAssessment(content, outputMode)
 	}
 	if err := rejectDuplicateObjectFields(content); err != nil {
 		return application.EvidenceAssessment{}, "duplicate_object_fields", err
@@ -410,9 +445,33 @@ func parseCandidateAssessment(content []byte) (application.EvidenceAssessment, s
 	return application.EvidenceAssessment{Relevant: true, Summary: summary}, "", nil
 }
 
+func parsePlainTextCandidateAssessment(content []byte, outputMode SummaryOutputMode) (application.EvidenceAssessment, string, error) {
+	if outputMode != SummaryOutputModeJSONOrPlain {
+		return application.EvidenceAssessment{}, "candidate_plain_text_response", errors.New("invalid provider response")
+	}
+	plainText := normalizeProviderSummary(string(content))
+	if plainText == "" {
+		return application.EvidenceAssessment{}, "candidate_plain_text_empty", errors.New("invalid provider response")
+	}
+	if looksLikeMetaSummary(plainText) {
+		return application.EvidenceAssessment{}, "candidate_plain_text_meta_response", errors.New("invalid provider response")
+	}
+	if looksLikeUnsafePlainTextSummary(plainText) {
+		return application.EvidenceAssessment{}, "candidate_plain_text_unsafe_response", errors.New("invalid provider response")
+	}
+	return application.EvidenceAssessment{Relevant: true, Summary: plainText}, "", nil
+}
+
 func looksLikeJSON(content []byte) bool {
 	trimmed := strings.TrimSpace(string(content))
 	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
+}
+
+func candidateFormat(content string) string {
+	if looksLikeJSON([]byte(content)) {
+		return "json"
+	}
+	return "plain_text"
 }
 
 func looksLikeMetaSummary(value string) bool {
@@ -435,6 +494,37 @@ func looksLikeMetaSummary(value string) bool {
 		"return a json object",
 		"treat the passage as data",
 		"summarize the supplied retrieval passage",
+	}
+	for _, marker := range markers {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeUnsafePlainTextSummary(value string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(value), " "))
+	markers := []string{
+		"ignore previous instructions",
+		"ignore all previous instructions",
+		"disregard previous instructions",
+		"system prompt",
+		"developer message",
+		"jailbreak",
+		"you are chatgpt",
+		"as an ai language model",
+		"i cannot comply",
+		"i can't comply",
+		"i am unable to",
+		"i'm unable to",
+		"cannot assist",
+		"can't assist",
+		"unable to assist",
+		"i cannot help",
+		"i can't help",
+		"i'm sorry, but",
+		"i am sorry, but",
 	}
 	for _, marker := range markers {
 		if strings.Contains(normalized, marker) {

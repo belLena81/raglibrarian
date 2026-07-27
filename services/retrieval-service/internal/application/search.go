@@ -337,6 +337,8 @@ func documentsFromEvidence(values []Evidence) []DocumentResult {
 type searchAssessmentCache struct {
 	mu             sync.Mutex
 	remaining      int
+	localOnly      bool
+	providerFailed bool
 	summaryTimeout time.Duration
 	entries        map[string]*searchAssessmentEntry
 }
@@ -348,10 +350,18 @@ type searchAssessmentEntry struct {
 }
 
 func newSearchAssessmentCache(limit int, summaryTimeout time.Duration) *searchAssessmentCache {
-	return &searchAssessmentCache{remaining: limit, summaryTimeout: summaryTimeout, entries: make(map[string]*searchAssessmentEntry)}
+	return &searchAssessmentCache{
+		remaining:      limit,
+		localOnly:      limit == 0,
+		summaryTimeout: summaryTimeout,
+		entries:        make(map[string]*searchAssessmentEntry),
+	}
 }
 
 func (c *searchAssessmentCache) assess(ctx context.Context, provider SummaryProvider, request SummaryRequest) (EvidenceAssessment, bool) {
+	if ctx.Err() != nil {
+		return EvidenceAssessment{}, false
+	}
 	normalizedPassage := normalizeSummaryInput(request.Passage)
 	if normalizedPassage == "" {
 		return EvidenceAssessment{}, false
@@ -371,14 +381,15 @@ func (c *searchAssessmentCache) assess(ctx context.Context, provider SummaryProv
 	}
 	entry := &searchAssessmentEntry{ready: make(chan struct{})}
 	c.entries[key] = entry
-	useProvider := provider != nil && c.remaining > 0
+	useProvider := provider != nil && !c.providerFailed && c.remaining > 0
+	useLocalAssessment := provider == nil || c.localOnly || c.providerFailed || c.remaining == 0
 	if useProvider {
 		c.remaining--
 	}
 	c.mu.Unlock()
 
 	assessment, ok := localAssessment(normalizedPassage)
-	if provider != nil && !useProvider {
+	if !useLocalAssessment && !useProvider {
 		assessment = EvidenceAssessment{}
 		ok = false
 	} else if useProvider {
@@ -394,6 +405,11 @@ func (c *searchAssessmentCache) assess(ctx context.Context, provider SummaryProv
 			providerAssessment.Summary = normalizeProviderSummary(providerAssessment.Summary)
 			assessment = providerAssessment
 			ok = true
+		} else if ctx.Err() == nil {
+			assessment, ok = localAssessment(normalizedPassage)
+			c.mu.Lock()
+			c.providerFailed = true
+			c.mu.Unlock()
 		}
 	}
 

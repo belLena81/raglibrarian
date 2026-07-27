@@ -17,9 +17,11 @@ import (
 )
 
 const (
-	defaultMinimumSearchScore = 0.6
-	minimumSearchScoreKey     = "RETRIEVAL_MINIMUM_SEARCH_SCORE"
-	defaultSummaryLLMMaxCalls = 100
+	defaultMinimumSearchScore      = 0.6
+	minimumSearchScoreKey          = "RETRIEVAL_MINIMUM_SEARCH_SCORE"
+	defaultSummaryLLMMaxCalls      = 100
+	defaultSummaryLLMOutputMode    = "json_or_plain"
+	summaryLLMOutputModeStrictJSON = "strict_json"
 )
 
 type Config struct {
@@ -40,6 +42,7 @@ type Config struct {
 	SummaryLLMMaxOutputTokens   int
 	SummaryLLMMaxCalls          int
 	SummaryLLMRequestsPerMinute int
+	SummaryLLMOutputMode        string
 	SummaryLLMAPIKeyFile        string
 	SummaryLLMCAFile            string
 	TEILogRawResponse           bool
@@ -79,9 +82,9 @@ func Load() (Config, error) {
 		QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: collection, QdrantAPIKeyFile: os.Getenv("RETRIEVAL_QDRANT_API_KEY_FILE"),
 		PostgresDSNFile: os.Getenv("RETRIEVAL_POSTGRES_DSN_FILE"), SummaryLLMBaseURL: os.Getenv("RETRIEVAL_SUMMARY_LLM_BASE_URL"),
 		SummaryLLMModel: os.Getenv("RETRIEVAL_SUMMARY_LLM_MODEL"), SummaryLLMAPIKeyFile: os.Getenv("RETRIEVAL_SUMMARY_LLM_API_KEY_FILE"),
-		SummaryLLMCAFile: os.Getenv("RETRIEVAL_SUMMARY_LLM_CA_FILE"),
-		TLS:              internaltls.Files{CA: os.Getenv("RETRIEVAL_TLS_CA_FILE"), Certificate: os.Getenv("RETRIEVAL_TLS_CERT_FILE"), Key: os.Getenv("RETRIEVAL_TLS_KEY_FILE")},
-		RunAs:            process.Identity{UID: uid, GID: gid},
+		SummaryLLMCAFile: os.Getenv("RETRIEVAL_SUMMARY_LLM_CA_FILE"), SummaryLLMOutputMode: strings.ToLower(strings.TrimSpace(os.Getenv("RETRIEVAL_SUMMARY_LLM_OUTPUT_MODE"))),
+		TLS:   internaltls.Files{CA: os.Getenv("RETRIEVAL_TLS_CA_FILE"), Certificate: os.Getenv("RETRIEVAL_TLS_CERT_FILE"), Key: os.Getenv("RETRIEVAL_TLS_KEY_FILE")},
+		RunAs: process.Identity{UID: uid, GID: gid},
 	}
 	searchTimeout, searchTimeoutErr := optionalDuration("RETRIEVAL_SEARCH_TIMEOUT", 2*time.Minute)
 	dependencyTimeout, dependencyTimeoutErr := optionalDuration("RETRIEVAL_DEPENDENCY_TIMEOUT", searchTimeout)
@@ -90,6 +93,7 @@ func Load() (Config, error) {
 	summaryMaxCalls, summaryMaxCallsErr := nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_MAX_CALLS", defaultSummaryLLMMaxCalls, 1000)
 	minimumSearchScore, minimumSearchScoreErr := LoadMinimumSearchScore()
 	summaryLLMRequestsPerMinute, summaryLLMRequestsPerMinuteErr := nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_REQUESTS_PER_MINUTE", 15, 1000)
+	summaryLLMOutputMode, summaryLLMOutputModeErr := summaryOutputMode(configuration.SummaryLLMOutputMode)
 	teiRequestsPerSecond, teiRequestsPerSecondErr := nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000)
 	teiLogRawResponse, teiLogRawResponseErr := optionalBool("RETRIEVAL_TEI_LOG_RAW_RESPONSE", false)
 	teiLogRawResponseMaxBytes, teiLogRawResponseMaxBytesErr := nonNegativeInteger("RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", 4096, 64<<10)
@@ -100,17 +104,28 @@ func Load() (Config, error) {
 	configuration.SummaryLLMMaxCalls = summaryMaxCalls
 	configuration.MinimumSearchScore = minimumSearchScore
 	configuration.SummaryLLMRequestsPerMinute = summaryLLMRequestsPerMinute
+	configuration.SummaryLLMOutputMode = summaryLLMOutputMode
 	configuration.TEIRequestsPerSecond = teiRequestsPerSecond
 	configuration.TEILogRawResponse = teiLogRawResponse
 	configuration.TEILogRawResponseMaxBytes = teiLogRawResponseMaxBytes
 	if configuration.GRPCAddress == "" || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
 		configuration.PostgresDSNFile == "" || configuration.QdrantAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || uidErr != nil || gidErr != nil ||
-		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || teiRequestsPerSecondErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || configuration.SummaryLLMTimeout > configuration.SearchTimeout ||
+		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || summaryLLMOutputModeErr != nil || teiRequestsPerSecondErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || configuration.SummaryLLMTimeout > configuration.SearchTimeout ||
 		!validSummaryProviderConfiguration(configuration) {
 		return Config{}, errors.New("invalid retrieval configuration")
 	}
 	return configuration, nil
+}
+
+func summaryOutputMode(value string) (string, error) {
+	if value == "" {
+		return defaultSummaryLLMOutputMode, nil
+	}
+	if value != defaultSummaryLLMOutputMode && value != summaryLLMOutputModeStrictJSON {
+		return "", errors.New("invalid summary provider output mode")
+	}
+	return value, nil
 }
 
 func validSummaryProviderConfiguration(configuration Config) bool {
