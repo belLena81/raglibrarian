@@ -19,7 +19,7 @@ import (
 const (
 	maxProcessingEventBytes = 64 << 10
 	maxManifestBytes        = 1 << 20
-	maxProcessedPages       = 500
+	maxProcessedPages       = 1000
 	maxProcessedChunks      = 50_000
 )
 

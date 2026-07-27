@@ -365,6 +365,19 @@ func TestParseInfoRecognizesPaddedEncryptedField(t *testing.T) {
 	}
 }
 
+func TestParseInfoReportsPageLimitDetail(t *testing.T) {
+	extractor := NewPoppler("pdfinfo", "pdftotext", Limits{MaximumPages: 1000}, &fakeRunner{})
+	_, err := extractor.parseInfo([]byte("Pages: 1001\nEncrypted: no\n"))
+	category, ok := FailureCategory(err)
+	if !ok || category != domain.FailureResourceLimitExceeded {
+		t.Fatalf("failure = %v, category = %q", err, category)
+	}
+	detail, ok := FailureDetail(err)
+	if !ok || detail != "pdf_page_limit_exceeded" {
+		t.Fatalf("FailureDetail() = %q, %t", detail, ok)
+	}
+}
+
 func TestPopplerStreamsPhysicalPages(t *testing.T) {
 	runner := &fakeRunner{outputs: [][]byte{
 		[]byte("Pages: 2\nEncrypted: no\n"),

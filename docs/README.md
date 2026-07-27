@@ -260,6 +260,13 @@ Implementation:
 - Preflight file size/page count and enforce a sub-14-minute execution budget.
   Keep raw content only in encrypted transient storage for the invocation and
   never rely on warm-runtime state for correctness.
+- Treat the source-size and page-count envelopes as a shared processing
+  contract. The current `m4-slo-v1` profile accepts documents up to 25 MiB and
+  1000 pages; Ingestion extraction config, Retrieval manifest validation,
+  Catalog processing-event validation, Compose/local host env, docs, and UI
+  copy must be updated together. A document under 25 MiB can still exceed the
+  page-count envelope, so PDF page-limit failures use the sanitized
+  `pdf_page_limit_exceeded` diagnostic while public UI remains category based.
 - Persist retry intent with the inbox state before acknowledging delivery.
   Worker and Lambda adapters apply the same retry/final-failure disposition;
   artifact cleanup is leased, retryable, and cannot starve newer failed jobs.
@@ -277,7 +284,7 @@ Acceptance:
   worker adapter; both produce identical application results and idempotency.
 - Chunk boundaries and page citations are covered by stable document fixtures.
 - Raw book content never appears in logs, traces, event error fields, or DLQs.
-- Under processing profile `m4-slo-v1` (text PDF up to 25 MiB/500 pages,
+- Under processing profile `m4-slo-v1` (text PDF up to 25 MiB/1000 pages,
   extracted text up to 64 MiB, five-book sample, two processing slots), the
   extracting status is visible within 2 seconds at p95, ready propagation from
   commit to Catalog is under 1 second, tiny documents finish within 10 seconds

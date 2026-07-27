@@ -112,7 +112,7 @@ func loadAWS(ctx context.Context) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	maximumPages, err := boundedInt64("INGESTION_MAX_PAGES", 500, 500)
+	maximumPages, err := boundedInt64("INGESTION_MAX_PAGES", 1000, 1000)
 	if err != nil {
 		return Config{}, err
 	}

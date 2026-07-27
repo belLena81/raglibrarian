@@ -20,7 +20,7 @@ var (
 	ErrLifecycleCleanupPending = errors.New("lifecycle cleanup pending")
 )
 
-const maxManifestPages = 500
+const maxManifestPages = 1000
 
 type MetadataEvent struct {
 	EventID, BookID, Title, Author, MediaType, CorrelationID, CausationID, Producer, SchemaVersion, IdempotencyKey string

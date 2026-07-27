@@ -12,7 +12,7 @@ func TestLoadUsesBoundedProductionDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.MaximumSourceBytes != 25<<20 || value.MaximumPages != 500 || value.MaximumChunks != 50_000 || value.MaximumManifestBytes != 1<<20 || value.WorkConcurrency != 1 {
+	if value.MaximumSourceBytes != 25<<20 || value.MaximumPages != 1000 || value.MaximumChunks != 50_000 || value.MaximumManifestBytes != 1<<20 || value.WorkConcurrency != 1 {
 		t.Fatalf("unexpected defaults: %#v", value)
 	}
 	if value.MemoryLimitBytes != 2<<30 || value.ParserSandboxMemoryBytes != 1536<<20 {
@@ -34,7 +34,7 @@ func TestLoadRejectsUnsupportedM4ProcessingProfile(t *testing.T) {
 	}{
 		{name: "chunk limit", key: "INGESTION_MAX_CHUNKS", value: "50001"},
 		{name: "source envelope", key: "INGESTION_MAX_SOURCE_BYTES", value: "52428800"},
-		{name: "page envelope", key: "INGESTION_MAX_PAGES", value: "501"},
+		{name: "page envelope", key: "INGESTION_MAX_PAGES", value: "1001"},
 		{name: "manifest envelope", key: "INGESTION_MAX_MANIFEST_BYTES", value: "1048577"},
 		{name: "chunk token profile", key: "INGESTION_CHUNK_MAX_TOKENS", value: "801"},
 		{name: "chunk overlap profile", key: "INGESTION_CHUNK_OVERLAP_TOKENS", value: "121"},

@@ -337,7 +337,7 @@ func (p *Poppler) parseInfo(output []byte) (DocumentInfo, error) {
 		return DocumentInfo{}, &categorizedError{category: domain.FailureMalformedDocument}
 	}
 	if pages > uint64(p.limits.MaximumPages) {
-		return DocumentInfo{}, &categorizedError{category: domain.FailureResourceLimitExceeded}
+		return DocumentInfo{}, detailedFailure("pdf_page_limit_exceeded", &categorizedError{category: domain.FailureResourceLimitExceeded})
 	}
 	return DocumentInfo{PageCount: uint32(pages)}, nil
 }
