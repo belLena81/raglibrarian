@@ -73,7 +73,7 @@ func newQualityEmbedder(t *testing.T) *embedding.TEI {
 func newQualityQdrant(t *testing.T, embedder *embedding.TEI) *vector.Qdrant {
 	t.Helper()
 	client := &http.Client{Transport: qualityQdrantTransport{points: qualityCorpus(t, embedder)}}
-	store, err := vector.NewQdrant("http://qdrant-quality.test", "quality", client, 0.6)
+	store, err := vector.NewQdrant("http://qdrant-quality.test", "quality", client, 0.05)
 	if err != nil {
 		t.Fatalf("NewQdrant() error = %v", err)
 	}
