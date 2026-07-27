@@ -109,8 +109,22 @@ jobs:
           AZURE_VERIFY_APPROVED_IMAGE_COMMAND: ${{ vars.AZURE_VERIFY_APPROVED_IMAGE_COMMAND }}
         run: |
           set -euo pipefail
-          "$RAGLIBRARIAN_SET_WORKER_MODE_COMMAND" paused
-          deploy/azure-test/scripts/transition.sh
+          pause_status=0
+          if "$RAGLIBRARIAN_SET_WORKER_MODE_COMMAND" paused; then
+            :
+          else
+            pause_status=$?
+          fi
+          transition_status=0
+          if deploy/azure-test/scripts/transition.sh; then
+            :
+          else
+            transition_status=$?
+          fi
+          if [ "$pause_status" -ne 0 ]; then
+            exit "$pause_status"
+          fi
+          exit "$transition_status"
       - name: Write sanitized release evidence
         if: always()
         env:

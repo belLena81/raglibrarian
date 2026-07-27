@@ -84,8 +84,8 @@ func TestLoadAcceptsOptionalSummaryProviderConfiguration(t *testing.T) {
 	if configuration.DependencyTimeout != 25*time.Second {
 		t.Fatalf("DependencyTimeout = %s, want 25s", configuration.DependencyTimeout)
 	}
-	if configuration.SummaryLLMTimeout != 25*time.Second {
-		t.Fatalf("SummaryLLMTimeout = %s, want 25s", configuration.SummaryLLMTimeout)
+	if configuration.SummaryLLMTimeout <= 0 || configuration.SummaryLLMTimeout >= configuration.SearchTimeout {
+		t.Fatalf("SummaryLLMTimeout = %s, want a positive timeout below SearchTimeout", configuration.SummaryLLMTimeout)
 	}
 }
 
@@ -117,8 +117,8 @@ func TestLoadDefaultsSummaryProviderRateLimit(t *testing.T) {
 	if configuration.DependencyTimeout != 2*time.Minute {
 		t.Fatalf("DependencyTimeout = %s, want 2m", configuration.DependencyTimeout)
 	}
-	if configuration.SummaryLLMTimeout != 2*time.Minute {
-		t.Fatalf("SummaryLLMTimeout = %s, want 2m", configuration.SummaryLLMTimeout)
+	if configuration.SummaryLLMTimeout <= 0 || configuration.SummaryLLMTimeout >= configuration.SearchTimeout {
+		t.Fatalf("SummaryLLMTimeout = %s, want a positive timeout below SearchTimeout", configuration.SummaryLLMTimeout)
 	}
 }
 
@@ -143,8 +143,8 @@ func TestLoadDefaultsSearchTimeoutAndMinimumScore(t *testing.T) {
 	if configuration.DependencyTimeout != 2*time.Minute {
 		t.Fatalf("DependencyTimeout = %s, want 2m", configuration.DependencyTimeout)
 	}
-	if configuration.SummaryLLMTimeout != 2*time.Minute {
-		t.Fatalf("SummaryLLMTimeout = %s, want 2m", configuration.SummaryLLMTimeout)
+	if configuration.SummaryLLMTimeout <= 0 || configuration.SummaryLLMTimeout >= configuration.SearchTimeout {
+		t.Fatalf("SummaryLLMTimeout = %s, want a positive timeout below SearchTimeout", configuration.SummaryLLMTimeout)
 	}
 	if configuration.MinimumSearchScore != 0.6 {
 		t.Fatalf("MinimumSearchScore = %g, want 0.6", configuration.MinimumSearchScore)
@@ -303,6 +303,24 @@ func TestLoadRejectsInvalidThrottleConfiguration(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() accepted malformed TEI throttle configuration")
+	}
+}
+
+func TestLoadRejectsSummaryTimeoutAtOrAboveSearchTimeout(t *testing.T) {
+	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+	t.Setenv("RETRIEVAL_SEARCH_TIMEOUT", "90s")
+	t.Setenv("RETRIEVAL_SUMMARY_LLM_TIMEOUT", "90s")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted a summary timeout that was not shorter than the search timeout")
 	}
 }
 

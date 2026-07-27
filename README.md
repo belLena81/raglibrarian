@@ -239,6 +239,9 @@ make app-test
 It now covers the complete local product stack rather than a milestone-specific slice.
 `make app-test` runs the current full repository gate set.
 `make local-run` remains the underlying bootstrap command for the Compose stack.
+The stateful test targets reset the test-only PostgreSQL databases and Qdrant
+collection before they run, so repeated local, e2e, and CI executions start
+from an empty test baseline and never touch real data.
 `stack-up` now starts the current full stack profile set (M4, M5, and M6-capable),
 applies Identity migrations with the migration-only role, and brings up the same
 runtime used for current development at loopback `:8080`.

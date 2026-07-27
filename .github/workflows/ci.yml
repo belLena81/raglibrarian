@@ -173,6 +173,8 @@ jobs:
       - name: Verify MinIO multipart cleanup
         run: make minio-runtime-test
       - name: Run black-box and controlled worker-recovery tests
+        env:
+          TEST_COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
         run: |
           E2E_BOOTSTRAP_CODE="$(cat .dev/secrets/e2e_bootstrap_code)" \
           E2E_MAIL_FIXTURE_URL=http://127.0.0.1:8025/view/latest.txt \
@@ -183,6 +185,8 @@ jobs:
         run: |
           docker compose -f docker-compose.yml -f docker-compose.ci.yml logs --no-color --tail=300 ingestion-service retrieval-worker retrieval-service answer-service llm-provider-stub rabbitmq qdrant || true
       - name: Run focused M5 worker-recovery tests
+        env:
+          TEST_COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
         run: make m5-worker-recovery-test
       - name: Verify database-loss readiness behavior
         run: |
@@ -220,12 +224,13 @@ jobs:
             | openssl dgst -sha256 -binary > .dev/secrets/identity_bootstrap_verifier
           chmod 400 .dev/secrets/e2e_bootstrap_code .dev/secrets/identity_bootstrap_verifier
       - name: Start isolated M4 stack
-        run: docker compose --profile raglibrarian up -d --build --wait --wait-timeout 240
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian up -d --build --wait --wait-timeout 240
       - name: Run M4 performance smoke and soak suites
         env:
           E2E_BASE_URL: http://127.0.0.1:8080
           E2E_SECONDARY_BASE_URL: http://127.0.0.1:8081
           E2E_MAIL_FIXTURE_URL: http://127.0.0.1:8025/view/latest.txt
+          TEST_COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
           M4_PERFORMANCE_PROFILE: m4-slo-v1
           M4_SOAK_DURATION: 30m
         run: |

@@ -501,6 +501,7 @@ jobs:
             M4_E2E_MINIO_ARTIFACT_BUCKET="$M4_MINIO_ARTIFACT_BUCKET" \
             M4_E2E_RABBITMQ_URI_FILE="$rabbitmq_uri" \
             M4_E2E_STATUS_TIMEOUT=15m \
+            TEST_RESET_STATE=false \
               make m4-e2e
             M4_E2E_ACCESS_TOKEN_FILE="$access_token" \
             M4_E2E_FIXTURE_DIR="$fixture_dir" \
@@ -514,6 +515,7 @@ jobs:
             M4_E2E_MINIO_ARTIFACT_BUCKET="$M4_MINIO_ARTIFACT_BUCKET" \
             M4_PERFORMANCE_PROFILE=m4-slo-v1 \
             M4_PERFORMANCE_TIMEOUT=20m \
+            TEST_RESET_STATE=false \
               make m4-performance-smoke
             rm -f "$access_token" "$revocable_access_token"
             printf '{"adapter":"%s","contract":"passed","poison_dlq":"passed","live_status":"passed","profile":"m4-slo-v1"}\n' "$adapter" >> "$evidence"

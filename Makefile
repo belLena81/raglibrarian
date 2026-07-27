@@ -21,6 +21,8 @@ DEPLOYABLE_IMAGES := raglibrarian-ingestion-lambda:local raglibrarian-ingestion-
 M5_TEST_COMPOSE_FILES ?= -f docker-compose.yml -f docker-compose.ci.yml
 M5_SEARCH_QUALITY_REQUIRE_MODEL ?= false
 INTEGRATION_COMPOSE_FILES ?=
+TEST_COMPOSE_FILES ?=
+TEST_RESET_STATE ?= true
 M4_E2E_INGESTION_POSTGRES_DSN_FILE ?= $(CURDIR)/.dev/secrets/ingestion_e2e_dsn
 M4_E2E_MINIO_ENDPOINT ?= 127.0.0.1:9000
 M4_E2E_MINIO_INSECURE ?= true
@@ -67,6 +69,8 @@ _require_root:
 		echo ""; \
 		exit 1; \
 	}
+
+TEST_RESET_CMD = if [ "$(TEST_RESET_STATE)" != "false" ]; then TEST_COMPOSE_FILES="$(TEST_COMPOSE_FILES)" bash ./scripts/reset-test-state.sh; fi
 
 # ── Test ──────────────────────────────────────────────────────────────────────
 test: _require_root
@@ -245,6 +249,7 @@ tidy: _require_root
 # The complete M2 lifecycle additionally needs E2E_BOOTSTRAP_CODE and a local
 # Mailpit latest-message URL such as http://127.0.0.1:8025/view/latest.txt.
 e2e: _require_root
+	@$(TEST_RESET_CMD)
 	cd tests/e2e && E2E_PUBLIC_ORIGIN="$(E2E_PUBLIC_ORIGIN)" go test -v -tags e2e ./...
 
 # M4 suites are deliberately separate because their files require both the
@@ -300,6 +305,7 @@ m5-search-quality-test-real: _require_root m5-model-bootstrap
 	@$(MAKE) M5_TEST_COMPOSE_FILES='-f docker-compose.yml' M5_SEARCH_QUALITY_REQUIRE_MODEL=true m5-search-quality-test
 
 m5-worker-recovery-test: _require_root
+	@$(TEST_RESET_CMD)
 	@secret_dir="$${SECRET_DIR:-$(CURDIR)/.dev/secrets}"; \
 	case "$$secret_dir" in /*) ;; *) secret_dir="$(CURDIR)/$$secret_dir" ;; esac; \
 	cd services/retrieval-service && \
@@ -310,9 +316,11 @@ m5-worker-recovery-test: _require_root
 	go test -count=1 -v -tags=integration -run 'Replay|Recovery|TerminalFailure|Visibility|Manifest|FailBatch|CompleteBatch|Lifecycle|Deletion|RolePrivileges' ./internal/repository
 
 m5-e2e: m4-fixtures
+	@$(TEST_RESET_CMD)
 	cd tests/e2e && M5_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" go test -count=1 -v -tags 'e2e m5' -run '^TestM5' ./...
 
 m7-e2e: m4-fixtures
+	@$(TEST_RESET_CMD)
 	@test -n "$(M7_E2E_LIBRARIAN_TOKEN_FILE)" && test -r "$(M7_E2E_LIBRARIAN_TOKEN_FILE)" || { echo "M7_E2E_LIBRARIAN_TOKEN_FILE must name a readable active librarian token file"; exit 1; }
 	@tests="$$(cd tests/e2e && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" go test -tags 'e2e m5 m7' -list '^TestM7' ./...)"; \
 	printf '%s\n' "$$tests" | grep -qx 'TestM7EPUBReindexAndDeleteLifecycleConvergesIdempotently' || { echo "M7 lifecycle E2E test was not discovered"; exit 1; }
@@ -321,6 +329,7 @@ m7-e2e: m4-fixtures
 m7-integration-test: m5-contract-test m7-e2e
 
 m5-performance-smoke: _require_root
+	@$(TEST_RESET_CMD)
 	cd tests/e2e && go test -count=1 -v -timeout 20m -tags 'e2e m5' -run '^TestM5PerformanceSearchesIndexedEvidenceWithinBudget$$' ./...
 
 m6-contract-test: _require_root
@@ -368,11 +377,13 @@ m6-answer-quality-test-real: _require_root
 	$(MAKE) M6_E2E_PATTERN='^TestM6SearchRemainsCompatibleAndAnswerCitesReturnedEvidence$$' m6-e2e
 
 m6-e2e: m4-fixtures
+	@$(TEST_RESET_CMD)
 	@tests="$$(cd tests/e2e && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" go test -tags 'e2e m5 m6' -list '^TestM6' ./...)"; \
 	printf '%s\n' "$$tests" | grep -q '^TestM6' || { echo "M6 E2E tests were not discovered"; exit 1; }
 	cd tests/e2e && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" M5_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" go test -count=1 -v -tags 'e2e m5 m6' -run "$${M6_E2E_PATTERN:-^TestM6(SearchRemainsCompatibleAndAnswerCitesReturnedEvidence|EmptyEvidenceDegradesWithoutFabrication)$$}" ./...
 
 m6-performance-smoke: _require_root
+	@$(TEST_RESET_CMD)
 	@tests="$$(cd tests/e2e && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" go test -tags 'e2e m5 m6' -list '^TestM6PerformanceAnswersWithinBudget$$' ./...)"; \
 	printf '%s\n' "$$tests" | grep -qx 'TestM6PerformanceAnswersWithinBudget' || { echo "M6 performance test was not discovered"; exit 1; }
 	cd tests/e2e && GOCACHE="$${GOCACHE:-/tmp/raglibrarian-go-cache}" go test -count=1 -v -timeout 20m -tags 'e2e m5 m6' -run '^TestM6PerformanceAnswersWithinBudget$$' ./...
@@ -480,6 +491,7 @@ m4-worker-recovery-test: m4-fixtures
 	}; \
 	trap cleanup EXIT INT TERM; \
 	docker compose $(INTEGRATION_COMPOSE_FILES) stop --timeout 30 ingestion-service retrieval-worker; \
+	$(TEST_RESET_CMD); \
 	(cd tests/e2e && \
 		M4_E2E_RECOVERY_CONTROL_DIR="$$control_dir" \
 		M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" \
@@ -520,9 +532,11 @@ m4-fixtures: _require_root
 	go run ./tests/fixtures/ingestion/generate.go -out "$(M4_E2E_FIXTURE_DIR)"
 
 m4-e2e: m4-fixtures
+	@$(TEST_RESET_CMD)
 	cd tests/e2e && M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" M4_E2E_EDGE_BASE_URLS="$(M4_E2E_EDGE_BASE_URLS)" M4_E2E_PUBLIC_ORIGIN="$(M4_E2E_PUBLIC_ORIGIN)" M4_E2E_INGESTION_POSTGRES_DSN_FILE="$(M4_E2E_INGESTION_POSTGRES_DSN_FILE)" M4_E2E_MINIO_ENDPOINT="$(M4_E2E_MINIO_ENDPOINT)" M4_E2E_MINIO_INSECURE="$(M4_E2E_MINIO_INSECURE)" M4_E2E_MINIO_CA_FILE="$(M4_E2E_MINIO_CA_FILE)" M4_E2E_MINIO_ACCESS_KEY_FILE="$(M4_E2E_MINIO_ACCESS_KEY_FILE)" M4_E2E_MINIO_SECRET_KEY_FILE="$(M4_E2E_MINIO_SECRET_KEY_FILE)" M4_E2E_MINIO_ARTIFACT_BUCKET="$(M4_E2E_MINIO_ARTIFACT_BUCKET)" M4_E2E_RABBITMQ_URI_FILE="$(M4_E2E_RABBITMQ_URI_FILE)" go test -count=1 -v -tags 'e2e m4' -run '^TestM4' ./...
 
 m4-performance-smoke: m4-fixtures
+	@$(TEST_RESET_CMD)
 	cd tests/e2e && M4_E2E_FIXTURE_DIR="$(M4_E2E_FIXTURE_DIR)" M4_E2E_EDGE_BASE_URLS="$(M4_E2E_EDGE_BASE_URLS)" M4_E2E_PUBLIC_ORIGIN="$(M4_E2E_PUBLIC_ORIGIN)" M4_E2E_INGESTION_POSTGRES_DSN_FILE="$(M4_E2E_INGESTION_POSTGRES_DSN_FILE)" M4_E2E_MINIO_ENDPOINT="$(M4_E2E_MINIO_ENDPOINT)" M4_E2E_MINIO_INSECURE="$(M4_E2E_MINIO_INSECURE)" M4_E2E_MINIO_CA_FILE="$(M4_E2E_MINIO_CA_FILE)" M4_E2E_MINIO_ACCESS_KEY_FILE="$(M4_E2E_MINIO_ACCESS_KEY_FILE)" M4_E2E_MINIO_SECRET_KEY_FILE="$(M4_E2E_MINIO_SECRET_KEY_FILE)" M4_E2E_MINIO_ARTIFACT_BUCKET="$(M4_E2E_MINIO_ARTIFACT_BUCKET)" M4_PERFORMANCE_PROFILE="$${M4_PERFORMANCE_PROFILE:-m4-slo-v1}" go test -count=1 -v -timeout "$${M4_PERFORMANCE_TIMEOUT:-20m}" -tags 'e2e m4' -run '^TestM4Performance' ./...
 
 m4-sse-load: _require_root
@@ -530,6 +544,7 @@ m4-sse-load: _require_root
 
 m4-soak: m4-fixtures
 	@set -eu; \
+	$(TEST_RESET_CMD); \
 	cd tests/e2e; \
 	soak_tests="$$(go test -count=1 -tags 'e2e m4 m4_soak' -list '^TestM4SoakRepeatedIngestion$$' ./...)"; \
 	printf '%s\n' "$$soak_tests" | grep -qx 'TestM4SoakRepeatedIngestion' || { echo 'M4 soak test was not discovered' >&2; exit 1; }; \

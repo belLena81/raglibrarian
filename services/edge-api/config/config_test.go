@@ -42,7 +42,7 @@ func TestLoadParsesExplicitSecurityConfiguration(t *testing.T) {
 	assert.Equal(t, "answer-service:50055", cfg.AnswerAddress)
 	assert.Equal(t, 5*time.Minute, cfg.AnswerDeadline)
 	assert.Equal(t, 2*time.Minute, cfg.RetrievalSearchDeadline)
-	assert.Equal(t, 5*time.Second, cfg.CatalogPreviewDeadline)
+	assert.Equal(t, 6*time.Second, cfg.CatalogPreviewDeadline)
 	assert.Equal(t, 10, cfg.AnswerRateLimit)
 	assert.Equal(t, 3*time.Minute, cfg.AnswerRateWindow)
 	assert.True(t, cfg.RetrievalReadinessRequired)
@@ -136,6 +136,17 @@ func TestLoadAcceptsMaximumCatalogPreviewDeadline(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, 30*time.Second, cfg.CatalogPreviewDeadline)
+}
+
+func TestLoadRejectsCatalogPreviewDeadlineAtOrAboveRetrievalSearchDeadline(t *testing.T) {
+	setRequired(t)
+	t.Setenv("EDGE_RETRIEVAL_SEARCH_DEADLINE", "9s")
+	t.Setenv("EDGE_CATALOG_PREVIEW_DEADLINE", "9s")
+
+	_, err := config.Load()
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, config.ErrQueryLimitConfiguration)
 }
 
 func TestLoadRejectsOversizedAnswerDeadline(t *testing.T) {

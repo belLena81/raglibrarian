@@ -226,7 +226,11 @@ if ! grep -Fq 'export RETRIEVAL_SUMMARY_LLM_OUTPUT_MODE="$retrieval_summary_prov
   echo "host env renderer does not export retrieval summary output mode" >&2
   exit 1
 fi
-if ! grep -Fq 'export EDGE_CATALOG_PREVIEW_DEADLINE="${EDGE_CATALOG_PREVIEW_DEADLINE:-5s}"' "$root_dir/scripts/render-local-host-env.sh"; then
+if ! grep -Fq 'export RETRIEVAL_SUMMARY_LLM_TIMEOUT="${RETRIEVAL_SUMMARY_LLM_TIMEOUT:-90s}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export the retrieval summary timeout" >&2
+  exit 1
+fi
+if ! grep -Fq 'export EDGE_CATALOG_PREVIEW_DEADLINE="${EDGE_CATALOG_PREVIEW_DEADLINE:-6s}"' "$root_dir/scripts/render-local-host-env.sh"; then
   echo "host env renderer does not export the catalog preview deadline" >&2
   exit 1
 fi

@@ -139,9 +139,12 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	catalogPreviewDeadline, err := boundedDuration("EDGE_CATALOG_PREVIEW_DEADLINE", 5*time.Second, catalogclient.MaxPreviewDeadline)
+	catalogPreviewDeadline, err := boundedDuration("EDGE_CATALOG_PREVIEW_DEADLINE", 6*time.Second, catalogclient.MaxPreviewDeadline)
 	if err != nil {
 		return Config{}, err
+	}
+	if catalogPreviewDeadline >= retrievalSearchDeadline {
+		return Config{}, fmt.Errorf("%w: EDGE_CATALOG_PREVIEW_DEADLINE must be shorter than EDGE_RETRIEVAL_SEARCH_DEADLINE", ErrQueryLimitConfiguration)
 	}
 	minimumEvidenceScore, err := boundedFloat("EDGE_MINIMUM_EVIDENCE_SCORE", 0.6, 0, 1)
 	if err != nil {

@@ -16,8 +16,6 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "$script_dir/../../.." && pwd)
 cd "$repo_root"
 
-"$script_dir/validate-deployment.sh" "$AZURE_PARAMETERS_FILE"
-
 wait_for_scheduled_executions() {
   wait_for_active_executions Schedule
 }
@@ -107,6 +105,8 @@ if [ "$AZURE_PROCESSING_MODE" = paused ]; then
   delete_event_jobs
   delete_scheduled_jobs
 fi
+
+"$script_dir/validate-deployment.sh" "$AZURE_PARAMETERS_FILE"
 
 az deployment group create \
   --resource-group "$AZURE_RESOURCE_GROUP" \
