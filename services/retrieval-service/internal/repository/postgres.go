@@ -814,6 +814,13 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 	if err = tx.QueryRow(ctx, `SELECT state FROM retrieval.index_batches WHERE id=$1 AND job_id=$2 FOR UPDATE`, work.BatchID, work.JobID).Scan(&state); err != nil {
 		return false, err
 	}
+	var mediaType string
+	if err = tx.QueryRow(ctx, `SELECT media_type FROM retrieval.metadata_facts WHERE book_id=$1`, work.BookID).Scan(&mediaType); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, application.ErrInvalidEvent
+		}
+		return false, err
+	}
 	if jobState != "pending" {
 		if state == "processing" {
 			if _, err = tx.Exec(ctx, `UPDATE retrieval.index_batches
@@ -849,11 +856,19 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 	batchVectorSum := make([]float32, domain.EmbeddingDimensions)
 	var pageStart, pageEnd uint32
 	havePageStart := false
+	batchMediaType := mediaType
 	seenChunkIDs := make(map[string]struct{}, len(records))
 	for _, record := range records {
 		if record.JobID != work.JobID || record.BookID != work.BookID || len(record.Vector) != domain.EmbeddingDimensions {
 			return false, application.ErrInvalidEvent
 		}
+		recordMediaType := record.MediaType
+		if recordMediaType == "" {
+			recordMediaType = mediaType
+		} else if recordMediaType != mediaType {
+			return false, application.ErrInvalidEvent
+		}
+		batchMediaType = recordMediaType
 		if _, seen := seenChunkIDs[record.ChunkID]; seen {
 			return false, application.Failure(domain.FailureManifestIntegrity, application.ErrConflictingEvent)
 		}
@@ -872,7 +887,7 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 			(evidence_id,chunk_id,job_id,book_id,title,author,publication_year,tags,chapter,section,page_start,page_end,passage,content_sha256,created_at,media_type)
 			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 			ON CONFLICT(job_id,chunk_id) DO NOTHING`, record.EvidenceID, record.ChunkID, work.JobID, record.BookID, record.Title, record.Author,
-			record.Year, postgresTextArray(record.Tags), record.Chapter, record.Section, record.PageStart, record.PageEnd, record.Passage, record.ContentSHA256[:], now, record.MediaType)
+			record.Year, postgresTextArray(record.Tags), record.Chapter, record.Section, record.PageStart, record.PageEnd, record.Passage, record.ContentSHA256[:], now, recordMediaType)
 		if insertErr != nil {
 			return false, insertErr
 		}
@@ -891,7 +906,7 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 			chunk_count=retrieval.documents.chunk_count + EXCLUDED.chunk_count,
 			page_start=LEAST(retrieval.documents.page_start, EXCLUDED.page_start),
 			page_end=GREATEST(retrieval.documents.page_end, EXCLUDED.page_end),
-			updated_at=EXCLUDED.updated_at`, work.BookID+":"+work.JobID, work.JobID, work.BookID, firstRecord.Title, firstRecord.Author, firstRecord.Year, postgresTextArray(firstRecord.Tags), len(records), pageStart, pageEnd, now, firstRecord.MediaType)
+			updated_at=EXCLUDED.updated_at`, work.BookID+":"+work.JobID, work.JobID, work.BookID, firstRecord.Title, firstRecord.Author, firstRecord.Year, postgresTextArray(firstRecord.Tags), len(records), pageStart, pageEnd, now, batchMediaType)
 	if err != nil {
 		return false, err
 	}
@@ -1522,24 +1537,24 @@ func (r *Postgres) RecoverStaleBatches(ctx context.Context, cutoff, now time.Tim
 		UPDATE retrieval.index_batches b
 		SET state=CASE WHEN j.state='pending' THEN 'pending' ELSE 'failed' END,
 		    lease_owner=NULL,lease_expires_at=NULL,
-		    next_attempt_at=CASE WHEN j.state='pending' THEN $2 ELSE NULL END,
-		    updated_at=$2
+		    next_attempt_at=CASE WHEN j.state='pending' THEN $2::timestamptz ELSE NULL END,
+		    updated_at=$2::timestamptz
 		FROM retrieval.index_jobs j
 		WHERE b.job_id=j.id AND b.state='processing' AND b.updated_at < $1
 		RETURNING b.id,b.state
 	), replay AS (
-		UPDATE retrieval.outbox o SET published_at=NULL,next_attempt_at=$2
+		UPDATE retrieval.outbox o SET published_at=NULL,next_attempt_at=$2::timestamptz
 		FROM stale WHERE stale.state='pending' AND o.event_id=stale.id || ':requested'
 	), stale_finalization AS (
 		UPDATE retrieval.index_jobs
 		SET finalization_inflight=false,finalization_lease_expires_at=NULL,
 		    vector_cleanup_pending=CASE WHEN state='failed' THEN true ELSE vector_cleanup_pending END,
-		    vector_cleanup_next_attempt_at=CASE WHEN state='failed' THEN $2 ELSE vector_cleanup_next_attempt_at END,
-		    updated_at=$2
+		    vector_cleanup_next_attempt_at=CASE WHEN state='failed' THEN $2::timestamptz ELSE vector_cleanup_next_attempt_at END,
+		    updated_at=$2::timestamptz
 		WHERE finalization_inflight AND finalization_lease_expires_at < $2
 		RETURNING id,state
 	), replay_finalization AS (
-		UPDATE retrieval.outbox o SET published_at=NULL,next_attempt_at=$2
+		UPDATE retrieval.outbox o SET published_at=NULL,next_attempt_at=$2::timestamptz
 		FROM stale_finalization s
 		WHERE s.state='pending'
 		  AND o.event_id=(

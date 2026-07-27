@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS retrieval.evidence (
 );
 
 CREATE TABLE IF NOT EXISTS retrieval.book_lifecycle (
-    book_id                   TEXT        PRIMARY KEY REFERENCES retrieval.metadata_facts(book_id),
+    book_id                   TEXT        PRIMARY KEY,
     lifecycle_version         BIGINT      NOT NULL CHECK (lifecycle_version >= 1),
     state                     TEXT        NOT NULL CHECK (state IN ('active','reindexing','deleting','deleted')),
     active_job_id             TEXT        REFERENCES retrieval.index_jobs(id),
