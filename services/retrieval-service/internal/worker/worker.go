@@ -929,13 +929,6 @@ func (r *Runtime) logStaleBatchesRecovered(count int64) {
 	}
 }
 
-func (r *Runtime) logRejected(queue, reason string) {
-	if r.diagnostic == nil {
-		return
-	}
-	r.diagnostic.Rejected(queueOperation(queue), "", "", reason, "")
-}
-
 func (r *Runtime) logRetry(queue, reason, detail string) {
 	if r.diagnostic != nil {
 		r.diagnostic.RetryScheduled(queueOperation(queue), reason, detail)

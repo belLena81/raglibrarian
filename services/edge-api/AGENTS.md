@@ -32,6 +32,9 @@ turning it into an Identity, Catalog, Ingestion, Retrieval, or Answer service.
   changed HTTP contracts when infrastructure is available.
 - Prefer contract-first changes. Define domain/request/response types and tests
   before wiring an external service.
+- Unit and e2e tests must use isolated test databases or other isolated test
+  data stores; never reset, truncate, or otherwise mutate the main application
+  data from test runs.
 - Never log tokens, passwords, raw book contents, or secret configuration.
 - Return citations only for retrieved evidence. Do not make the LLM invent a
   source, page number, chapter, or quotation.
