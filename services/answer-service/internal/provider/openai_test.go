@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/belLena81/raglibrarian/pkg/providerhttp"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/domain"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/throttle"
@@ -455,18 +456,18 @@ func TestNewOpenAIRequiresHTTPSAndFixedConfiguration(t *testing.T) {
 	}
 }
 
-func TestReadAPIKeyRequiresRestrictedRegularSingleLineFile(t *testing.T) {
+func TestProviderHTTPReadSingleLineSecretRequiresRestrictedRegularSingleLineFile(t *testing.T) {
 	fileName := t.TempDir() + "/key"
 	if err := os.WriteFile(fileName, []byte("synthetic-key\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if value, err := ReadAPIKey(fileName); err != nil || value != "synthetic-key" {
-		t.Fatalf("ReadAPIKey() = %q, %v", value, err)
+	if value, err := providerhttp.ReadSingleLineSecret(fileName, 4096); err != nil || value != "synthetic-key" {
+		t.Fatalf("ReadSingleLineSecret() = %q, %v", value, err)
 	}
 	if err := os.Chmod(fileName, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReadAPIKey(fileName); err == nil {
+	if _, err := providerhttp.ReadSingleLineSecret(fileName, 4096); err == nil {
 		t.Fatal("permissive credential file accepted")
 	}
 }

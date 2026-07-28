@@ -591,19 +591,3 @@ func rejectDuplicateObjectFields(data []byte) error {
 	}
 	return nil
 }
-
-func ReadAPIKey(filePath string) (string, error) {
-	value, err := providerhttp.ReadSingleLineSecret(filePath, 4096)
-	if err != nil {
-		return "", errors.New("invalid summary provider credential file")
-	}
-	return value, nil
-}
-
-func NewHTTPClient(caFile string, timeout time.Duration) (*http.Client, error) {
-	client, err := providerhttp.NewTLSHTTPClient(caFile, timeout)
-	if err != nil {
-		return nil, errors.New("load summary provider trust roots")
-	}
-	return client, nil
-}

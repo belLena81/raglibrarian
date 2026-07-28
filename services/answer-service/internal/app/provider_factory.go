@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/providerhttp"
 	"github.com/belLena81/raglibrarian/services/answer-service/config"
@@ -13,11 +14,11 @@ import (
 func configureLLMProvider(configuration config.Config) (application.LLMProvider, error) {
 	switch configuration.LLMProviderKind {
 	case providerhttp.OpenAICompatibleProviderKind:
-		apiKey, err := provider.ReadAPIKey(configuration.LLMAPIKeyFile)
+		apiKey, err := providerhttp.ReadSingleLineSecret(configuration.LLMAPIKeyFile, 4096)
 		if err != nil {
 			return nil, errors.New("load provider credentials")
 		}
-		httpClient, err := provider.NewHTTPClient(configuration.LLMCAFile)
+		httpClient, err := providerhttp.NewTLSHTTPClient(configuration.LLMCAFile, 0*time.Second)
 		if err != nil {
 			return nil, errors.New("configure provider transport")
 		}

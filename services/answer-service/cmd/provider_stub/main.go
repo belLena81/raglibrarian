@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/process"
-	"github.com/belLena81/raglibrarian/services/answer-service/internal/provider"
+	"github.com/belLena81/raglibrarian/pkg/providerhttp"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/providerstub"
 )
 
@@ -23,7 +23,7 @@ func main() {
 	address := os.Getenv("ANSWER_STUB_ADDR")
 	certificate := os.Getenv("ANSWER_STUB_TLS_CERT_FILE")
 	keyFile := os.Getenv("ANSWER_STUB_TLS_KEY_FILE")
-	apiKey, err := provider.ReadAPIKey(os.Getenv("ANSWER_STUB_API_KEY_FILE"))
+	apiKey, err := providerhttp.ReadSingleLineSecret(os.Getenv("ANSWER_STUB_API_KEY_FILE"), 4096)
 	if address == "" || certificate == "" || keyFile == "" || err != nil {
 		log.Fatal("provider stub configuration is invalid")
 	}

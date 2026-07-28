@@ -74,14 +74,14 @@ func configureSummaryProvider(configuration config.Config, serviceLogger *zap.Lo
 	}
 	switch configuration.SummaryLLMProviderKind {
 	case retrievalSummaryProviderOpenAICompatible:
-		apiKey, err := provider.ReadAPIKey(configuration.SummaryLLMAPIKeyFile)
+		apiKey, err := providerhttp.ReadSingleLineSecret(configuration.SummaryLLMAPIKeyFile, 4096)
 		if err != nil {
 			if serviceLogger != nil {
 				serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "api_key_unavailable"))
 			}
 			return nil, nil
 		}
-		httpClient, err := provider.NewHTTPClient(configuration.SummaryLLMCAFile, configuration.SummaryLLMTimeout)
+		httpClient, err := providerhttp.NewTLSHTTPClient(configuration.SummaryLLMCAFile, configuration.SummaryLLMTimeout)
 		if err != nil {
 			if serviceLogger != nil {
 				serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "transport_unavailable"))

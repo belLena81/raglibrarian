@@ -500,19 +500,3 @@ func rejectDuplicateObjectFields(data []byte) error {
 	}
 	return nil
 }
-
-func ReadAPIKey(filePath string) (string, error) {
-	value, err := providerhttp.ReadSingleLineSecret(filePath, 4096)
-	if err != nil {
-		return "", errors.New("invalid provider credential file")
-	}
-	return value, nil
-}
-
-func NewHTTPClient(caFile string) (*http.Client, error) {
-	client, err := providerhttp.NewTLSHTTPClient(caFile, 0)
-	if err != nil {
-		return nil, errors.New("load provider trust roots")
-	}
-	return client, nil
-}
