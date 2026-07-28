@@ -177,16 +177,16 @@ func Load() (Config, error) {
 	}
 	summaryTimeout, summaryTimeoutErr := optionalDuration("RETRIEVAL_SUMMARY_LLM_TIMEOUT", summaryTimeoutDefault)
 	summaryMaxOutputTokens, summaryMaxOutputTokensErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_OUTPUT_TOKENS", 64, 256)
-	summaryMaxCalls, summaryMaxCallsErr := nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_MAX_CALLS", defaultSummaryLLMMaxCalls, 1000)
+	summaryMaxCalls, summaryMaxCallsErr := boundedNonNegativeInteger("RETRIEVAL_SUMMARY_LLM_MAX_CALLS", defaultSummaryLLMMaxCalls, 1000)
 	searchCandidatePageMultiplier, searchCandidatePageMultiplierErr := boundedPositiveInteger("RETRIEVAL_SEARCH_CANDIDATE_PAGE_MULTIPLIER", defaultSearchCandidatePageMultiplier, 16)
 	minimumSearchScore, minimumSearchScoreErr := LoadMinimumSearchScore()
-	summaryLLMRequestsPerMinute, summaryLLMRequestsPerMinuteErr := nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_REQUESTS_PER_MINUTE", 15, 1000)
+	summaryLLMRequestsPerMinute, summaryLLMRequestsPerMinuteErr := nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_REQUESTS_PER_MINUTE", 15)
 	summaryLLMOutputMode, summaryLLMOutputModeErr := summaryOutputMode(configuration.SummaryLLMOutputMode)
-	teiRequestsPerSecond, teiRequestsPerSecondErr := nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000)
+	teiRequestsPerSecond, teiRequestsPerSecondErr := nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0)
 	teiMaxResponseBytes, teiMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_TEI_MAX_RESPONSE_BYTES", DefaultTEIMaxResponseBytes, 32<<20)
 	teiBatchSize, teiBatchSizeErr := boundedPositiveInteger("RETRIEVAL_TEI_BATCH_SIZE", defaultTEIBatchSize, 256)
 	teiLogRawResponse, teiLogRawResponseErr := optionalBool("RETRIEVAL_TEI_LOG_RAW_RESPONSE", false)
-	teiLogRawResponseMaxBytes, teiLogRawResponseMaxBytesErr := nonNegativeInteger("RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", 4096, 64<<10)
+	teiLogRawResponseMaxBytes, teiLogRawResponseMaxBytesErr := boundedNonNegativeInteger("RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", 4096, 64<<10)
 	qdrantMaxResponseBytes, qdrantMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_MAX_RESPONSE_BYTES", DefaultQdrantMaxResponseBytes, 32<<20)
 	qdrantBatchResponseBytes, qdrantBatchResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_BATCH_RESPONSE_BYTES", DefaultQdrantBatchResponseBytes, 32<<20)
 	summaryMaxInputRunes, summaryMaxInputRunesErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_INPUT_RUNES", DefaultSummaryProviderMaxInputRunes, 32768)
@@ -369,11 +369,11 @@ func LoadWorker() (WorkerConfig, error) {
 	readinessReadHeaderTimeout, readinessReadHeaderTimeoutErr := optionalDuration("RETRIEVAL_WORKER_READY_READ_HEADER_TIMEOUT", 2*time.Second)
 	readinessIdleTimeout, readinessIdleTimeoutErr := optionalDuration("RETRIEVAL_WORKER_READY_IDLE_TIMEOUT", 30*time.Second)
 	readinessShutdownTimeout, readinessShutdownTimeoutErr := optionalDuration("RETRIEVAL_WORKER_READY_SHUTDOWN_TIMEOUT", 3*time.Second)
-	teiRequestsPerSecond, teiRequestsPerSecondErr := nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000)
+	teiRequestsPerSecond, teiRequestsPerSecondErr := nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0)
 	teiMaxResponseBytes, teiMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_TEI_MAX_RESPONSE_BYTES", DefaultTEIMaxResponseBytes, 32<<20)
 	teiBatchSize, teiBatchSizeErr := boundedPositiveInteger("RETRIEVAL_TEI_BATCH_SIZE", defaultTEIBatchSize, 256)
 	teiLogRawResponse, teiLogRawResponseErr := optionalBool("RETRIEVAL_TEI_LOG_RAW_RESPONSE", false)
-	teiLogRawResponseMaxBytes, teiLogRawResponseMaxBytesErr := nonNegativeInteger("RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", 4096, 64<<10)
+	teiLogRawResponseMaxBytes, teiLogRawResponseMaxBytesErr := boundedNonNegativeInteger("RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", 4096, 64<<10)
 	minimumSearchScore, minimumSearchScoreErr := LoadMinimumSearchScore()
 	qdrantMaxResponseBytes, qdrantMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_MAX_RESPONSE_BYTES", DefaultQdrantMaxResponseBytes, 32<<20)
 	qdrantBatchResponseBytes, qdrantBatchResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_BATCH_RESPONSE_BYTES", DefaultQdrantBatchResponseBytes, 32<<20)
@@ -488,7 +488,19 @@ func validProviderURL(value string) bool {
 	return err == nil && len(value) <= 2048 && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
-func nonNegativeInteger(key string, fallback, maximum int) (int, error) {
+func nonNegativeInteger(key string, fallback int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return 0, errors.New("invalid integer")
+	}
+	return parsed, nil
+}
+
+func boundedNonNegativeInteger(key string, fallback, maximum int) (int, error) {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
 		return fallback, nil

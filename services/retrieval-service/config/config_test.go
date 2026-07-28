@@ -185,15 +185,15 @@ func TestLoadOverridesSummaryProviderRateLimit(t *testing.T) {
 	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
 	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
 	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
-	t.Setenv("RETRIEVAL_SUMMARY_LLM_REQUESTS_PER_MINUTE", "7")
+	t.Setenv("RETRIEVAL_SUMMARY_LLM_REQUESTS_PER_MINUTE", "2001")
 	t.Setenv("RETRIEVAL_SEARCH_TIMEOUT", "25s")
 
 	configuration, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if configuration.SummaryLLMRequestsPerMinute != 7 {
-		t.Fatalf("SummaryLLMRequestsPerMinute = %d, want 7", configuration.SummaryLLMRequestsPerMinute)
+	if configuration.SummaryLLMRequestsPerMinute != 2001 {
+		t.Fatalf("SummaryLLMRequestsPerMinute = %d, want 2001", configuration.SummaryLLMRequestsPerMinute)
 	}
 }
 

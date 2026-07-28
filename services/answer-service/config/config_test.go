@@ -63,6 +63,7 @@ func TestLoadEnablesProviderErrorBodyLoggingFlag(t *testing.T) {
 
 func TestLoadOverridesProviderPolicy(t *testing.T) {
 	setRequiredEnvironment(t)
+	t.Setenv("ANSWER_PROVIDER_REQUESTS_PER_MINUTE", "2001")
 	t.Setenv("ANSWER_PROVIDER_MAX_RESPONSE_BYTES", "65536")
 	t.Setenv("ANSWER_PROVIDER_MAX_CANDIDATE_BYTES", "16384")
 	t.Setenv("ANSWER_PROVIDER_HTTP_TIMEOUT", "15s")
@@ -74,6 +75,9 @@ func TestLoadOverridesProviderPolicy(t *testing.T) {
 	}
 	if configuration.LLMMaxResponseBytes != 65536 || configuration.LLMMaxCandidateBytes != 16384 {
 		t.Fatalf("unexpected provider policy: response=%d candidate=%d", configuration.LLMMaxResponseBytes, configuration.LLMMaxCandidateBytes)
+	}
+	if configuration.LLMRequestsPerMinute != 2001 {
+		t.Fatalf("LLMRequestsPerMinute = %d, want 2001", configuration.LLMRequestsPerMinute)
 	}
 	if configuration.MetricsMaxHeaderBytes != 65535 {
 		t.Fatalf("MetricsMaxHeaderBytes = %d, want %d", configuration.MetricsMaxHeaderBytes, 65535)
@@ -101,11 +105,6 @@ func TestLoadRejectsInsecureProviderAndInvalidBounds(t *testing.T) {
 	t.Setenv("ANSWER_PROVIDER_REQUESTS_PER_MINUTE", "-1")
 	if _, err := Load(); err == nil {
 		t.Fatal("negative provider rate limit accepted")
-	}
-	setRequiredEnvironment(t)
-	t.Setenv("ANSWER_PROVIDER_REQUESTS_PER_MINUTE", "1001")
-	if _, err := Load(); err == nil {
-		t.Fatal("oversized provider rate limit accepted")
 	}
 	setRequiredEnvironment(t)
 	t.Setenv("ANSWER_PROVIDER_REQUESTS_PER_MINUTE", "maybe")

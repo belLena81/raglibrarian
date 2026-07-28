@@ -215,7 +215,7 @@ func providerRequestsPerMinute(key, model string) (int, error) {
 	value := os.Getenv(key)
 	if value != "" {
 		parsed, err := strconv.Atoi(value)
-		if err != nil || parsed < 0 || parsed > 1000 {
+		if err != nil || parsed < 0 {
 			return 0, errors.New("invalid integer")
 		}
 		return parsed, nil
