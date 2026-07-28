@@ -15,47 +15,44 @@ import (
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/providerstub"
 )
 
-const defaultRuntimeID = 65532
-
 var dropPrivileges = process.DropPrivileges
 
+type runtimeConfig struct {
+	Address           string
+	CertificateFile   string
+	KeyFile           string
+	APIKeyFile        string
+	RunAs             process.Identity
+	Delay             time.Duration
+	Scenario          providerstub.Scenario
+	Policy            providerstub.Policy
+	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	IdleTimeout       time.Duration
+}
+
 func main() {
-	address := os.Getenv("ANSWER_STUB_ADDR")
-	certificate := os.Getenv("ANSWER_STUB_TLS_CERT_FILE")
-	keyFile := os.Getenv("ANSWER_STUB_TLS_KEY_FILE")
-	apiKey, err := providerhttp.ReadSingleLineSecret(os.Getenv("ANSWER_STUB_API_KEY_FILE"), 4096)
-	if address == "" || certificate == "" || keyFile == "" || err != nil {
-		log.Fatal("provider stub configuration is invalid")
-	}
-	keyPair, err := tls.LoadX509KeyPair(certificate, keyFile)
+	configuration, err := loadConfig()
 	if err != nil {
 		log.Fatal("provider stub configuration is invalid")
 	}
-	runAs, err := parseRunAs()
+	apiKey, err := providerhttp.ReadSingleLineSecret(configuration.APIKeyFile, 4096)
 	if err != nil {
 		log.Fatal("provider stub configuration is invalid")
 	}
-	delay, err := parseDelay(os.Getenv("ANSWER_STUB_DELAY_MS"))
+	keyPair, err := tls.LoadX509KeyPair(configuration.CertificateFile, configuration.KeyFile)
 	if err != nil {
 		log.Fatal("provider stub configuration is invalid")
 	}
-	scenario := os.Getenv("ANSWER_STUB_SCENARIO")
-	if scenario == "" {
-		scenario = string(providerstub.ScenarioSuccess)
-	}
-	policy := providerstub.Policy{
-		MaximumDelay:       envDuration("ANSWER_STUB_MAX_DELAY", 30*time.Second),
-		TimeoutDelay:       envDuration("ANSWER_STUB_TIMEOUT_DELAY", 10*time.Second),
-		MaximumRequestBody: envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128<<10),
-	}
-	handler, err := providerstub.New(apiKey, providerstub.Scenario(scenario), delay, policy)
+	handler, err := providerstub.New(apiKey, configuration.Scenario, configuration.Delay, configuration.Policy)
 	if err != nil {
 		log.Fatal("provider stub configuration is invalid")
 	}
-	if err = dropPrivileges(runAs); err != nil {
+	if err = dropPrivileges(configuration.RunAs); err != nil {
 		log.Fatal("provider stub could not reduce privileges")
 	}
-	listener, err := net.Listen("tcp", address)
+	listener, err := net.Listen("tcp", configuration.Address)
 	if err != nil {
 		log.Fatal("provider stub listener failed")
 	}
@@ -64,16 +61,53 @@ func main() {
 		MinVersion:   tls.VersionTLS13,
 	})
 	server := &http.Server{
-		Addr:              address,
+		Addr:              configuration.Address,
 		Handler:           handler,
+		ReadHeaderTimeout: configuration.ReadHeaderTimeout,
+		ReadTimeout:       configuration.ReadTimeout,
+		WriteTimeout:      configuration.WriteTimeout,
+		IdleTimeout:       configuration.IdleTimeout,
+	}
+	if err = server.Serve(tlsListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal("provider stub listener failed")
+	}
+}
+
+func loadConfig() (runtimeConfig, error) {
+	runAs, err := parseRunAs()
+	if err != nil {
+		return runtimeConfig{}, err
+	}
+	delay, err := parseDelay(os.Getenv("ANSWER_STUB_DELAY_MS"))
+	if err != nil {
+		return runtimeConfig{}, err
+	}
+	scenario := os.Getenv("ANSWER_STUB_SCENARIO")
+	if scenario == "" {
+		scenario = string(providerstub.ScenarioSuccess)
+	}
+	configuration := runtimeConfig{
+		Address:         os.Getenv("ANSWER_STUB_ADDR"),
+		CertificateFile: os.Getenv("ANSWER_STUB_TLS_CERT_FILE"),
+		KeyFile:         os.Getenv("ANSWER_STUB_TLS_KEY_FILE"),
+		APIKeyFile:      os.Getenv("ANSWER_STUB_API_KEY_FILE"),
+		RunAs:           runAs,
+		Delay:           delay,
+		Scenario:        providerstub.Scenario(scenario),
+		Policy: providerstub.Policy{
+			MaximumDelay:       envDuration("ANSWER_STUB_MAX_DELAY", 30*time.Second),
+			TimeoutDelay:       envDuration("ANSWER_STUB_TIMEOUT_DELAY", 10*time.Second),
+			MaximumRequestBody: envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128<<10),
+		},
 		ReadHeaderTimeout: envDuration("ANSWER_STUB_READ_HEADER_TIMEOUT", 2*time.Second),
 		ReadTimeout:       envDuration("ANSWER_STUB_READ_TIMEOUT", 5*time.Second),
 		WriteTimeout:      envDuration("ANSWER_STUB_WRITE_TIMEOUT", 15*time.Second),
 		IdleTimeout:       envDuration("ANSWER_STUB_IDLE_TIMEOUT", 30*time.Second),
 	}
-	if err = server.Serve(tlsListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal("provider stub listener failed")
+	if configuration.Address == "" || configuration.CertificateFile == "" || configuration.KeyFile == "" || configuration.APIKeyFile == "" {
+		return runtimeConfig{}, errors.New("missing required configuration")
 	}
+	return configuration, nil
 }
 
 func envDuration(key string, fallback time.Duration) time.Duration {
@@ -115,7 +149,7 @@ func parseRunAs() (process.Identity, error) {
 func positiveIdentity(name string) (int, error) {
 	value := os.Getenv(name)
 	if value == "" {
-		return defaultRuntimeID, nil
+		return 65532, nil
 	}
 	parsed, err := strconv.ParseInt(value, 10, 32)
 	if err != nil || parsed < 1 {
