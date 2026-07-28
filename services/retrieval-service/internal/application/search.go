@@ -64,11 +64,11 @@ type IndexVisibility interface {
 }
 
 type Searcher struct {
-	embedder        QueryEmbedder
-	store           EvidenceStore
-	visibility      IndexVisibility
-	summaryProvider SummaryProvider
-	policy          SearchPolicy
+	embedder         QueryEmbedder
+	store            EvidenceStore
+	visibility       IndexVisibility
+	evidenceAssessor EvidenceAssessor
+	policy           SearchPolicy
 }
 
 type SummaryRequest struct {
@@ -82,41 +82,46 @@ type EvidenceAssessment struct {
 }
 
 type SearchPolicy struct {
-	MinimumVisibleScore      float64
-	SummaryCallLimit         int
-	SummaryTimeout           time.Duration
-	CandidatePageMultiplier  int
-	MaximumSummaryInputRunes int
+	MinimumVisibleScore         float64
+	AssessmentCallLimit         int
+	AssessmentTimeout           time.Duration
+	CandidatePageMultiplier     int
+	MaximumAssessmentInputRunes int
+	RequestPolicy               domain.SearchRequestPolicy
 }
 
-func NewSearcherWithPolicy(embedder QueryEmbedder, store EvidenceStore, visibility IndexVisibility, provider SummaryProvider, policy SearchPolicy) (*Searcher, error) {
-	if embedder == nil || store == nil || visibility == nil || policy.SummaryCallLimit < 0 ||
-		policy.CandidatePageMultiplier < 1 || policy.MaximumSummaryInputRunes < 1 {
+func NewSearcherWithPolicy(embedder QueryEmbedder, store EvidenceStore, visibility IndexVisibility, assessor EvidenceAssessor, policy SearchPolicy) (*Searcher, error) {
+	if embedder == nil || store == nil || visibility == nil || policy.AssessmentCallLimit < 0 ||
+		policy.CandidatePageMultiplier < 1 || policy.MaximumAssessmentInputRunes < 1 ||
+		policy.RequestPolicy.MaximumQuestionCharacters <= 0 || policy.RequestPolicy.MaximumFilterTags <= 0 ||
+		policy.RequestPolicy.MaximumTagCharacters <= 0 || policy.RequestPolicy.MaximumAuthorCharacters <= 0 ||
+		policy.RequestPolicy.DefaultResultLimit <= 0 || policy.RequestPolicy.MaximumResultLimit <= 0 ||
+		policy.RequestPolicy.DefaultResultLimit > policy.RequestPolicy.MaximumResultLimit {
 		return nil, errors.New("invalid searcher configuration")
 	}
 	return &Searcher{
-		embedder:        embedder,
-		store:           store,
-		visibility:      visibility,
-		summaryProvider: provider,
-		policy:          policy,
+		embedder:         embedder,
+		store:            store,
+		visibility:       visibility,
+		evidenceAssessor: assessor,
+		policy:           policy,
 	}, nil
 }
 
-func (s *Searcher) SetSummaryProvider(provider SummaryProvider) {
-	s.summaryProvider = provider
+func (s *Searcher) SetEvidenceAssessor(assessor EvidenceAssessor) {
+	s.evidenceAssessor = assessor
 }
 
-func (s *Searcher) SetSummaryProviderTimeout(timeout time.Duration) {
-	s.policy.SummaryTimeout = timeout
+func (s *Searcher) SetEvidenceAssessorTimeout(timeout time.Duration) {
+	s.policy.AssessmentTimeout = timeout
 }
 
 func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.SearchQueryInput) (SearchResult, error) {
 	if !actor.CanSearch() {
 		return SearchResult{}, ErrSearchForbidden
 	}
-	assessmentCache := newSearchAssessmentCache(s.policy.SummaryCallLimit, s.policy.SummaryTimeout, s.policy.MaximumSummaryInputRunes)
-	query, err := domain.NewSearchQuery(input)
+	assessmentCache := newSearchAssessmentCache(s.policy.AssessmentCallLimit, s.policy.AssessmentTimeout, s.policy.MaximumAssessmentInputRunes)
+	query, err := domain.NewSearchQuery(input, s.policy.RequestPolicy)
 	if err != nil {
 		return SearchResult{}, err
 	}
@@ -160,7 +165,7 @@ func (s *Searcher) attachDocumentChunkCounts(ctx context.Context, query domain.S
 func (s *Searcher) searchVisibleEvidence(ctx context.Context, query domain.SearchQuery, vector []float32, assessmentCache *searchAssessmentCache) ([]Evidence, error) {
 	results := make([]Evidence, 0, query.Limit())
 	seen := make(map[string]struct{})
-	maximumSearchCandidates := searchCandidateBudget(s.policy.CandidatePageMultiplier)
+	maximumSearchCandidates := searchCandidateBudget(s.policy.RequestPolicy.MaximumResultLimit, s.policy.CandidatePageMultiplier)
 	for offset, pageLimit := 0, searchPageLimit(query.Limit(), s.policy.CandidatePageMultiplier); len(results) < query.Limit() && offset < maximumSearchCandidates; offset += pageLimit {
 		candidateLimit := searchCandidateLimit(pageLimit, offset, maximumSearchCandidates)
 		candidates, err := s.store.Search(ctx, query, vector, candidateLimit, offset)
@@ -202,15 +207,15 @@ func (s *Searcher) searchVisibleEvidence(ctx context.Context, query domain.Searc
 
 func searchPageLimit(limit, candidatePageMultiplier int) int {
 	pageLimit := limit * candidatePageMultiplier
-	maximumSearchCandidates := searchCandidateBudget(candidatePageMultiplier)
+	maximumSearchCandidates := searchCandidateBudget(limit, candidatePageMultiplier)
 	if pageLimit > maximumSearchCandidates {
 		return maximumSearchCandidates
 	}
 	return pageLimit
 }
 
-func searchCandidateBudget(candidatePageMultiplier int) int {
-	return domain.MaximumResultLimit * candidatePageMultiplier
+func searchCandidateBudget(maximumResultLimit, candidatePageMultiplier int) int {
+	return maximumResultLimit * candidatePageMultiplier
 }
 
 func searchCandidateLimit(pageLimit, offset, maximumSearchCandidates int) int {
@@ -266,9 +271,9 @@ func sortDocumentsByScore(values []DocumentResult) {
 
 func (s *Searcher) assessEvidence(ctx context.Context, question string, value Evidence, assessmentCache *searchAssessmentCache) (EvidenceAssessment, bool) {
 	if assessmentCache == nil {
-		return localAssessment(value.Passage, s.policy.MaximumSummaryInputRunes)
+		return localAssessment(value.Passage, s.policy.MaximumAssessmentInputRunes)
 	}
-	return assessmentCache.assess(ctx, s.summaryProvider, SummaryRequest{Question: question, Passage: value.Passage})
+	return assessmentCache.assess(ctx, s.evidenceAssessor, SummaryRequest{Question: question, Passage: value.Passage})
 }
 
 func normalizeSummaryInput(value string, maximumRunes int) string {
@@ -374,7 +379,7 @@ func newSearchAssessmentCache(limit int, summaryTimeout time.Duration, maximumRu
 	}
 }
 
-func (c *searchAssessmentCache) assess(ctx context.Context, provider SummaryProvider, request SummaryRequest) (EvidenceAssessment, bool) {
+func (c *searchAssessmentCache) assess(ctx context.Context, assessor EvidenceAssessor, request SummaryRequest) (EvidenceAssessment, bool) {
 	if ctx.Err() != nil {
 		return EvidenceAssessment{}, false
 	}
@@ -397,8 +402,8 @@ func (c *searchAssessmentCache) assess(ctx context.Context, provider SummaryProv
 	}
 	entry := &searchAssessmentEntry{ready: make(chan struct{})}
 	c.entries[key] = entry
-	useProvider := provider != nil && !c.providerFailed && c.remaining > 0
-	useLocalAssessment := provider == nil || c.localOnly || c.providerFailed || c.remaining == 0
+	useProvider := assessor != nil && !c.providerFailed && c.remaining > 0
+	useLocalAssessment := assessor == nil || c.localOnly || c.providerFailed || c.remaining == 0
 	if useProvider {
 		c.remaining--
 	}
@@ -417,7 +422,7 @@ func (c *searchAssessmentCache) assess(ctx context.Context, provider SummaryProv
 			assessmentContext, cancel = context.WithTimeout(ctx, c.summaryTimeout)
 		}
 		defer cancel()
-		if providerAssessment, err := provider.Assess(assessmentContext, SummaryRequest{Question: normalizedQuestion, Passage: normalizedPassage}); err == nil {
+		if providerAssessment, err := assessor.Assess(assessmentContext, SummaryRequest{Question: normalizedQuestion, Passage: normalizedPassage}); err == nil {
 			providerAssessment.Summary = normalizeProviderSummary(providerAssessment.Summary)
 			assessment = providerAssessment
 			ok = true
@@ -437,6 +442,6 @@ func (c *searchAssessmentCache) assess(ctx context.Context, provider SummaryProv
 	return assessment, ok
 }
 
-type SummaryProvider interface {
+type EvidenceAssessor interface {
 	Assess(context.Context, SummaryRequest) (EvidenceAssessment, error)
 }

@@ -52,6 +52,7 @@ func newHandler(t *testing.T, useCase *fakeAuthUseCase) *handler.AuthHandler {
 	return handler.NewAuthHandler(useCase, diagnostic.New(zaptest.NewLogger(t)), handler.CookieConfig{
 		Secure:              true,
 		RefreshCookieMaxAge: 30 * 24 * time.Hour,
+		JSONBodyMaxBytes:    16 << 10,
 	})
 }
 
@@ -176,14 +177,14 @@ func TestRefreshSuccessReplacesCookieWithoutExposingIt(t *testing.T) {
 
 func TestConstructorRequiresDependencies(t *testing.T) {
 	assert.Panics(t, func() {
-		handler.NewAuthHandler(nil, diagnostic.New(zaptest.NewLogger(t)), handler.CookieConfig{RefreshCookieMaxAge: time.Hour})
+		handler.NewAuthHandler(nil, diagnostic.New(zaptest.NewLogger(t)), handler.CookieConfig{RefreshCookieMaxAge: time.Hour, JSONBodyMaxBytes: 16 << 10})
 	})
 	assert.Panics(t, func() {
-		handler.NewAuthHandler(&fakeAuthUseCase{}, nil, handler.CookieConfig{RefreshCookieMaxAge: time.Hour})
+		handler.NewAuthHandler(&fakeAuthUseCase{}, nil, handler.CookieConfig{RefreshCookieMaxAge: time.Hour, JSONBodyMaxBytes: 16 << 10})
 	})
 	var typedNil *diagnostic.Recorder
 	assert.Panics(t, func() {
-		handler.NewAuthHandler(&fakeAuthUseCase{}, typedNil, handler.CookieConfig{RefreshCookieMaxAge: time.Hour})
+		handler.NewAuthHandler(&fakeAuthUseCase{}, typedNil, handler.CookieConfig{RefreshCookieMaxAge: time.Hour, JSONBodyMaxBytes: 16 << 10})
 	})
 	assert.Panics(t, func() {
 		handler.NewAuthHandler(&fakeAuthUseCase{}, diagnostic.New(zaptest.NewLogger(t)), handler.CookieConfig{})
@@ -197,7 +198,7 @@ func TestRegisterDoesNotLogDependencyError(t *testing.T) {
 	h := handler.NewAuthHandler(
 		&fakeAuthUseCase{registerErr: errors.New(canary)},
 		diagnostic.New(log),
-		handler.CookieConfig{Secure: true, RefreshCookieMaxAge: 30 * 24 * time.Hour},
+		handler.CookieConfig{Secure: true, RefreshCookieMaxAge: 30 * 24 * time.Hour, JSONBodyMaxBytes: 16 << 10},
 	)
 
 	recorder := post(t, h.Register, `{"name":"Reader","email":"reader@example.com","password":"password-1234","role":"reader"}`)

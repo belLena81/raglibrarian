@@ -69,7 +69,7 @@ func DecodeMetadata(payload []byte) (application.MetadataEvent, error) {
 		CorrelationID: message.CorrelationId, CausationID: message.CausationId, Producer: message.Producer, SchemaVersion: message.SchemaVersion, IdempotencyKey: message.IdempotencyKey,
 		OccurredAt: message.OccurredAt.AsTime(), PayloadDigest: sha256.Sum256(payload), LifecycleVersion: lifecycleVersion}
 	copy(event.SourceSHA256[:], message.Sha256)
-	return event, event.Validate()
+	return event, event.ValidateEnvelope()
 }
 
 func DecodeManifest(payload, manifestPayload []byte) (application.ManifestEvent, error) {

@@ -20,14 +20,21 @@ type SetupUseCase interface {
 }
 
 // SetupHandler serves the bounded, one-time administrator setup flow.
-type SetupHandler struct{ identity SetupUseCase }
+type SetupHandler struct {
+	identity         SetupUseCase
+	jsonBodyMaxBytes int64
+}
+
+type SetupPolicy struct {
+	JSONBodyMaxBytes int64
+}
 
 // NewSetupHandler constructs a setup handler with its required Identity port.
-func NewSetupHandler(identity SetupUseCase) *SetupHandler {
-	if identity == nil {
+func NewSetupHandler(identity SetupUseCase, policy SetupPolicy) *SetupHandler {
+	if identity == nil || policy.JSONBodyMaxBytes <= 0 {
 		panic("handler: setup dependency is required")
 	}
-	return &SetupHandler{identity: identity}
+	return &SetupHandler{identity: identity, jsonBodyMaxBytes: policy.JSONBodyMaxBytes}
 }
 
 // Status reports whether initial administrator setup is still required.
@@ -51,7 +58,7 @@ func (h *SetupHandler) CreateAdmin(w http.ResponseWriter, r *http.Request) {
 		Password      string `json:"password"`
 		BootstrapCode string `json:"bootstrap_code"`
 	}
-	if err := decodeJSONBody(w, r, &request); err != nil {
+	if err := decodeJSONBody(w, r, &request, h.jsonBodyMaxBytes); err != nil {
 		writeIdentityError(w, r, http.StatusBadRequest, "invalid_request", "invalid setup request")
 		return
 	}
@@ -89,17 +96,23 @@ type PendingHub struct {
 	subscribers map[chan struct{}]subscription
 	bySession   map[string]int
 	byIP        map[string]int
-	limit       int
+	policy      PendingHubPolicy
+}
+
+type PendingHubPolicy struct {
+	MaxSubscribers           int
+	MaxSubscribersPerSession int
+	MaxSubscribersPerIP      int
 }
 
 type subscription struct{ sessionID, ip string }
 
 // NewPendingHub constructs a hub with a process-wide subscriber limit.
-func NewPendingHub(limit int) *PendingHub {
-	if limit < 1 {
+func NewPendingHub(policy PendingHubPolicy) *PendingHub {
+	if policy.MaxSubscribers < 1 || policy.MaxSubscribersPerSession < 1 || policy.MaxSubscribersPerIP < 1 {
 		panic("handler: positive SSE limit is required")
 	}
-	return &PendingHub{subscribers: make(map[chan struct{}]subscription), bySession: make(map[string]int), byIP: make(map[string]int), limit: limit}
+	return &PendingHub{subscribers: make(map[chan struct{}]subscription), bySession: make(map[string]int), byIP: make(map[string]int), policy: policy}
 }
 
 // Publish non-blockingly notifies every current subscriber of a pending change.
@@ -117,7 +130,7 @@ func (h *PendingHub) Publish() {
 func (h *PendingHub) subscribe(sessionID, ip string) (<-chan struct{}, func(), bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if len(h.subscribers) >= h.limit || h.bySession[sessionID] >= 1 || h.byIP[ip] >= 10 {
+	if len(h.subscribers) >= h.policy.MaxSubscribers || h.bySession[sessionID] >= h.policy.MaxSubscribersPerSession || h.byIP[ip] >= h.policy.MaxSubscribersPerIP {
 		return nil, nil, false
 	}
 	channel := make(chan struct{}, 1)
@@ -148,11 +161,12 @@ type AdminHandler struct {
 type AdminPolicy struct {
 	PendingPageDefaultSize int
 	PendingPageMaxSize     int
+	JSONBodyMaxBytes       int64
 }
 
 // NewAdminHandler constructs an administrator handler with required dependencies.
 func NewAdminHandler(identity AdminUseCase, hub *PendingHub, policy AdminPolicy) *AdminHandler {
-	if identity == nil || hub == nil || policy.PendingPageDefaultSize <= 0 || policy.PendingPageMaxSize < policy.PendingPageDefaultSize {
+	if identity == nil || hub == nil || policy.PendingPageDefaultSize <= 0 || policy.PendingPageMaxSize < policy.PendingPageDefaultSize || policy.JSONBodyMaxBytes <= 0 {
 		panic("handler: admin dependencies are required")
 	}
 	return &AdminHandler{identity: identity, hub: hub, policy: policy}
@@ -216,7 +230,7 @@ func (h *AdminHandler) decide(w http.ResponseWriter, r *http.Request, approve bo
 	var request struct {
 		UserID string `json:"user_id"`
 	}
-	if err := decodeJSONBody(w, r, &request); err != nil || request.UserID == "" {
+	if err := decodeJSONBody(w, r, &request, h.policy.JSONBodyMaxBytes); err != nil || request.UserID == "" {
 		writeIdentityError(w, r, http.StatusBadRequest, "invalid_request", "invalid decision")
 		return
 	}

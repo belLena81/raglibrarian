@@ -63,6 +63,8 @@ func TestLoadParsesExplicitSecurityConfiguration(t *testing.T) {
 	assert.Equal(t, 100, cfg.AdminPendingPageMaxSize)
 	assert.Equal(t, 100, cfg.BooksPageMaxSize)
 	assert.Equal(t, 512, cfg.BooksPageTokenMaxSize)
+	assert.Equal(t, 4096, cfg.BookMetadataMaxBytes)
+	assert.Equal(t, 16<<10, cfg.JSONBodyMaxBytes)
 	assert.Equal(t, 20, cfg.AuthRegisterRateLimit)
 	assert.Equal(t, time.Hour, cfg.AuthRegisterRateWindow)
 	assert.Equal(t, 10000, cfg.AuthRegisterRateMaxKeys)
@@ -118,7 +120,12 @@ func TestLoadParsesExplicitSecurityConfiguration(t *testing.T) {
 	assert.Equal(t, 20, cfg.BookStatusPrefetch)
 	assert.Equal(t, 64<<20, cfg.BookStatusQueueMaxLengthBytes)
 	assert.Equal(t, 200, cfg.BookStatusHubCapacity)
+	assert.Equal(t, 1, cfg.BookStatusSessionCapacity)
+	assert.Equal(t, 10, cfg.BookStatusIPCapacity)
+	assert.Equal(t, 64, cfg.BookStatusPendingEventCapacity)
 	assert.Equal(t, 200, cfg.PendingHubCapacity)
+	assert.Equal(t, 1, cfg.PendingSessionCapacity)
+	assert.Equal(t, 10, cfg.PendingIPCapacity)
 }
 
 func TestLoadParsesRetrievalReadinessPolicy(t *testing.T) {
@@ -176,6 +183,8 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	t.Setenv("EDGE_BOOK_UPLOAD_RATE_WINDOW", "15m")
 	t.Setenv("EDGE_BOOK_UPLOAD_RATE_MAX_KEYS", "600")
 	t.Setenv("EDGE_BOOK_UPLOAD_DEADLINE", "90s")
+	t.Setenv("EDGE_BOOK_METADATA_MAX_BYTES", "8192")
+	t.Setenv("EDGE_JSON_BODY_MAX_BYTES", "32768")
 	t.Setenv("EDGE_ANSWER_DEADLINE", "7s")
 	t.Setenv("EDGE_RETRIEVAL_SEARCH_DEADLINE", "11s")
 	t.Setenv("EDGE_CATALOG_PREVIEW_DEADLINE", "9s")
@@ -208,7 +217,12 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	t.Setenv("EDGE_BOOK_STATUS_PREFETCH", "25")
 	t.Setenv("EDGE_BOOK_STATUS_QUEUE_MAX_LENGTH_BYTES", "1024")
 	t.Setenv("EDGE_BOOK_STATUS_HUB_CAPACITY", "250")
+	t.Setenv("EDGE_BOOK_STATUS_SESSION_CAPACITY", "2")
+	t.Setenv("EDGE_BOOK_STATUS_IP_CAPACITY", "11")
+	t.Setenv("EDGE_BOOK_STATUS_PENDING_EVENT_CAPACITY", "80")
 	t.Setenv("EDGE_PENDING_HUB_CAPACITY", "180")
+	t.Setenv("EDGE_PENDING_SESSION_CAPACITY", "2")
+	t.Setenv("EDGE_PENDING_IP_CAPACITY", "11")
 	t.Setenv("EDGE_REFRESH_COOKIE_MAX_AGE", "168h")
 
 	cfg, err := config.Load()
@@ -230,6 +244,7 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	assert.Equal(t, 120, cfg.AdminPendingPageMaxSize)
 	assert.Equal(t, 140, cfg.BooksPageMaxSize)
 	assert.Equal(t, 640, cfg.BooksPageTokenMaxSize)
+	assert.Equal(t, 32768, cfg.JSONBodyMaxBytes)
 	assert.Equal(t, 21, cfg.AuthRegisterRateLimit)
 	assert.Equal(t, 2*time.Hour, cfg.AuthRegisterRateWindow)
 	assert.Equal(t, 111, cfg.AuthRegisterRateMaxKeys)
@@ -258,6 +273,7 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	assert.Equal(t, 15*time.Minute, cfg.BookUploadRateWindow)
 	assert.Equal(t, 600, cfg.BookUploadRateMaxKeys)
 	assert.Equal(t, 90*time.Second, cfg.BookUploadDeadline)
+	assert.Equal(t, 8192, cfg.BookMetadataMaxBytes)
 	assert.Equal(t, 7*time.Second, cfg.AnswerDeadline)
 	assert.Equal(t, 11*time.Second, cfg.RetrievalSearchDeadline)
 	assert.Equal(t, 9*time.Second, cfg.CatalogPreviewDeadline)
@@ -290,7 +306,12 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	assert.Equal(t, 25, cfg.BookStatusPrefetch)
 	assert.Equal(t, 1024, cfg.BookStatusQueueMaxLengthBytes)
 	assert.Equal(t, 250, cfg.BookStatusHubCapacity)
+	assert.Equal(t, 2, cfg.BookStatusSessionCapacity)
+	assert.Equal(t, 11, cfg.BookStatusIPCapacity)
+	assert.Equal(t, 80, cfg.BookStatusPendingEventCapacity)
 	assert.Equal(t, 180, cfg.PendingHubCapacity)
+	assert.Equal(t, 2, cfg.PendingSessionCapacity)
+	assert.Equal(t, 11, cfg.PendingIPCapacity)
 }
 
 func TestLoadParsesMinimumEvidenceScore(t *testing.T) {

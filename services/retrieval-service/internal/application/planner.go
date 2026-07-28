@@ -30,6 +30,10 @@ type ManifestPolicy struct {
 	MaxExpandedTotalBytes int64
 }
 
+type MetadataPolicy struct {
+	MaxTags int
+}
+
 type MetadataEvent struct {
 	EventID, BookID, Title, Author, MediaType, CorrelationID, CausationID, Producer, SchemaVersion, IdempotencyKey string
 	Year                                                                                                           int
@@ -39,10 +43,19 @@ type MetadataEvent struct {
 	OccurredAt                                                                                                     time.Time
 }
 
-func (e MetadataEvent) Validate() error {
+func (e MetadataEvent) Validate(policy MetadataPolicy) error {
 	if !safeID(e.EventID) || !safeID(e.BookID) || strings.TrimSpace(e.Title) == "" || strings.TrimSpace(e.Author) == "" ||
 		e.Year < 0 || !supportedMediaType(e.MediaType) || e.SourceSHA256 == ([32]byte{}) || e.PayloadDigest == ([32]byte{}) || !safeID(e.CorrelationID) ||
-		!safeID(e.CausationID) || e.Producer != "catalog-service" || e.SchemaVersion != "v1" || e.IdempotencyKey != e.BookID || e.OccurredAt.IsZero() || len(e.Tags) > domain.MaximumFilterTags {
+		!safeID(e.CausationID) || e.Producer != "catalog-service" || e.SchemaVersion != "v1" || e.IdempotencyKey != e.BookID || e.OccurredAt.IsZero() || len(e.Tags) > policy.MaxTags {
+		return ErrInvalidEvent
+	}
+	return nil
+}
+
+func (e MetadataEvent) ValidateEnvelope() error {
+	if !safeID(e.EventID) || !safeID(e.BookID) || strings.TrimSpace(e.Title) == "" || strings.TrimSpace(e.Author) == "" ||
+		e.Year < 0 || !supportedMediaType(e.MediaType) || e.SourceSHA256 == ([32]byte{}) || e.PayloadDigest == ([32]byte{}) || !safeID(e.CorrelationID) ||
+		!safeID(e.CausationID) || e.Producer != "catalog-service" || e.SchemaVersion != "v1" || e.IdempotencyKey != e.BookID || e.OccurredAt.IsZero() {
 		return ErrInvalidEvent
 	}
 	return nil
@@ -200,6 +213,13 @@ func validateManifestPolicy(policy ManifestPolicy) error {
 	return nil
 }
 
+func validateMetadataPolicy(policy MetadataPolicy) error {
+	if policy.MaxTags < 1 {
+		return errors.New("invalid metadata policy")
+	}
+	return nil
+}
+
 type PlanningSnapshot struct {
 	Metadata *MetadataEvent
 	Manifest *ManifestEvent
@@ -224,22 +244,23 @@ type PlanningRepository interface {
 }
 
 type Planner struct {
-	repository PlanningRepository
-	newID      func() (string, error)
-	now        func() time.Time
-	profile    domain.IndexProfile
-	policy     ManifestPolicy
+	repository     PlanningRepository
+	newID          func() (string, error)
+	now            func() time.Time
+	profile        domain.IndexProfile
+	metadataPolicy MetadataPolicy
+	manifestPolicy ManifestPolicy
 }
 
-func NewPlanner(repository PlanningRepository, newID func() (string, error), now func() time.Time, policy ManifestPolicy) (*Planner, error) {
-	if repository == nil || newID == nil || now == nil || validateManifestPolicy(policy) != nil {
+func NewPlanner(repository PlanningRepository, newID func() (string, error), now func() time.Time, metadataPolicy MetadataPolicy, manifestPolicy ManifestPolicy) (*Planner, error) {
+	if repository == nil || newID == nil || now == nil || validateMetadataPolicy(metadataPolicy) != nil || validateManifestPolicy(manifestPolicy) != nil {
 		return nil, errors.New("invalid planner configuration")
 	}
-	return &Planner{repository: repository, newID: newID, now: now, profile: domain.SupportedIndexProfile(), policy: policy}, nil
+	return &Planner{repository: repository, newID: newID, now: now, profile: domain.SupportedIndexProfile(), metadataPolicy: metadataPolicy, manifestPolicy: manifestPolicy}, nil
 }
 
 func (p *Planner) HandleMetadata(ctx context.Context, event MetadataEvent) error {
-	if err := event.Validate(); err != nil {
+	if err := event.Validate(p.metadataPolicy); err != nil {
 		return err
 	}
 	snapshot, err := p.repository.ProjectMetadata(ctx, event)
@@ -254,7 +275,7 @@ func (p *Planner) HandleManifest(ctx context.Context, event ManifestEvent) error
 	if !ok {
 		return ErrUnsupportedIndexProfile
 	}
-	if err := event.Validate(profile, p.policy); err != nil {
+	if err := event.Validate(profile, p.manifestPolicy); err != nil {
 		return err
 	}
 	snapshot, err := p.repository.ProjectManifest(ctx, event)

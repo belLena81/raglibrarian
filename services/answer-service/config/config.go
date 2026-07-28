@@ -13,9 +13,15 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/process"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/application"
+	"github.com/belLena81/raglibrarian/services/answer-service/internal/domain"
 )
 
 const (
+	defaultMaximumQuestionCharacters = 2000
+	defaultMaximumFilterTags         = 20
+	defaultMaximumTagCharacters      = 64
+	defaultMaximumAuthorCharacters   = 256
+	defaultMaximumResultLimit        = 20
 	defaultMaximumEvidence           = 8
 	defaultMaximumContextBytes       = 32 << 10
 	defaultMaximumEvidenceBytes      = 8 << 10
@@ -38,17 +44,10 @@ type Config struct {
 	MetricsAddress           string
 	RetrievalAddress         string
 	RetrievalDNSName         string
-	LLMBaseURL               string
-	LLMModel                 string
-	LLMRequestsPerMinute     int
-	LLMMaxResponseBytes      int
-	LLMMaxCandidateBytes     int
-	LLMHTTPClientTimeout     time.Duration
-	LogProviderErrorBody     bool
-	LLMAPIKeyFile            string
-	LLMCAFile                string
+	Generator                GeneratorConfig
 	TLS                      internaltls.Files
 	RunAs                    process.Identity
+	RequestPolicy            domain.RequestPolicy
 	Limits                   application.Limits
 	ReadinessProbeTimeout    time.Duration
 	ReadinessPollInterval    time.Duration
@@ -60,9 +59,26 @@ type Config struct {
 	MetricsIdleTimeout       time.Duration
 }
 
+type GeneratorConfig struct {
+	BaseURL           string
+	Model             string
+	RequestsPerMinute int
+	MaxResponseBytes  int
+	MaxCandidateBytes int
+	HTTPClientTimeout time.Duration
+	LogErrorBody      bool
+	APIKeyFile        string
+	CAFile            string
+}
+
 func Load() (Config, error) {
 	uid, uidErr := positiveInteger("RUN_AS_UID", 65532, 1, 1<<31-1)
 	gid, gidErr := positiveInteger("RUN_AS_GID", 65532, 1, 1<<31-1)
+	maximumQuestionCharacters, questionErr := positiveInteger("ANSWER_MAX_QUESTION_CHARACTERS", defaultMaximumQuestionCharacters, 1, 1<<20)
+	maximumFilterTags, filterTagsErr := positiveInteger("ANSWER_MAX_FILTER_TAGS", defaultMaximumFilterTags, 1, 256)
+	maximumTagCharacters, tagCharactersErr := positiveInteger("ANSWER_MAX_TAG_CHARACTERS", defaultMaximumTagCharacters, 1, 1<<20)
+	maximumAuthorCharacters, authorCharactersErr := positiveInteger("ANSWER_MAX_AUTHOR_CHARACTERS", defaultMaximumAuthorCharacters, 1, 1<<20)
+	maximumResultLimit, resultLimitErr := positiveInteger("ANSWER_MAX_RESULT_LIMIT", defaultMaximumResultLimit, 1, 256)
 	maximumEvidence, evidenceErr := positiveInteger("ANSWER_MAX_EVIDENCE", defaultMaximumEvidence, 1, 64)
 	maximumContext, contextErr := positiveInteger("ANSWER_MAX_CONTEXT_BYTES", defaultMaximumContextBytes, 1, 1<<20)
 	maximumItem, itemErr := positiveInteger("ANSWER_MAX_EVIDENCE_BYTES", defaultMaximumEvidenceBytes, 1, 1<<20)
@@ -86,13 +102,31 @@ func Load() (Config, error) {
 	metricsWriteTimeout, metricsWriteErr := duration("ANSWER_METRICS_WRITE_TIMEOUT", 5*time.Second, 100*time.Millisecond, time.Minute)
 	metricsIdleTimeout, metricsIdleErr := duration("ANSWER_METRICS_IDLE_TIMEOUT", 30*time.Second, time.Second, 5*time.Minute)
 	configuration := Config{
-		GRPCAddress: os.Getenv("ANSWER_GRPC_ADDR"), MetricsAddress: os.Getenv("ANSWER_METRICS_ADDR"), RetrievalAddress: os.Getenv("ANSWER_RETRIEVAL_GRPC_ADDR"),
+		GRPCAddress:      os.Getenv("ANSWER_GRPC_ADDR"),
+		MetricsAddress:   os.Getenv("ANSWER_METRICS_ADDR"),
+		RetrievalAddress: os.Getenv("ANSWER_RETRIEVAL_GRPC_ADDR"),
 		RetrievalDNSName: os.Getenv("ANSWER_RETRIEVAL_TLS_SERVER_NAME"),
-		LLMBaseURL:       os.Getenv("ANSWER_LLM_BASE_URL"), LLMModel: os.Getenv("ANSWER_LLM_MODEL"),
-		LLMAPIKeyFile: os.Getenv("ANSWER_LLM_API_KEY_FILE"), LLMCAFile: os.Getenv("ANSWER_LLM_CA_FILE"),
-		LLMHTTPClientTimeout: providerHTTPTimeout,
-		TLS:                  internaltls.Files{CA: os.Getenv("ANSWER_TLS_CA_FILE"), Certificate: os.Getenv("ANSWER_TLS_CERT_FILE"), Key: os.Getenv("ANSWER_TLS_KEY_FILE")},
-		RunAs:                process.Identity{UID: uid, GID: gid}, Limits: application.Limits{MaximumEvidence: maximumEvidence, MaximumContextBytes: maximumContext,
+		Generator: GeneratorConfig{
+			BaseURL:           os.Getenv("ANSWER_LLM_BASE_URL"),
+			Model:             os.Getenv("ANSWER_LLM_MODEL"),
+			APIKeyFile:        os.Getenv("ANSWER_LLM_API_KEY_FILE"),
+			CAFile:            os.Getenv("ANSWER_LLM_CA_FILE"),
+			HTTPClientTimeout: providerHTTPTimeout,
+		},
+		TLS: internaltls.Files{
+			CA:          os.Getenv("ANSWER_TLS_CA_FILE"),
+			Certificate: os.Getenv("ANSWER_TLS_CERT_FILE"),
+			Key:         os.Getenv("ANSWER_TLS_KEY_FILE"),
+		},
+		RunAs: process.Identity{UID: uid, GID: gid},
+		RequestPolicy: domain.RequestPolicy{
+			MaximumQuestionCharacters: maximumQuestionCharacters,
+			MaximumFilterTags:         maximumFilterTags,
+			MaximumTagCharacters:      maximumTagCharacters,
+			MaximumAuthorCharacters:   maximumAuthorCharacters,
+			MaximumResultLimit:        uint32(maximumResultLimit),
+		},
+		Limits: application.Limits{MaximumEvidence: maximumEvidence, MaximumContextBytes: maximumContext,
 			MaximumEvidenceBytes: maximumItem, MaximumSegments: maximumSegments, MaximumAnswerBytes: maximumAnswer, MaximumSummaryRunes: maximumSummaryRunes,
 			MaximumFailureDetailRunes: maximumFailureDetailRunes,
 			MaximumCitations:          maximumCitations,
@@ -110,21 +144,22 @@ func Load() (Config, error) {
 	if rpmErr != nil {
 		return Config{}, errors.New("invalid answer configuration")
 	}
-	configuration.LLMRequestsPerMinute = rpm
+	configuration.Generator.RequestsPerMinute = rpm
 	maxResponseBytes, maxResponseBytesErr := positiveInteger("ANSWER_PROVIDER_MAX_RESPONSE_BYTES", DefaultProviderMaxResponseBytes, 1, 1<<20)
 	maxCandidateBytes, maxCandidateBytesErr := positiveInteger("ANSWER_PROVIDER_MAX_CANDIDATE_BYTES", DefaultProviderMaxCandidateBytes, 1, 256<<10)
-	configuration.LLMMaxResponseBytes = maxResponseBytes
-	configuration.LLMMaxCandidateBytes = maxCandidateBytes
+	configuration.Generator.MaxResponseBytes = maxResponseBytes
+	configuration.Generator.MaxCandidateBytes = maxCandidateBytes
 	logProviderErrorBody, logProviderErrorBodyErr := boolean("ANSWER_PROVIDER_LOG_ERROR_BODY", false)
 	if logProviderErrorBodyErr != nil {
 		return Config{}, errors.New("invalid answer configuration")
 	}
-	configuration.LogProviderErrorBody = logProviderErrorBody
+	configuration.Generator.LogErrorBody = logProviderErrorBody
 	if configuration.RetrievalDNSName == "" {
 		configuration.RetrievalDNSName = "retrieval-service"
 	}
 	errs := []error{
-		uidErr, gidErr, evidenceErr, contextErr, itemErr, segmentErr, answerErr, summaryErr, failureDetailErr, citationErr, tokenErr, concurrencyErr,
+		uidErr, gidErr, questionErr, filterTagsErr, tagCharactersErr, authorCharactersErr, resultLimitErr,
+		evidenceErr, contextErr, itemErr, segmentErr, answerErr, summaryErr, failureDetailErr, citationErr, tokenErr, concurrencyErr,
 		maxResponseBytesErr, maxCandidateBytesErr,
 		requestErr, retrievalErr, providerErr, readinessProbeErr, readinessPollErr, shutdownErr, metricsReadErr,
 		providerHTTPTimeoutErr,
@@ -137,10 +172,10 @@ func Load() (Config, error) {
 	}
 	if !validListenAddress(configuration.GRPCAddress) || !validListenAddress(configuration.MetricsAddress) || !validServiceAddress(configuration.RetrievalAddress) ||
 		configuration.RetrievalDNSName != "retrieval-service" ||
-		!validProviderURL(configuration.LLMBaseURL) || strings.TrimSpace(configuration.LLMModel) == "" || len(configuration.LLMModel) > 256 || strings.ContainsAny(configuration.LLMModel, "\r\n") ||
-		configuration.LLMAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
-		configuration.LLMMaxCandidateBytes > configuration.LLMMaxResponseBytes ||
-		(configuration.LLMHTTPClientTimeout > 0 && configuration.LLMHTTPClientTimeout > configuration.Limits.ProviderTimeout) ||
+		!validProviderURL(configuration.Generator.BaseURL) || strings.TrimSpace(configuration.Generator.Model) == "" || len(configuration.Generator.Model) > 256 || strings.ContainsAny(configuration.Generator.Model, "\r\n") ||
+		configuration.Generator.APIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
+		configuration.Generator.MaxCandidateBytes > configuration.Generator.MaxResponseBytes ||
+		(configuration.Generator.HTTPClientTimeout > 0 && configuration.Generator.HTTPClientTimeout > configuration.Limits.ProviderTimeout) ||
 		configuration.Limits.MaximumEvidenceBytes > configuration.Limits.MaximumContextBytes || configuration.Limits.RetrievalTimeout >= configuration.Limits.RequestTimeout ||
 		configuration.Limits.ProviderTimeout >= configuration.Limits.RequestTimeout {
 		return Config{}, errors.New("invalid answer configuration")

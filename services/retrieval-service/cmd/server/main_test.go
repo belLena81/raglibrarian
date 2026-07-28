@@ -10,44 +10,44 @@ import (
 	"go.uber.org/zap"
 )
 
-func TestConfigureSummaryProviderDisablesInvalidConfiguration(t *testing.T) {
+func TestConfigureEvidenceAssessorDisablesInvalidConfiguration(t *testing.T) {
 	directory := t.TempDir()
 	apiKeyFile := filepath.Join(directory, "summary-api-key")
 	if err := os.WriteFile(apiKeyFile, []byte("test-api-key\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	provider, err := retrievalruntime.NewSummaryProvider(config.Config{
-		SummaryLLMBaseURL:           "http://openrouter.ai",
-		SummaryLLMModel:             "ohere/north-mini-code:free",
-		SummaryLLMAPIKeyFile:        apiKeyFile,
-		SummaryLLMMaxOutputTokens:   64,
-		SummaryLLMRequestsPerMinute: 1,
+	assessor, err := retrievalruntime.NewEvidenceAssessor(config.EvidenceAssessorConfig{
+		BaseURL:           "http://openrouter.ai",
+		Model:             "ohere/north-mini-code:free",
+		APIKeyFile:        apiKeyFile,
+		MaxOutputTokens:   64,
+		RequestsPerMinute: 1,
 	}, zap.NewNop())
 	if err != nil {
-		t.Fatalf("NewSummaryProvider() error = %v", err)
+		t.Fatalf("NewEvidenceAssessor() error = %v", err)
 	}
-	if provider != nil {
-		t.Fatal("NewSummaryProvider() returned a provider for invalid configuration")
+	if assessor != nil {
+		t.Fatal("NewEvidenceAssessor() returned an assessor for invalid configuration")
 	}
 }
 
-func TestConfigureSummaryProviderRejectsPermissiveAPIKeyFile(t *testing.T) {
+func TestConfigureEvidenceAssessorRejectsPermissiveAPIKeyFile(t *testing.T) {
 	directory := t.TempDir()
 	apiKeyFile := filepath.Join(directory, "summary-api-key")
 	if err := os.WriteFile(apiKeyFile, []byte("test-api-key\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	provider, err := retrievalruntime.NewSummaryProvider(config.Config{
-		SummaryLLMBaseURL:           "https://openrouter.ai",
-		SummaryLLMModel:             "ohere/north-mini-code:free",
-		SummaryLLMAPIKeyFile:        apiKeyFile,
-		SummaryLLMMaxOutputTokens:   64,
-		SummaryLLMRequestsPerMinute: 1,
+	assessor, err := retrievalruntime.NewEvidenceAssessor(config.EvidenceAssessorConfig{
+		BaseURL:           "https://openrouter.ai",
+		Model:             "ohere/north-mini-code:free",
+		APIKeyFile:        apiKeyFile,
+		MaxOutputTokens:   64,
+		RequestsPerMinute: 1,
 	}, zap.NewNop())
 	if err != nil {
-		t.Fatalf("NewSummaryProvider() error = %v", err)
+		t.Fatalf("NewEvidenceAssessor() error = %v", err)
 	}
-	if provider != nil {
-		t.Fatal("NewSummaryProvider() accepted a permissive API key file")
+	if assessor != nil {
+		t.Fatal("NewEvidenceAssessor() accepted a permissive API key file")
 	}
 }

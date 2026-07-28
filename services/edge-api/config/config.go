@@ -62,7 +62,8 @@ type Config struct {
 	QueryMaxQuestionLength, QueryMaxTags, QueryMaxTagLength, QueryMaxAuthorLength     int
 	QueryDefaultLimit, QueryMaxLimit                                                  int
 	AdminPendingPageDefaultSize, AdminPendingPageMaxSize                              int
-	BooksPageMaxSize, BooksPageTokenMaxSize                                           int
+	BooksPageMaxSize, BooksPageTokenMaxSize, BookMetadataMaxBytes                     int
+	JSONBodyMaxBytes                                                                  int
 	QueryRateWindow, QueryConcurrencyRetryAfter                                       time.Duration
 	AuthRegisterRateLimit, AuthRegisterRateMaxKeys                                    int
 	AuthVerifyEmailRateLimit, AuthVerifyEmailRateMaxKeys                              int
@@ -93,7 +94,9 @@ type Config struct {
 	BookStatusReconnectInitialBackoff, BookStatusReconnectMaxBackoff                  time.Duration
 	BookStatusDialTimeout, BookStatusHeartbeatTimeout                                 time.Duration
 	BookStatusPrefetch, BookStatusQueueMaxLengthBytes                                 int
-	BookStatusHubCapacity, PendingHubCapacity                                         int
+	BookStatusHubCapacity, BookStatusSessionCapacity, BookStatusIPCapacity            int
+	BookStatusPendingEventCapacity                                                    int
+	PendingHubCapacity, PendingSessionCapacity, PendingIPCapacity                     int
 	MinimumEvidenceScore                                                              float64
 	RunAs                                                                             process.Identity
 }
@@ -311,6 +314,14 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	bookMetadataMaxBytes, err := positiveInt("EDGE_BOOK_METADATA_MAX_BYTES", 4096)
+	if err != nil {
+		return Config{}, err
+	}
+	jsonBodyMaxBytes, err := positiveInt("EDGE_JSON_BODY_MAX_BYTES", 16<<10)
+	if err != nil {
+		return Config{}, err
+	}
 	answerRateLimit, err := positiveInt("EDGE_ANSWER_RATE_LIMIT", 10)
 	if err != nil {
 		return Config{}, err
@@ -427,7 +438,27 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	bookStatusSessionCapacity, err := positiveInt("EDGE_BOOK_STATUS_SESSION_CAPACITY", 1)
+	if err != nil {
+		return Config{}, err
+	}
+	bookStatusIPCapacity, err := positiveInt("EDGE_BOOK_STATUS_IP_CAPACITY", 10)
+	if err != nil {
+		return Config{}, err
+	}
+	bookStatusPendingEventCapacity, err := positiveInt("EDGE_BOOK_STATUS_PENDING_EVENT_CAPACITY", 64)
+	if err != nil {
+		return Config{}, err
+	}
 	pendingHubCapacity, err := positiveInt("EDGE_PENDING_HUB_CAPACITY", 200)
+	if err != nil {
+		return Config{}, err
+	}
+	pendingSessionCapacity, err := positiveInt("EDGE_PENDING_SESSION_CAPACITY", 1)
+	if err != nil {
+		return Config{}, err
+	}
+	pendingIPCapacity, err := positiveInt("EDGE_PENDING_IP_CAPACITY", 10)
 	if err != nil {
 		return Config{}, err
 	}
@@ -517,6 +548,8 @@ func Load() (Config, error) {
 		AdminPendingPageMaxSize:              adminPendingPageMaxSize,
 		BooksPageMaxSize:                     booksPageMaxSize,
 		BooksPageTokenMaxSize:                booksPageTokenMaxSize,
+		BookMetadataMaxBytes:                 bookMetadataMaxBytes,
+		JSONBodyMaxBytes:                     jsonBodyMaxBytes,
 		AuthRegisterRateLimit:                authRegisterRateLimit,
 		AuthRegisterRateWindow:               authRegisterRateWindow,
 		AuthRegisterRateMaxKeys:              authRegisterRateMaxKeys,
@@ -577,7 +610,12 @@ func Load() (Config, error) {
 		BookStatusPrefetch:                   bookStatusPrefetch,
 		BookStatusQueueMaxLengthBytes:        bookStatusQueueMaxLengthBytes,
 		BookStatusHubCapacity:                bookStatusHubCapacity,
+		BookStatusSessionCapacity:            bookStatusSessionCapacity,
+		BookStatusIPCapacity:                 bookStatusIPCapacity,
+		BookStatusPendingEventCapacity:       bookStatusPendingEventCapacity,
 		PendingHubCapacity:                   pendingHubCapacity,
+		PendingSessionCapacity:               pendingSessionCapacity,
+		PendingIPCapacity:                    pendingIPCapacity,
 		MinimumEvidenceScore:                 minimumEvidenceScore,
 		RunAs:                                runAs,
 	}, nil

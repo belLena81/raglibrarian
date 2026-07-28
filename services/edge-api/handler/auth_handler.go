@@ -76,6 +76,7 @@ type AuthHandler struct {
 	diagnostics         authDiagnostics
 	secureCookie        bool
 	refreshCookieMaxAge time.Duration
+	jsonBodyMaxBytes    int64
 }
 
 type authDiagnostics interface {
@@ -87,6 +88,7 @@ type authDiagnostics interface {
 type CookieConfig struct {
 	Secure              bool
 	RefreshCookieMaxAge time.Duration
+	JSONBodyMaxBytes    int64
 }
 
 // NewAuthHandler constructs an AuthHandler with explicit cookie policy.
@@ -97,7 +99,7 @@ func NewAuthHandler(uc AuthUseCase, diagnostics authDiagnostics, cookies CookieC
 	if dependencyMissing(diagnostics) {
 		panic("handler: Logger must not be nil")
 	}
-	if cookies.RefreshCookieMaxAge <= 0 {
+	if cookies.RefreshCookieMaxAge <= 0 || cookies.JSONBodyMaxBytes <= 0 {
 		panic("handler: refresh cookie max age must be positive")
 	}
 	return &AuthHandler{
@@ -105,6 +107,7 @@ func NewAuthHandler(uc AuthUseCase, diagnostics authDiagnostics, cookies CookieC
 		diagnostics:         diagnostics,
 		secureCookie:        cookies.Secure,
 		refreshCookieMaxAge: cookies.RefreshCookieMaxAge,
+		jsonBodyMaxBytes:    cookies.JSONBodyMaxBytes,
 	}
 }
 
@@ -124,7 +127,7 @@ type AuthUseCase interface {
 
 func (h *AuthHandler) RequestPasswordReset(w http.ResponseWriter, r *http.Request) {
 	var req PasswordResetRequest
-	if decodeJSONBody(w, r, &req) != nil {
+	if decodeJSONBody(w, r, &req, h.jsonBodyMaxBytes) != nil {
 		writeIdentityError(w, r, http.StatusBadRequest, "invalid_request", "invalid request")
 		return
 	}
@@ -139,7 +142,7 @@ func (h *AuthHandler) RequestPasswordReset(w http.ResponseWriter, r *http.Reques
 }
 func (h *AuthHandler) VerifyPasswordReset(w http.ResponseWriter, r *http.Request) {
 	var req PasswordResetVerifyRequest
-	if decodeJSONBody(w, r, &req) != nil {
+	if decodeJSONBody(w, r, &req, h.jsonBodyMaxBytes) != nil {
 		writeIdentityError(w, r, http.StatusBadRequest, "invalid_request", "invalid request")
 		return
 	}
@@ -160,7 +163,7 @@ func (h *AuthHandler) VerifyPasswordReset(w http.ResponseWriter, r *http.Request
 }
 func (h *AuthHandler) CompletePasswordReset(w http.ResponseWriter, r *http.Request) {
 	var req PasswordResetCompleteRequest
-	if decodeJSONBody(w, r, &req) != nil {
+	if decodeJSONBody(w, r, &req, h.jsonBodyMaxBytes) != nil {
 		writeIdentityError(w, r, http.StatusBadRequest, "invalid_request", "invalid request")
 		return
 	}
@@ -179,7 +182,7 @@ func (h *AuthHandler) CompletePasswordReset(w http.ResponseWriter, r *http.Reque
 // Register handles privacy-preserving, verification-required registration.
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var req RegisterRequest
-	if err := decodeJSONBody(w, r, &req); err != nil {
+	if err := decodeJSONBody(w, r, &req, h.jsonBodyMaxBytes); err != nil {
 		writeIdentityError(w, r, http.StatusBadRequest, "invalid_request", "invalid request")
 		return
 	}
@@ -203,7 +206,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 // VerifyEmail consumes an email-verification token without creating a session.
 func (h *AuthHandler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 	var req VerifyEmailRequest
-	if err := decodeJSONBody(w, r, &req); err != nil || req.Token == "" {
+	if err := decodeJSONBody(w, r, &req, h.jsonBodyMaxBytes); err != nil || req.Token == "" {
 		writeIdentityError(w, r, http.StatusBadRequest, "invalid_verification", "verification is invalid or expired")
 		return
 	}
@@ -222,7 +225,7 @@ func (h *AuthHandler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 // ResendVerification requests a privacy-preserving verification resend.
 func (h *AuthHandler) ResendVerification(w http.ResponseWriter, r *http.Request) {
 	var req ResendVerificationRequest
-	if err := decodeJSONBody(w, r, &req); err != nil || req.Email == "" {
+	if err := decodeJSONBody(w, r, &req, h.jsonBodyMaxBytes); err != nil || req.Email == "" {
 		writeIdentityError(w, r, http.StatusBadRequest, "invalid_request", "invalid request")
 		return
 	}
@@ -274,7 +277,7 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 // Login handles POST /auth/login. Returns a PASETO token on success.
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
-	if err := decodeJSONBody(w, r, &req); err != nil {
+	if err := decodeJSONBody(w, r, &req, h.jsonBodyMaxBytes); err != nil {
 		writeIdentityError(w, r, http.StatusBadRequest, "invalid_request", "invalid request")
 		return
 	}

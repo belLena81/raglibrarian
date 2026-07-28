@@ -32,11 +32,16 @@ type BookStatusHub struct {
 	subscribers map[*bookStatusSubscriber]subscription
 	bySession   map[string]int
 	byIP        map[string]int
-	limit       int
+	policy      BookStatusHubPolicy
 	available   bool
 }
 
-const maxPendingBookStatusEvents = 64
+type BookStatusHubPolicy struct {
+	MaxSubscribers           int
+	MaxSubscribersPerSession int
+	MaxSubscribersPerIP      int
+	MaxPendingEvents         int
+}
 
 // bookStatusSubscriber stores its pending state under BookStatusHub.mu. wake is
 // only a notification: the SSE writer drains the state from the hub before it
@@ -47,15 +52,15 @@ type bookStatusSubscriber struct {
 	resync  bool
 }
 
-func NewBookStatusHub(limit int) *BookStatusHub {
-	if limit < 1 {
+func NewBookStatusHub(policy BookStatusHubPolicy) *BookStatusHub {
+	if policy.MaxSubscribers < 1 || policy.MaxSubscribersPerSession < 1 || policy.MaxSubscribersPerIP < 1 || policy.MaxPendingEvents < 1 {
 		panic("handler: positive book SSE limit is required")
 	}
 	return &BookStatusHub{
 		subscribers: make(map[*bookStatusSubscriber]subscription),
 		bySession:   make(map[string]int),
 		byIP:        make(map[string]int),
-		limit:       limit,
+		policy:      policy,
 	}
 }
 
@@ -80,7 +85,7 @@ func (h *BookStatusHub) SetAvailable(available bool) {
 }
 
 // Publish retains the newest notification for every book for slow subscribers.
-// If a subscriber falls more than maxPendingBookStatusEvents books behind, it
+// If a subscriber falls more than MaxPendingEvents books behind, it
 // receives one resync notification instead of an incomplete status snapshot.
 func (h *BookStatusHub) Publish(event BookStatusEvent) {
 	h.mu.Lock()
@@ -106,7 +111,7 @@ func (h *BookStatusHub) queueBookStatusEvent(subscriber *bookStatusSubscriber, e
 		h.signalBookStatusSubscriber(subscriber)
 		return
 	}
-	if len(subscriber.pending) >= maxPendingBookStatusEvents {
+	if len(subscriber.pending) >= h.policy.MaxPendingEvents {
 		clear(subscriber.pending)
 		subscriber.resync = true
 		h.signalBookStatusSubscriber(subscriber)
@@ -126,7 +131,7 @@ func (h *BookStatusHub) signalBookStatusSubscriber(subscriber *bookStatusSubscri
 func (h *BookStatusHub) subscribe(sessionID, ip string) (*bookStatusSubscriber, func(), bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if !h.available || len(h.subscribers) >= h.limit || h.bySession[sessionID] >= 1 || h.byIP[ip] >= 10 {
+	if !h.available || len(h.subscribers) >= h.policy.MaxSubscribers || h.bySession[sessionID] >= h.policy.MaxSubscribersPerSession || h.byIP[ip] >= h.policy.MaxSubscribersPerIP {
 		return nil, nil, false
 	}
 	subscriber := &bookStatusSubscriber{

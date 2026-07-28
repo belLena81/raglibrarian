@@ -7,10 +7,8 @@ import (
 	"net/http"
 )
 
-const maxJSONBodyBytes int64 = 16 << 10
-
-func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any, maximumBytes int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maximumBytes)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {

@@ -242,7 +242,7 @@ func TestApplyReindexCreatesNewLifecycleGenerationWithoutHidingPriorIndex(t *tes
 		ManifestReference: "books/" + bookID + "/" + hex.EncodeToString(sourceSHA256[:]) + "/" + hex.EncodeToString(processingConfigDigest[:]) + "/manifest.pb",
 		OccurredAt:        now,
 	}
-	if err = event.Validate(); err != nil {
+	if err = event.Validate(application.MetadataPolicy{MaxTags: 20}); err != nil {
 		t.Fatal(err)
 	}
 	if transitioned, applyErr := repository.ApplyReindex(ctx, event, newJobID, now); applyErr != nil || !transitioned {

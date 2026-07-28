@@ -12,10 +12,18 @@ import (
 
 func testSearchPolicy(summaryCallLimit int) SearchPolicy {
 	return SearchPolicy{
-		MinimumVisibleScore:      0.6,
-		SummaryCallLimit:         summaryCallLimit,
-		CandidatePageMultiplier:  2,
-		MaximumSummaryInputRunes: 4096,
+		MinimumVisibleScore:         0.6,
+		AssessmentCallLimit:         summaryCallLimit,
+		CandidatePageMultiplier:     2,
+		MaximumAssessmentInputRunes: 4096,
+		RequestPolicy: domain.SearchRequestPolicy{
+			MaximumQuestionCharacters: 2000,
+			MaximumFilterTags:         20,
+			MaximumTagCharacters:      64,
+			MaximumAuthorCharacters:   256,
+			DefaultResultLimit:        5,
+			MaximumResultLimit:        20,
+		},
 	}
 }
 
@@ -76,10 +84,10 @@ func TestSearcherUsesProviderAssessmentsAndDoesNotSummarizeDocuments(t *testing.
 		}},
 	}
 	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 4)
-	provider := &stubSummaryProvider{response: func(value SummaryRequest) EvidenceAssessment {
+	assessor := &stubEvidenceAssessor{response: func(value SummaryRequest) EvidenceAssessment {
 		return EvidenceAssessment{Relevant: true, Summary: "summary: " + strings.TrimSpace(value.Question) + " | " + strings.TrimSpace(value.Passage)}
 	}}
-	searcher.SetSummaryProvider(provider)
+	searcher.SetEvidenceAssessor(assessor)
 
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: " replication ", Limit: 3})
 	if err != nil {
@@ -92,11 +100,11 @@ func TestSearcherUsesProviderAssessmentsAndDoesNotSummarizeDocuments(t *testing.
 		result.Documents[0].Evidence[0].Summary != "summary: replication | Deterministic retries keep search stable." {
 		t.Fatalf("document grouping should contain only accepted evidence without book summary: %#v", result.Documents)
 	}
-	if provider.calls() != 1 {
-		t.Fatalf("provider calls = %d, want 1", provider.calls())
+	if assessor.calls() != 1 {
+		t.Fatalf("assessor calls = %d, want 1", assessor.calls())
 	}
-	if len(provider.requests) != 1 || provider.requests[0].Question != "replication" || provider.requests[0].Passage != "Deterministic retries keep search stable." {
-		t.Fatalf("provider requests missing question/passage: %#v", provider.requests)
+	if len(assessor.requests) != 1 || assessor.requests[0].Question != "replication" || assessor.requests[0].Passage != "Deterministic retries keep search stable." {
+		t.Fatalf("assessor requests missing question/passage: %#v", assessor.requests)
 	}
 }
 
@@ -110,8 +118,8 @@ func TestSearcherFallsBackToLocalAssessmentsAfterProviderFailure(t *testing.T) {
 	}
 	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 4)
 
-	provider := &stubSummaryProvider{err: errors.New("provider failed")}
-	searcher.SetSummaryProvider(provider)
+	assessor := &stubEvidenceAssessor{err: errors.New("provider failed")}
+	searcher.SetEvidenceAssessor(assessor)
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 3})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
@@ -126,8 +134,8 @@ func TestSearcherFallsBackToLocalAssessmentsAfterProviderFailure(t *testing.T) {
 	if result.Evidence[0].Summary != "Provider must assess this passage." || result.Evidence[1].Summary != "Keep local evidence after failure." {
 		t.Fatalf("local fallback summaries = %#v", result.Evidence)
 	}
-	if provider.calls() != 1 {
-		t.Fatalf("provider calls = %d, want 1 after first failure", provider.calls())
+	if assessor.calls() != 1 {
+		t.Fatalf("assessor calls = %d, want 1 after first failure", assessor.calls())
 	}
 }
 
@@ -141,8 +149,8 @@ func TestSearcherUsesLocalAssessmentsWhenProviderCallsAreDisabled(t *testing.T) 
 		Score:      0.91,
 	}}}
 	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 0)
-	provider := &stubSummaryProvider{}
-	searcher.SetSummaryProvider(provider)
+	assessor := &stubEvidenceAssessor{}
+	searcher.SetEvidenceAssessor(assessor)
 
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 3})
 	if err != nil {
@@ -151,8 +159,8 @@ func TestSearcherUsesLocalAssessmentsWhenProviderCallsAreDisabled(t *testing.T) 
 	if len(result.Evidence) != 1 || result.Evidence[0].Summary != "Use local evidence without provider calls." {
 		t.Fatalf("local-only result = %#v", result.Evidence)
 	}
-	if provider.calls() != 0 {
-		t.Fatalf("provider calls = %d, want 0", provider.calls())
+	if assessor.calls() != 0 {
+		t.Fatalf("assessor calls = %d, want 0", assessor.calls())
 	}
 }
 
@@ -163,10 +171,10 @@ func TestSearcherFallsBackToLocalAssessmentAfterProviderBudgetIsExhausted(t *tes
 		{EvidenceID: "local", JobID: "job-2", BookID: "book-2", Passage: "keep this locally assessed evidence", Score: 0.90},
 	}}
 	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 1)
-	provider := &stubSummaryProvider{response: func(SummaryRequest) EvidenceAssessment {
+	assessor := &stubEvidenceAssessor{response: func(SummaryRequest) EvidenceAssessment {
 		return EvidenceAssessment{Relevant: false}
 	}}
-	searcher.SetSummaryProvider(provider)
+	searcher.SetEvidenceAssessor(assessor)
 
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 3})
 	if err != nil {
@@ -175,8 +183,8 @@ func TestSearcherFallsBackToLocalAssessmentAfterProviderBudgetIsExhausted(t *tes
 	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "local" || result.Evidence[0].Summary != "keep this locally assessed evidence" {
 		t.Fatalf("result after provider budget exhaustion = %#v", result.Evidence)
 	}
-	if provider.calls() != 1 {
-		t.Fatalf("provider calls = %d, want 1", provider.calls())
+	if assessor.calls() != 1 {
+		t.Fatalf("assessor calls = %d, want 1", assessor.calls())
 	}
 }
 
@@ -190,7 +198,7 @@ func TestSearcherDoesNotFallbackWhenParentContextIsCanceled(t *testing.T) {
 		Score:      0.91,
 	}}}
 	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 1)
-	searcher.SetSummaryProvider(&stubSummaryProvider{err: context.Canceled})
+	searcher.SetEvidenceAssessor(&stubEvidenceAssessor{err: context.Canceled})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -204,22 +212,22 @@ func TestSearcherDoesNotFallbackWhenParentContextIsCanceled(t *testing.T) {
 }
 
 func TestSearchAssessmentCacheDoesNotOpenCircuitForCanceledParentContext(t *testing.T) {
-	cache := newSearchAssessmentCache(2, 0, testSearchPolicy(2).MaximumSummaryInputRunes)
-	provider := &stubSummaryProvider{err: context.Canceled}
+	cache := newSearchAssessmentCache(2, 0, testSearchPolicy(2).MaximumAssessmentInputRunes)
+	assessor := &stubEvidenceAssessor{err: context.Canceled}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if assessment, ok := cache.assess(ctx, provider, SummaryRequest{Question: "replication", Passage: "canceled passage"}); ok || assessment != (EvidenceAssessment{}) {
+	if assessment, ok := cache.assess(ctx, assessor, SummaryRequest{Question: "replication", Passage: "canceled passage"}); ok || assessment != (EvidenceAssessment{}) {
 		t.Fatalf("canceled assessment = %#v, %t", assessment, ok)
 	}
 
-	provider.err = nil
-	assessment, ok := cache.assess(context.Background(), provider, SummaryRequest{Question: "replication", Passage: "fresh passage"})
+	assessor.err = nil
+	assessment, ok := cache.assess(context.Background(), assessor, SummaryRequest{Question: "replication", Passage: "fresh passage"})
 	if !ok || !assessment.Relevant || assessment.Summary != "fresh passage" {
 		t.Fatalf("assessment after canceled parent context = %#v, %t", assessment, ok)
 	}
-	if provider.calls() != 1 {
-		t.Fatalf("provider calls = %d, want 1", provider.calls())
+	if assessor.calls() != 1 {
+		t.Fatalf("assessor calls = %d, want 1", assessor.calls())
 	}
 }
 
@@ -234,17 +242,18 @@ func TestSearcherWithPolicyUsesConfiguredCandidatePageMultiplier(t *testing.T) {
 			},
 		},
 	}
-	provider := &stubSummaryProvider{response: func(value SummaryRequest) EvidenceAssessment {
+	assessor := &stubEvidenceAssessor{response: func(value SummaryRequest) EvidenceAssessment {
 		if strings.HasPrefix(value.Passage, "relevant ") {
 			return EvidenceAssessment{Relevant: true, Summary: value.Passage}
 		}
 		return EvidenceAssessment{Relevant: false}
 	}}
-	searcher, err := NewSearcherWithPolicy(embedder, store, visibleIndexes{}, provider, SearchPolicy{
-		MinimumVisibleScore:      0.6,
-		SummaryCallLimit:         4,
-		CandidatePageMultiplier:  3,
-		MaximumSummaryInputRunes: testSearchPolicy(4).MaximumSummaryInputRunes,
+	searcher, err := NewSearcherWithPolicy(embedder, store, visibleIndexes{}, assessor, SearchPolicy{
+		MinimumVisibleScore:         0.6,
+		AssessmentCallLimit:         4,
+		CandidatePageMultiplier:     3,
+		MaximumAssessmentInputRunes: testSearchPolicy(4).MaximumAssessmentInputRunes,
+		RequestPolicy:               testSearchPolicy(4).RequestPolicy,
 	})
 	if err != nil {
 		t.Fatalf("NewSearcherWithPolicy() error = %v", err)
@@ -279,13 +288,13 @@ func TestSearcherExcludesIrrelevantProviderAssessmentsAndBackfills(t *testing.T)
 	}
 	store := &stubEvidenceStore{results: results}
 	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 5)
-	provider := &stubSummaryProvider{response: func(value SummaryRequest) EvidenceAssessment {
+	assessor := &stubEvidenceAssessor{response: func(value SummaryRequest) EvidenceAssessment {
 		if strings.Contains(value.Passage, "evidence a") || strings.Contains(value.Passage, "evidence c") {
 			return EvidenceAssessment{Relevant: false}
 		}
 		return EvidenceAssessment{Relevant: true, Summary: "summary: " + strings.TrimSpace(value.Passage)}
 	}}
-	searcher.SetSummaryProvider(provider)
+	searcher.SetEvidenceAssessor(assessor)
 
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 5})
 	if err != nil {
@@ -297,8 +306,8 @@ func TestSearcherExcludesIrrelevantProviderAssessmentsAndBackfills(t *testing.T)
 	if len(result.Evidence) != 3 || len(result.Documents) != 3 {
 		t.Fatalf("irrelevant evidence should be excluded from results and document groups: %#v", result)
 	}
-	if provider.calls() != 5 {
-		t.Fatalf("provider calls = %d, want 5", provider.calls())
+	if assessor.calls() != 5 {
+		t.Fatalf("assessor calls = %d, want 5", assessor.calls())
 	}
 }
 
@@ -317,13 +326,13 @@ func TestSearcherBackfillsAfterProviderExclusions(t *testing.T) {
 		},
 	}
 	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 4)
-	provider := &stubSummaryProvider{response: func(value SummaryRequest) EvidenceAssessment {
+	assessor := &stubEvidenceAssessor{response: func(value SummaryRequest) EvidenceAssessment {
 		if strings.HasPrefix(value.Passage, "relevant ") {
 			return EvidenceAssessment{Relevant: true, Summary: value.Passage}
 		}
 		return EvidenceAssessment{Relevant: false}
 	}}
-	searcher.SetSummaryProvider(provider)
+	searcher.SetEvidenceAssessor(assessor)
 
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 1})
 	if err != nil {
@@ -467,15 +476,15 @@ func TestSearcherSkipsEmptyPassagesForAssessments(t *testing.T) {
 		}},
 	}
 	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 4)
-	provider := &stubSummaryProvider{}
-	searcher.SetSummaryProvider(provider)
+	assessor := &stubEvidenceAssessor{}
+	searcher.SetEvidenceAssessor(assessor)
 
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: " replication ", Limit: 3})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
-	if provider.calls() != 0 {
-		t.Fatalf("provider calls = %d, want 0", provider.calls())
+	if assessor.calls() != 0 {
+		t.Fatalf("assessor calls = %d, want 0", assessor.calls())
 	}
 	if len(result.Evidence) != 0 || len(result.Documents) != 0 {
 		t.Fatalf("empty passages should not produce results: %#v", result)
@@ -623,14 +632,14 @@ func (v filteringVisibility) FilterIndexedDocuments(_ context.Context, values []
 	return results, nil
 }
 
-type stubSummaryProvider struct {
+type stubEvidenceAssessor struct {
 	mu       sync.Mutex
 	requests []SummaryRequest
 	response func(SummaryRequest) EvidenceAssessment
 	err      error
 }
 
-func (s *stubSummaryProvider) Assess(_ context.Context, value SummaryRequest) (EvidenceAssessment, error) {
+func (s *stubEvidenceAssessor) Assess(_ context.Context, value SummaryRequest) (EvidenceAssessment, error) {
 	s.mu.Lock()
 	s.requests = append(s.requests, value)
 	response := s.response
@@ -645,7 +654,7 @@ func (s *stubSummaryProvider) Assess(_ context.Context, value SummaryRequest) (E
 	return response(value), nil
 }
 
-func (s *stubSummaryProvider) calls() int {
+func (s *stubEvidenceAssessor) calls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.requests)

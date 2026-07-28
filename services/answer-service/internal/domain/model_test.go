@@ -9,21 +9,23 @@ func TestSearchRequestValidateAuthorizesOnlyActiveProductRoles(t *testing.T) {
 	for _, role := range []string{"reader", "librarian", "admin"} {
 		request := validRequest()
 		request.Actor.Role = role
-		if err := request.Validate(); err != nil {
+		if err := request.Validate(testRequestPolicy()); err != nil {
 			t.Fatalf("role %q: %v", role, err)
 		}
 	}
 	request := validRequest()
 	request.Actor.Status = "pending"
-	if err := request.Validate(); !errorsIs(err, ErrForbidden) {
+	if err := request.Validate(testRequestPolicy()); !errorsIs(err, ErrForbidden) {
 		t.Fatalf("error = %v, want forbidden", err)
 	}
 }
 
 func TestSearchRequestValidateBoundsPublicInput(t *testing.T) {
 	tests := []func(*SearchRequest){
-		func(r *SearchRequest) { r.Question = strings.Repeat("a", MaximumQuestionCharacters+1) },
-		func(r *SearchRequest) { r.Limit = MaximumResultLimit + 1 },
+		func(r *SearchRequest) {
+			r.Question = strings.Repeat("a", testRequestPolicy().MaximumQuestionCharacters+1)
+		},
+		func(r *SearchRequest) { r.Limit = testRequestPolicy().MaximumResultLimit + 1 },
 		func(r *SearchRequest) { r.CorrelationID = "not-a-request-id" },
 		func(r *SearchRequest) { r.Filters.Tags = []string{""} },
 		func(r *SearchRequest) { r.Filters.Author = string([]byte{0xff}) },
@@ -36,9 +38,19 @@ func TestSearchRequestValidateBoundsPublicInput(t *testing.T) {
 	for index, mutate := range tests {
 		request := validRequest()
 		mutate(&request)
-		if err := request.Validate(); !errorsIs(err, ErrInvalidRequest) {
+		if err := request.Validate(testRequestPolicy()); !errorsIs(err, ErrInvalidRequest) {
 			t.Fatalf("case %d error = %v", index, err)
 		}
+	}
+}
+
+func testRequestPolicy() RequestPolicy {
+	return RequestPolicy{
+		MaximumQuestionCharacters: 2000,
+		MaximumFilterTags:         20,
+		MaximumTagCharacters:      64,
+		MaximumAuthorCharacters:   256,
+		MaximumResultLimit:        20,
 	}
 }
 

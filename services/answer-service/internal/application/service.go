@@ -26,7 +26,7 @@ type ProviderRequest struct {
 	MaxSegment int
 }
 
-type LLMProvider interface {
+type AnswerProvider interface {
 	Generate(context.Context, ProviderRequest) ([]domain.AnswerSegment, error)
 }
 
@@ -74,18 +74,28 @@ type Limits struct {
 }
 
 type Service struct {
-	retriever Retriever
-	provider  LLMProvider
-	observer  Observer
-	limits    Limits
-	permits   chan struct{}
+	retriever     Retriever
+	provider      AnswerProvider
+	observer      Observer
+	limits        Limits
+	requestPolicy domain.RequestPolicy
+	permits       chan struct{}
 }
 
-func NewService(retriever Retriever, provider LLMProvider, observer Observer, limits Limits) (*Service, error) {
-	if retriever == nil || provider == nil || observer == nil || !validLimits(limits) {
+func NewService(retriever Retriever, provider AnswerProvider, observer Observer, limits Limits, requestPolicy domain.RequestPolicy) (*Service, error) {
+	if retriever == nil || provider == nil || observer == nil || !validLimits(limits) || requestPolicy.MaximumResultLimit == 0 ||
+		requestPolicy.MaximumQuestionCharacters == 0 || requestPolicy.MaximumFilterTags == 0 || requestPolicy.MaximumTagCharacters == 0 ||
+		requestPolicy.MaximumAuthorCharacters == 0 {
 		return nil, errors.New("invalid answer service configuration")
 	}
-	return &Service{retriever: retriever, provider: provider, observer: observer, limits: limits, permits: make(chan struct{}, limits.ProviderConcurrency)}, nil
+	return &Service{
+		retriever:     retriever,
+		provider:      provider,
+		observer:      observer,
+		limits:        limits,
+		requestPolicy: requestPolicy,
+		permits:       make(chan struct{}, limits.ProviderConcurrency),
+	}, nil
 }
 
 func validLimits(l Limits) bool {
@@ -106,7 +116,7 @@ func (s *Service) CheckReady(ctx context.Context) error {
 
 func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (domain.AnswerResult, error) {
 	started := time.Now()
-	if err := request.Validate(); err != nil {
+	if err := request.Validate(s.requestPolicy); err != nil {
 		return domain.AnswerResult{}, err
 	}
 	ctx, cancel := context.WithTimeout(parent, s.limits.RequestTimeout)

@@ -109,6 +109,7 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 		return nil, err
 	}
 	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: configuration.FinalizationLease})
+	metadataPolicy := application.MetadataPolicy{MaxTags: configuration.MaximumMetadataTags}
 	manifestPolicy := application.ManifestPolicy{
 		MaxPages:              uint32(configuration.ManifestMaxPages),
 		MaxShards:             configuration.ManifestMaxShards,
@@ -118,7 +119,7 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 		MaxTotalChunks:        uint32(configuration.ManifestMaxTotalChunks),
 		MaxExpandedTotalBytes: configuration.ManifestMaxExpandedBytes,
 	}
-	planner, err := application.NewPlanner(records, randomID, time.Now, manifestPolicy)
+	planner, err := application.NewPlanner(records, randomID, time.Now, metadataPolicy, manifestPolicy)
 	if err != nil {
 		pool.Close()
 		return nil, err

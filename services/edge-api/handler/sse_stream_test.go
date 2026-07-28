@@ -34,6 +34,7 @@ type adminSSEUseCaseStub struct {
 var testAdminPolicy = AdminPolicy{
 	PendingPageDefaultSize: 25,
 	PendingPageMaxSize:     100,
+	JSONBodyMaxBytes:       16 << 10,
 }
 
 func (adminSSEUseCaseStub) ListPending(context.Context, authflow.Principal, int, string) (authflow.PendingPage, error) {
@@ -55,7 +56,7 @@ func TestBookEventsSurvivesServerAndFrameWriteDeadlines(t *testing.T) {
 		Role:      "reader",
 		Status:    "active",
 	}
-	hub := NewBookStatusHub(1)
+	hub := NewBookStatusHub(testBookStatusHubPolicy(1))
 	hub.SetAvailable(true)
 	handler := &BooksHandler{events: &bookEvents{
 		sessions: sseSessionStub{principal: principal},
@@ -75,7 +76,7 @@ func TestBookEventsSurvivesServerAndFrameWriteDeadlines(t *testing.T) {
 }
 
 func TestBookEventsSendsOverflowResyncForSlowSubscriber(t *testing.T) {
-	hub := NewBookStatusHub(1)
+	hub := NewBookStatusHub(testBookStatusHubPolicy(1))
 	hub.SetAvailable(true)
 	subscriber, remove, ok := hub.subscribe("session-1", "127.0.0.1")
 	if !ok {
@@ -83,7 +84,7 @@ func TestBookEventsSendsOverflowResyncForSlowSubscriber(t *testing.T) {
 	}
 	defer remove()
 
-	for book := 0; book <= maxPendingBookStatusEvents; book++ {
+	for book := 0; book <= hub.policy.MaxPendingEvents; book++ {
 		hub.Publish(BookStatusEvent{BookID: string(rune(book + 1)), ProcessingVersion: 1})
 	}
 	events, resync, subscribed := hub.drain(subscriber)
@@ -107,7 +108,7 @@ func TestAdminEventsSurvivesServerAndFrameWriteDeadlines(t *testing.T) {
 	}
 	handler := NewAdminHandler(adminSSEUseCaseStub{
 		sseSessionStub: sseSessionStub{principal: principal},
-	}, NewPendingHub(1), testAdminPolicy)
+	}, NewPendingHub(PendingHubPolicy{MaxSubscribers: 1, MaxSubscribersPerSession: 1, MaxSubscribersPerIP: 10}), testAdminPolicy)
 	handler.timing = testSSETiming()
 
 	assertSSEHeartbeatsSurviveWriteTimeout(t, func(w http.ResponseWriter, r *http.Request) {
@@ -130,7 +131,7 @@ func TestAdminEventsEndsAtAccessTokenExpiry(t *testing.T) {
 	}
 	handler := NewAdminHandler(adminSSEUseCaseStub{
 		sseSessionStub: sseSessionStub{principal: principal},
-	}, NewPendingHub(1), testAdminPolicy)
+	}, NewPendingHub(PendingHubPolicy{MaxSubscribers: 1, MaxSubscribersPerSession: 1, MaxSubscribersPerIP: 10}), testAdminPolicy)
 	handler.timing = sseTiming{
 		heartbeatInterval:  20 * time.Millisecond,
 		revalidateInterval: time.Second,
@@ -217,7 +218,7 @@ func TestAdminEventsRejectsMissingOrExpiredClaims(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			handler := NewAdminHandler(adminSSEUseCaseStub{
 				sseSessionStub: sseSessionStub{principal: principal},
-			}, NewPendingHub(1), testAdminPolicy)
+			}, NewPendingHub(PendingHubPolicy{MaxSubscribers: 1, MaxSubscribersPerSession: 1, MaxSubscribersPerIP: 10}), testAdminPolicy)
 			handler.timing = testSSETiming()
 			request := httptest.NewRequest(http.MethodGet, "/admin/events", nil)
 			request = request.WithContext(test.context(request.Context()))
@@ -242,7 +243,7 @@ func TestBookEventsSanitizesUnsupportedDeadlineFailure(t *testing.T) {
 		Role:      "reader",
 		Status:    "active",
 	}
-	hub := NewBookStatusHub(1)
+	hub := NewBookStatusHub(testBookStatusHubPolicy(1))
 	hub.SetAvailable(true)
 	handler := &BooksHandler{events: &bookEvents{
 		sessions: sseSessionStub{principal: principal},

@@ -1,0 +1,11 @@
+name: Setup UI CI
+description: Install pinned Node.js and restore the UI npm cache.
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v7.0.0
+      with:
+        node-version: '22.17.0'
+        cache: npm
+        cache-dependency-path: ui/package-lock.json

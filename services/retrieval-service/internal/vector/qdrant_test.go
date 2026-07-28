@@ -15,6 +15,17 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 )
 
+func testSearchRequestPolicy() domain.SearchRequestPolicy {
+	return domain.SearchRequestPolicy{
+		MaximumQuestionCharacters: 2000,
+		MaximumFilterTags:         20,
+		MaximumTagCharacters:      64,
+		MaximumAuthorCharacters:   256,
+		DefaultResultLimit:        5,
+		MaximumResultLimit:        20,
+	}
+}
+
 func TestQdrantSearchUsesBoundedLimitAndReturnsEvidence(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
 		var body queryRequest
@@ -28,7 +39,7 @@ func TestQdrantSearchUsesBoundedLimitAndReturnsEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewQdrant() error = %v", err)
 	}
-	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 2})
+	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 2}, testSearchRequestPolicy())
 	results, err := store.Search(context.Background(), query, make([]float32, domain.EmbeddingDimensions), 4, 6)
 	if err != nil || len(results) != 1 || results[0].EvidenceID != "evidence-1" {
 		t.Fatalf("Search() = %#v, %v", results, err)
@@ -70,7 +81,7 @@ func TestQdrantSearchDocumentsHydratesStoredChunkEvidence(t *testing.T) {
 		}
 	})}
 	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
-	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 2})
+	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 2}, testSearchRequestPolicy())
 
 	page, err := store.SearchDocuments(context.Background(), query, make([]float32, domain.EmbeddingDimensions), 4, 2)
 
@@ -94,7 +105,7 @@ func TestQdrantSearchDocumentsKeepsFullRawPageOpenAfterHydrationDrops(t *testing
 		}
 	})}
 	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
-	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 1})
+	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 1}, testSearchRequestPolicy())
 
 	page, err := store.SearchDocuments(context.Background(), query, make([]float32, domain.EmbeddingDimensions), 2, 0)
 
@@ -116,7 +127,7 @@ func TestQdrantSearchEvidenceBatchAcceptsHydrationResponseLargerThanFourMiB(t *t
 		return response(http.StatusOK, batchResponse)
 	})}
 	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
-	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 1})
+	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 1}, testSearchRequestPolicy())
 
 	results, err := store.searchEvidenceBatch(context.Background(), query, make([]float32, domain.EmbeddingDimensions), []string{"job-1"}, 3)
 
@@ -147,7 +158,7 @@ func TestQdrantPreservesExplicitZeroYearUpperBound(t *testing.T) {
 	})}
 	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
 	yearTo := 0
-	query, err := domain.NewSearchQuery(domain.SearchQueryInput{Question: "old books", Filters: domain.SearchFilters{YearTo: &yearTo}, Limit: 1})
+	query, err := domain.NewSearchQuery(domain.SearchQueryInput{Question: "old books", Filters: domain.SearchFilters{YearTo: &yearTo}, Limit: 1}, testSearchRequestPolicy())
 	if err != nil {
 		t.Fatalf("NewSearchQuery() error = %v", err)
 	}

@@ -26,6 +26,11 @@ func TestLoadRequiresCompletePrivateRuntimeConfiguration(t *testing.T) {
 	if configuration.GRPCAddress != ":8083" || configuration.QdrantCollection != "evidence_v2" {
 		t.Fatalf("unexpected configuration: %#v", configuration)
 	}
+	if configuration.SearchRequestPolicy.MaximumQuestionCharacters != 2000 || configuration.SearchRequestPolicy.MaximumFilterTags != 20 ||
+		configuration.SearchRequestPolicy.MaximumTagCharacters != 64 || configuration.SearchRequestPolicy.MaximumAuthorCharacters != 256 ||
+		configuration.SearchRequestPolicy.DefaultResultLimit != 5 || configuration.SearchRequestPolicy.MaximumResultLimit != 20 {
+		t.Fatalf("unexpected search request policy: %#v", configuration.SearchRequestPolicy)
+	}
 }
 
 func TestLoadRejectsPublicDependencyURL(t *testing.T) {
@@ -44,7 +49,7 @@ func TestLoadRejectsPublicDependencyURL(t *testing.T) {
 	}
 }
 
-func TestLoadAcceptsOptionalSummaryProviderConfiguration(t *testing.T) {
+func TestLoadAcceptsOptionalEvidenceAssessorConfiguration(t *testing.T) {
 	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
 	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
 	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
@@ -57,17 +62,28 @@ func TestLoadAcceptsOptionalSummaryProviderConfiguration(t *testing.T) {
 	t.Setenv("RETRIEVAL_SUMMARY_LLM_BASE_URL", "https://llm-provider.example.com")
 	t.Setenv("RETRIEVAL_SUMMARY_LLM_MODEL", "summary-model")
 	t.Setenv("RETRIEVAL_SUMMARY_LLM_API_KEY_FILE", "/run/secrets/summary-key")
+	t.Setenv("RETRIEVAL_MAX_QUESTION_CHARACTERS", "1024")
+	t.Setenv("RETRIEVAL_MAX_FILTER_TAGS", "10")
+	t.Setenv("RETRIEVAL_MAX_TAG_CHARACTERS", "32")
+	t.Setenv("RETRIEVAL_MAX_AUTHOR_CHARACTERS", "128")
+	t.Setenv("RETRIEVAL_DEFAULT_RESULT_LIMIT", "4")
+	t.Setenv("RETRIEVAL_MAX_RESULT_LIMIT", "11")
 	t.Setenv("RETRIEVAL_SEARCH_TIMEOUT", "25s")
 
 	configuration, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if configuration.SummaryLLMBaseURL != "https://llm-provider.example.com" || configuration.SummaryLLMModel != "summary-model" {
-		t.Fatalf("unexpected summary provider configuration: %#v", configuration)
+	if configuration.EvidenceAssessor.BaseURL != "https://llm-provider.example.com" || configuration.EvidenceAssessor.Model != "summary-model" {
+		t.Fatalf("unexpected evidence assessor configuration: %#v", configuration)
 	}
-	if configuration.SummaryLLMRequestsPerMinute != 15 {
-		t.Fatalf("SummaryLLMRequestsPerMinute = %d, want 15", configuration.SummaryLLMRequestsPerMinute)
+	if configuration.EvidenceAssessor.RequestsPerMinute != 15 {
+		t.Fatalf("EvidenceAssessor.RequestsPerMinute = %d, want 15", configuration.EvidenceAssessor.RequestsPerMinute)
+	}
+	if configuration.SearchRequestPolicy.MaximumQuestionCharacters != 1024 || configuration.SearchRequestPolicy.MaximumFilterTags != 10 ||
+		configuration.SearchRequestPolicy.MaximumTagCharacters != 32 || configuration.SearchRequestPolicy.MaximumAuthorCharacters != 128 ||
+		configuration.SearchRequestPolicy.DefaultResultLimit != 4 || configuration.SearchRequestPolicy.MaximumResultLimit != 11 {
+		t.Fatalf("unexpected search request policy: %#v", configuration.SearchRequestPolicy)
 	}
 	if configuration.TEIMaxResponseBytes != 8<<20 || configuration.TEIBatchSize != 8 {
 		t.Fatalf("unexpected TEI policy: response=%d batch=%d", configuration.TEIMaxResponseBytes, configuration.TEIBatchSize)
@@ -75,20 +91,20 @@ func TestLoadAcceptsOptionalSummaryProviderConfiguration(t *testing.T) {
 	if configuration.QdrantMaxResponseBytes != 4<<20 || configuration.QdrantBatchResponseBytes != 8<<20 {
 		t.Fatalf("unexpected Qdrant policy: response=%d batch=%d", configuration.QdrantMaxResponseBytes, configuration.QdrantBatchResponseBytes)
 	}
-	if configuration.SummaryLLMMaxCalls != 100 {
-		t.Fatalf("SummaryLLMMaxCalls = %d, want 100", configuration.SummaryLLMMaxCalls)
+	if configuration.EvidenceAssessor.MaxCalls != 100 {
+		t.Fatalf("EvidenceAssessor.MaxCalls = %d, want 100", configuration.EvidenceAssessor.MaxCalls)
 	}
 	if configuration.SearchCandidatePageMultiplier != 2 {
 		t.Fatalf("SearchCandidatePageMultiplier = %d, want 2", configuration.SearchCandidatePageMultiplier)
 	}
-	if configuration.SummaryLLMMaxOutputTokens != 64 {
-		t.Fatalf("SummaryLLMMaxOutputTokens = %d, want 64", configuration.SummaryLLMMaxOutputTokens)
+	if configuration.EvidenceAssessor.MaxOutputTokens != 64 {
+		t.Fatalf("EvidenceAssessor.MaxOutputTokens = %d, want 64", configuration.EvidenceAssessor.MaxOutputTokens)
 	}
-	if configuration.SummaryLLMMaxInputRunes != 4096 || configuration.SummaryLLMMaxResponseBytes != 64<<10 || configuration.SummaryLLMMaxSummaryBytes != 16<<10 {
-		t.Fatalf("unexpected summary provider policy: runes=%d response=%d summary=%d", configuration.SummaryLLMMaxInputRunes, configuration.SummaryLLMMaxResponseBytes, configuration.SummaryLLMMaxSummaryBytes)
+	if configuration.EvidenceAssessor.MaxInputRunes != 4096 || configuration.EvidenceAssessor.MaxResponseBytes != 64<<10 || configuration.EvidenceAssessor.MaxSummaryBytes != 16<<10 {
+		t.Fatalf("unexpected evidence assessor policy: runes=%d response=%d summary=%d", configuration.EvidenceAssessor.MaxInputRunes, configuration.EvidenceAssessor.MaxResponseBytes, configuration.EvidenceAssessor.MaxSummaryBytes)
 	}
-	if configuration.SummaryLLMOutputMode != "json_or_plain" {
-		t.Fatalf("SummaryLLMOutputMode = %q, want json_or_plain", configuration.SummaryLLMOutputMode)
+	if configuration.EvidenceAssessor.OutputMode != "json_or_plain" {
+		t.Fatalf("EvidenceAssessor.OutputMode = %q, want json_or_plain", configuration.EvidenceAssessor.OutputMode)
 	}
 	if configuration.SearchTimeout != 25*time.Second {
 		t.Fatalf("SearchTimeout = %s, want 25s", configuration.SearchTimeout)
@@ -96,12 +112,12 @@ func TestLoadAcceptsOptionalSummaryProviderConfiguration(t *testing.T) {
 	if configuration.DependencyTimeout != 25*time.Second {
 		t.Fatalf("DependencyTimeout = %s, want 25s", configuration.DependencyTimeout)
 	}
-	if configuration.SummaryLLMTimeout <= 0 || configuration.SummaryLLMTimeout >= configuration.SearchTimeout {
-		t.Fatalf("SummaryLLMTimeout = %s, want a positive timeout below SearchTimeout", configuration.SummaryLLMTimeout)
+	if configuration.EvidenceAssessor.Timeout <= 0 || configuration.EvidenceAssessor.Timeout >= configuration.SearchTimeout {
+		t.Fatalf("EvidenceAssessor.Timeout = %s, want a positive timeout below SearchTimeout", configuration.EvidenceAssessor.Timeout)
 	}
 }
 
-func TestLoadDefaultsSummaryProviderRateLimit(t *testing.T) {
+func TestLoadDefaultsEvidenceAssessorRateLimit(t *testing.T) {
 	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
 	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
 	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
@@ -117,11 +133,11 @@ func TestLoadDefaultsSummaryProviderRateLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if configuration.SummaryLLMRequestsPerMinute != 15 {
-		t.Fatalf("SummaryLLMRequestsPerMinute = %d, want 15", configuration.SummaryLLMRequestsPerMinute)
+	if configuration.EvidenceAssessor.RequestsPerMinute != 15 {
+		t.Fatalf("EvidenceAssessor.RequestsPerMinute = %d, want 15", configuration.EvidenceAssessor.RequestsPerMinute)
 	}
-	if configuration.SummaryLLMMaxCalls != 100 {
-		t.Fatalf("SummaryLLMMaxCalls = %d, want 100", configuration.SummaryLLMMaxCalls)
+	if configuration.EvidenceAssessor.MaxCalls != 100 {
+		t.Fatalf("EvidenceAssessor.MaxCalls = %d, want 100", configuration.EvidenceAssessor.MaxCalls)
 	}
 	if configuration.SearchCandidatePageMultiplier != 2 {
 		t.Fatalf("SearchCandidatePageMultiplier = %d, want 2", configuration.SearchCandidatePageMultiplier)
@@ -135,8 +151,8 @@ func TestLoadDefaultsSummaryProviderRateLimit(t *testing.T) {
 	if configuration.DependencyTimeout != 2*time.Minute {
 		t.Fatalf("DependencyTimeout = %s, want 2m", configuration.DependencyTimeout)
 	}
-	if configuration.SummaryLLMTimeout <= 0 || configuration.SummaryLLMTimeout >= configuration.SearchTimeout {
-		t.Fatalf("SummaryLLMTimeout = %s, want a positive timeout below SearchTimeout", configuration.SummaryLLMTimeout)
+	if configuration.EvidenceAssessor.Timeout <= 0 || configuration.EvidenceAssessor.Timeout >= configuration.SearchTimeout {
+		t.Fatalf("EvidenceAssessor.Timeout = %s, want a positive timeout below SearchTimeout", configuration.EvidenceAssessor.Timeout)
 	}
 }
 
@@ -161,21 +177,21 @@ func TestLoadDefaultsSearchTimeoutAndMinimumScore(t *testing.T) {
 	if configuration.DependencyTimeout != 2*time.Minute {
 		t.Fatalf("DependencyTimeout = %s, want 2m", configuration.DependencyTimeout)
 	}
-	if configuration.SummaryLLMTimeout <= 0 || configuration.SummaryLLMTimeout >= configuration.SearchTimeout {
-		t.Fatalf("SummaryLLMTimeout = %s, want a positive timeout below SearchTimeout", configuration.SummaryLLMTimeout)
+	if configuration.EvidenceAssessor.Timeout <= 0 || configuration.EvidenceAssessor.Timeout >= configuration.SearchTimeout {
+		t.Fatalf("EvidenceAssessor.Timeout = %s, want a positive timeout below SearchTimeout", configuration.EvidenceAssessor.Timeout)
 	}
 	if configuration.MinimumSearchScore != 0.6 {
 		t.Fatalf("MinimumSearchScore = %g, want 0.6", configuration.MinimumSearchScore)
 	}
-	if configuration.SummaryLLMMaxCalls != 100 {
-		t.Fatalf("SummaryLLMMaxCalls = %d, want 100", configuration.SummaryLLMMaxCalls)
+	if configuration.EvidenceAssessor.MaxCalls != 100 {
+		t.Fatalf("EvidenceAssessor.MaxCalls = %d, want 100", configuration.EvidenceAssessor.MaxCalls)
 	}
 	if configuration.SearchCandidatePageMultiplier != 2 {
 		t.Fatalf("SearchCandidatePageMultiplier = %d, want 2", configuration.SearchCandidatePageMultiplier)
 	}
 }
 
-func TestLoadOverridesSummaryProviderRateLimit(t *testing.T) {
+func TestLoadOverridesEvidenceAssessorRateLimit(t *testing.T) {
 	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
 	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
 	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
@@ -192,12 +208,12 @@ func TestLoadOverridesSummaryProviderRateLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if configuration.SummaryLLMRequestsPerMinute != 2001 {
-		t.Fatalf("SummaryLLMRequestsPerMinute = %d, want 2001", configuration.SummaryLLMRequestsPerMinute)
+	if configuration.EvidenceAssessor.RequestsPerMinute != 2001 {
+		t.Fatalf("EvidenceAssessor.RequestsPerMinute = %d, want 2001", configuration.EvidenceAssessor.RequestsPerMinute)
 	}
 }
 
-func TestLoadOverridesSummaryProviderMaxCalls(t *testing.T) {
+func TestLoadOverridesEvidenceAssessorMaxCalls(t *testing.T) {
 	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
 	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
 	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
@@ -214,8 +230,8 @@ func TestLoadOverridesSummaryProviderMaxCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if configuration.SummaryLLMMaxCalls != 2 {
-		t.Fatalf("SummaryLLMMaxCalls = %d, want 2", configuration.SummaryLLMMaxCalls)
+	if configuration.EvidenceAssessor.MaxCalls != 2 {
+		t.Fatalf("EvidenceAssessor.MaxCalls = %d, want 2", configuration.EvidenceAssessor.MaxCalls)
 	}
 }
 
@@ -240,7 +256,7 @@ func TestLoadOverridesSearchCandidatePageMultiplier(t *testing.T) {
 	}
 }
 
-func TestLoadOverridesSummaryProviderMaxOutputTokens(t *testing.T) {
+func TestLoadOverridesEvidenceAssessorMaxOutputTokens(t *testing.T) {
 	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
 	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
 	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
@@ -257,8 +273,8 @@ func TestLoadOverridesSummaryProviderMaxOutputTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if configuration.SummaryLLMMaxOutputTokens != 48 {
-		t.Fatalf("SummaryLLMMaxOutputTokens = %d, want 48", configuration.SummaryLLMMaxOutputTokens)
+	if configuration.EvidenceAssessor.MaxOutputTokens != 48 {
+		t.Fatalf("EvidenceAssessor.MaxOutputTokens = %d, want 48", configuration.EvidenceAssessor.MaxOutputTokens)
 	}
 }
 
@@ -293,12 +309,12 @@ func TestLoadOverridesRetrievalProviderPolicies(t *testing.T) {
 	if configuration.QdrantMaxResponseBytes != 2097152 || configuration.QdrantBatchResponseBytes != 3145728 {
 		t.Fatalf("unexpected Qdrant policy: %#v", configuration)
 	}
-	if configuration.SummaryLLMMaxInputRunes != 2048 || configuration.SummaryLLMMaxResponseBytes != 32768 || configuration.SummaryLLMMaxSummaryBytes != 8192 {
+	if configuration.EvidenceAssessor.MaxInputRunes != 2048 || configuration.EvidenceAssessor.MaxResponseBytes != 32768 || configuration.EvidenceAssessor.MaxSummaryBytes != 8192 {
 		t.Fatalf("unexpected summary policy: %#v", configuration)
 	}
 }
 
-func TestLoadOverridesSummaryProviderOutputMode(t *testing.T) {
+func TestLoadOverridesEvidenceAssessorOutputMode(t *testing.T) {
 	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
 	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
 	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
@@ -315,12 +331,12 @@ func TestLoadOverridesSummaryProviderOutputMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if configuration.SummaryLLMOutputMode != "strict_json" {
-		t.Fatalf("SummaryLLMOutputMode = %q, want strict_json", configuration.SummaryLLMOutputMode)
+	if configuration.EvidenceAssessor.OutputMode != "strict_json" {
+		t.Fatalf("EvidenceAssessor.OutputMode = %q, want strict_json", configuration.EvidenceAssessor.OutputMode)
 	}
 }
 
-func TestLoadRejectsInvalidSummaryProviderOutputMode(t *testing.T) {
+func TestLoadRejectsInvalidEvidenceAssessorOutputMode(t *testing.T) {
 	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
 	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
 	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
@@ -333,7 +349,7 @@ func TestLoadRejectsInvalidSummaryProviderOutputMode(t *testing.T) {
 	t.Setenv("RETRIEVAL_SUMMARY_LLM_OUTPUT_MODE", "plain_text")
 
 	if _, err := Load(); err == nil {
-		t.Fatal("Load() accepted an invalid summary provider output mode")
+		t.Fatal("Load() accepted an invalid evidence assessor output mode")
 	}
 }
 
@@ -362,8 +378,8 @@ func TestLoadOverridesRetrievalTimeouts(t *testing.T) {
 	if configuration.DependencyTimeout != 45*time.Second {
 		t.Fatalf("DependencyTimeout = %s, want 45s", configuration.DependencyTimeout)
 	}
-	if configuration.SummaryLLMTimeout != 30*time.Second {
-		t.Fatalf("SummaryLLMTimeout = %s, want 30s", configuration.SummaryLLMTimeout)
+	if configuration.EvidenceAssessor.Timeout != 30*time.Second {
+		t.Fatalf("EvidenceAssessor.Timeout = %s, want 30s", configuration.EvidenceAssessor.Timeout)
 	}
 }
 

@@ -111,6 +111,7 @@ func testAdminPolicy() handler.AdminPolicy {
 	return handler.AdminPolicy{
 		PendingPageDefaultSize: 25,
 		PendingPageMaxSize:     100,
+		JSONBodyMaxBytes:       16 << 10,
 	}
 }
 
@@ -120,12 +121,12 @@ func TestRouterRequiresSessionValidatorAndAppliesSecurityHeaders(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	diagnostics := diagnostic.New(log)
 	identity := fakeIdentity{}
-	hub := handler.NewPendingHub(10)
+	hub := handler.NewPendingHub(handler.PendingHubPolicy{MaxSubscribers: 10, MaxSubscribersPerSession: 1, MaxSubscribersPerIP: 10})
 	router := edgeapi.NewRouter(
 		handler.NewQueryHandler(fakeRetrieval{}, 0.6, testQueryPolicy()),
 		handler.NewAuthHandler(identity, diagnostics, testCookieConfig(true)),
 		handler.NewHealthHandler(identity),
-		handler.NewSetupHandler(identity),
+		handler.NewSetupHandler(identity, handler.SetupPolicy{JSONBodyMaxBytes: 16 << 10}),
 		handler.NewAdminHandler(identity, hub, testAdminPolicy()),
 		verifier,
 		identity,
@@ -149,7 +150,7 @@ func TestRouterPanicsWithoutSessionValidator(t *testing.T) {
 	diagnostics := diagnostic.New(log)
 	identity := fakeIdentity{}
 	assert.Panics(t, func() {
-		edgeapi.NewRouter(handler.NewQueryHandler(fakeRetrieval{}, 0.6, testQueryPolicy()), handler.NewAuthHandler(identity, diagnostics, testCookieConfig(false)), handler.NewHealthHandler(identity), handler.NewSetupHandler(identity), handler.NewAdminHandler(identity, handler.NewPendingHub(10), testAdminPolicy()), verifier, nil, diagnostics, testRouterConfig())
+		edgeapi.NewRouter(handler.NewQueryHandler(fakeRetrieval{}, 0.6, testQueryPolicy()), handler.NewAuthHandler(identity, diagnostics, testCookieConfig(false)), handler.NewHealthHandler(identity), handler.NewSetupHandler(identity, handler.SetupPolicy{JSONBodyMaxBytes: 16 << 10}), handler.NewAdminHandler(identity, handler.NewPendingHub(handler.PendingHubPolicy{MaxSubscribers: 10, MaxSubscribersPerSession: 1, MaxSubscribersPerIP: 10}), testAdminPolicy()), verifier, nil, diagnostics, testRouterConfig())
 	})
 }
 
@@ -200,8 +201,8 @@ func TestQueryRouteRateLimitsTrustedPrincipalBeforeRetrieval(t *testing.T) {
 		handler.NewQueryHandler(retrieval, 0.6, testQueryPolicy()),
 		handler.NewAuthHandler(identity, diagnostics, testCookieConfig(true)),
 		handler.NewHealthHandler(identity),
-		handler.NewSetupHandler(identity),
-		handler.NewAdminHandler(identity, handler.NewPendingHub(10), testAdminPolicy()),
+		handler.NewSetupHandler(identity, handler.SetupPolicy{JSONBodyMaxBytes: 16 << 10}),
+		handler.NewAdminHandler(identity, handler.NewPendingHub(handler.PendingHubPolicy{MaxSubscribers: 10, MaxSubscribersPerSession: 1, MaxSubscribersPerIP: 10}), testAdminPolicy()),
 		verifier,
 		identity,
 		diagnostics,
@@ -231,8 +232,8 @@ func TestBookUploadRateLimitUsesRouterConfiguration(t *testing.T) {
 		handler.NewQueryHandler(fakeRetrieval{}, 0.6, testQueryPolicy()),
 		handler.NewAuthHandler(identity, diagnostics, testCookieConfig(true)),
 		handler.NewHealthHandler(identity),
-		handler.NewSetupHandler(identity),
-		handler.NewAdminHandler(identity, handler.NewPendingHub(10), testAdminPolicy()),
+		handler.NewSetupHandler(identity, handler.SetupPolicy{JSONBodyMaxBytes: 16 << 10}),
+		handler.NewAdminHandler(identity, handler.NewPendingHub(handler.PendingHubPolicy{MaxSubscribers: 10, MaxSubscribersPerSession: 1, MaxSubscribersPerIP: 10}), testAdminPolicy()),
 		verifier,
 		identity,
 		diagnostics,
@@ -246,6 +247,7 @@ func TestBookUploadRateLimitUsesRouterConfiguration(t *testing.T) {
 			ListTimeout:      6 * time.Second,
 			PreviewTimeout:   5 * time.Second,
 			LifecycleTimeout: 5 * time.Second,
+			MetadataMaxBytes: 4096,
 			ListPageMaxSize:  100,
 			PageTokenMaxSize: 512,
 		}),
@@ -287,8 +289,8 @@ func newTestRouter(t *testing.T, identity *passwordResetIdentity) http.Handler {
 		handler.NewQueryHandler(fakeRetrieval{}, 0.6, testQueryPolicy()),
 		handler.NewAuthHandler(identity, diagnostics, testCookieConfig(true)),
 		handler.NewHealthHandler(identity),
-		handler.NewSetupHandler(identity),
-		handler.NewAdminHandler(identity, handler.NewPendingHub(10), testAdminPolicy()),
+		handler.NewSetupHandler(identity, handler.SetupPolicy{JSONBodyMaxBytes: 16 << 10}),
+		handler.NewAdminHandler(identity, handler.NewPendingHub(handler.PendingHubPolicy{MaxSubscribers: 10, MaxSubscribersPerSession: 1, MaxSubscribersPerIP: 10}), testAdminPolicy()),
 		verifier,
 		identity,
 		diagnostics,
@@ -338,6 +340,7 @@ func testCookieConfig(secure bool) handler.CookieConfig {
 	return handler.CookieConfig{
 		Secure:              secure,
 		RefreshCookieMaxAge: 30 * 24 * time.Hour,
+		JSONBodyMaxBytes:    16 << 10,
 	}
 }
 
@@ -349,6 +352,7 @@ func testQueryPolicy() handler.QueryPolicy {
 		MaxAuthorLength:   256,
 		DefaultLimit:      5,
 		MaxLimit:          20,
+		JSONBodyMaxBytes:  16 << 10,
 	}
 }
 

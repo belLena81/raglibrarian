@@ -223,7 +223,7 @@ func TestAnswerTruncatesFailureDetailUsingConfiguredLimit(t *testing.T) {
 	limits := testLimits()
 	limits.MaximumFailureDetailRunes = 12
 	observer := &fakeObserver{}
-	service, err := NewService(&fakeRetriever{result: searchResult("evidence-1")}, &fakeProvider{err: errors.New(strings.Repeat(" detail ", 10))}, observer, limits)
+	service, err := NewService(&fakeRetriever{result: searchResult("evidence-1")}, &fakeProvider{err: errors.New(strings.Repeat(" detail ", 10))}, observer, limits, testRequestPolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,13 +238,23 @@ func TestAnswerTruncatesFailureDetailUsingConfiguredLimit(t *testing.T) {
 	}
 }
 
-func newTestService(t *testing.T, retriever Retriever, provider LLMProvider, limits Limits) *Service {
+func newTestService(t *testing.T, retriever Retriever, provider AnswerProvider, limits Limits) *Service {
 	t.Helper()
-	service, err := NewService(retriever, provider, &fakeObserver{}, limits)
+	service, err := NewService(retriever, provider, &fakeObserver{}, limits, testRequestPolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
 	return service
+}
+
+func testRequestPolicy() domain.RequestPolicy {
+	return domain.RequestPolicy{
+		MaximumQuestionCharacters: 2000,
+		MaximumFilterTags:         20,
+		MaximumTagCharacters:      64,
+		MaximumAuthorCharacters:   256,
+		MaximumResultLimit:        20,
+	}
 }
 
 func testLimits() Limits {

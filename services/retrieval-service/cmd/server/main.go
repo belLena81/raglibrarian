@@ -17,6 +17,7 @@ import (
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 	retrievalgrpc "github.com/belLena81/raglibrarian/services/retrieval-service/internal/grpc"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
 	retrievalruntime "github.com/belLena81/raglibrarian/services/retrieval-service/internal/runtime"
@@ -52,9 +53,9 @@ func main() {
 		log.Print("retrieval server could not read database credentials")
 		os.Exit(1)
 	}
-	summaryProvider, err := retrievalruntime.NewSummaryProvider(configuration, serviceLogger)
+	evidenceAssessor, err := retrievalruntime.NewEvidenceAssessor(configuration.EvidenceAssessor, serviceLogger)
 	if err != nil {
-		log.Print("retrieval server could not configure summary provider")
+		log.Print("retrieval server could not configure evidence assessor")
 		os.Exit(1)
 	}
 	if err = process.DropPrivileges(configuration.RunAs); err != nil {
@@ -68,12 +69,20 @@ func main() {
 	}
 	defer pool.Close()
 	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: configuration.FinalizationLease})
-	searcher, err := application.NewSearcherWithPolicy(embedder, store, records, summaryProvider, application.SearchPolicy{
-		MinimumVisibleScore:      configuration.MinimumSearchScore,
-		SummaryCallLimit:         configuration.SummaryLLMMaxCalls,
-		SummaryTimeout:           configuration.SummaryLLMTimeout,
-		CandidatePageMultiplier:  configuration.SearchCandidatePageMultiplier,
-		MaximumSummaryInputRunes: configuration.SummaryLLMMaxInputRunes,
+	searcher, err := application.NewSearcherWithPolicy(embedder, store, records, evidenceAssessor, application.SearchPolicy{
+		MinimumVisibleScore:         configuration.MinimumSearchScore,
+		AssessmentCallLimit:         configuration.EvidenceAssessor.MaxCalls,
+		AssessmentTimeout:           configuration.EvidenceAssessor.Timeout,
+		CandidatePageMultiplier:     configuration.SearchCandidatePageMultiplier,
+		MaximumAssessmentInputRunes: configuration.EvidenceAssessor.MaxInputRunes,
+		RequestPolicy: domain.SearchRequestPolicy{
+			MaximumQuestionCharacters: configuration.SearchRequestPolicy.MaximumQuestionCharacters,
+			MaximumFilterTags:         configuration.SearchRequestPolicy.MaximumFilterTags,
+			MaximumTagCharacters:      configuration.SearchRequestPolicy.MaximumTagCharacters,
+			MaximumAuthorCharacters:   configuration.SearchRequestPolicy.MaximumAuthorCharacters,
+			DefaultResultLimit:        configuration.SearchRequestPolicy.DefaultResultLimit,
+			MaximumResultLimit:        configuration.SearchRequestPolicy.MaximumResultLimit,
+		},
 	})
 	if err != nil {
 		log.Print("retrieval server could not configure search")

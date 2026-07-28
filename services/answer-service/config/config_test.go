@@ -14,17 +14,22 @@ func TestLoadUsesSecureBoundedDefaults(t *testing.T) {
 	if configuration.Limits.MaximumEvidence != 8 || configuration.Limits.MaximumContextBytes != 32<<10 || configuration.Limits.ProviderConcurrency != 4 {
 		t.Fatalf("unexpected limits: %#v", configuration.Limits)
 	}
+	if configuration.RequestPolicy.MaximumQuestionCharacters != 2000 || configuration.RequestPolicy.MaximumFilterTags != 20 ||
+		configuration.RequestPolicy.MaximumTagCharacters != 64 || configuration.RequestPolicy.MaximumAuthorCharacters != 256 ||
+		configuration.RequestPolicy.MaximumResultLimit != 20 {
+		t.Fatalf("unexpected request policy: %#v", configuration.RequestPolicy)
+	}
 	if configuration.Limits.MaximumSummaryRunes != 512 {
 		t.Fatalf("MaximumSummaryRunes = %d, want 512", configuration.Limits.MaximumSummaryRunes)
 	}
 	if configuration.Limits.MaximumFailureDetailRunes != 160 {
 		t.Fatalf("MaximumFailureDetailRunes = %d, want 160", configuration.Limits.MaximumFailureDetailRunes)
 	}
-	if configuration.LLMMaxResponseBytes != 128<<10 || configuration.LLMMaxCandidateBytes != 32<<10 {
-		t.Fatalf("unexpected provider policy: response=%d candidate=%d", configuration.LLMMaxResponseBytes, configuration.LLMMaxCandidateBytes)
+	if configuration.Generator.MaxResponseBytes != 128<<10 || configuration.Generator.MaxCandidateBytes != 32<<10 {
+		t.Fatalf("unexpected provider policy: response=%d candidate=%d", configuration.Generator.MaxResponseBytes, configuration.Generator.MaxCandidateBytes)
 	}
-	if configuration.LLMHTTPClientTimeout != 0 {
-		t.Fatalf("LLMHTTPClientTimeout = %s, want 0", configuration.LLMHTTPClientTimeout)
+	if configuration.Generator.HTTPClientTimeout != 0 {
+		t.Fatalf("Provider.HTTPClientTimeout = %s, want 0", configuration.Generator.HTTPClientTimeout)
 	}
 	if configuration.MetricsMaxHeaderBytes != 16<<10 {
 		t.Fatalf("MetricsMaxHeaderBytes = %d, want %d", configuration.MetricsMaxHeaderBytes, 16<<10)
@@ -44,11 +49,11 @@ func TestLoadDefaultsFreeTierProviderRateLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if configuration.LLMRequestsPerMinute != 0 {
-		t.Fatalf("LLMRequestsPerMinute = %d, want 0", configuration.LLMRequestsPerMinute)
+	if configuration.Generator.RequestsPerMinute != 0 {
+		t.Fatalf("Provider.RequestsPerMinute = %d, want 0", configuration.Generator.RequestsPerMinute)
 	}
-	if configuration.LogProviderErrorBody {
-		t.Fatal("LogProviderErrorBody = true, want false")
+	if configuration.Generator.LogErrorBody {
+		t.Fatal("Provider.LogErrorBody = true, want false")
 	}
 }
 
@@ -59,8 +64,8 @@ func TestLoadEnablesProviderErrorBodyLoggingFlag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !configuration.LogProviderErrorBody {
-		t.Fatal("LogProviderErrorBody = false, want true")
+	if !configuration.Generator.LogErrorBody {
+		t.Fatal("Provider.LogErrorBody = false, want true")
 	}
 }
 
@@ -72,16 +77,21 @@ func TestLoadOverridesProviderPolicy(t *testing.T) {
 	t.Setenv("ANSWER_PROVIDER_HTTP_TIMEOUT", "15s")
 	t.Setenv("ANSWER_MAX_SUMMARY_RUNES", "256")
 	t.Setenv("ANSWER_MAX_FAILURE_DETAIL_RUNES", "80")
+	t.Setenv("ANSWER_MAX_QUESTION_CHARACTERS", "1024")
+	t.Setenv("ANSWER_MAX_FILTER_TAGS", "10")
+	t.Setenv("ANSWER_MAX_TAG_CHARACTERS", "32")
+	t.Setenv("ANSWER_MAX_AUTHOR_CHARACTERS", "128")
+	t.Setenv("ANSWER_MAX_RESULT_LIMIT", "7")
 	t.Setenv("ANSWER_METRICS_MAX_HEADER_BYTES", "65535")
 	configuration, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if configuration.LLMMaxResponseBytes != 65536 || configuration.LLMMaxCandidateBytes != 16384 {
-		t.Fatalf("unexpected provider policy: response=%d candidate=%d", configuration.LLMMaxResponseBytes, configuration.LLMMaxCandidateBytes)
+	if configuration.Generator.MaxResponseBytes != 65536 || configuration.Generator.MaxCandidateBytes != 16384 {
+		t.Fatalf("unexpected provider policy: response=%d candidate=%d", configuration.Generator.MaxResponseBytes, configuration.Generator.MaxCandidateBytes)
 	}
-	if configuration.LLMRequestsPerMinute != 2001 {
-		t.Fatalf("LLMRequestsPerMinute = %d, want 2001", configuration.LLMRequestsPerMinute)
+	if configuration.Generator.RequestsPerMinute != 2001 {
+		t.Fatalf("Provider.RequestsPerMinute = %d, want 2001", configuration.Generator.RequestsPerMinute)
 	}
 	if configuration.MetricsMaxHeaderBytes != 65535 {
 		t.Fatalf("MetricsMaxHeaderBytes = %d, want %d", configuration.MetricsMaxHeaderBytes, 65535)
@@ -92,8 +102,13 @@ func TestLoadOverridesProviderPolicy(t *testing.T) {
 	if configuration.Limits.MaximumFailureDetailRunes != 80 {
 		t.Fatalf("MaximumFailureDetailRunes = %d, want 80", configuration.Limits.MaximumFailureDetailRunes)
 	}
-	if configuration.LLMHTTPClientTimeout != 15*time.Second {
-		t.Fatalf("LLMHTTPClientTimeout = %s, want 15s", configuration.LLMHTTPClientTimeout)
+	if configuration.RequestPolicy.MaximumQuestionCharacters != 1024 || configuration.RequestPolicy.MaximumFilterTags != 10 ||
+		configuration.RequestPolicy.MaximumTagCharacters != 32 || configuration.RequestPolicy.MaximumAuthorCharacters != 128 ||
+		configuration.RequestPolicy.MaximumResultLimit != 7 {
+		t.Fatalf("unexpected request policy: %#v", configuration.RequestPolicy)
+	}
+	if configuration.Generator.HTTPClientTimeout != 15*time.Second {
+		t.Fatalf("Provider.HTTPClientTimeout = %s, want 15s", configuration.Generator.HTTPClientTimeout)
 	}
 }
 
@@ -148,6 +163,11 @@ func TestLoadRejectsInsecureProviderAndInvalidBounds(t *testing.T) {
 	t.Setenv("ANSWER_METRICS_MAX_HEADER_BYTES", "0")
 	if _, err := Load(); err == nil {
 		t.Fatal("non-positive metrics header limit accepted")
+	}
+	setRequiredEnvironment(t)
+	t.Setenv("ANSWER_MAX_RESULT_LIMIT", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("non-positive request result limit accepted")
 	}
 }
 

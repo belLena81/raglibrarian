@@ -418,5 +418,6 @@ func testQueryPolicy() handler.QueryPolicy {
 		MaxAuthorLength:   256,
 		DefaultLimit:      5,
 		MaxLimit:          20,
+		JSONBodyMaxBytes:  16 << 10,
 	}
 }

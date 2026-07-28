@@ -22,8 +22,6 @@ import (
 	"github.com/belLena81/raglibrarian/services/edge-api/middleware"
 )
 
-const maxBookMetadataBytes = 4096
-
 var ErrInvalidBookRequest = errors.New("invalid book request")
 var ErrInvalidPagination = errors.New("invalid pagination")
 
@@ -83,6 +81,7 @@ type BooksPolicy struct {
 	ListTimeout      time.Duration
 	PreviewTimeout   time.Duration
 	LifecycleTimeout time.Duration
+	MetadataMaxBytes int
 	ListPageMaxSize  int
 	PageTokenMaxSize int
 }
@@ -93,6 +92,7 @@ func NewBooksHandler(catalog BookCatalog, policy BooksPolicy) *BooksHandler {
 		policy.ListTimeout <= 0 ||
 		policy.PreviewTimeout <= 0 ||
 		policy.LifecycleTimeout <= 0 ||
+		policy.MetadataMaxBytes <= 0 ||
 		policy.ListPageMaxSize <= 0 ||
 		policy.PageTokenMaxSize <= 0 {
 		panic("handler: book catalog is required")
@@ -117,7 +117,7 @@ func (h *BooksHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var metadata BookMetadata
-	if err = decodeBookMetadata(metadataPart, &metadata); err != nil {
+	if err = decodeBookMetadata(metadataPart, &metadata, h.policy.MetadataMaxBytes); err != nil {
 		writeBookError(w, r, http.StatusBadRequest, "invalid_upload", "invalid upload")
 		return
 	}
@@ -301,9 +301,9 @@ func mapBookError(err error) (int, string, string) {
 }
 func mimeParse(value string) (string, map[string]string, error) { return mime.ParseMediaType(value) }
 
-func decodeBookMetadata(reader io.Reader, metadata *BookMetadata) error {
-	data, err := io.ReadAll(io.LimitReader(reader, maxBookMetadataBytes+1))
-	if err != nil || len(data) > maxBookMetadataBytes {
+func decodeBookMetadata(reader io.Reader, metadata *BookMetadata, maximumBytes int) error {
+	data, err := io.ReadAll(io.LimitReader(reader, int64(maximumBytes)+1))
+	if err != nil || len(data) > maximumBytes {
 		return ErrInvalidBookRequest
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))

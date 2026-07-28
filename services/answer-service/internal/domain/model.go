@@ -9,18 +9,18 @@ import (
 	"unicode/utf8"
 )
 
-const (
-	MaximumQuestionCharacters = 2000
-	MaximumFilterTags         = 20
-	MaximumTagCharacters      = 64
-	MaximumAuthorCharacters   = 256
-	MaximumResultLimit        = 20
-)
-
 var (
 	ErrInvalidRequest = errors.New("invalid answer request")
 	ErrForbidden      = errors.New("answer forbidden")
 )
+
+type RequestPolicy struct {
+	MaximumQuestionCharacters int
+	MaximumFilterTags         int
+	MaximumTagCharacters      int
+	MaximumAuthorCharacters   int
+	MaximumResultLimit        uint32
+}
 
 type Actor struct {
 	UserID string
@@ -48,13 +48,16 @@ type SearchRequest struct {
 	MinimumEvidenceScore float64
 }
 
-func (r SearchRequest) Validate() error {
+func (r SearchRequest) Validate(policy RequestPolicy) error {
 	if !r.Actor.CanAnswer() {
 		return ErrForbidden
 	}
 	question := strings.TrimSpace(r.Question)
-	if question == "" || !utf8.ValidString(question) || utf8.RuneCountInString(question) > MaximumQuestionCharacters || r.Limit > MaximumResultLimit ||
-		len(r.Filters.Tags) > MaximumFilterTags || utf8.RuneCountInString(strings.TrimSpace(r.Filters.Author)) > MaximumAuthorCharacters || !validCorrelationID(r.CorrelationID) {
+	if !validRequestPolicy(policy) {
+		return ErrInvalidRequest
+	}
+	if question == "" || !utf8.ValidString(question) || utf8.RuneCountInString(question) > policy.MaximumQuestionCharacters || r.Limit > policy.MaximumResultLimit ||
+		len(r.Filters.Tags) > policy.MaximumFilterTags || utf8.RuneCountInString(strings.TrimSpace(r.Filters.Author)) > policy.MaximumAuthorCharacters || !validCorrelationID(r.CorrelationID) {
 		return ErrInvalidRequest
 	}
 	if math.IsNaN(r.MinimumEvidenceScore) || math.IsInf(r.MinimumEvidenceScore, 0) || r.MinimumEvidenceScore < 0 || r.MinimumEvidenceScore > 1 {
@@ -67,11 +70,19 @@ func (r SearchRequest) Validate() error {
 	}
 	for _, tag := range r.Filters.Tags {
 		tag = strings.TrimSpace(tag)
-		if tag == "" || !utf8.ValidString(tag) || utf8.RuneCountInString(tag) > MaximumTagCharacters {
+		if tag == "" || !utf8.ValidString(tag) || utf8.RuneCountInString(tag) > policy.MaximumTagCharacters {
 			return ErrInvalidRequest
 		}
 	}
 	return nil
+}
+
+func validRequestPolicy(policy RequestPolicy) bool {
+	return policy.MaximumQuestionCharacters > 0 &&
+		policy.MaximumFilterTags > 0 &&
+		policy.MaximumTagCharacters > 0 &&
+		policy.MaximumAuthorCharacters > 0 &&
+		policy.MaximumResultLimit > 0
 }
 
 func validCorrelationID(value string) bool {

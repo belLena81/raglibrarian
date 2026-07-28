@@ -9,20 +9,20 @@ import (
 	"unicode/utf8"
 )
 
-const (
-	MaximumQuestionCharacters = 2000
-	MaximumFilterTags         = 20
-	MaximumTagCharacters      = 64
-	MaximumAuthorCharacters   = 256
-	DefaultResultLimit        = 5
-	MaximumResultLimit        = 20
-)
-
 var (
 	ErrInvalidSearchQuery = errors.New("invalid search query")
 	ErrInvalidIndexJob    = errors.New("invalid index job")
 	ErrTerminalIndexJob   = errors.New("index job is terminal")
 )
+
+type SearchRequestPolicy struct {
+	MaximumQuestionCharacters int
+	MaximumFilterTags         int
+	MaximumTagCharacters      int
+	MaximumAuthorCharacters   int
+	DefaultResultLimit        int
+	MaximumResultLimit        int
+}
 
 // Actor is a live principal asserted by an authenticated Edge peer.
 type Actor struct {
@@ -62,29 +62,32 @@ type SearchQuery struct {
 }
 
 // NewSearchQuery validates and normalizes public query input.
-func NewSearchQuery(input SearchQueryInput) (SearchQuery, error) {
+func NewSearchQuery(input SearchQueryInput, policy SearchRequestPolicy) (SearchQuery, error) {
+	if !validSearchRequestPolicy(policy) {
+		return SearchQuery{}, ErrInvalidSearchQuery
+	}
 	question := strings.TrimSpace(input.Question)
-	if question == "" || !utf8.ValidString(question) || utf8.RuneCountInString(question) > MaximumQuestionCharacters {
+	if question == "" || !utf8.ValidString(question) || utf8.RuneCountInString(question) > policy.MaximumQuestionCharacters {
 		return SearchQuery{}, ErrInvalidSearchQuery
 	}
 	limit := input.Limit
 	if limit == 0 {
-		limit = DefaultResultLimit
+		limit = policy.DefaultResultLimit
 	}
-	if limit < 1 || limit > MaximumResultLimit || !validYear(input.Filters.YearFrom) || !validYear(input.Filters.YearTo) ||
+	if limit < 1 || limit > policy.MaximumResultLimit || !validYear(input.Filters.YearFrom) || !validYear(input.Filters.YearTo) ||
 		(input.Filters.YearFrom != nil && input.Filters.YearTo != nil && *input.Filters.YearFrom > *input.Filters.YearTo) ||
-		len(input.Filters.Tags) > MaximumFilterTags {
+		len(input.Filters.Tags) > policy.MaximumFilterTags {
 		return SearchQuery{}, ErrInvalidSearchQuery
 	}
 	author := normalizeFilter(input.Filters.Author)
-	if utf8.RuneCountInString(author) > MaximumAuthorCharacters {
+	if utf8.RuneCountInString(author) > policy.MaximumAuthorCharacters {
 		return SearchQuery{}, ErrInvalidSearchQuery
 	}
 	tags := make([]string, 0, len(input.Filters.Tags))
 	seen := make(map[string]struct{}, len(input.Filters.Tags))
 	for _, value := range input.Filters.Tags {
 		tag := normalizeFilter(value)
-		if tag == "" || utf8.RuneCountInString(tag) > MaximumTagCharacters {
+		if tag == "" || utf8.RuneCountInString(tag) > policy.MaximumTagCharacters {
 			return SearchQuery{}, ErrInvalidSearchQuery
 		}
 		if _, found := seen[tag]; found {
@@ -99,6 +102,16 @@ func NewSearchQuery(input SearchQueryInput) (SearchQuery, error) {
 		filters:  SearchFilters{Tags: tags, Author: author, YearFrom: cloneInt(input.Filters.YearFrom), YearTo: cloneInt(input.Filters.YearTo)},
 		limit:    limit,
 	}, nil
+}
+
+func validSearchRequestPolicy(policy SearchRequestPolicy) bool {
+	return policy.MaximumQuestionCharacters > 0 &&
+		policy.MaximumFilterTags > 0 &&
+		policy.MaximumTagCharacters > 0 &&
+		policy.MaximumAuthorCharacters > 0 &&
+		policy.DefaultResultLimit > 0 &&
+		policy.MaximumResultLimit > 0 &&
+		policy.DefaultResultLimit <= policy.MaximumResultLimit
 }
 
 func validYear(value *int) bool {

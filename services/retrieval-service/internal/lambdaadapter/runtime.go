@@ -133,6 +133,7 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
+	metadataPolicy := application.MetadataPolicy{MaxTags: policy.MaximumMetadataTags}
 	manifestPolicy := application.ManifestPolicy{
 		MaxPages:              uint32(policy.ManifestMaxPages),
 		MaxShards:             policy.ManifestMaxShards,
@@ -142,7 +143,7 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 		MaxTotalChunks:        uint32(policy.ManifestMaxTotalChunks),
 		MaxExpandedTotalBytes: policy.ManifestMaxExpandedBytes,
 	}
-	planner, err := application.NewPlanner(records, randomID, time.Now, manifestPolicy)
+	planner, err := application.NewPlanner(records, randomID, time.Now, metadataPolicy, manifestPolicy)
 	if err != nil {
 		pool.Close()
 		return nil, err

@@ -127,6 +127,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	authHandler := handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{
 		Secure:              cfg.SecureCookie,
 		RefreshCookieMaxAge: cfg.RefreshCookieMaxAge,
+		JSONBodyMaxBytes:    int64(cfg.JSONBodyMaxBytes),
 	})
 	answerAdmission := middleware.NewPrincipalRateLimiter(cfg.AnswerRateLimit, cfg.AnswerRateWindow, cfg.QueryRateMaxKeys)
 	queryHandler := handler.NewQueryHandler(retrieval, cfg.MinimumEvidenceScore, handler.QueryPolicy{
@@ -136,6 +137,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		MaxAuthorLength:   cfg.QueryMaxAuthorLength,
 		DefaultLimit:      cfg.QueryDefaultLimit,
 		MaxLimit:          cfg.QueryMaxLimit,
+		JSONBodyMaxBytes:  int64(cfg.JSONBodyMaxBytes),
 	}, handler.WithAnswer(answer, answerAdmission))
 	healthHandler := handler.NewHealthHandler(readiness{
 		identity:                   identity,
@@ -148,10 +150,16 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		ListTimeout:      cfg.BooksListTimeout,
 		PreviewTimeout:   cfg.CatalogPreviewDeadline,
 		LifecycleTimeout: cfg.BooksLifecycleTimeout,
+		MetadataMaxBytes: cfg.BookMetadataMaxBytes,
 		ListPageMaxSize:  cfg.BooksPageMaxSize,
 		PageTokenMaxSize: cfg.BooksPageTokenMaxSize,
 	})
-	bookStatusHub := handler.NewBookStatusHub(cfg.BookStatusHubCapacity)
+	bookStatusHub := handler.NewBookStatusHub(handler.BookStatusHubPolicy{
+		MaxSubscribers:           cfg.BookStatusHubCapacity,
+		MaxSubscribersPerSession: cfg.BookStatusSessionCapacity,
+		MaxSubscribersPerIP:      cfg.BookStatusIPCapacity,
+		MaxPendingEvents:         cfg.BookStatusPendingEventCapacity,
+	})
 	booksHandler.EnableEvents(handler.BookEventsConfig{
 		Sessions: identity, Hub: bookStatusHub, PublicOrigin: cfg.PublicOrigin, EnforceOrigin: cfg.EnforceBrowserOrigin,
 		Timing: handler.SSEPolicy{
@@ -169,11 +177,16 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		Prefetch:                cfg.BookStatusPrefetch,
 		QueueMaxLengthBytes:     int64(cfg.BookStatusQueueMaxLengthBytes),
 	})
-	setupHandler := handler.NewSetupHandler(identity)
-	hub := handler.NewPendingHub(cfg.PendingHubCapacity)
+	setupHandler := handler.NewSetupHandler(identity, handler.SetupPolicy{JSONBodyMaxBytes: int64(cfg.JSONBodyMaxBytes)})
+	hub := handler.NewPendingHub(handler.PendingHubPolicy{
+		MaxSubscribers:           cfg.PendingHubCapacity,
+		MaxSubscribersPerSession: cfg.PendingSessionCapacity,
+		MaxSubscribersPerIP:      cfg.PendingIPCapacity,
+	})
 	adminHandler := handler.NewAdminHandler(identity, hub, handler.AdminPolicy{
 		PendingPageDefaultSize: cfg.AdminPendingPageDefaultSize,
 		PendingPageMaxSize:     cfg.AdminPendingPageMaxSize,
+		JSONBodyMaxBytes:       int64(cfg.JSONBodyMaxBytes),
 	})
 	adminHandler.SetSSETiming(handler.SSEPolicy{
 		HeartbeatInterval:  cfg.SSEHeartbeatInterval,

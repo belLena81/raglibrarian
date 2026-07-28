@@ -5,8 +5,17 @@ import (
 	"time"
 )
 
+func testBookStatusHubPolicy(limit int) BookStatusHubPolicy {
+	return BookStatusHubPolicy{
+		MaxSubscribers:           limit,
+		MaxSubscribersPerSession: 1,
+		MaxSubscribersPerIP:      10,
+		MaxPendingEvents:         64,
+	}
+}
+
 func TestBookStatusHubCoalescesPerBookWithoutDroppingOtherBooks(t *testing.T) {
-	hub := NewBookStatusHub(1)
+	hub := NewBookStatusHub(testBookStatusHubPolicy(1))
 	hub.SetAvailable(true)
 	subscriber, remove, ok := hub.subscribe("session", "192.0.2.1")
 	if !ok {
@@ -39,7 +48,7 @@ func TestBookStatusHubCoalescesPerBookWithoutDroppingOtherBooks(t *testing.T) {
 }
 
 func TestBookStatusHubOverflowRequestsOneResyncUntilDrained(t *testing.T) {
-	hub := NewBookStatusHub(1)
+	hub := NewBookStatusHub(testBookStatusHubPolicy(1))
 	hub.SetAvailable(true)
 	subscriber, remove, ok := hub.subscribe("session", "192.0.2.1")
 	if !ok {
@@ -47,7 +56,7 @@ func TestBookStatusHubOverflowRequestsOneResyncUntilDrained(t *testing.T) {
 	}
 	defer remove()
 
-	for book := 0; book <= maxPendingBookStatusEvents; book++ {
+	for book := 0; book <= hub.policy.MaxPendingEvents; book++ {
 		hub.Publish(BookStatusEvent{BookID: string(rune(book + 1)), ProcessingVersion: 1})
 	}
 	// Further events must not replace the durable resync signal.
@@ -69,7 +78,7 @@ func TestBookStatusHubOverflowRequestsOneResyncUntilDrained(t *testing.T) {
 }
 
 func TestBookStatusHubRemainsLiveAcrossPublishAndSubscriptionLifecycle(t *testing.T) {
-	hub := NewBookStatusHub(1)
+	hub := NewBookStatusHub(testBookStatusHubPolicy(1))
 	hub.SetAvailable(true)
 
 	first, unsubscribeFirst, ok := hub.subscribe("session", "192.0.2.1")
@@ -113,7 +122,7 @@ func TestBookStatusHubRemainsLiveAcrossPublishAndSubscriptionLifecycle(t *testin
 }
 
 func TestBookStatusHubRemovesLimiterKeysOnUnsubscribe(t *testing.T) {
-	hub := NewBookStatusHub(2)
+	hub := NewBookStatusHub(testBookStatusHubPolicy(2))
 	hub.SetAvailable(true)
 
 	first, unsubscribeFirst, ok := hub.subscribe("session-1", "192.0.2.1")
@@ -145,7 +154,7 @@ func TestBookStatusHubRemovesLimiterKeysOnUnsubscribe(t *testing.T) {
 }
 
 func TestBookStatusHubRemovesLimiterKeysOnBrokerLoss(t *testing.T) {
-	hub := NewBookStatusHub(2)
+	hub := NewBookStatusHub(testBookStatusHubPolicy(2))
 	hub.SetAvailable(true)
 
 	first, _, ok := hub.subscribe("session-1", "192.0.2.1")

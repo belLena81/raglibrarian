@@ -96,38 +96,38 @@ func newVectorStore(endpoint, collection, apiKey string, minimumSearchScore floa
 	return store, nil
 }
 
-func NewSummaryProvider(configuration config.Config, serviceLogger *zap.Logger) (application.SummaryProvider, error) {
-	if configuration.SummaryLLMBaseURL == "" {
+func NewEvidenceAssessor(configuration config.EvidenceAssessorConfig, serviceLogger *zap.Logger) (application.EvidenceAssessor, error) {
+	if configuration.BaseURL == "" {
 		return nil, nil
 	}
-	apiKey, err := providerhttp.ReadSingleLineSecret(configuration.SummaryLLMAPIKeyFile, 4096)
+	apiKey, err := providerhttp.ReadSingleLineSecret(configuration.APIKeyFile, 4096)
 	if err != nil {
-		return disableSummaryProvider(serviceLogger, "api_key_unavailable"), nil
+		return disableEvidenceAssessor(serviceLogger, "api_key_unavailable"), nil
 	}
-	httpClient, err := providerhttp.NewTLSHTTPClient(configuration.SummaryLLMCAFile, configuration.SummaryLLMTimeout)
+	httpClient, err := providerhttp.NewTLSHTTPClient(configuration.CAFile, configuration.Timeout)
 	if err != nil {
-		return disableSummaryProvider(serviceLogger, "transport_unavailable"), nil
+		return disableEvidenceAssessor(serviceLogger, "transport_unavailable"), nil
 	}
-	limit, err := throttle.NewPerMinute(configuration.SummaryLLMRequestsPerMinute)
+	limit, err := throttle.NewPerMinute(configuration.RequestsPerMinute)
 	if err != nil {
-		return disableSummaryProvider(serviceLogger, "rate_limit_invalid"), nil
+		return disableEvidenceAssessor(serviceLogger, "rate_limit_invalid"), nil
 	}
-	outputMode, err := provider.ParseSummaryOutputMode(configuration.SummaryLLMOutputMode)
+	outputMode, err := provider.ParseSummaryOutputMode(configuration.OutputMode)
 	if err != nil {
-		return disableSummaryProvider(serviceLogger, "output_mode_invalid"), nil
+		return disableEvidenceAssessor(serviceLogger, "output_mode_invalid"), nil
 	}
-	summaryProvider, err := provider.NewOpenAIWithOptions(configuration.SummaryLLMBaseURL, configuration.SummaryLLMModel, apiKey, httpClient, serviceLogger, limit, configuration.SummaryLLMMaxOutputTokens, provider.Options{
+	evidenceAssessor, err := provider.NewOpenAIWithOptions(configuration.BaseURL, configuration.Model, apiKey, httpClient, serviceLogger, limit, configuration.MaxOutputTokens, provider.Options{
 		OutputMode: outputMode,
 		Policy: provider.Policy{
-			MaximumResponseBytes: configuration.SummaryLLMMaxResponseBytes,
-			MaximumSummaryBytes:  configuration.SummaryLLMMaxSummaryBytes,
-			MaximumInputRunes:    configuration.SummaryLLMMaxInputRunes,
+			MaximumResponseBytes: configuration.MaxResponseBytes,
+			MaximumSummaryBytes:  configuration.MaxSummaryBytes,
+			MaximumInputRunes:    configuration.MaxInputRunes,
 		},
 	})
 	if err != nil {
-		return disableSummaryProvider(serviceLogger, "configuration_invalid"), nil
+		return disableEvidenceAssessor(serviceLogger, "configuration_invalid"), nil
 	}
-	return summaryProvider, nil
+	return evidenceAssessor, nil
 }
 
 func readAPIKey(path string) (string, error) {
@@ -138,9 +138,9 @@ func readAPIKey(path string) (string, error) {
 	return apiKey, nil
 }
 
-func disableSummaryProvider(serviceLogger *zap.Logger, reason string) application.SummaryProvider {
+func disableEvidenceAssessor(serviceLogger *zap.Logger, reason string) application.EvidenceAssessor {
 	if serviceLogger != nil {
-		serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", reason))
+		serviceLogger.Warn("retrieval evidence assessor disabled", zap.String("reason", reason))
 	}
 	return nil
 }

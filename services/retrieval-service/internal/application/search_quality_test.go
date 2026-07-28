@@ -24,10 +24,18 @@ func TestSearchQualityBenchmark(t *testing.T) {
 	embedder := newQualityEmbedder(t)
 	store := newQualityQdrant(t, embedder)
 	searcher, err := application.NewSearcherWithPolicy(embedder, store, qualityVisibility{}, nil, application.SearchPolicy{
-		MinimumVisibleScore:      0.05,
-		SummaryCallLimit:         4,
-		CandidatePageMultiplier:  2,
-		MaximumSummaryInputRunes: 4096,
+		MinimumVisibleScore:         0.05,
+		AssessmentCallLimit:         4,
+		CandidatePageMultiplier:     2,
+		MaximumAssessmentInputRunes: 4096,
+		RequestPolicy: domain.SearchRequestPolicy{
+			MaximumQuestionCharacters: 2000,
+			MaximumFilterTags:         20,
+			MaximumTagCharacters:      64,
+			MaximumAuthorCharacters:   256,
+			DefaultResultLimit:        5,
+			MaximumResultLimit:        20,
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewSearcherWithPolicy() error = %v", err)

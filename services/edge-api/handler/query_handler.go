@@ -147,6 +147,7 @@ type QueryPolicy struct {
 	MaxAuthorLength   int
 	DefaultLimit      int
 	MaxLimit          int
+	JSONBodyMaxBytes  int64
 }
 
 // QueryHandlerOption configures optional query capabilities.
@@ -172,7 +173,7 @@ func NewQueryHandler(retrieval Searcher, minimumEvidenceScore float64, policy Qu
 		panic("handler: minimum evidence score must be within (0, 1]")
 	}
 	if policy.MaxQuestionLength <= 0 || policy.MaxTags <= 0 || policy.MaxTagLength <= 0 || policy.MaxAuthorLength <= 0 ||
-		policy.DefaultLimit <= 0 || policy.MaxLimit <= 0 || policy.DefaultLimit > policy.MaxLimit {
+		policy.DefaultLimit <= 0 || policy.MaxLimit <= 0 || policy.DefaultLimit > policy.MaxLimit || policy.JSONBodyMaxBytes <= 0 {
 		panic("handler: query policy is invalid")
 	}
 	handler := &QueryHandler{retrieval: retrieval, minimumEvidenceScore: minimumEvidenceScore, policy: policy}
@@ -188,7 +189,7 @@ func NewQueryHandler(retrieval Searcher, minimumEvidenceScore float64, policy Qu
 // Query validates the request and returns only Retrieval-provided evidence.
 func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
 	var request QueryRequest
-	if err := decodeJSONBody(w, r, &request); err != nil {
+	if err := decodeJSONBody(w, r, &request, h.policy.JSONBodyMaxBytes); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}

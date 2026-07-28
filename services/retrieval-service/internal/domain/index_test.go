@@ -7,6 +7,17 @@ import (
 	"time"
 )
 
+func testSearchRequestPolicy() SearchRequestPolicy {
+	return SearchRequestPolicy{
+		MaximumQuestionCharacters: 2000,
+		MaximumFilterTags:         20,
+		MaximumTagCharacters:      64,
+		MaximumAuthorCharacters:   256,
+		DefaultResultLimit:        5,
+		MaximumResultLimit:        20,
+	}
+}
+
 func TestSupportedIndexProfileDigestIsStable(t *testing.T) {
 	profile := SupportedIndexProfile()
 	if profile.Model != "BAAI/bge-base-en-v1.5" || profile.Dimensions != 768 || profile.Distance != "cosine" || profile.Pooling != "cls" || profile.MaximumTokens != 512 {
@@ -45,11 +56,11 @@ func TestNewSearchQueryNormalizesAndBoundsInput(t *testing.T) {
 			YearFrom: &yearFrom,
 			YearTo:   &yearTo,
 		},
-	})
+	}, testSearchRequestPolicy())
 	if err != nil {
 		t.Fatalf("NewSearchQuery() error = %v", err)
 	}
-	if query.Question() != "How does replication work?" || query.Limit() != DefaultResultLimit {
+	if query.Question() != "How does replication work?" || query.Limit() != testSearchRequestPolicy().DefaultResultLimit {
 		t.Fatalf("unexpected normalized query: %#v", query)
 	}
 	filters := query.Filters()
@@ -67,15 +78,15 @@ func TestNewSearchQueryRejectsInvalidBounds(t *testing.T) {
 	yearTo := 2020
 	tests := []SearchQueryInput{
 		{},
-		{Question: strings.Repeat("a", MaximumQuestionCharacters+1)},
-		{Question: "valid", Limit: MaximumResultLimit + 1},
+		{Question: strings.Repeat("a", testSearchRequestPolicy().MaximumQuestionCharacters+1)},
+		{Question: "valid", Limit: testSearchRequestPolicy().MaximumResultLimit + 1},
 		{Question: "valid", Filters: SearchFilters{YearFrom: &negativeYear}},
 		{Question: "valid", Filters: SearchFilters{YearFrom: &yearFrom, YearTo: &yearTo}},
-		{Question: "valid", Filters: SearchFilters{Tags: make([]string, MaximumFilterTags+1)}},
-		{Question: "valid", Filters: SearchFilters{Author: strings.Repeat("a", MaximumAuthorCharacters+1)}},
+		{Question: "valid", Filters: SearchFilters{Tags: make([]string, testSearchRequestPolicy().MaximumFilterTags+1)}},
+		{Question: "valid", Filters: SearchFilters{Author: strings.Repeat("a", testSearchRequestPolicy().MaximumAuthorCharacters+1)}},
 	}
 	for index, input := range tests {
-		if _, err := NewSearchQuery(input); err != ErrInvalidSearchQuery {
+		if _, err := NewSearchQuery(input, testSearchRequestPolicy()); err != ErrInvalidSearchQuery {
 			t.Fatalf("case %d error = %v, want ErrInvalidSearchQuery", index, err)
 		}
 	}

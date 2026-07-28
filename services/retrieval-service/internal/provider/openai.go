@@ -60,7 +60,7 @@ func ParseSummaryOutputMode(value string) (SummaryOutputMode, error) {
 	case SummaryOutputModeJSONOrPlain, SummaryOutputModeStrictJSON:
 		return mode, nil
 	default:
-		return "", errors.New("invalid summary provider output mode")
+		return "", errors.New("invalid evidence assessor output mode")
 	}
 }
 
@@ -70,7 +70,7 @@ func NewOpenAI(baseURL, model, apiKey string, client *http.Client, log *zap.Logg
 		outputMode = outputModes[0]
 	}
 	if len(outputModes) > 1 {
-		return nil, errors.New("invalid summary provider configuration")
+		return nil, errors.New("invalid evidence assessor configuration")
 	}
 	return NewOpenAIWithOptions(baseURL, model, apiKey, client, log, limit, maxTokens, Options{
 		OutputMode: outputMode,
@@ -89,7 +89,7 @@ func NewOpenAIWithOptions(baseURL, model, apiKey string, client *http.Client, lo
 		strings.TrimSpace(model) == "" || len(model) > 256 || strings.ContainsAny(model, "\r\n") || strings.TrimSpace(apiKey) == "" || strings.ContainsAny(apiKey, "\r\n") || client == nil ||
 		maxTokens < 1 || maxTokens > 256 || (outputMode != SummaryOutputModeJSONOrPlain && outputMode != SummaryOutputModeStrictJSON) ||
 		policy.MaximumResponseBytes < 1 || policy.MaximumSummaryBytes < 1 || policy.MaximumInputRunes < 1 || policy.MaximumSummaryBytes > policy.MaximumResponseBytes {
-		return nil, errors.New("invalid summary provider configuration")
+		return nil, errors.New("invalid evidence assessor configuration")
 	}
 	return &OpenAI{
 		endpoint:   endpoint,
@@ -364,9 +364,9 @@ func normalizeSummaryInput(value string, maximumSummaryInputRunes int) string {
 
 func defaultPolicy() Policy {
 	return Policy{
-		MaximumResponseBytes: retrievalconfig.DefaultSummaryProviderMaxResponseBytes,
-		MaximumSummaryBytes:  retrievalconfig.DefaultSummaryProviderMaxSummaryBytes,
-		MaximumInputRunes:    retrievalconfig.DefaultSummaryProviderMaxInputRunes,
+		MaximumResponseBytes: retrievalconfig.DefaultEvidenceAssessorMaxResponseBytes,
+		MaximumSummaryBytes:  retrievalconfig.DefaultEvidenceAssessorMaxSummaryBytes,
+		MaximumInputRunes:    retrievalconfig.DefaultEvidenceAssessorMaxInputRunes,
 	}
 }
 

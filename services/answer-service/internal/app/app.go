@@ -52,7 +52,7 @@ func New(configuration config.Config) (*App, error) {
 	if err != nil {
 		return nil, errors.New("load client transport credentials")
 	}
-	providerAdapter, err := answersruntime.NewLLMProvider(configuration)
+	providerAdapter, err := answersruntime.NewProvider(configuration.Generator)
 	if err != nil {
 		return nil, errors.New("configure provider")
 	}
@@ -65,7 +65,7 @@ func New(configuration config.Config) (*App, error) {
 	}
 	retriever := retrieval.NewClient(retrievalv1.NewRetrievalServiceClient(connection))
 	metricRecorder := &metrics.Recorder{}
-	service, err := application.NewService(retriever, providerAdapter, diagnostic.New(log, metricRecorder), configuration.Limits)
+	service, err := application.NewService(retriever, providerAdapter, diagnostic.New(log, metricRecorder), configuration.Limits, configuration.RequestPolicy)
 	if err != nil {
 		_ = connection.Close()
 		return nil, err
