@@ -13,7 +13,6 @@ import (
 
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
-	"github.com/belLena81/raglibrarian/services/edge-api/internal/rpcpolicy"
 	"github.com/belLena81/raglibrarian/services/edge-api/internal/searchcontract"
 )
 
@@ -42,8 +41,8 @@ func New(service retrievalv1.RetrievalServiceClient, policy Policy) *Client {
 	if policy.ReadinessTimeout <= 0 {
 		panic("retrievalclient: readiness timeout must be positive")
 	}
-	if policy.SearchDeadline <= 0 || policy.SearchDeadline > rpcpolicy.MaximumRetrievalSearchDeadline {
-		panic("retrievalclient: deadline must be between zero and 5 minutes")
+	if policy.SearchDeadline <= 0 {
+		panic("retrievalclient: search deadline must be positive")
 	}
 	return &Client{service: service, policy: policy}
 }

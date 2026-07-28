@@ -9,7 +9,6 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/contracts"
 	"github.com/belLena81/raglibrarian/pkg/rabbitmqconn"
-	"github.com/belLena81/raglibrarian/services/edge-api/internal/bookstatuspolicy"
 	"github.com/rabbitmq/amqp091-go"
 	"google.golang.org/protobuf/proto"
 
@@ -39,7 +38,13 @@ func Run(ctx context.Context, uri, queue string, hub Hub, policy Policy) {
 	if uri == "" || queue == "" || hub == nil {
 		panic("bookstatus: consumer dependencies are required")
 	}
-	policy = normalizePolicy(policy)
+	if policy.ReconnectInitialBackoff <= 0 || policy.ReconnectMaxBackoff <= 0 || policy.DialTimeout <= 0 ||
+		policy.HeartbeatTimeout <= 0 || policy.Prefetch <= 0 || policy.QueueMaxLengthBytes <= 0 {
+		panic("bookstatus: policy must be positive")
+	}
+	if policy.ReconnectInitialBackoff > policy.ReconnectMaxBackoff {
+		panic("bookstatus: reconnect initial backoff must not exceed max backoff")
+	}
 	backoff := policy.ReconnectInitialBackoff
 	for ctx.Err() == nil {
 		_ = consume(ctx, uri, queue, hub, policy)
@@ -117,31 +122,6 @@ func consume(ctx context.Context, uri, queue string, hub Hub, policy Policy) err
 			_ = delivery.Nack(false, false)
 		}
 	}
-}
-
-func normalizePolicy(policy Policy) Policy {
-	if policy.ReconnectInitialBackoff <= 0 {
-		policy.ReconnectInitialBackoff = bookstatuspolicy.DefaultReconnectInitialBackoff
-	}
-	if policy.ReconnectMaxBackoff <= 0 {
-		policy.ReconnectMaxBackoff = bookstatuspolicy.DefaultReconnectMaxBackoff
-	}
-	if policy.DialTimeout <= 0 {
-		policy.DialTimeout = bookstatuspolicy.DefaultDialTimeout
-	}
-	if policy.HeartbeatTimeout <= 0 {
-		policy.HeartbeatTimeout = bookstatuspolicy.DefaultHeartbeatTimeout
-	}
-	if policy.Prefetch <= 0 {
-		policy.Prefetch = bookstatuspolicy.DefaultPrefetch
-	}
-	if policy.QueueMaxLengthBytes <= 0 {
-		policy.QueueMaxLengthBytes = bookstatuspolicy.DefaultQueueMaxLengthBytes
-	}
-	if policy.ReconnectInitialBackoff > policy.ReconnectMaxBackoff {
-		policy.ReconnectInitialBackoff = policy.ReconnectMaxBackoff
-	}
-	return policy
 }
 
 func decode(delivery amqp091.Delivery) (handler.BookStatusEvent, bool) {

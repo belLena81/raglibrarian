@@ -17,7 +17,6 @@ import (
 
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
-	"github.com/belLena81/raglibrarian/services/edge-api/internal/rpcpolicy"
 )
 
 type Client struct {
@@ -46,8 +45,8 @@ func New(service catalogv1.CatalogServiceClient, policy Policy) *Client {
 	if policy.ListTimeout <= 0 {
 		panic("catalogclient: list timeout must be positive")
 	}
-	if policy.PreviewTimeout <= 0 || policy.PreviewTimeout > rpcpolicy.MaximumCatalogPreviewDeadline {
-		panic("catalogclient: preview timeout must be between zero and 30 seconds")
+	if policy.PreviewTimeout <= 0 {
+		panic("catalogclient: preview timeout must be positive")
 	}
 	return &Client{service: service, policy: policy}
 }

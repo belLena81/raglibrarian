@@ -29,13 +29,14 @@ func (s *answerClientStub) Answer(ctx context.Context, request *answerv1.AnswerR
 	return s.answer(ctx, request, options...)
 }
 
-func TestNewEnforcesAnswerDeadlineBudget(t *testing.T) {
+func TestNewRequiresPositiveAnswerDeadline(t *testing.T) {
 	service := &answerClientStub{answer: func(context.Context, *answerv1.AnswerRequest, ...grpc.CallOption) (*answerv1.AnswerResponse, error) {
 		return &answerv1.AnswerResponse{}, nil
 	}}
 
 	assert.NotPanics(t, func() { New(service, 5*time.Minute, 0.6) })
-	assert.Panics(t, func() { New(service, 5*time.Minute+time.Second, 0.6) })
+	assert.NotPanics(t, func() { New(service, 5*time.Minute+time.Second, 0.6) })
+	assert.Panics(t, func() { New(service, 0, 0.6) })
 	assert.Panics(t, func() { New(service, 5*time.Minute, 0) })
 }
 

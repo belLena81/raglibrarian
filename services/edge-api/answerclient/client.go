@@ -13,7 +13,6 @@ import (
 
 	answerv1 "github.com/belLena81/raglibrarian/pkg/proto/answer/v1"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
-	"github.com/belLena81/raglibrarian/services/edge-api/internal/rpcpolicy"
 	"github.com/belLena81/raglibrarian/services/edge-api/internal/searchcontract"
 )
 
@@ -29,8 +28,8 @@ func New(service answerv1.AnswerServiceClient, deadline time.Duration, minimumEv
 	if service == nil {
 		panic("answerclient: service must not be nil")
 	}
-	if deadline <= 0 || deadline > rpcpolicy.MaximumAnswerDeadline {
-		panic("answerclient: deadline must be between zero and 5 minutes")
+	if deadline <= 0 {
+		panic("answerclient: deadline must be positive")
 	}
 	if minimumEvidenceScore <= 0 || minimumEvidenceScore > 1 {
 		panic("answerclient: minimum evidence score must be within (0, 1]")

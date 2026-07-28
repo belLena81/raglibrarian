@@ -16,8 +16,6 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/process"
-	"github.com/belLena81/raglibrarian/services/edge-api/internal/bookstatuspolicy"
-	"github.com/belLena81/raglibrarian/services/edge-api/internal/rpcpolicy"
 )
 
 var (
@@ -33,6 +31,18 @@ var (
 	ErrRunIdentityConfiguration = errors.New("run identity configuration invalid")
 	// ErrQueryLimitConfiguration identifies invalid query admission controls.
 	ErrQueryLimitConfiguration = errors.New("query limit configuration invalid")
+)
+
+const (
+	defaultBookStatusReconnectInitialBackoff = time.Second
+	defaultBookStatusReconnectMaxBackoff     = 30 * time.Second
+	defaultBookStatusDialTimeout             = 5 * time.Second
+	defaultBookStatusHeartbeatTimeout        = 10 * time.Second
+	defaultBookStatusPrefetch                = 20
+	defaultBookStatusQueueMaxLengthBytes     = 64 << 20
+	maximumAnswerDeadline                    = 5 * time.Minute
+	maximumRetrievalSearchDeadline           = 5 * time.Minute
+	maximumCatalogPreviewDeadline            = 30 * time.Second
 )
 
 // Config is validated Edge runtime configuration.
@@ -389,27 +399,27 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	bookStatusReconnectInitialBackoff, err := positiveDuration("EDGE_BOOK_STATUS_RECONNECT_INITIAL_BACKOFF", bookstatuspolicy.DefaultReconnectInitialBackoff)
+	bookStatusReconnectInitialBackoff, err := positiveDuration("EDGE_BOOK_STATUS_RECONNECT_INITIAL_BACKOFF", defaultBookStatusReconnectInitialBackoff)
 	if err != nil {
 		return Config{}, err
 	}
-	bookStatusReconnectMaxBackoff, err := positiveDuration("EDGE_BOOK_STATUS_RECONNECT_MAX_BACKOFF", bookstatuspolicy.DefaultReconnectMaxBackoff)
+	bookStatusReconnectMaxBackoff, err := positiveDuration("EDGE_BOOK_STATUS_RECONNECT_MAX_BACKOFF", defaultBookStatusReconnectMaxBackoff)
 	if err != nil {
 		return Config{}, err
 	}
-	bookStatusDialTimeout, err := positiveDuration("EDGE_BOOK_STATUS_DIAL_TIMEOUT", bookstatuspolicy.DefaultDialTimeout)
+	bookStatusDialTimeout, err := positiveDuration("EDGE_BOOK_STATUS_DIAL_TIMEOUT", defaultBookStatusDialTimeout)
 	if err != nil {
 		return Config{}, err
 	}
-	bookStatusHeartbeatTimeout, err := positiveDuration("EDGE_BOOK_STATUS_HEARTBEAT_TIMEOUT", bookstatuspolicy.DefaultHeartbeatTimeout)
+	bookStatusHeartbeatTimeout, err := positiveDuration("EDGE_BOOK_STATUS_HEARTBEAT_TIMEOUT", defaultBookStatusHeartbeatTimeout)
 	if err != nil {
 		return Config{}, err
 	}
-	bookStatusPrefetch, err := positiveInt("EDGE_BOOK_STATUS_PREFETCH", bookstatuspolicy.DefaultPrefetch)
+	bookStatusPrefetch, err := positiveInt("EDGE_BOOK_STATUS_PREFETCH", defaultBookStatusPrefetch)
 	if err != nil {
 		return Config{}, err
 	}
-	bookStatusQueueMaxLengthBytes, err := positiveInt("EDGE_BOOK_STATUS_QUEUE_MAX_LENGTH_BYTES", bookstatuspolicy.DefaultQueueMaxLengthBytes)
+	bookStatusQueueMaxLengthBytes, err := positiveInt("EDGE_BOOK_STATUS_QUEUE_MAX_LENGTH_BYTES", defaultBookStatusQueueMaxLengthBytes)
 	if err != nil {
 		return Config{}, err
 	}
@@ -421,15 +431,15 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	answerDeadline, err := boundedDuration("EDGE_ANSWER_DEADLINE", rpcpolicy.MaximumAnswerDeadline, rpcpolicy.MaximumAnswerDeadline)
+	answerDeadline, err := boundedDuration("EDGE_ANSWER_DEADLINE", maximumAnswerDeadline, maximumAnswerDeadline)
 	if err != nil {
 		return Config{}, err
 	}
-	retrievalSearchDeadline, err := boundedDuration("EDGE_RETRIEVAL_SEARCH_DEADLINE", 2*time.Minute, rpcpolicy.MaximumRetrievalSearchDeadline)
+	retrievalSearchDeadline, err := boundedDuration("EDGE_RETRIEVAL_SEARCH_DEADLINE", 2*time.Minute, maximumRetrievalSearchDeadline)
 	if err != nil {
 		return Config{}, err
 	}
-	catalogPreviewDeadline, err := boundedDuration("EDGE_CATALOG_PREVIEW_DEADLINE", 6*time.Second, rpcpolicy.MaximumCatalogPreviewDeadline)
+	catalogPreviewDeadline, err := boundedDuration("EDGE_CATALOG_PREVIEW_DEADLINE", 6*time.Second, maximumCatalogPreviewDeadline)
 	if err != nil {
 		return Config{}, err
 	}
