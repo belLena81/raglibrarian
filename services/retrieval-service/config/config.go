@@ -21,6 +21,7 @@ const (
 	minimumSearchScoreKey                  = "RETRIEVAL_MINIMUM_SEARCH_SCORE"
 	DefaultQdrantCollection                = "evidence_v2"
 	defaultSearchCandidatePageMultiplier   = 2
+	DefaultLambdaMinimumProcessingTimeout  = time.Minute
 	DefaultLambdaProcessingTimeout         = 13*time.Minute + 30*time.Second
 	DefaultLambdaFailureRecordTimeout      = 10 * time.Second
 	DefaultTEIMaxResponseBytes             = 8 << 20
@@ -423,7 +424,7 @@ func LoadLambdaRuntimePolicy() (LambdaRuntimePolicy, error) {
 
 func LoadLambdaProcessingTimeout() (time.Duration, error) {
 	value, err := optionalDuration("RETRIEVAL_PROCESSING_TIMEOUT", DefaultLambdaProcessingTimeout)
-	if err != nil || value < time.Minute || value > DefaultLambdaProcessingTimeout {
+	if err != nil || value < DefaultLambdaMinimumProcessingTimeout || value > DefaultLambdaProcessingTimeout {
 		return 0, errors.New("invalid retrieval processing timeout")
 	}
 	return value, nil

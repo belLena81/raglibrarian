@@ -69,11 +69,6 @@ type Runtime struct {
 
 var errManifestArtifactRead = errors.New("manifest artifact read failed")
 
-const (
-	minimumProcessingTimeout = time.Minute
-	maximumProcessingTimeout = 13*time.Minute + 30*time.Second
-)
-
 type manifestFailureRecorder interface {
 	FailManifest(context.Context, application.ManifestEvent, domain.FailureCategory, time.Time) error
 }
