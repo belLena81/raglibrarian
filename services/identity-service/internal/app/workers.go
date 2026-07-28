@@ -13,9 +13,18 @@ import (
 	"github.com/belLena81/raglibrarian/services/identity-service/usecase/port"
 )
 
-func monitorDatabaseHealth(ctx context.Context, pool *pgxpool.Pool, healthServer *health.Server) {
+type EmailDeliveryPolicy struct {
+	Interval          time.Duration
+	ClaimTTL          time.Duration
+	ClaimBatchSize    int
+	RetryBaseInterval time.Duration
+	RetryMaxInterval  time.Duration
+	RetryMaxAttempts  int
+}
+
+func monitorDatabaseHealth(ctx context.Context, pool *pgxpool.Pool, healthServer *health.Server, probeTimeout, pollInterval time.Duration) {
 	check := func() {
-		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		pingCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 		defer cancel()
 		status := grpc_health_v1.HealthCheckResponse_SERVING
 		if pool.Ping(pingCtx) != nil {
@@ -24,7 +33,7 @@ func monitorDatabaseHealth(ctx context.Context, pool *pgxpool.Pool, healthServer
 		healthServer.SetServingStatus("", status)
 	}
 	check()
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -36,11 +45,11 @@ func monitorDatabaseHealth(ctx context.Context, pool *pgxpool.Pool, healthServer
 	}
 }
 
-func deliverVerificationEmails(ctx context.Context, outbox port.EmailOutbox, opener port.EmailOpener, sender port.EmailSender, diagnostics *diagnostic.Recorder) {
-	ticker := time.NewTicker(5 * time.Second)
+func deliverVerificationEmails(ctx context.Context, outbox port.EmailOutbox, opener port.EmailOpener, sender port.EmailSender, diagnostics *diagnostic.Recorder, policy EmailDeliveryPolicy) {
+	ticker := time.NewTicker(policy.Interval)
 	defer ticker.Stop()
 	for {
-		deliverEmailBatch(ctx, outbox, opener, sender, diagnostics)
+		deliverEmailBatch(ctx, outbox, opener, sender, diagnostics, policy)
 		select {
 		case <-ctx.Done():
 			return
@@ -49,9 +58,9 @@ func deliverVerificationEmails(ctx context.Context, outbox port.EmailOutbox, ope
 	}
 }
 
-func deliverEmailBatch(ctx context.Context, outbox port.EmailOutbox, opener port.EmailOpener, sender port.EmailSender, diagnostics *diagnostic.Recorder) {
+func deliverEmailBatch(ctx context.Context, outbox port.EmailOutbox, opener port.EmailOpener, sender port.EmailSender, diagnostics *diagnostic.Recorder, policy EmailDeliveryPolicy) {
 	now := time.Now().UTC()
-	deliveries, err := outbox.Claim(ctx, now, time.Minute, 25)
+	deliveries, err := outbox.Claim(ctx, now, policy.ClaimTTL, policy.ClaimBatchSize)
 	if err != nil {
 		diagnostics.WorkerFailed(diagnostic.StageEmailClaim)
 		return
@@ -71,12 +80,13 @@ func deliverEmailBatch(ctx context.Context, outbox port.EmailOutbox, opener port
 			}
 			continue
 		}
-		terminal := delivery.Attempts >= 10
+		terminal := delivery.Attempts >= policy.RetryMaxAttempts
 		minutes := math.Pow(2, float64(delivery.Attempts-1))
-		if minutes > 60 {
-			minutes = 60
+		retryDelay := time.Duration(minutes * float64(policy.RetryBaseInterval))
+		if retryDelay > policy.RetryMaxInterval {
+			retryDelay = policy.RetryMaxInterval
 		}
-		retryAt := time.Now().UTC().Add(time.Duration(minutes) * time.Minute)
+		retryAt := time.Now().UTC().Add(retryDelay)
 		if markErr := outbox.Failed(ctx, delivery.ID, retryAt, terminal); markErr != nil {
 			diagnostics.WorkerFailed(diagnostic.StageEmailRetry)
 		}
@@ -90,9 +100,9 @@ type expiredSessionCleaner interface {
 	CleanupExpired(context.Context, time.Time) (int64, error)
 }
 
-func cleanupExpiredSessions(ctx context.Context, sessions expiredSessionCleaner, diagnostics *diagnostic.Recorder) {
+func cleanupExpiredSessions(ctx context.Context, sessions expiredSessionCleaner, diagnostics *diagnostic.Recorder, timeout, interval time.Duration) {
 	cleanup := func() {
-		cleanupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		cleanupCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		deleted, err := sessions.CleanupExpired(cleanupCtx, time.Now().UTC())
 		if err != nil {
@@ -104,7 +114,7 @@ func cleanupExpiredSessions(ctx context.Context, sessions expiredSessionCleaner,
 		}
 	}
 	cleanup()
-	ticker := time.NewTicker(time.Hour)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -128,14 +138,14 @@ type passwordResetCleaner interface {
 	Cleanup(context.Context) (int64, error)
 }
 
-func cleanupIdentityState(ctx context.Context, verifications verificationCleaner, rejected rejectedCleaner, passwordResets passwordResetCleaner, diagnostics *diagnostic.Recorder) {
+func cleanupIdentityState(ctx context.Context, verifications verificationCleaner, rejected rejectedCleaner, passwordResets passwordResetCleaner, diagnostics *diagnostic.Recorder, timeout, interval time.Duration) {
 	cleanup := func() {
-		cleanupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		cleanupCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		cleanupIdentityStateOnce(cleanupCtx, verifications, rejected, passwordResets, diagnostics)
 	}
 	cleanup()
-	ticker := time.NewTicker(time.Hour)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {

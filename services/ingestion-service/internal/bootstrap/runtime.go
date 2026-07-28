@@ -69,8 +69,9 @@ func NewDispatcher(ctx context.Context, cfg config.DispatcherConfig) (*Dispatche
 		pool.Close()
 		return nil, errors.New("database unavailable")
 	}
-	publisher := transport.NewReconnectingPublisher(cfg.RabbitURI)
-	outbox, err := transport.NewOutboxWorker(repository.NewPostgres(pool), publisher, cfg.ResultExchange, cfg.OutboxInterval, diagnostic.New(nil))
+	brokerPolicy := transport.BrokerPolicy{DialTimeout: cfg.RabbitDialTimeout, Heartbeat: cfg.RabbitHeartbeat, PublishTimeout: cfg.RabbitPublishTimeout}
+	publisher := transport.NewReconnectingPublisher(cfg.RabbitURI, brokerPolicy)
+	outbox, err := transport.NewOutboxWorker(repository.NewPostgres(pool), publisher, cfg.ResultExchange, cfg.OutboxInterval, transport.OutboxPolicy{Lease: cfg.OutboxLease, PublishTimeout: cfg.RabbitPublishTimeout}, diagnostic.New(nil))
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -283,8 +284,9 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		cleanup()
 		return nil, err
 	}
-	publisher := transport.NewReconnectingPublisher(cfg.RabbitURI)
-	outbox, err := transport.NewOutboxWorker(repo, publisher, cfg.ResultExchange, cfg.OutboxInterval, diagnosticsLogger)
+	brokerPolicy := transport.BrokerPolicy{DialTimeout: cfg.RabbitDialTimeout, Heartbeat: cfg.RabbitHeartbeat, PublishTimeout: cfg.RabbitPublishTimeout}
+	publisher := transport.NewReconnectingPublisher(cfg.RabbitURI, brokerPolicy)
+	outbox, err := transport.NewOutboxWorker(repo, publisher, cfg.ResultExchange, cfg.OutboxInterval, transport.OutboxPolicy{Lease: cfg.OutboxLease, PublishTimeout: cfg.RabbitPublishTimeout}, diagnosticsLogger)
 	if err != nil {
 		cleanup()
 		return nil, err

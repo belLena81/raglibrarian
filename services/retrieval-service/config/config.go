@@ -97,6 +97,15 @@ type WorkerConfig struct {
 	RunAs                                                         process.Identity
 }
 
+type LambdaRuntimePolicy struct {
+	DependencyTimeout       time.Duration
+	CollectionEnsureTimeout time.Duration
+	FailureRecordTimeout    time.Duration
+	RabbitDialTimeout       time.Duration
+	RabbitHeartbeat         time.Duration
+	EndpointResolveTimeout  time.Duration
+}
+
 func Load() (Config, error) {
 	grpcAddress := os.Getenv("RETRIEVAL_GRPC_ADDR")
 	if grpcAddress == "" {
@@ -341,6 +350,27 @@ func LoadWorker() (WorkerConfig, error) {
 		return WorkerConfig{}, errors.New("invalid retrieval worker configuration")
 	}
 	return configuration, nil
+}
+
+func LoadLambdaRuntimePolicy() (LambdaRuntimePolicy, error) {
+	dependencyTimeout, dependencyTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_DEPENDENCY_TIMEOUT", 90*time.Second)
+	collectionEnsureTimeout, collectionEnsureTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_COLLECTION_TIMEOUT", 10*time.Second)
+	failureRecordTimeout, failureRecordTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_FAILURE_RECORD_TIMEOUT", 10*time.Second)
+	rabbitDialTimeout, rabbitDialTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_RABBITMQ_DIAL_TIMEOUT", 5*time.Second)
+	rabbitHeartbeat, rabbitHeartbeatErr := optionalDuration("RETRIEVAL_LAMBDA_RABBITMQ_HEARTBEAT", 10*time.Second)
+	endpointResolveTimeout, endpointResolveTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_ENDPOINT_RESOLVE_TIMEOUT", 3*time.Second)
+	if dependencyTimeoutErr != nil || collectionEnsureTimeoutErr != nil || failureRecordTimeoutErr != nil ||
+		rabbitDialTimeoutErr != nil || rabbitHeartbeatErr != nil || endpointResolveTimeoutErr != nil {
+		return LambdaRuntimePolicy{}, errors.New("invalid retrieval lambda runtime policy")
+	}
+	return LambdaRuntimePolicy{
+		DependencyTimeout:       dependencyTimeout,
+		CollectionEnsureTimeout: collectionEnsureTimeout,
+		FailureRecordTimeout:    failureRecordTimeout,
+		RabbitDialTimeout:       rabbitDialTimeout,
+		RabbitHeartbeat:         rabbitHeartbeat,
+		EndpointResolveTimeout:  endpointResolveTimeout,
+	}, nil
 }
 
 func readSecretFile(key string, maximum int64) (string, error) {

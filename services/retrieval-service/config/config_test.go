@@ -595,6 +595,42 @@ func TestLoadWorkerRejectsInvalidTEIRawResponseDiagnostics(t *testing.T) {
 	}
 }
 
+func TestLoadLambdaRuntimePolicyDefaultsAndOverrides(t *testing.T) {
+	configuration, err := LoadLambdaRuntimePolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuration.DependencyTimeout != 90*time.Second || configuration.CollectionEnsureTimeout != 10*time.Second ||
+		configuration.FailureRecordTimeout != 10*time.Second || configuration.RabbitDialTimeout != 5*time.Second ||
+		configuration.RabbitHeartbeat != 10*time.Second || configuration.EndpointResolveTimeout != 3*time.Second {
+		t.Fatalf("unexpected lambda policy defaults: %#v", configuration)
+	}
+
+	t.Setenv("RETRIEVAL_LAMBDA_DEPENDENCY_TIMEOUT", "80s")
+	t.Setenv("RETRIEVAL_LAMBDA_COLLECTION_TIMEOUT", "11s")
+	t.Setenv("RETRIEVAL_LAMBDA_FAILURE_RECORD_TIMEOUT", "12s")
+	t.Setenv("RETRIEVAL_LAMBDA_RABBITMQ_DIAL_TIMEOUT", "6s")
+	t.Setenv("RETRIEVAL_LAMBDA_RABBITMQ_HEARTBEAT", "13s")
+	t.Setenv("RETRIEVAL_LAMBDA_ENDPOINT_RESOLVE_TIMEOUT", "4s")
+
+	configuration, err = LoadLambdaRuntimePolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuration.DependencyTimeout != 80*time.Second || configuration.CollectionEnsureTimeout != 11*time.Second ||
+		configuration.FailureRecordTimeout != 12*time.Second || configuration.RabbitDialTimeout != 6*time.Second ||
+		configuration.RabbitHeartbeat != 13*time.Second || configuration.EndpointResolveTimeout != 4*time.Second {
+		t.Fatalf("unexpected lambda policy overrides: %#v", configuration)
+	}
+}
+
+func TestLoadLambdaRuntimePolicyRejectsInvalidValues(t *testing.T) {
+	t.Setenv("RETRIEVAL_LAMBDA_ENDPOINT_RESOLVE_TIMEOUT", "0s")
+	if _, err := LoadLambdaRuntimePolicy(); err == nil {
+		t.Fatal("LoadLambdaRuntimePolicy() accepted invalid duration")
+	}
+}
+
 func setWorkerEnvironment(t *testing.T) {
 	t.Helper()
 	directory := t.TempDir()

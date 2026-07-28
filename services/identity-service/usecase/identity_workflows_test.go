@@ -68,7 +68,8 @@ func TestLibrarianRegistrationCreatesVerificationBeforeAccount(t *testing.T) {
 	passwords := &workflowPasswords{}
 	ids := &workflowIDs{}
 	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
-	service := NewVerificationService(store, passwords, workflowProtector{}, workflowProtector{}, ids, fixedClock{now: now})
+	policy := VerificationPolicy{TTL: 30 * time.Minute, Retention: 24 * time.Hour, ResendCooldown: 10 * time.Minute}
+	service := NewVerificationService(store, passwords, workflowProtector{}, workflowProtector{}, ids, fixedClock{now: now}, policy)
 
 	err := service.Register(context.Background(), " Librarian ", " LIBRARIAN@EXAMPLE.TEST ", "password-1234", domain.RoleLibrarian)
 	require.NoError(t, err)
@@ -76,7 +77,7 @@ func TestLibrarianRegistrationCreatesVerificationBeforeAccount(t *testing.T) {
 	assert.Equal(t, "librarian@example.test", store.registration.Email)
 	assert.Equal(t, domain.RoleLibrarian, store.registration.Role)
 	assert.Len(t, store.registration.TokenHash, sha256.Size)
-	assert.Equal(t, now.Add(verificationTTL), store.registration.ExpiresAt)
+	assert.Equal(t, now.Add(policy.TTL), store.registration.ExpiresAt)
 	assert.Equal(t, 1, passwords.hashCalls)
 	assert.NotEmpty(t, store.email.Ciphertext)
 	assert.Equal(t, now, store.email.CreatedAt)
@@ -87,7 +88,15 @@ func TestReaderRegistrationCreatesVerificationBeforeAccount(t *testing.T) {
 	passwords := &workflowPasswords{}
 	ids := &workflowIDs{}
 	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
-	service := NewVerificationService(store, passwords, workflowProtector{}, workflowProtector{}, ids, fixedClock{now: now})
+	service := NewVerificationService(
+		store,
+		passwords,
+		workflowProtector{},
+		workflowProtector{},
+		ids,
+		fixedClock{now: now},
+		VerificationPolicy{TTL: 30 * time.Minute, Retention: 24 * time.Hour, ResendCooldown: 10 * time.Minute},
+	)
 
 	err := service.Register(context.Background(), " Reader ", " READER@EXAMPLE.TEST ", "password-1234", domain.RoleReader)
 	require.NoError(t, err)
@@ -124,7 +133,7 @@ func TestBootstrapRequiresDomainSeparatedVerifier(t *testing.T) {
 }
 
 func TestApprovalRejectsInvalidPageBoundsBeforeRepository(t *testing.T) {
-	service := NewApprovalService(nilApprovalStore{}, fixedClock{now: time.Now().UTC()})
+	service := NewApprovalService(nilApprovalStore{}, fixedClock{now: time.Now().UTC()}, 90*24*time.Hour)
 	_, err := service.List(context.Background(), domain.Principal{}, 101, nil)
 	assert.True(t, errors.Is(err, domain.ErrConflict))
 }

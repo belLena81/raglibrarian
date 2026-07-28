@@ -13,7 +13,7 @@ func TestNewSMTPSenderRejectsAuthenticationWithoutTLS(t *testing.T) {
 	_, err := NewSMTPSender(Config{
 		Address: "smtp.example.test:25", ServerName: "smtp.example.test",
 		Username: "identity", Password: "secret", From: "no-reply@example.test",
-		VerifyURL: "https://example.test/verify-email",
+		VerifyURL: "https://example.test/verify-email", OperationTimeout: 10 * time.Second,
 	})
 	require.ErrorIs(t, err, ErrDeliveryFailed)
 }
@@ -21,7 +21,7 @@ func TestNewSMTPSenderRejectsAuthenticationWithoutTLS(t *testing.T) {
 func TestNewSMTPSenderAllowsUnauthenticatedLocalAdapter(t *testing.T) {
 	_, err := NewSMTPSender(Config{
 		Address: "mailpit:1025", ServerName: "mailpit",
-		From: "no-reply@example.test", VerifyURL: "http://localhost:5173/verify-email",
+		From: "no-reply@example.test", VerifyURL: "http://localhost:5173/verify-email", OperationTimeout: 10 * time.Second,
 	})
 	require.NoError(t, err)
 }
@@ -46,7 +46,7 @@ func TestSMTPSenderHonorsContextWhileWaitingForServerGreeting(t *testing.T) {
 
 	sender, err := NewSMTPSender(Config{
 		Address: listener.Addr().String(), ServerName: "localhost",
-		From: "no-reply@example.test", VerifyURL: "https://example.test/verify-email",
+		From: "no-reply@example.test", VerifyURL: "https://example.test/verify-email", OperationTimeout: 10 * time.Second,
 	})
 	require.NoError(t, err)
 
@@ -56,4 +56,13 @@ func TestSMTPSenderHonorsContextWhileWaitingForServerGreeting(t *testing.T) {
 	require.ErrorIs(t, err, ErrDeliveryFailed)
 	require.Less(t, time.Since(started), time.Second)
 	<-serverDone
+}
+
+func TestNewSMTPSenderRejectsNonPositiveTimeout(t *testing.T) {
+	_, err := NewSMTPSender(Config{
+		Address: "mailpit:1025", ServerName: "mailpit",
+		From: "no-reply@example.test", VerifyURL: "http://localhost:5173/verify-email",
+	})
+
+	require.ErrorIs(t, err, ErrDeliveryFailed)
 }

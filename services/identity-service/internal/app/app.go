@@ -49,12 +49,12 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		return fmt.Errorf("database connection: %w", err)
 	}
 	defer pool.Close()
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	pingCtx, cancel := context.WithTimeout(ctx, cfg.DBPingTimeout)
 	defer cancel()
 	if err = pool.Ping(pingCtx); err != nil {
 		return fmt.Errorf("database unavailable: %w", err)
 	}
-	signer, err := auth.NewSignerWithKeyID(cfg.SigningKey, 15*time.Minute, cfg.SigningKeyID)
+	signer, err := auth.NewSignerWithKeyID(cfg.SigningKey, cfg.AccessTokenTTL, cfg.SigningKeyID)
 	if err != nil {
 		return err
 	}
@@ -87,7 +87,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	identityStore := repository.NewPostgresIdentityRepository(pool)
 	passwords := password.NewLimitedHasher(password.BcryptHasher{}, cfg.BcryptConcurrency)
 	issuer := identitytoken.NewIssuer(signer)
-	sessionService := usecase.NewSessionService(users, sessions, issuer, passwords, systemClock{}, 30*24*time.Hour)
+	sessionService := usecase.NewSessionService(users, sessions, issuer, passwords, systemClock{}, cfg.SessionTTL)
 	protector, err := securevalue.New(cfg.FingerprintKey, cfg.OutboxKey, cfg.OutboxKeyID)
 	if err != nil {
 		return fmt.Errorf("secure values unavailable: %w", err)
@@ -96,20 +96,36 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	if err != nil {
 		return fmt.Errorf("email adapter unavailable: %w", err)
 	}
-	verificationService := usecase.NewVerificationService(identityStore, passwords, protector, protector, systemIDs{}, systemClock{})
-	passwordResetService := usecase.NewPasswordResetService(identityStore, passwords, protector, protector, systemIDs{}, systemClock{}, cfg.PasswordResetKey)
+	verificationService := usecase.NewVerificationService(identityStore, passwords, protector, protector, systemIDs{}, systemClock{}, usecase.VerificationPolicy{
+		TTL:            cfg.VerificationTTL,
+		Retention:      cfg.VerificationRetention,
+		ResendCooldown: cfg.VerificationResendCooldown,
+	})
+	passwordResetService := usecase.NewPasswordResetService(identityStore, passwords, protector, protector, systemIDs{}, systemClock{}, cfg.PasswordResetKey, usecase.PasswordResetPolicy{
+		CodeTTL:  cfg.PasswordResetCodeTTL,
+		GrantTTL: cfg.PasswordResetGrantTTL,
+	})
 	bootstrapService := usecase.NewBootstrapService(identityStore, passwords, protector, systemIDs{}, systemClock{}, cfg.BootstrapVerifier)
-	approvalService := usecase.NewApprovalService(identityStore, systemClock{})
+	approvalService := usecase.NewApprovalService(identityStore, systemClock{}, cfg.RejectedRetention)
 	notifications := repository.NewPostgresNotifications(pool)
-	identityv1.RegisterIdentityServiceServer(server, identitygrpc.NewServer(verificationService, sessionService, passwordResetService, bootstrapService, approvalService, notifications))
+	identityv1.RegisterIdentityServiceServer(server, identitygrpc.NewServer(verificationService, sessionService, passwordResetService, bootstrapService, approvalService, notifications, identitygrpc.Policy{
+		OperationTimeout: cfg.GRPCOperationTimeout,
+	}))
 	healthServer := health.NewServer()
 	grpc_health_v1.RegisterHealthServer(server, healthServer)
 	backgroundCtx, stopBackground := context.WithCancel(ctx)
 	defer stopBackground()
-	go monitorDatabaseHealth(backgroundCtx, pool, healthServer)
-	go cleanupExpiredSessions(backgroundCtx, sessions, diagnostics)
-	go cleanupIdentityState(backgroundCtx, verificationService, approvalService, passwordResetService, diagnostics)
-	go deliverVerificationEmails(backgroundCtx, identityStore, protector, sender, diagnostics)
+	go monitorDatabaseHealth(backgroundCtx, pool, healthServer, cfg.HealthProbeTimeout, cfg.HealthPollInterval)
+	go cleanupExpiredSessions(backgroundCtx, sessions, diagnostics, cfg.SessionCleanupTimeout, cfg.SessionCleanupInterval)
+	go cleanupIdentityState(backgroundCtx, verificationService, approvalService, passwordResetService, diagnostics, cfg.IdentityCleanupTimeout, cfg.IdentityCleanupInterval)
+	go deliverVerificationEmails(backgroundCtx, identityStore, protector, sender, diagnostics, EmailDeliveryPolicy{
+		Interval:          cfg.EmailDeliverInterval,
+		ClaimTTL:          cfg.EmailClaimTTL,
+		ClaimBatchSize:    cfg.EmailClaimBatchSize,
+		RetryBaseInterval: cfg.EmailRetryBaseInterval,
+		RetryMaxInterval:  cfg.EmailRetryMaxInterval,
+		RetryMaxAttempts:  cfg.EmailRetryMaxAttempts,
+	})
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.Serve(listener) }()
 	select {
@@ -121,7 +137,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	case <-ctx.Done():
 		stopBackground()
 		healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
-		gracefulStop(server, 10*time.Second)
+		gracefulStop(server, cfg.GRPCGracefulStopTimeout)
 		return nil
 	}
 }

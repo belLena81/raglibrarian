@@ -36,6 +36,7 @@ type Config struct {
 	MemoryLimitBytes, ParserSandboxMemoryBytes                                  int64
 	MaximumPages                                                                uint32
 	ProcessingTimeout, JobLease, OutboxInterval                                 time.Duration
+	RabbitDialTimeout, RabbitHeartbeat, RabbitPublishTimeout, OutboxLease       time.Duration
 	CleanupInterval, OrphanGracePeriod                                          time.Duration
 	WorkerReadinessProbeTimeout, WorkerReadinessRefreshInterval                 time.Duration
 	WorkerMetricsReadHeaderTimeout, WorkerMetricsShutdownTimeout                time.Duration
@@ -63,7 +64,11 @@ type DispatcherConfig struct {
 	RabbitURI      string
 	ResultExchange string
 	OutboxInterval time.Duration
-	RunAs          process.Identity
+	RabbitDialTimeout,
+	RabbitHeartbeat,
+	RabbitPublishTimeout,
+	OutboxLease time.Duration
+	RunAs process.Identity
 }
 
 func loadLocalDispatcher() (DispatcherConfig, error) {
@@ -79,6 +84,22 @@ func loadLocalDispatcher() (DispatcherConfig, error) {
 	if err != nil {
 		return DispatcherConfig{}, err
 	}
+	rabbitDialTimeout, err := boundedDuration("INGESTION_RABBITMQ_DIAL_TIMEOUT", time.Second, time.Minute, 5*time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	rabbitHeartbeat, err := boundedDuration("INGESTION_RABBITMQ_HEARTBEAT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	rabbitPublishTimeout, err := boundedDuration("INGESTION_RABBITMQ_PUBLISH_TIMEOUT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	outboxLease, err := boundedDuration("INGESTION_OUTBOX_LEASE", time.Second, 5*time.Minute, 30*time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
 	uid, err := boundedInt("RUN_AS_UID", 65532, 1<<30)
 	if err != nil {
 		return DispatcherConfig{}, err
@@ -88,12 +109,16 @@ func loadLocalDispatcher() (DispatcherConfig, error) {
 		return DispatcherConfig{}, err
 	}
 	return DispatcherConfig{
-		RuntimeBackend: "local",
-		DSN:            dsn,
-		RabbitURI:      rabbitURI,
-		ResultExchange: optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
-		OutboxInterval: outboxInterval,
-		RunAs:          process.Identity{UID: uid, GID: gid},
+		RuntimeBackend:       "local",
+		DSN:                  dsn,
+		RabbitURI:            rabbitURI,
+		ResultExchange:       optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
+		OutboxInterval:       outboxInterval,
+		RabbitDialTimeout:    rabbitDialTimeout,
+		RabbitHeartbeat:      rabbitHeartbeat,
+		RabbitPublishTimeout: rabbitPublishTimeout,
+		OutboxLease:          outboxLease,
+		RunAs:                process.Identity{UID: uid, GID: gid},
 	}, nil
 }
 
@@ -278,6 +303,22 @@ func loadLocal() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	rabbitDialTimeout, err := boundedDuration("INGESTION_RABBITMQ_DIAL_TIMEOUT", time.Second, time.Minute, 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	rabbitHeartbeat, err := boundedDuration("INGESTION_RABBITMQ_HEARTBEAT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	rabbitPublishTimeout, err := boundedDuration("INGESTION_RABBITMQ_PUBLISH_TIMEOUT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	outboxLease, err := boundedDuration("INGESTION_OUTBOX_LEASE", time.Second, 5*time.Minute, 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
 	cleanupInterval, err := boundedDuration("INGESTION_CLEANUP_INTERVAL", time.Minute, 24*time.Hour, 15*time.Minute)
 	if err != nil {
 		return Config{}, err
@@ -357,6 +398,10 @@ func loadLocal() (Config, error) {
 		ProcessingTimeout:              timeout,
 		JobLease:                       lease,
 		OutboxInterval:                 outboxInterval,
+		RabbitDialTimeout:              rabbitDialTimeout,
+		RabbitHeartbeat:                rabbitHeartbeat,
+		RabbitPublishTimeout:           rabbitPublishTimeout,
+		OutboxLease:                    outboxLease,
 		CleanupInterval:                cleanupInterval,
 		OrphanGracePeriod:              orphanGracePeriod,
 		WorkerReadinessProbeTimeout:    workerReadinessProbeTimeout,

@@ -428,7 +428,7 @@ func (r *PostgresIdentityRepository) RequestPasswordReset(ctx context.Context, f
 	return true, nil
 }
 
-func (r *PostgresIdentityRepository) VerifyPasswordReset(ctx context.Context, fingerprint, codeHash, grantHash []byte, now time.Time) ([]domain.Role, error) {
+func (r *PostgresIdentityRepository) VerifyPasswordReset(ctx context.Context, fingerprint, codeHash, grantHash []byte, now, grantExpiresAt time.Time) ([]domain.Role, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("password reset: begin verify: %w", err)
@@ -460,7 +460,7 @@ func (r *PostgresIdentityRepository) VerifyPasswordReset(ctx context.Context, fi
 		}
 		return nil, domain.ErrInvalidPasswordReset
 	}
-	_, err = tx.Exec(ctx, `UPDATE identity.password_reset_challenges SET attempts=attempts+1,grant_hash=$2,grant_expires_at=$3 WHERE email_fingerprint=$1`, fingerprint, grantHash, now.Add(10*time.Minute))
+	_, err = tx.Exec(ctx, `UPDATE identity.password_reset_challenges SET attempts=attempts+1,grant_hash=$2,grant_expires_at=$3 WHERE email_fingerprint=$1`, fingerprint, grantHash, grantExpiresAt)
 	if err != nil {
 		return nil, err
 	}

@@ -20,6 +20,10 @@ func TestLoadUsesBoundedProductionDefaults(t *testing.T) {
 		value.WorkerMetricsReadHeaderTimeout != 10*time.Second || value.WorkerMetricsShutdownTimeout != 10*time.Second {
 		t.Fatalf("unexpected worker runtime defaults: %#v", value)
 	}
+	if value.RabbitDialTimeout != 5*time.Second || value.RabbitHeartbeat != 10*time.Second ||
+		value.RabbitPublishTimeout != 10*time.Second || value.OutboxLease != 30*time.Second {
+		t.Fatalf("unexpected rabbit policy defaults: %#v", value)
+	}
 	if value.MemoryLimitBytes != 2<<30 || value.ParserSandboxMemoryBytes != 1536<<20 {
 		t.Fatalf("unexpected parser memory defaults: %#v", value)
 	}
@@ -126,6 +130,10 @@ func TestLoadParsesWorkerRuntimePolicy(t *testing.T) {
 	t.Setenv("INGESTION_WORKER_READINESS_REFRESH_INTERVAL", "3s")
 	t.Setenv("INGESTION_WORKER_METRICS_READ_HEADER_TIMEOUT", "6s")
 	t.Setenv("INGESTION_WORKER_METRICS_SHUTDOWN_TIMEOUT", "7s")
+	t.Setenv("INGESTION_RABBITMQ_DIAL_TIMEOUT", "4s")
+	t.Setenv("INGESTION_RABBITMQ_HEARTBEAT", "11s")
+	t.Setenv("INGESTION_RABBITMQ_PUBLISH_TIMEOUT", "8s")
+	t.Setenv("INGESTION_OUTBOX_LEASE", "45s")
 
 	value, err := Load()
 	if err != nil {
@@ -134,7 +142,11 @@ func TestLoadParsesWorkerRuntimePolicy(t *testing.T) {
 	if value.WorkerReadinessProbeTimeout != 1500*time.Millisecond ||
 		value.WorkerReadinessRefreshInterval != 3*time.Second ||
 		value.WorkerMetricsReadHeaderTimeout != 6*time.Second ||
-		value.WorkerMetricsShutdownTimeout != 7*time.Second {
+		value.WorkerMetricsShutdownTimeout != 7*time.Second ||
+		value.RabbitDialTimeout != 4*time.Second ||
+		value.RabbitHeartbeat != 11*time.Second ||
+		value.RabbitPublishTimeout != 8*time.Second ||
+		value.OutboxLease != 45*time.Second {
 		t.Fatalf("unexpected worker runtime policy: %#v", value)
 	}
 }
@@ -177,6 +189,10 @@ func TestLoadDispatcherRequiresOnlyDispatcherCredentials(t *testing.T) {
 	}
 	if value.DSN == "" || value.RabbitURI == "" || value.ResultExchange != "raglibrarian.ingestion.events.v1" {
 		t.Fatalf("unexpected dispatcher config: %#v", value)
+	}
+	if value.RabbitDialTimeout != 5*time.Second || value.RabbitHeartbeat != 10*time.Second ||
+		value.RabbitPublishTimeout != 10*time.Second || value.OutboxLease != 30*time.Second {
+		t.Fatalf("unexpected dispatcher rabbit policy: %#v", value)
 	}
 }
 

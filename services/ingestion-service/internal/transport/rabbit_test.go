@@ -287,7 +287,12 @@ func TestConsumerDeadLettersWhenRetryPublishFailsWhileActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	acknowledger := &recordingAcknowledger{}
-	consumer := &Consumer{processor: &countingProcessor{err: errors.New("temporary")}, publisher: &recordingPublisher{err: errors.New("publish unavailable")}, now: time.Now}
+	consumer := &Consumer{
+		processor: &countingProcessor{err: errors.New("temporary")},
+		publisher: &recordingPublisher{err: errors.New("publish unavailable")},
+		policy:    BrokerPolicy{DialTimeout: 5 * time.Second, Heartbeat: 10 * time.Second, PublishTimeout: 10 * time.Second},
+		now:       time.Now,
+	}
 	consumer.handle(context.Background(), amqp091.Delivery{Acknowledger: acknowledger, ContentType: "application/x-protobuf", Type: UploadRoute, MessageId: validUploadMessage().EventId, Body: payload})
 	if !acknowledger.nacked || acknowledger.requeued || acknowledger.acked {
 		t.Fatalf("failed retry publish must dead-letter: %#v", acknowledger)
@@ -301,7 +306,12 @@ func TestConsumerLeavesDeliveryUnsettledWhenContextCancelsDuringRetryPublish(t *
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	acknowledger := &recordingAcknowledger{}
-	consumer := &Consumer{processor: &countingProcessor{err: errors.New("temporary")}, publisher: &recordingPublisher{err: context.Canceled, cancel: cancel}, now: time.Now}
+	consumer := &Consumer{
+		processor: &countingProcessor{err: errors.New("temporary")},
+		publisher: &recordingPublisher{err: context.Canceled, cancel: cancel},
+		policy:    BrokerPolicy{DialTimeout: 5 * time.Second, Heartbeat: 10 * time.Second, PublishTimeout: 10 * time.Second},
+		now:       time.Now,
+	}
 	consumer.handle(ctx, amqp091.Delivery{Acknowledger: acknowledger, ContentType: "application/x-protobuf", Type: UploadRoute, MessageId: validUploadMessage().EventId, Body: payload})
 	if acknowledger.nacked || acknowledger.requeued || acknowledger.acked || acknowledger.rejected {
 		t.Fatalf("canceled delivery must remain unsettled: %#v", acknowledger)
@@ -309,7 +319,11 @@ func TestConsumerLeavesDeliveryUnsettledWhenContextCancelsDuringRetryPublish(t *
 }
 
 func TestNewConsumerRejectsMissingRetryPublisher(t *testing.T) {
-	consumer, err := NewConsumer(&amqp091.Channel{}, "ingestion", 1, &countingProcessor{}, nil)
+	consumer, err := NewConsumer(&amqp091.Channel{}, "ingestion", 1, &countingProcessor{}, nil, BrokerPolicy{
+		DialTimeout:    5 * time.Second,
+		Heartbeat:      10 * time.Second,
+		PublishTimeout: 10 * time.Second,
+	})
 	if err == nil || consumer != nil {
 		t.Fatal("missing retry publisher must be rejected before channel setup")
 	}

@@ -44,7 +44,8 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer runtime.Close()
-	connection, err := transport.DialConsumer(invocationContext, cfg.RabbitURI)
+	brokerPolicy := transport.BrokerPolicy{DialTimeout: cfg.RabbitDialTimeout, Heartbeat: cfg.RabbitHeartbeat, PublishTimeout: cfg.RabbitPublishTimeout}
+	connection, err := transport.DialConsumer(invocationContext, cfg.RabbitURI, brokerPolicy)
 	if err != nil {
 		return err
 	}
@@ -67,7 +68,7 @@ func run(ctx context.Context) error {
 	}
 	// ProcessOneDelivery is the same bounded retry republish/DLQ path used by
 	// the long-running worker. It settles the delivery itself.
-	transport.ProcessOneDelivery(invocationContext, delivery, runtime, runtime.Publisher)
+	transport.ProcessOneDelivery(invocationContext, delivery, runtime, runtime.Publisher, brokerPolicy)
 	return invocationContext.Err()
 }
 

@@ -15,6 +15,8 @@ import (
 	"github.com/belLena81/raglibrarian/services/identity-service/domain"
 )
 
+const testOperationTimeout = 5 * time.Second
+
 type resetUseCaseStub struct {
 	verifyErr   error
 	completeErr error
@@ -41,7 +43,7 @@ func TestPasswordResetRPCPreservesDependencyFailures(t *testing.T) {
 	server := &Server{passwordReset: resetUseCaseStub{
 		verifyErr:   errors.New("database unavailable"),
 		completeErr: context.DeadlineExceeded,
-	}}
+	}, policy: Policy{OperationTimeout: testOperationTimeout}}
 
 	_, err := server.VerifyPasswordReset(context.Background(), &identityv1.VerifyPasswordResetRequest{Email: "reader@example.test", Code: "123456"})
 	assert.Equal(t, codes.Internal, status.Code(err))
@@ -53,7 +55,7 @@ func TestPasswordResetRPCMapsOnlyInvalidResetToInvalidArgument(t *testing.T) {
 	server := &Server{passwordReset: resetUseCaseStub{
 		verifyErr:   domain.ErrInvalidPasswordReset,
 		completeErr: domain.ErrInvalidPasswordReset,
-	}}
+	}, policy: Policy{OperationTimeout: testOperationTimeout}}
 
 	_, err := server.VerifyPasswordReset(context.Background(), &identityv1.VerifyPasswordResetRequest{Email: "reader@example.test", Code: "123456"})
 	assert.Equal(t, codes.InvalidArgument, status.Code(err))
@@ -63,40 +65,43 @@ func TestPasswordResetRPCMapsOnlyInvalidResetToInvalidArgument(t *testing.T) {
 
 func TestAuthenticatedOperationAddsOperationTimeout(t *testing.T) {
 	started := time.Now()
-	ctx, cancel, err := authenticatedOperation(context.Background())
+	server := &Server{policy: Policy{OperationTimeout: testOperationTimeout}}
+	ctx, cancel, err := server.authenticatedOperation(context.Background())
 	finished := time.Now()
 	defer cancel()
 
 	require.NoError(t, err)
 	deadline, ok := ctx.Deadline()
 	require.True(t, ok)
-	assert.False(t, deadline.Before(started.Add(operationTimeout)))
-	assert.False(t, deadline.After(finished.Add(operationTimeout)))
+	assert.False(t, deadline.Before(started.Add(testOperationTimeout)))
+	assert.False(t, deadline.After(finished.Add(testOperationTimeout)))
 }
 
 func TestAuthenticatedOperationCapsLongerCallerDeadline(t *testing.T) {
-	parent, parentCancel := context.WithTimeout(context.Background(), 2*operationTimeout)
+	parent, parentCancel := context.WithTimeout(context.Background(), 2*testOperationTimeout)
 	defer parentCancel()
 	started := time.Now()
 
-	ctx, cancel, err := authenticatedOperation(parent)
+	server := &Server{policy: Policy{OperationTimeout: testOperationTimeout}}
+	ctx, cancel, err := server.authenticatedOperation(parent)
 	finished := time.Now()
 	defer cancel()
 
 	require.NoError(t, err)
 	deadline, ok := ctx.Deadline()
 	require.True(t, ok)
-	assert.False(t, deadline.Before(started.Add(operationTimeout)))
-	assert.False(t, deadline.After(finished.Add(operationTimeout)))
+	assert.False(t, deadline.Before(started.Add(testOperationTimeout)))
+	assert.False(t, deadline.After(finished.Add(testOperationTimeout)))
 }
 
 func TestAuthenticatedOperationPreservesShorterCallerDeadline(t *testing.T) {
-	parent, parentCancel := context.WithTimeout(context.Background(), operationTimeout/2)
+	parent, parentCancel := context.WithTimeout(context.Background(), testOperationTimeout/2)
 	defer parentCancel()
 	parentDeadline, ok := parent.Deadline()
 	require.True(t, ok)
 
-	ctx, cancel, err := authenticatedOperation(parent)
+	server := &Server{policy: Policy{OperationTimeout: testOperationTimeout}}
+	ctx, cancel, err := server.authenticatedOperation(parent)
 	defer cancel()
 
 	require.NoError(t, err)

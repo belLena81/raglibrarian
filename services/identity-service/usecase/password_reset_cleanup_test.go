@@ -19,7 +19,7 @@ func (*passwordResetCleanupStore) RequestPasswordReset(context.Context, []byte, 
 	return false, nil
 }
 
-func (*passwordResetCleanupStore) VerifyPasswordReset(context.Context, []byte, []byte, []byte, time.Time) ([]domain.Role, error) {
+func (*passwordResetCleanupStore) VerifyPasswordReset(context.Context, []byte, []byte, []byte, time.Time, time.Time) ([]domain.Role, error) {
 	return nil, nil
 }
 

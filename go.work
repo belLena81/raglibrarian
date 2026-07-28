@@ -12,6 +12,7 @@ use (
 	./pkg/process
 	./pkg/providerhttp
 	./pkg/proto
+	./pkg/rabbitmqconn
 	./services/answer-service
 	./services/catalog-service
 	./services/edge-api

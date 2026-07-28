@@ -12,7 +12,10 @@ import (
 	"github.com/belLena81/raglibrarian/services/identity-service/usecase/port"
 )
 
-const passwordResetTTL = 10 * time.Minute
+type PasswordResetPolicy struct {
+	CodeTTL  time.Duration
+	GrantTTL time.Duration
+}
 
 type PasswordResetService struct {
 	store        port.PasswordResetStore
@@ -22,13 +25,26 @@ type PasswordResetService struct {
 	ids          port.IDGenerator
 	clock        Clock
 	key          []byte
+	policy       PasswordResetPolicy
 }
 
-func NewPasswordResetService(store port.PasswordResetStore, passwords PasswordHasher, fingerprints port.Fingerprinter, sealer port.EmailSealer, ids port.IDGenerator, clock Clock, key []byte) *PasswordResetService {
+func NewPasswordResetService(store port.PasswordResetStore, passwords PasswordHasher, fingerprints port.Fingerprinter, sealer port.EmailSealer, ids port.IDGenerator, clock Clock, key []byte, policy PasswordResetPolicy) *PasswordResetService {
 	if store == nil || passwords == nil || fingerprints == nil || sealer == nil || ids == nil || clock == nil || len(key) != 32 {
 		panic("usecase: invalid password reset dependencies")
 	}
-	return &PasswordResetService{store: store, passwords: passwords, fingerprints: fingerprints, sealer: sealer, ids: ids, clock: clock, key: append([]byte(nil), key...)}
+	if policy.CodeTTL <= 0 || policy.GrantTTL <= 0 {
+		panic("usecase: invalid password reset policy")
+	}
+	return &PasswordResetService{
+		store:        store,
+		passwords:    passwords,
+		fingerprints: fingerprints,
+		sealer:       sealer,
+		ids:          ids,
+		clock:        clock,
+		key:          append([]byte(nil), key...),
+		policy:       policy,
+	}
 }
 
 func (s *PasswordResetService) Request(ctx context.Context, email string) error {
@@ -46,7 +62,7 @@ func (s *PasswordResetService) Request(ctx context.Context, email string) error 
 	}
 	now := s.clock.Now().UTC()
 	message.CreatedAt = now
-	_, err = s.store.RequestPasswordReset(ctx, s.fingerprints.Fingerprint(email), s.mac("code", code), now.Add(passwordResetTTL), message)
+	_, err = s.store.RequestPasswordReset(ctx, s.fingerprints.Fingerprint(email), s.mac("code", code), now.Add(s.policy.CodeTTL), message)
 	return err
 }
 
@@ -59,7 +75,8 @@ func (s *PasswordResetService) Verify(ctx context.Context, email, code string) (
 	if err != nil {
 		return "", nil, err
 	}
-	roles, err := s.store.VerifyPasswordReset(ctx, s.fingerprints.Fingerprint(email), s.mac("code", code), s.mac("grant", grant), s.clock.Now().UTC())
+	now := s.clock.Now().UTC()
+	roles, err := s.store.VerifyPasswordReset(ctx, s.fingerprints.Fingerprint(email), s.mac("code", code), s.mac("grant", grant), now, now.Add(s.policy.GrantTTL))
 	if err != nil {
 		return "", nil, err
 	}

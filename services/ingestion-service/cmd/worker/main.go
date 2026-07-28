@@ -44,7 +44,8 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return err
 	}
 	defer runtime.Close()
-	connection, err := transport.DialConsumer(ctx, cfg.RabbitURI)
+	brokerPolicy := transport.BrokerPolicy{DialTimeout: cfg.RabbitDialTimeout, Heartbeat: cfg.RabbitHeartbeat, PublishTimeout: cfg.RabbitPublishTimeout}
+	connection, err := transport.DialConsumer(ctx, cfg.RabbitURI, brokerPolicy)
 	if err != nil {
 		return err
 	}
@@ -54,7 +55,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return errors.New("broker channel unavailable")
 	}
 	defer func() { _ = channel.Close() }()
-	consumer, err := transport.NewConsumer(channel, cfg.Queue, cfg.WorkConcurrency, runtime, runtime.Publisher)
+	consumer, err := transport.NewConsumer(channel, cfg.Queue, cfg.WorkConcurrency, runtime, runtime.Publisher, brokerPolicy)
 	if err != nil {
 		return err
 	}

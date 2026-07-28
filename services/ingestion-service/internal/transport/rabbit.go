@@ -3,11 +3,11 @@ package transport
 import (
 	"context"
 	"errors"
-	"net"
 	"sync"
 	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/contracts"
+	"github.com/belLena81/raglibrarian/pkg/rabbitmqconn"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/diagnostic"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/repository"
@@ -33,24 +33,36 @@ type Consumer struct {
 	queue     string
 	processor EventProcessor
 	publisher Publisher
+	policy    BrokerPolicy
 	now       func() time.Time
+}
+
+type BrokerPolicy struct {
+	DialTimeout    time.Duration
+	Heartbeat      time.Duration
+	PublishTimeout time.Duration
+}
+
+type OutboxPolicy struct {
+	Lease          time.Duration
+	PublishTimeout time.Duration
 }
 
 // ProcessOneDelivery applies the worker's bounded retry and DLQ policy to one
 // delivery. It is used by short-lived serverless jobs as well as Consumer.Run.
-func ProcessOneDelivery(ctx context.Context, delivery amqp091.Delivery, processor EventProcessor, publisher Publisher) {
-	consumer := &Consumer{processor: processor, publisher: publisher, now: time.Now}
+func ProcessOneDelivery(ctx context.Context, delivery amqp091.Delivery, processor EventProcessor, publisher Publisher, policy BrokerPolicy) {
+	consumer := &Consumer{processor: processor, publisher: publisher, policy: policy, now: time.Now}
 	consumer.handle(ctx, delivery)
 }
 
-func NewConsumer(channel *amqp091.Channel, queue string, concurrency int, processor EventProcessor, publisher Publisher) (*Consumer, error) {
-	if channel == nil || queue == "" || concurrency < 1 || processor == nil || publisher == nil {
+func NewConsumer(channel *amqp091.Channel, queue string, concurrency int, processor EventProcessor, publisher Publisher, policy BrokerPolicy) (*Consumer, error) {
+	if channel == nil || queue == "" || concurrency < 1 || processor == nil || publisher == nil || policy.DialTimeout <= 0 || policy.Heartbeat <= 0 || policy.PublishTimeout <= 0 {
 		return nil, errors.New("invalid RabbitMQ consumer")
 	}
 	if err := channel.Qos(concurrency, 0, false); err != nil {
 		return nil, err
 	}
-	return &Consumer{channel: channel, queue: queue, processor: processor, publisher: publisher, now: time.Now}, nil
+	return &Consumer{channel: channel, queue: queue, processor: processor, publisher: publisher, policy: policy, now: time.Now}, nil
 }
 
 func (c *Consumer) Run(ctx context.Context, concurrency int) error {
@@ -125,7 +137,7 @@ func (c *Consumer) retry(ctx context.Context, delivery amqp091.Delivery) {
 		return
 	}
 	nextAttempt := attempt + 1
-	publishCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	publishCtx, cancel := context.WithTimeout(ctx, c.policy.PublishTimeout)
 	err := c.publisher.PublishWithContext(
 		publishCtx,
 		RetryExchange,
@@ -234,16 +246,16 @@ type OutboxWorker struct {
 	publisher  Publisher
 	exchange   string
 	interval   time.Duration
-	lease      time.Duration
+	policy     OutboxPolicy
 	now        func() time.Time
 	logger     *diagnostic.Logger
 }
 
-func NewOutboxWorker(repo *repository.Postgres, publisher Publisher, exchange string, interval time.Duration, logger *diagnostic.Logger) (*OutboxWorker, error) {
-	if repo == nil || publisher == nil || exchange == "" || interval <= 0 {
+func NewOutboxWorker(repo *repository.Postgres, publisher Publisher, exchange string, interval time.Duration, policy OutboxPolicy, logger *diagnostic.Logger) (*OutboxWorker, error) {
+	if repo == nil || publisher == nil || exchange == "" || interval <= 0 || policy.Lease <= 0 || policy.PublishTimeout <= 0 {
 		return nil, errors.New("invalid outbox worker")
 	}
-	return &OutboxWorker{repository: repo, publisher: publisher, exchange: exchange, interval: interval, lease: 30 * time.Second, now: time.Now, logger: logger}, nil
+	return &OutboxWorker{repository: repo, publisher: publisher, exchange: exchange, interval: interval, policy: policy, now: time.Now, logger: logger}, nil
 }
 
 func (w *OutboxWorker) Run(ctx context.Context) error {
@@ -277,13 +289,13 @@ func (w *OutboxWorker) PublishPending(ctx context.Context) error {
 
 func (w *OutboxWorker) publishBatch(ctx context.Context) (bool, error) {
 	now := w.now().UTC()
-	events, err := w.repository.ClaimOutbox(ctx, now, w.lease)
+	events, err := w.repository.ClaimOutbox(ctx, now, w.policy.Lease)
 	if err != nil {
 		return false, err
 	}
 	published := len(events) > 0
 	for _, event := range events {
-		publishCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		publishCtx, cancel := context.WithTimeout(ctx, w.policy.PublishTimeout)
 		err = w.publisher.PublishWithContext(publishCtx, w.exchange, event.Type, true, false, amqp091.Publishing{ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent, MessageId: event.ID, Type: event.Type, Timestamp: now, Body: event.Payload})
 		cancel()
 		if err != nil {
@@ -306,14 +318,14 @@ func (w *OutboxWorker) publishBatch(ctx context.Context) (bool, error) {
 			w.logger.OutboxMarkedPublished(event.ID, event.AggregateID, event.Type)
 		}
 	}
-	retries, err := w.repository.ClaimRetryDispatches(ctx, now, w.lease)
+	retries, err := w.repository.ClaimRetryDispatches(ctx, now, w.policy.Lease)
 	if err != nil {
 		return published, err
 	}
 	published = published || len(retries) > 0
 	for _, retry := range retries {
 		delay := retry.DispatchAfter.Sub(now)
-		publishCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		publishCtx, cancel := context.WithTimeout(ctx, w.policy.PublishTimeout)
 		err = w.publisher.PublishWithContext(publishCtx, RetryExchange, retryRoute(delay), true, false, amqp091.Publishing{ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent, MessageId: retry.EventID, Type: UploadRoute, Timestamp: now, Body: retry.Payload})
 		cancel()
 		if err != nil {
@@ -329,6 +341,7 @@ func (w *OutboxWorker) publishBatch(ctx context.Context) (bool, error) {
 
 type ReconnectingPublisher struct {
 	uri           string
+	policy        BrokerPolicy
 	mu            sync.Mutex
 	connection    *amqp091.Connection
 	channel       *amqp091.Channel
@@ -336,8 +349,8 @@ type ReconnectingPublisher struct {
 	returns       <-chan amqp091.Return
 }
 
-func NewReconnectingPublisher(uri string) *ReconnectingPublisher {
-	return &ReconnectingPublisher{uri: uri}
+func NewReconnectingPublisher(uri string, policy BrokerPolicy) *ReconnectingPublisher {
+	return &ReconnectingPublisher{uri: uri, policy: policy}
 }
 
 func (p *ReconnectingPublisher) PublishWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, message amqp091.Publishing) error {
@@ -383,8 +396,7 @@ func (p *ReconnectingPublisher) connect(ctx context.Context) error {
 	if p.channel != nil {
 		return nil
 	}
-	dialer := net.Dialer{Timeout: 5 * time.Second}
-	connection, err := amqp091.DialConfig(p.uri, amqp091.Config{Heartbeat: 10 * time.Second, Dial: func(network, address string) (net.Conn, error) { return dialer.DialContext(ctx, network, address) }})
+	connection, err := rabbitmqconn.Dial(ctx, p.uri, rabbitmqconn.DialPolicy{Timeout: p.policy.DialTimeout, Heartbeat: p.policy.Heartbeat})
 	if err != nil {
 		return errors.New("broker unavailable")
 	}
@@ -418,9 +430,8 @@ func (p *ReconnectingPublisher) close() error {
 	return err
 }
 
-func DialConsumer(ctx context.Context, uri string) (*amqp091.Connection, error) {
-	dialer := net.Dialer{Timeout: 5 * time.Second}
-	connection, err := amqp091.DialConfig(uri, amqp091.Config{Heartbeat: 10 * time.Second, Dial: func(network, address string) (net.Conn, error) { return dialer.DialContext(ctx, network, address) }})
+func DialConsumer(ctx context.Context, uri string, policy BrokerPolicy) (*amqp091.Connection, error) {
+	connection, err := rabbitmqconn.Dial(ctx, uri, rabbitmqconn.DialPolicy{Timeout: policy.DialTimeout, Heartbeat: policy.Heartbeat})
 	if err != nil {
 		return nil, errors.New("broker unavailable")
 	}

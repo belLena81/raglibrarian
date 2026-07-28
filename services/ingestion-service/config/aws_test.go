@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
@@ -71,5 +72,55 @@ func TestValidateAWSRabbitURIRequiresAMQPS(t *testing.T) {
 		if err := validateAWSRabbitURI(uri); err == nil {
 			t.Fatalf("expected RabbitMQ URI to fail closed: %q", uri)
 		}
+	}
+}
+
+func TestAWSLoadTimeoutDefaultsAndOverrides(t *testing.T) {
+	value, err := awsLoadTimeout()
+	if err != nil {
+		t.Fatalf("awsLoadTimeout() error = %v", err)
+	}
+	if value != 10*time.Second {
+		t.Fatalf("awsLoadTimeout() = %s, want 10s", value)
+	}
+
+	t.Setenv("INGESTION_AWS_LOAD_TIMEOUT", "12s")
+	value, err = awsLoadTimeout()
+	if err != nil {
+		t.Fatalf("awsLoadTimeout() override error = %v", err)
+	}
+	if value != 12*time.Second {
+		t.Fatalf("awsLoadTimeout() override = %s, want 12s", value)
+	}
+}
+
+func TestAWSSecretRequestTimeoutDefaultsAndOverrides(t *testing.T) {
+	value, err := awsSecretRequestTimeout()
+	if err != nil {
+		t.Fatalf("awsSecretRequestTimeout() error = %v", err)
+	}
+	if value != 5*time.Second {
+		t.Fatalf("awsSecretRequestTimeout() = %s, want 5s", value)
+	}
+
+	t.Setenv("INGESTION_AWS_SECRET_REQUEST_TIMEOUT", "7s")
+	value, err = awsSecretRequestTimeout()
+	if err != nil {
+		t.Fatalf("awsSecretRequestTimeout() override error = %v", err)
+	}
+	if value != 7*time.Second {
+		t.Fatalf("awsSecretRequestTimeout() override = %s, want 7s", value)
+	}
+}
+
+func TestAWSHelperTimeoutsRejectInvalidValues(t *testing.T) {
+	t.Setenv("INGESTION_AWS_LOAD_TIMEOUT", "500ms")
+	if _, err := awsLoadTimeout(); err == nil {
+		t.Fatal("awsLoadTimeout() accepted too-short timeout")
+	}
+
+	t.Setenv("INGESTION_AWS_SECRET_REQUEST_TIMEOUT", "0s")
+	if _, err := awsSecretRequestTimeout(); err == nil {
+		t.Fatal("awsSecretRequestTimeout() accepted non-positive timeout")
 	}
 }

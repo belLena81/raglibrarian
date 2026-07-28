@@ -64,6 +64,7 @@ type Runtime struct {
 	secret             Secret
 	processingTimeout  time.Duration
 	failureRecordLimit time.Duration
+	policy             retrievalconfig.LambdaRuntimePolicy
 }
 
 var errManifestArtifactRead = errors.New("manifest artifact read failed")
@@ -117,6 +118,10 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 	if err := validateMode(); err != nil {
 		return nil, err
 	}
+	policy, err := retrievalconfig.LoadLambdaRuntimePolicy()
+	if err != nil {
+		return nil, err
+	}
 	secret, err := loadSecret(ctx, os.Getenv("RETRIEVAL_RUNTIME_SECRET_ARN"))
 	if err != nil {
 		return nil, err
@@ -142,7 +147,7 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 	}
 	var lifecycle lifecycleProcessor
 	if lifecycleConfigured {
-		if err = validatePrivateEndpoint(ctx, secret.QdrantURL); err != nil {
+		if err = validatePrivateEndpointWithTimeout(ctx, secret.QdrantURL, policy.EndpointResolveTimeout); err != nil {
 			pool.Close()
 			return nil, errors.New("invalid private vector endpoint")
 		}
@@ -151,7 +156,7 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 			pool.Close()
 			return nil, err
 		}
-		httpClient := &http.Client{Timeout: 90 * time.Second, CheckRedirect: rejectRedirect}
+		httpClient := &http.Client{Timeout: policy.DependencyTimeout, CheckRedirect: rejectRedirect}
 		index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, retrievalconfig.DefaultQdrantCollection, secret.QdrantAPIKey, httpClient, minimumSearchScore)
 		if err != nil {
 			pool.Close()
@@ -163,7 +168,7 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 			return nil, err
 		}
 	}
-	return &Runtime{repository: records, manifestFails: records, objects: objects, planner: planner, lifecycle: lifecycle, secret: secret}, nil
+	return &Runtime{repository: records, manifestFails: records, objects: objects, planner: planner, lifecycle: lifecycle, secret: secret, policy: policy}, nil
 }
 
 func validatePlannerSecret(secret Secret) (bool, error) {
@@ -184,14 +189,18 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	policy, err := retrievalconfig.LoadLambdaRuntimePolicy()
+	if err != nil {
+		return nil, err
+	}
 	secret, err := loadSecret(ctx, os.Getenv("RETRIEVAL_RUNTIME_SECRET_ARN"))
 	if err != nil || secret.PostgresDSN == "" || secret.Region == "" || secret.ArtifactBucket == "" || secret.TEIURL == "" || secret.QdrantURL == "" || secret.QdrantAPIKey == "" {
 		return nil, errors.New("invalid indexer runtime secret")
 	}
-	if err = validatePrivateEndpoint(ctx, secret.TEIURL); err != nil {
+	if err = validatePrivateEndpointWithTimeout(ctx, secret.TEIURL, policy.EndpointResolveTimeout); err != nil {
 		return nil, errors.New("invalid private embedding endpoint")
 	}
-	if err = validatePrivateEndpoint(ctx, secret.QdrantURL); err != nil {
+	if err = validatePrivateEndpointWithTimeout(ctx, secret.QdrantURL, policy.EndpointResolveTimeout); err != nil {
 		return nil, errors.New("invalid private vector endpoint")
 	}
 	minimumSearchScore, err := retrievalconfig.LoadMinimumSearchScore()
@@ -208,7 +217,7 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
-	httpClient := &http.Client{Timeout: 90 * time.Second, CheckRedirect: rejectRedirect}
+	httpClient := &http.Client{Timeout: policy.DependencyTimeout, CheckRedirect: rejectRedirect}
 	embedder, err := embedding.NewTEI(secret.TEIURL, httpClient, zap.NewNop(), nil)
 	if err != nil {
 		pool.Close()
@@ -219,7 +228,7 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
-	collectionContext, collectionCancel := context.WithTimeout(ctx, 10*time.Second)
+	collectionContext, collectionCancel := context.WithTimeout(ctx, policy.CollectionEnsureTimeout)
 	err = index.EnsureCollection(collectionContext)
 	collectionCancel()
 	if err != nil {
@@ -242,7 +251,8 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 		vector:             index,
 		secret:             secret,
 		processingTimeout:  processingTimeout,
-		failureRecordLimit: defaultFailureRecordTime,
+		failureRecordLimit: policy.FailureRecordTimeout,
+		policy:             policy,
 	}, nil
 }
 
@@ -254,11 +264,15 @@ func NewCleanupRuntime(ctx context.Context) (*Runtime, error) {
 	if err := validateMode(); err != nil {
 		return nil, err
 	}
+	policy, err := retrievalconfig.LoadLambdaRuntimePolicy()
+	if err != nil {
+		return nil, err
+	}
 	secret, err := loadSecret(ctx, os.Getenv("RETRIEVAL_RUNTIME_SECRET_ARN"))
 	if err != nil || secret.PostgresDSN == "" || secret.QdrantURL == "" || secret.QdrantAPIKey == "" {
 		return nil, errors.New("invalid cleanup runtime secret")
 	}
-	if err = validatePrivateEndpoint(ctx, secret.QdrantURL); err != nil {
+	if err = validatePrivateEndpointWithTimeout(ctx, secret.QdrantURL, policy.EndpointResolveTimeout); err != nil {
 		return nil, errors.New("invalid private vector endpoint")
 	}
 	minimumSearchScore, err := retrievalconfig.LoadMinimumSearchScore()
@@ -270,7 +284,7 @@ func NewCleanupRuntime(ctx context.Context) (*Runtime, error) {
 		return nil, errors.New("configure retrieval database")
 	}
 	records := repository.NewPostgres(pool)
-	httpClient := &http.Client{Timeout: 90 * time.Second, CheckRedirect: rejectRedirect}
+	httpClient := &http.Client{Timeout: policy.DependencyTimeout, CheckRedirect: rejectRedirect}
 	index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, retrievalconfig.DefaultQdrantCollection, secret.QdrantAPIKey, httpClient, minimumSearchScore)
 	if err != nil {
 		pool.Close()
@@ -281,11 +295,15 @@ func NewCleanupRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
-	return &Runtime{repository: records, manifestFails: records, vectorJobs: records, vector: index, lifecycle: lifecycle, secret: secret}, nil
+	return &Runtime{repository: records, manifestFails: records, vectorJobs: records, vector: index, lifecycle: lifecycle, secret: secret, policy: policy}, nil
 }
 
 func newDatabaseRuntime(ctx context.Context, publisher bool) (*Runtime, error) {
 	if err := validateMode(); err != nil {
+		return nil, err
+	}
+	policy, err := retrievalconfig.LoadLambdaRuntimePolicy()
+	if err != nil {
 		return nil, err
 	}
 	secret, err := loadSecret(ctx, os.Getenv("RETRIEVAL_RUNTIME_SECRET_ARN"))
@@ -293,7 +311,7 @@ func newDatabaseRuntime(ctx context.Context, publisher bool) (*Runtime, error) {
 		return nil, errors.New("invalid database runtime secret")
 	}
 	if publisher {
-		if err = validatePrivateBroker(ctx, secret.PublisherRabbitURI); err != nil {
+		if err = validatePrivateBrokerWithTimeout(ctx, secret.PublisherRabbitURI, policy.EndpointResolveTimeout); err != nil {
 			return nil, errors.New("invalid private publisher endpoint")
 		}
 	}
@@ -302,7 +320,7 @@ func newDatabaseRuntime(ctx context.Context, publisher bool) (*Runtime, error) {
 		return nil, errors.New("configure retrieval database")
 	}
 	records := repository.NewPostgres(pool)
-	return &Runtime{repository: records, manifestFails: records, secret: secret}, nil
+	return &Runtime{repository: records, manifestFails: records, secret: secret, policy: policy}, nil
 }
 
 type RabbitEvent struct {
@@ -450,8 +468,8 @@ func (r *Runtime) failureRecordingContext() (context.Context, context.CancelFunc
 
 func (r *Runtime) Dispatch(ctx context.Context) error {
 	connection, err := rabbitmq.Dial(ctx, r.secret.PublisherRabbitURI, rabbitmq.DialPolicy{
-		Timeout:   5 * time.Second,
-		Heartbeat: 10 * time.Second,
+		Timeout:   r.policy.RabbitDialTimeout,
+		Heartbeat: r.policy.RabbitHeartbeat,
 	})
 	if err != nil {
 		return errors.New("publisher unavailable")
@@ -607,6 +625,14 @@ func randomID() (string, error) {
 }
 
 func validatePrivateEndpoint(ctx context.Context, value string) error {
+	policy, err := retrievalconfig.LoadLambdaRuntimePolicy()
+	if err != nil {
+		return err
+	}
+	return validatePrivateEndpointWithTimeout(ctx, value, policy.EndpointResolveTimeout)
+}
+
+func validatePrivateEndpointWithTimeout(ctx context.Context, value string, resolveTimeout time.Duration) error {
 	parsed, err := url.Parse(value)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return errors.New("invalid dependency URL")
@@ -618,7 +644,7 @@ func validatePrivateEndpoint(ctx context.Context, value string) error {
 		}
 		return errors.New("public dependency address")
 	}
-	resolveContext, cancel := context.WithTimeout(ctx, 3*time.Second)
+	resolveContext, cancel := context.WithTimeout(ctx, resolveTimeout)
 	defer cancel()
 	addresses, err := net.DefaultResolver.LookupIPAddr(resolveContext, host)
 	if err != nil || len(addresses) == 0 {
@@ -633,12 +659,20 @@ func validatePrivateEndpoint(ctx context.Context, value string) error {
 }
 
 func validatePrivateBroker(ctx context.Context, value string) error {
+	policy, err := retrievalconfig.LoadLambdaRuntimePolicy()
+	if err != nil {
+		return err
+	}
+	return validatePrivateBrokerWithTimeout(ctx, value, policy.EndpointResolveTimeout)
+}
+
+func validatePrivateBrokerWithTimeout(ctx context.Context, value string, resolveTimeout time.Duration) error {
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme != "amqps" || parsed.Host == "" || parsed.User == nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return errors.New("invalid broker URL")
 	}
 	httpsEquivalent := "https://" + parsed.Host
-	return validatePrivateEndpoint(ctx, httpsEquivalent)
+	return validatePrivateEndpointWithTimeout(ctx, httpsEquivalent, resolveTimeout)
 }
 
 func rejectRedirect(_ *http.Request, _ []*http.Request) error {

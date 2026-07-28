@@ -16,7 +16,11 @@ import (
 )
 
 func Load() (Config, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	timeout, err := awsLoadTimeout()
+	if err != nil {
+		return Config{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return LoadContext(ctx)
 }
@@ -29,7 +33,11 @@ func LoadContext(ctx context.Context) (Config, error) {
 }
 
 func LoadDispatcher() (DispatcherConfig, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	timeout, err := awsLoadTimeout()
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return LoadDispatcherContext(ctx)
 }
@@ -42,7 +50,11 @@ func LoadDispatcherContext(ctx context.Context) (DispatcherConfig, error) {
 }
 
 func LoadCleanup() (CleanupConfig, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	timeout, err := awsLoadTimeout()
+	if err != nil {
+		return CleanupConfig{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return LoadCleanupContext(ctx)
 }
@@ -162,6 +174,22 @@ func loadAWS(ctx context.Context) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	rabbitDialTimeout, err := boundedDuration("INGESTION_RABBITMQ_DIAL_TIMEOUT", time.Second, time.Minute, 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	rabbitHeartbeat, err := boundedDuration("INGESTION_RABBITMQ_HEARTBEAT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	rabbitPublishTimeout, err := boundedDuration("INGESTION_RABBITMQ_PUBLISH_TIMEOUT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	outboxLease, err := boundedDuration("INGESTION_OUTBOX_LEASE", time.Second, 5*time.Minute, 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
 	cleanupInterval, err := boundedDuration("INGESTION_CLEANUP_INTERVAL", time.Minute, 24*time.Hour, 15*time.Minute)
 	if err != nil {
 		return Config{}, err
@@ -228,6 +256,10 @@ func loadAWS(ctx context.Context) (Config, error) {
 		ProcessingTimeout:              timeout,
 		JobLease:                       lease,
 		OutboxInterval:                 outboxInterval,
+		RabbitDialTimeout:              rabbitDialTimeout,
+		RabbitHeartbeat:                rabbitHeartbeat,
+		RabbitPublishTimeout:           rabbitPublishTimeout,
+		OutboxLease:                    outboxLease,
 		CleanupInterval:                cleanupInterval,
 		OrphanGracePeriod:              grace,
 		WorkerReadinessProbeTimeout:    workerReadinessProbeTimeout,
@@ -258,6 +290,22 @@ func loadAWSDispatcher(ctx context.Context) (DispatcherConfig, error) {
 	if err != nil {
 		return DispatcherConfig{}, err
 	}
+	rabbitDialTimeout, err := boundedDuration("INGESTION_RABBITMQ_DIAL_TIMEOUT", time.Second, time.Minute, 5*time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	rabbitHeartbeat, err := boundedDuration("INGESTION_RABBITMQ_HEARTBEAT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	rabbitPublishTimeout, err := boundedDuration("INGESTION_RABBITMQ_PUBLISH_TIMEOUT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	outboxLease, err := boundedDuration("INGESTION_OUTBOX_LEASE", time.Second, 5*time.Minute, 30*time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
 	uid, err := boundedInt("RUN_AS_UID", 65532, 1<<30)
 	if err != nil {
 		return DispatcherConfig{}, err
@@ -266,7 +314,18 @@ func loadAWSDispatcher(ctx context.Context) (DispatcherConfig, error) {
 	if err != nil {
 		return DispatcherConfig{}, err
 	}
-	return DispatcherConfig{RuntimeBackend: "aws", DSN: dsn, RabbitURI: rabbitURI, ResultExchange: optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"), OutboxInterval: outboxInterval, RunAs: process.Identity{UID: uid, GID: gid}}, nil
+	return DispatcherConfig{
+		RuntimeBackend:       "aws",
+		DSN:                  dsn,
+		RabbitURI:            rabbitURI,
+		ResultExchange:       optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
+		OutboxInterval:       outboxInterval,
+		RabbitDialTimeout:    rabbitDialTimeout,
+		RabbitHeartbeat:      rabbitHeartbeat,
+		RabbitPublishTimeout: rabbitPublishTimeout,
+		OutboxLease:          outboxLease,
+		RunAs:                process.Identity{UID: uid, GID: gid},
+	}, nil
 }
 
 func loadAWSCleanup(ctx context.Context) (CleanupConfig, error) {
@@ -314,7 +373,11 @@ func readAWSSecret(ctx context.Context, region, arnKey, field string, maximum in
 }
 
 func getSecret(ctx context.Context, client secretsAPI, arn, label, field string, maximum int) (string, error) {
-	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	timeout, err := awsSecretRequestTimeout()
+	if err != nil {
+		return "", err
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	output, err := client.GetSecretValue(requestCtx, &secretsmanager.GetSecretValueInput{SecretId: &arn})
 	if err != nil || output.SecretString == nil || len(*output.SecretString) > maximum+128 {
@@ -333,6 +396,14 @@ func getSecret(ctx context.Context, client secretsAPI, arn, label, field string,
 		return "", fmt.Errorf("%s is invalid", label)
 	}
 	return value, nil
+}
+
+func awsLoadTimeout() (time.Duration, error) {
+	return boundedDuration("INGESTION_AWS_LOAD_TIMEOUT", time.Second, time.Minute, 10*time.Second)
+}
+
+func awsSecretRequestTimeout() (time.Duration, error) {
+	return boundedDuration("INGESTION_AWS_SECRET_REQUEST_TIMEOUT", time.Second, time.Minute, 5*time.Second)
 }
 
 func validateAWSPostgresDSN(dsn string) error {

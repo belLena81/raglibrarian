@@ -5,10 +5,10 @@ package bookstatus
 import (
 	"context"
 	"errors"
-	"net"
 	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/contracts"
+	"github.com/belLena81/raglibrarian/pkg/rabbitmqconn"
 	"github.com/rabbitmq/amqp091-go"
 	"google.golang.org/protobuf/proto"
 
@@ -63,12 +63,9 @@ func Run(ctx context.Context, uri, queue string, hub Hub, policy Policy) {
 }
 
 func consume(ctx context.Context, uri, queue string, hub Hub, policy Policy) error {
-	dialer := net.Dialer{Timeout: policy.DialTimeout}
-	connection, err := amqp091.DialConfig(uri, amqp091.Config{
+	connection, err := rabbitmqconn.Dial(ctx, uri, rabbitmqconn.DialPolicy{
+		Timeout:   policy.DialTimeout,
 		Heartbeat: policy.HeartbeatTimeout,
-		Dial: func(network, address string) (net.Conn, error) {
-			return dialer.DialContext(ctx, network, address)
-		},
 	})
 	if err != nil {
 		return err

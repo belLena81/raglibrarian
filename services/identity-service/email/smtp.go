@@ -16,17 +16,16 @@ import (
 // failure so transport details and recipient data never cross the adapter.
 var ErrDeliveryFailed = errors.New("email delivery failed")
 
-const smtpOperationTimeout = 10 * time.Second
-
 // Config contains the SMTP endpoint and verification-message settings.
 type Config struct {
-	Address    string
-	ServerName string
-	Username   string
-	Password   string
-	From       string
-	VerifyURL  string
-	StartTLS   bool
+	Address          string
+	ServerName       string
+	Username         string
+	Password         string
+	From             string
+	VerifyURL        string
+	StartTLS         bool
+	OperationTimeout time.Duration
 }
 
 // SMTPSender delivers verification messages through an SMTP server.
@@ -35,6 +34,9 @@ type SMTPSender struct{ config Config }
 // NewSMTPSender validates configuration and constructs an SMTP adapter.
 func NewSMTPSender(config Config) (*SMTPSender, error) {
 	if config.Address == "" || config.ServerName == "" || config.From == "" || config.VerifyURL == "" {
+		return nil, ErrDeliveryFailed
+	}
+	if config.OperationTimeout <= 0 {
 		return nil, ErrDeliveryFailed
 	}
 	if config.Username != "" && (!config.StartTLS || config.Password == "") {
@@ -56,9 +58,9 @@ func (s *SMTPSender) send(ctx context.Context, recipient, subject, body string) 
 	if recipient == "" || body == "" || strings.ContainsAny(recipient, "\r\n") {
 		return ErrDeliveryFailed
 	}
-	operationCtx, cancel := context.WithTimeout(ctx, smtpOperationTimeout)
+	operationCtx, cancel := context.WithTimeout(ctx, s.config.OperationTimeout)
 	defer cancel()
-	dialer := net.Dialer{Timeout: smtpOperationTimeout}
+	dialer := net.Dialer{Timeout: s.config.OperationTimeout}
 	connection, err := dialer.DialContext(operationCtx, "tcp", s.config.Address)
 	if err != nil {
 		return ErrDeliveryFailed

@@ -4,9 +4,9 @@ package processing
 import (
 	"context"
 	"errors"
-	"net"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/rabbitmqconn"
 	"github.com/rabbitmq/amqp091-go"
 
 	"github.com/belLena81/raglibrarian/services/catalog-service/internal/catalog"
@@ -122,12 +122,9 @@ func RunQueue(ctx context.Context, uri, queue string, service handler, recorder 
 }
 
 func consumeConnection(ctx context.Context, uri, queue string, service handler, recorder Recorder, policy Policy) error {
-	dialer := net.Dialer{Timeout: policy.DialTimeout}
-	connection, err := amqp091.DialConfig(uri, amqp091.Config{
+	connection, err := rabbitmqconn.Dial(ctx, uri, rabbitmqconn.DialPolicy{
+		Timeout:   policy.DialTimeout,
 		Heartbeat: policy.HeartbeatTimeout,
-		Dial: func(network, address string) (net.Conn, error) {
-			return dialer.DialContext(ctx, network, address)
-		},
 	})
 	if err != nil {
 		return err

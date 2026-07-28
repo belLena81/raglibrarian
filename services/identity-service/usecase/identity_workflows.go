@@ -13,12 +13,13 @@ import (
 	"github.com/belLena81/raglibrarian/services/identity-service/usecase/port"
 )
 
-const (
-	verificationTTL       = 30 * time.Minute
-	verificationRetention = 24 * time.Hour
-	resendCooldown        = 10 * time.Minute
-	bootstrapDomain       = "raglibrarian/admin-bootstrap/v1\x00"
-)
+const bootstrapDomain = "raglibrarian/admin-bootstrap/v1\x00"
+
+type VerificationPolicy struct {
+	TTL            time.Duration
+	Retention      time.Duration
+	ResendCooldown time.Duration
+}
 
 // VerificationService coordinates registration, email verification, resend,
 // and expiry cleanup without depending on transport or persistence details.
@@ -29,6 +30,7 @@ type VerificationService struct {
 	fingerprints port.Fingerprinter
 	ids          port.IDGenerator
 	clock        Clock
+	policy       VerificationPolicy
 }
 
 // NewVerificationService constructs the registration-verification workflow.
@@ -39,11 +41,23 @@ func NewVerificationService(
 	fingerprints port.Fingerprinter,
 	ids port.IDGenerator,
 	clock Clock,
+	policy VerificationPolicy,
 ) *VerificationService {
 	if store == nil || passwords == nil || sealer == nil || fingerprints == nil || ids == nil || clock == nil {
 		panic("usecase: invalid verification dependencies")
 	}
-	return &VerificationService{store: store, passwords: passwords, sealer: sealer, fingerprints: fingerprints, ids: ids, clock: clock}
+	if policy.TTL <= 0 || policy.Retention <= 0 || policy.ResendCooldown <= 0 {
+		panic("usecase: invalid verification policy")
+	}
+	return &VerificationService{
+		store:        store,
+		passwords:    passwords,
+		sealer:       sealer,
+		fingerprints: fingerprints,
+		ids:          ids,
+		clock:        clock,
+		policy:       policy,
+	}
 }
 
 // Register validates an account request and schedules a single-use ownership
@@ -82,7 +96,7 @@ func (s *VerificationService) Register(ctx context.Context, name, email, plainte
 		EmailFingerprint: s.fingerprints.Fingerprint(email),
 		PasswordHash:     hash,
 		Role:             role,
-		ExpiresAt:        now.Add(verificationTTL),
+		ExpiresAt:        now.Add(s.policy.TTL),
 		CreatedAt:        now,
 	}
 	messageID := s.ids.NewID()
@@ -112,7 +126,7 @@ func (s *VerificationService) Resend(ctx context.Context, email string) error {
 		return err
 	}
 	sealed.CreatedAt = now
-	return s.store.RotateForResend(ctx, email, tokenHash, now.Add(verificationTTL), now.Add(-resendCooldown), sealed)
+	return s.store.RotateForResend(ctx, email, tokenHash, now.Add(s.policy.TTL), now.Add(-s.policy.ResendCooldown), sealed)
 }
 
 // Verify consumes a single-use opaque token and returns the verified account.
@@ -126,7 +140,7 @@ func (s *VerificationService) Verify(ctx context.Context, token string) (domain.
 
 // Cleanup removes verification registrations beyond their retention window.
 func (s *VerificationService) Cleanup(ctx context.Context) (int64, error) {
-	return s.store.CleanupExpired(ctx, s.clock.Now().UTC().Add(-verificationRetention))
+	return s.store.CleanupExpired(ctx, s.clock.Now().UTC().Add(-s.policy.Retention))
 }
 
 // BootstrapService owns the one-time, verifier-protected administrator setup.
@@ -184,16 +198,20 @@ func (s *BootstrapService) validCode(code string) bool {
 
 // ApprovalService authorizes and coordinates pending-librarian review.
 type ApprovalService struct {
-	store port.ApprovalStore
-	clock Clock
+	store             port.ApprovalStore
+	clock             Clock
+	rejectedRetention time.Duration
 }
 
 // NewApprovalService constructs the librarian-approval workflow.
-func NewApprovalService(store port.ApprovalStore, clock Clock) *ApprovalService {
+func NewApprovalService(store port.ApprovalStore, clock Clock, rejectedRetention time.Duration) *ApprovalService {
 	if store == nil || clock == nil {
 		panic("usecase: invalid approval dependencies")
 	}
-	return &ApprovalService{store: store, clock: clock}
+	if rejectedRetention <= 0 {
+		panic("usecase: invalid approval policy")
+	}
+	return &ApprovalService{store: store, clock: clock, rejectedRetention: rejectedRetention}
 }
 
 // List returns a bounded page of pending librarians for an authorized actor.
@@ -219,7 +237,7 @@ func (s *ApprovalService) Reject(ctx context.Context, actor domain.Principal, us
 
 // CleanupRejected removes rejected accounts beyond their retention window.
 func (s *ApprovalService) CleanupRejected(ctx context.Context) (int64, error) {
-	return s.store.CleanupRejected(ctx, s.clock.Now().UTC().Add(-90*24*time.Hour))
+	return s.store.CleanupRejected(ctx, s.clock.Now().UTC().Add(-s.rejectedRetention))
 }
 
 func newOpaqueToken() (string, []byte, error) {

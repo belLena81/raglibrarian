@@ -16,8 +16,6 @@ import (
 	"github.com/belLena81/raglibrarian/services/identity-service/usecase/port"
 )
 
-const operationTimeout = 5 * time.Second
-
 // VerificationUseCase defines registration and email-verification operations.
 type VerificationUseCase interface {
 	Register(context.Context, string, string, string, domain.Role) error
@@ -65,20 +63,29 @@ type Server struct {
 	bootstrap     BootstrapUseCase
 	approval      ApprovalUseCase
 	notifications port.PendingNotifications
+	policy        Policy
+}
+
+// Policy defines runtime-tunable gRPC handler behavior.
+type Policy struct {
+	OperationTimeout time.Duration
 }
 
 // NewServer constructs the complete Identity gRPC adapter.
-func NewServer(verification VerificationUseCase, sessions SessionUseCase, passwordReset PasswordResetUseCase, bootstrap BootstrapUseCase, approval ApprovalUseCase, notifications port.PendingNotifications) *Server {
+func NewServer(verification VerificationUseCase, sessions SessionUseCase, passwordReset PasswordResetUseCase, bootstrap BootstrapUseCase, approval ApprovalUseCase, notifications port.PendingNotifications, policy Policy) *Server {
 	if verification == nil || sessions == nil || passwordReset == nil || bootstrap == nil || approval == nil || notifications == nil {
 		panic("grpc: identity use cases are required")
 	}
-	return &Server{verification: verification, sessions: sessions, passwordReset: passwordReset, bootstrap: bootstrap, approval: approval, notifications: notifications}
+	if policy.OperationTimeout <= 0 {
+		panic("grpc: operation timeout must be positive")
+	}
+	return &Server{verification: verification, sessions: sessions, passwordReset: passwordReset, bootstrap: bootstrap, approval: approval, notifications: notifications, policy: policy}
 }
 
 // Register accepts a new account registration without disclosing whether its
 // email address already exists.
 func (s *Server) Register(ctx context.Context, req *identityv1.RegisterRequest) (*identityv1.RegisterResponse, error) {
-	ctx, cancel, err := authenticatedOperation(ctx)
+	ctx, cancel, err := s.authenticatedOperation(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +104,7 @@ func (s *Server) Register(ctx context.Context, req *identityv1.RegisterRequest) 
 
 // VerifyEmail consumes a single-use registration verification token.
 func (s *Server) VerifyEmail(ctx context.Context, req *identityv1.VerifyEmailRequest) (*identityv1.VerifyEmailResponse, error) {
-	ctx, cancel, err := authenticatedOperation(ctx)
+	ctx, cancel, err := s.authenticatedOperation(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +121,7 @@ func (s *Server) VerifyEmail(ctx context.Context, req *identityv1.VerifyEmailReq
 // ResendVerification rotates verification material while preserving a generic
 // response for unknown email addresses.
 func (s *Server) ResendVerification(ctx context.Context, req *identityv1.ResendVerificationRequest) (*identityv1.ResendVerificationResponse, error) {
-	ctx, cancel, err := authenticatedOperation(ctx)
+	ctx, cancel, err := s.authenticatedOperation(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +137,7 @@ func (s *Server) ResendVerification(ctx context.Context, req *identityv1.ResendV
 
 // Login authenticates an active, verified account and creates a session.
 func (s *Server) Login(ctx context.Context, req *identityv1.LoginRequest) (*identityv1.LoginResponse, error) {
-	ctx, cancel, err := authenticatedOperation(ctx)
+	ctx, cancel, err := s.authenticatedOperation(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +157,7 @@ func (s *Server) Login(ctx context.Context, req *identityv1.LoginRequest) (*iden
 }
 
 func (s *Server) RequestPasswordReset(ctx context.Context, req *identityv1.RequestPasswordResetRequest) (*identityv1.RequestPasswordResetResponse, error) {
-	ctx, cancel, _ := authenticatedOperation(ctx)
+	ctx, cancel, _ := s.authenticatedOperation(ctx)
 	defer cancel()
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid request")
@@ -162,7 +169,7 @@ func (s *Server) RequestPasswordReset(ctx context.Context, req *identityv1.Reque
 }
 
 func (s *Server) VerifyPasswordReset(ctx context.Context, req *identityv1.VerifyPasswordResetRequest) (*identityv1.VerifyPasswordResetResponse, error) {
-	ctx, cancel, _ := authenticatedOperation(ctx)
+	ctx, cancel, _ := s.authenticatedOperation(ctx)
 	defer cancel()
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid request")
@@ -179,7 +186,7 @@ func (s *Server) VerifyPasswordReset(ctx context.Context, req *identityv1.Verify
 }
 
 func (s *Server) CompletePasswordReset(ctx context.Context, req *identityv1.CompletePasswordResetRequest) (*identityv1.CompletePasswordResetResponse, error) {
-	ctx, cancel, _ := authenticatedOperation(ctx)
+	ctx, cancel, _ := s.authenticatedOperation(ctx)
 	defer cancel()
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid request")
@@ -192,7 +199,7 @@ func (s *Server) CompletePasswordReset(ctx context.Context, req *identityv1.Comp
 
 // Refresh rotates a refresh token and issues fresh session credentials.
 func (s *Server) Refresh(ctx context.Context, req *identityv1.RefreshRequest) (*identityv1.RefreshResponse, error) {
-	ctx, cancel, err := authenticatedOperation(ctx)
+	ctx, cancel, err := s.authenticatedOperation(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +217,7 @@ func (s *Server) Refresh(ctx context.Context, req *identityv1.RefreshRequest) (*
 // ValidateSession validates session state and, when supported, returns the
 // account's current authorization principal.
 func (s *Server) ValidateSession(ctx context.Context, req *identityv1.ValidateSessionRequest) (*identityv1.ValidateSessionResponse, error) {
-	ctx, cancel, err := authenticatedOperation(ctx)
+	ctx, cancel, err := s.authenticatedOperation(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +241,7 @@ func (s *Server) ValidateSession(ctx context.Context, req *identityv1.ValidateSe
 
 // Logout revokes the requested session.
 func (s *Server) Logout(ctx context.Context, req *identityv1.LogoutRequest) (*identityv1.LogoutResponse, error) {
-	ctx, cancel, err := authenticatedOperation(ctx)
+	ctx, cancel, err := s.authenticatedOperation(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -251,7 +258,7 @@ func (s *Server) Logout(ctx context.Context, req *identityv1.LogoutRequest) (*id
 // GetSetupStatus reports whether the one-time administrator bootstrap remains
 // available.
 func (s *Server) GetSetupStatus(ctx context.Context, _ *identityv1.GetSetupStatusRequest) (*identityv1.GetSetupStatusResponse, error) {
-	ctx, cancel, err := authenticatedOperation(ctx)
+	ctx, cancel, err := s.authenticatedOperation(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +272,7 @@ func (s *Server) GetSetupStatus(ctx context.Context, _ *identityv1.GetSetupStatu
 
 // BootstrapAdmin creates the first administrator after verifier validation.
 func (s *Server) BootstrapAdmin(ctx context.Context, req *identityv1.BootstrapAdminRequest) (*identityv1.BootstrapAdminResponse, error) {
-	ctx, cancel, err := authenticatedOperation(ctx)
+	ctx, cancel, err := s.authenticatedOperation(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +289,7 @@ func (s *Server) BootstrapAdmin(ctx context.Context, req *identityv1.BootstrapAd
 // ListPendingLibrarians returns one cursor-paginated page after live
 // administrator authorization.
 func (s *Server) ListPendingLibrarians(ctx context.Context, req *identityv1.ListPendingLibrariansRequest) (*identityv1.ListPendingLibrariansResponse, error) {
-	ctx, cancel, err := authenticatedOperation(ctx)
+	ctx, cancel, err := s.authenticatedOperation(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +341,7 @@ func (s *Server) RejectLibrarian(ctx context.Context, req *identityv1.RejectLibr
 }
 
 func (s *Server) decide(ctx context.Context, actorRequest *identityv1.Actor, userID string, approve bool) error {
-	ctx, cancel, err := authenticatedOperation(ctx)
+	ctx, cancel, err := s.authenticatedOperation(ctx)
 	if err != nil {
 		return err
 	}
@@ -425,8 +432,8 @@ func principalResponse(principal domain.Principal) *identityv1.Principal {
 	}
 }
 
-func authenticatedOperation(ctx context.Context) (context.Context, context.CancelFunc, error) {
-	deadlineCtx, cancel := context.WithTimeout(ctx, operationTimeout)
+func (s *Server) authenticatedOperation(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	deadlineCtx, cancel := context.WithTimeout(ctx, s.policy.OperationTimeout)
 	return deadlineCtx, cancel, nil
 }
 

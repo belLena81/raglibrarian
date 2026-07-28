@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/process"
@@ -22,19 +23,42 @@ var ErrSecretFile = errors.New("secret file is invalid")
 // Config contains validated runtime settings and file-loaded secrets for the
 // Identity service.
 type Config struct {
-	Address           string
-	DSN               string
-	SigningKey        []byte
-	SigningKeyID      string
-	FingerprintKey    []byte
-	OutboxKey         []byte
-	PasswordResetKey  []byte
-	OutboxKeyID       string
-	BootstrapVerifier []byte
-	BcryptConcurrency int
-	TLS               internaltls.Files
-	RunAs             process.Identity
-	SMTP              email.Config
+	Address                    string
+	DSN                        string
+	SigningKey                 []byte
+	SigningKeyID               string
+	FingerprintKey             []byte
+	OutboxKey                  []byte
+	PasswordResetKey           []byte
+	OutboxKeyID                string
+	BootstrapVerifier          []byte
+	BcryptConcurrency          int
+	VerificationTTL            time.Duration
+	VerificationRetention      time.Duration
+	VerificationResendCooldown time.Duration
+	PasswordResetCodeTTL       time.Duration
+	PasswordResetGrantTTL      time.Duration
+	RejectedRetention          time.Duration
+	AccessTokenTTL             time.Duration
+	SessionTTL                 time.Duration
+	DBPingTimeout              time.Duration
+	HealthProbeTimeout         time.Duration
+	HealthPollInterval         time.Duration
+	EmailDeliverInterval       time.Duration
+	EmailClaimTTL              time.Duration
+	EmailClaimBatchSize        int
+	EmailRetryBaseInterval     time.Duration
+	EmailRetryMaxInterval      time.Duration
+	EmailRetryMaxAttempts      int
+	SessionCleanupTimeout      time.Duration
+	SessionCleanupInterval     time.Duration
+	IdentityCleanupTimeout     time.Duration
+	IdentityCleanupInterval    time.Duration
+	GRPCGracefulStopTimeout    time.Duration
+	GRPCOperationTimeout       time.Duration
+	TLS                        internaltls.Files
+	RunAs                      process.Identity
+	SMTP                       email.Config
 }
 
 // Load reads Identity configuration from the process environment and secret
@@ -65,6 +89,102 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	smtpPassword, err := readSecret("IDENTITY_SMTP_PASSWORD_FILE", 1024)
+	if err != nil {
+		return Config{}, err
+	}
+	smtpOperationTimeout, err := durationOptional("IDENTITY_SMTP_OPERATION_TIMEOUT", 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	verificationTTL, err := durationOptional("IDENTITY_VERIFICATION_TTL", 30*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	verificationRetention, err := durationOptional("IDENTITY_VERIFICATION_RETENTION", 24*time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	verificationResendCooldown, err := durationOptional("IDENTITY_VERIFICATION_RESEND_COOLDOWN", 10*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	passwordResetCodeTTL, err := durationOptional("IDENTITY_PASSWORD_RESET_CODE_TTL", 10*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	passwordResetGrantTTL, err := durationOptional("IDENTITY_PASSWORD_RESET_GRANT_TTL", 10*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	rejectedRetention, err := durationOptional("IDENTITY_REJECTED_RETENTION", 90*24*time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	accessTokenTTL, err := durationOptional("IDENTITY_ACCESS_TOKEN_TTL", 15*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	sessionTTL, err := durationOptional("IDENTITY_SESSION_TTL", 30*24*time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	dbPingTimeout, err := durationOptional("IDENTITY_DB_PING_TIMEOUT", 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	healthProbeTimeout, err := durationOptional("IDENTITY_HEALTH_PROBE_TIMEOUT", 2*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	healthPollInterval, err := durationOptional("IDENTITY_HEALTH_POLL_INTERVAL", 2*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	emailDeliverInterval, err := durationOptional("IDENTITY_EMAIL_DELIVER_INTERVAL", 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	emailClaimTTL, err := durationOptional("IDENTITY_EMAIL_CLAIM_TTL", time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	emailRetryBaseInterval, err := durationOptional("IDENTITY_EMAIL_RETRY_BASE_INTERVAL", time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	emailRetryMaxInterval, err := durationOptional("IDENTITY_EMAIL_RETRY_MAX_INTERVAL", 60*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	emailClaimBatchSize, err := strconv.Atoi(optional("IDENTITY_EMAIL_CLAIM_BATCH_SIZE", "25"))
+	if err != nil || emailClaimBatchSize < 1 {
+		return Config{}, fmt.Errorf("IDENTITY_EMAIL_CLAIM_BATCH_SIZE must be positive")
+	}
+	emailRetryMaxAttempts, err := strconv.Atoi(optional("IDENTITY_EMAIL_RETRY_MAX_ATTEMPTS", "10"))
+	if err != nil || emailRetryMaxAttempts < 1 {
+		return Config{}, fmt.Errorf("IDENTITY_EMAIL_RETRY_MAX_ATTEMPTS must be positive")
+	}
+	sessionCleanupTimeout, err := durationOptional("IDENTITY_SESSION_CLEANUP_TIMEOUT", 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	sessionCleanupInterval, err := durationOptional("IDENTITY_SESSION_CLEANUP_INTERVAL", time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	identityCleanupTimeout, err := durationOptional("IDENTITY_STATE_CLEANUP_TIMEOUT", 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	identityCleanupInterval, err := durationOptional("IDENTITY_STATE_CLEANUP_INTERVAL", time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	grpcGracefulStopTimeout, err := durationOptional("IDENTITY_GRPC_GRACEFUL_STOP_TIMEOUT", 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	grpcOperationTimeout, err := durationOptional("IDENTITY_GRPC_OPERATION_TIMEOUT", 5*time.Second)
 	if err != nil {
 		return Config{}, err
 	}
@@ -101,15 +221,26 @@ func Load() (Config, error) {
 		SigningKeyID:      optional("IDENTITY_SIGNING_KEY_ID", "local-v1"),
 		OutboxKeyID:       optional("IDENTITY_EMAIL_OUTBOX_KEY_ID", "local-v1"),
 		BootstrapVerifier: bootstrapVerifier, BcryptConcurrency: concurrency,
-		TLS:   internaltls.Files{CA: ca, Certificate: cert, Key: keyFile},
-		RunAs: process.Identity{UID: uid, GID: gid},
+		VerificationTTL: verificationTTL, VerificationRetention: verificationRetention,
+		VerificationResendCooldown: verificationResendCooldown, PasswordResetCodeTTL: passwordResetCodeTTL,
+		PasswordResetGrantTTL: passwordResetGrantTTL, RejectedRetention: rejectedRetention,
+		AccessTokenTTL: accessTokenTTL, SessionTTL: sessionTTL,
+		DBPingTimeout: dbPingTimeout, HealthProbeTimeout: healthProbeTimeout, HealthPollInterval: healthPollInterval,
+		EmailDeliverInterval: emailDeliverInterval, EmailClaimTTL: emailClaimTTL, EmailClaimBatchSize: emailClaimBatchSize,
+		EmailRetryBaseInterval: emailRetryBaseInterval, EmailRetryMaxInterval: emailRetryMaxInterval, EmailRetryMaxAttempts: emailRetryMaxAttempts,
+		SessionCleanupTimeout: sessionCleanupTimeout, SessionCleanupInterval: sessionCleanupInterval,
+		IdentityCleanupTimeout: identityCleanupTimeout, IdentityCleanupInterval: identityCleanupInterval, GRPCGracefulStopTimeout: grpcGracefulStopTimeout,
+		GRPCOperationTimeout: grpcOperationTimeout,
+		TLS:                  internaltls.Files{CA: ca, Certificate: cert, Key: keyFile},
+		RunAs:                process.Identity{UID: uid, GID: gid},
 		SMTP: email.Config{
 			Address:    optional("IDENTITY_SMTP_ADDR", "mailpit:1025"),
 			ServerName: optional("IDENTITY_SMTP_SERVER_NAME", "mailpit"),
 			Username:   os.Getenv("IDENTITY_SMTP_USERNAME"), Password: smtpPassword,
-			From:      optional("IDENTITY_SMTP_FROM", "noreply@raglibrarian.local"),
-			VerifyURL: optional("IDENTITY_VERIFY_URL", "http://localhost:5173/verify-email"),
-			StartTLS:  optional("IDENTITY_SMTP_STARTTLS", "false") == "true",
+			From:             optional("IDENTITY_SMTP_FROM", "noreply@raglibrarian.local"),
+			VerifyURL:        optional("IDENTITY_VERIFY_URL", "http://localhost:5173/verify-email"),
+			StartTLS:         optional("IDENTITY_SMTP_STARTTLS", "false") == "true",
+			OperationTimeout: smtpOperationTimeout,
 		},
 	}, nil
 }
@@ -193,4 +324,16 @@ func optional(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func durationOptional(key string, fallback time.Duration) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration", key)
+	}
+	return parsed, nil
 }
