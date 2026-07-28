@@ -116,7 +116,7 @@ func TestRouterRequiresSessionValidatorAndAppliesSecurityHeaders(t *testing.T) {
 	hub := handler.NewPendingHub(10)
 	router := edgeapi.NewRouter(
 		handler.NewQueryHandler(fakeRetrieval{}, 0.6),
-		handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: true}),
+		handler.NewAuthHandler(identity, diagnostics, testCookieConfig(true)),
 		handler.NewHealthHandler(identity),
 		handler.NewSetupHandler(identity),
 		handler.NewAdminHandler(identity, hub),
@@ -142,7 +142,7 @@ func TestRouterPanicsWithoutSessionValidator(t *testing.T) {
 	diagnostics := diagnostic.New(log)
 	identity := fakeIdentity{}
 	assert.Panics(t, func() {
-		edgeapi.NewRouter(handler.NewQueryHandler(fakeRetrieval{}, 0.6), handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{}), handler.NewHealthHandler(identity), handler.NewSetupHandler(identity), handler.NewAdminHandler(identity, handler.NewPendingHub(10)), verifier, nil, diagnostics, testRouterConfig())
+		edgeapi.NewRouter(handler.NewQueryHandler(fakeRetrieval{}, 0.6), handler.NewAuthHandler(identity, diagnostics, testCookieConfig(false)), handler.NewHealthHandler(identity), handler.NewSetupHandler(identity), handler.NewAdminHandler(identity, handler.NewPendingHub(10)), verifier, nil, diagnostics, testRouterConfig())
 	})
 }
 
@@ -191,7 +191,7 @@ func TestQueryRouteRateLimitsTrustedPrincipalBeforeRetrieval(t *testing.T) {
 	retrieval := &countingRetrieval{}
 	router := edgeapi.NewRouter(
 		handler.NewQueryHandler(retrieval, 0.6),
-		handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: true}),
+		handler.NewAuthHandler(identity, diagnostics, testCookieConfig(true)),
 		handler.NewHealthHandler(identity),
 		handler.NewSetupHandler(identity),
 		handler.NewAdminHandler(identity, handler.NewPendingHub(10)),
@@ -222,7 +222,7 @@ func TestBookUploadRateLimitUsesRouterConfiguration(t *testing.T) {
 	catalog := &countingCatalog{}
 	router := edgeapi.NewRouter(
 		handler.NewQueryHandler(fakeRetrieval{}, 0.6),
-		handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: true}),
+		handler.NewAuthHandler(identity, diagnostics, testCookieConfig(true)),
 		handler.NewHealthHandler(identity),
 		handler.NewSetupHandler(identity),
 		handler.NewAdminHandler(identity, handler.NewPendingHub(10)),
@@ -276,7 +276,7 @@ func newTestRouter(t *testing.T, identity *passwordResetIdentity) http.Handler {
 	diagnostics := diagnostic.New(zaptest.NewLogger(t))
 	return edgeapi.NewRouter(
 		handler.NewQueryHandler(fakeRetrieval{}, 0.6),
-		handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: true}),
+		handler.NewAuthHandler(identity, diagnostics, testCookieConfig(true)),
 		handler.NewHealthHandler(identity),
 		handler.NewSetupHandler(identity),
 		handler.NewAdminHandler(identity, handler.NewPendingHub(10)),
@@ -321,6 +321,13 @@ func testRouterConfig() edgeapi.RouterConfig {
 		BookUploadRateWindow:                 time.Hour,
 		BookUploadRateMaxKeys:                10000,
 		BookUploadDeadline:                   2*time.Minute + 10*time.Second,
+	}
+}
+
+func testCookieConfig(secure bool) handler.CookieConfig {
+	return handler.CookieConfig{
+		Secure:              secure,
+		RefreshCookieMaxAge: 30 * 24 * time.Hour,
 	}
 }
 
