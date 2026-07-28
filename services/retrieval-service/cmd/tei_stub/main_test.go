@@ -16,7 +16,7 @@ func TestEmbedReturnsDeterministicNormalizedVectors(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/embed", body)
 	response := httptest.NewRecorder()
 
-	embed(response, request)
+	embed(1<<20).ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("embed status = %d, want 200", response.Code)
@@ -40,7 +40,7 @@ func TestEmbedRejectsEmptyInput(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/embed", bytes.NewBufferString(`{"inputs":[""]}`))
 	response := httptest.NewRecorder()
 
-	embed(response, request)
+	embed(1<<20).ServeHTTP(response, request)
 
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("embed status = %d, want 400", response.Code)
