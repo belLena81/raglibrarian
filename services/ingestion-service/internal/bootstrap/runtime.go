@@ -71,7 +71,11 @@ func NewDispatcher(ctx context.Context, cfg config.DispatcherConfig) (*Dispatche
 	}
 	brokerPolicy := transport.BrokerPolicy{DialTimeout: cfg.RabbitDialTimeout, Heartbeat: cfg.RabbitHeartbeat, PublishTimeout: cfg.RabbitPublishTimeout}
 	publisher := transport.NewReconnectingPublisher(cfg.RabbitURI, brokerPolicy)
-	outbox, err := transport.NewOutboxWorker(repository.NewPostgres(pool), publisher, cfg.ResultExchange, cfg.OutboxInterval, transport.OutboxPolicy{Lease: cfg.OutboxLease, PublishTimeout: cfg.RabbitPublishTimeout}, diagnostic.New(nil))
+	outbox, err := transport.NewOutboxWorker(repository.NewPostgres(pool, repository.Policy{
+		RetryDispatchDelay:   cfg.RetryDispatchDelay,
+		OutboxRetryBaseDelay: cfg.OutboxRetryBaseDelay,
+		OutboxRetryMaxDelay:  cfg.OutboxRetryMaxDelay,
+	}), publisher, cfg.ResultExchange, cfg.OutboxInterval, transport.OutboxPolicy{Lease: cfg.OutboxLease, PublishTimeout: cfg.RabbitPublishTimeout}, diagnostic.New(nil))
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -117,7 +121,11 @@ func NewCleanup(ctx context.Context, cfg config.CleanupConfig) (*CleanupRuntime,
 		pool.Close()
 		return nil, err
 	}
-	cleaner, err := artifact.NewCleaner(repository.NewPostgres(pool), artifactStore, cfg.CleanupInterval, cfg.OrphanGracePeriod)
+	cleaner, err := artifact.NewCleaner(repository.NewPostgres(pool, repository.Policy{
+		RetryDispatchDelay:   cfg.RetryDispatchDelay,
+		OutboxRetryBaseDelay: cfg.OutboxRetryBaseDelay,
+		OutboxRetryMaxDelay:  cfg.OutboxRetryMaxDelay,
+	}), artifactStore, cfg.CleanupInterval, cfg.OrphanGracePeriod)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -219,7 +227,11 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		cleanup()
 		return nil, errors.New("worker identity unavailable")
 	}
-	repo := repository.NewPostgresWithProfile(pool, chunkPolicy)
+	repo := repository.NewPostgresWithProfile(pool, chunkPolicy, repository.Policy{
+		RetryDispatchDelay:   cfg.RetryDispatchDelay,
+		OutboxRetryBaseDelay: cfg.OutboxRetryBaseDelay,
+		OutboxRetryMaxDelay:  cfg.OutboxRetryMaxDelay,
+	})
 	recorder := &metrics.Recorder{}
 	diagnosticsLogger := diagnostic.New(nil)
 	pdfExtractor := extractor.NewPopplerWithOptions(

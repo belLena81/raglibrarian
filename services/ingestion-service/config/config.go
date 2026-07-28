@@ -38,6 +38,7 @@ type Config struct {
 	ProcessingTimeout, PersistenceTimeout, ArtifactAbortTimeout, JobLease       time.Duration
 	FirstRetryDelay, SecondRetryDelay, SubsequentRetryDelay, OutboxInterval     time.Duration
 	RabbitDialTimeout, RabbitHeartbeat, RabbitPublishTimeout, OutboxLease       time.Duration
+	RetryDispatchDelay, OutboxRetryBaseDelay, OutboxRetryMaxDelay               time.Duration
 	CleanupInterval, OrphanGracePeriod                                          time.Duration
 	WorkerReadinessProbeTimeout, WorkerReadinessRefreshInterval                 time.Duration
 	WorkerMetricsReadHeaderTimeout, WorkerMetricsShutdownTimeout                time.Duration
@@ -53,6 +54,8 @@ type CleanupConfig struct {
 	ArtifactBucket, MinIOCAFile                        string
 	AWSRegion, KMSKeyARN                               string
 	MinIOInsecure                                      bool
+	RetryDispatchDelay, OutboxRetryBaseDelay           time.Duration
+	OutboxRetryMaxDelay                                time.Duration
 	CleanupInterval, OrphanGracePeriod                 time.Duration
 }
 
@@ -68,7 +71,10 @@ type DispatcherConfig struct {
 	RabbitDialTimeout,
 	RabbitHeartbeat,
 	RabbitPublishTimeout,
-	OutboxLease time.Duration
+	OutboxLease,
+	RetryDispatchDelay,
+	OutboxRetryBaseDelay,
+	OutboxRetryMaxDelay time.Duration
 	RunAs process.Identity
 }
 
@@ -101,6 +107,18 @@ func loadLocalDispatcher() (DispatcherConfig, error) {
 	if err != nil {
 		return DispatcherConfig{}, err
 	}
+	retryDispatchDelay, err := boundedDuration("INGESTION_RETRY_DISPATCH_DELAY", time.Second, time.Minute, time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	outboxRetryBaseDelay, err := boundedDuration("INGESTION_OUTBOX_RETRY_BASE_DELAY", time.Second, time.Minute, time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	outboxRetryMaxDelay, err := boundedDuration("INGESTION_OUTBOX_RETRY_MAX_DELAY", time.Second, 10*time.Minute, 5*time.Minute)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
 	uid, err := boundedInt("RUN_AS_UID", 65532, 1<<30)
 	if err != nil {
 		return DispatcherConfig{}, err
@@ -119,6 +137,9 @@ func loadLocalDispatcher() (DispatcherConfig, error) {
 		RabbitHeartbeat:      rabbitHeartbeat,
 		RabbitPublishTimeout: rabbitPublishTimeout,
 		OutboxLease:          outboxLease,
+		RetryDispatchDelay:   retryDispatchDelay,
+		OutboxRetryBaseDelay: outboxRetryBaseDelay,
+		OutboxRetryMaxDelay:  outboxRetryMaxDelay,
 		RunAs:                process.Identity{UID: uid, GID: gid},
 	}, nil
 }
@@ -163,17 +184,32 @@ func loadLocalCleanup() (CleanupConfig, error) {
 	if err != nil {
 		return CleanupConfig{}, err
 	}
+	retryDispatchDelay, err := boundedDuration("INGESTION_RETRY_DISPATCH_DELAY", time.Second, time.Minute, time.Second)
+	if err != nil {
+		return CleanupConfig{}, err
+	}
+	outboxRetryBaseDelay, err := boundedDuration("INGESTION_OUTBOX_RETRY_BASE_DELAY", time.Second, time.Minute, time.Second)
+	if err != nil {
+		return CleanupConfig{}, err
+	}
+	outboxRetryMaxDelay, err := boundedDuration("INGESTION_OUTBOX_RETRY_MAX_DELAY", time.Second, 10*time.Minute, 5*time.Minute)
+	if err != nil {
+		return CleanupConfig{}, err
+	}
 	return CleanupConfig{
-		RuntimeBackend:    "local",
-		DSN:               dsn,
-		MinIOEndpoint:     endpoint,
-		MinIOAccessKey:    accessKey,
-		MinIOSecretKey:    secretKey,
-		ArtifactBucket:    artifactBucket,
-		MinIOCAFile:       caFile,
-		MinIOInsecure:     insecure,
-		CleanupInterval:   cleanupInterval,
-		OrphanGracePeriod: orphanGracePeriod,
+		RuntimeBackend:       "local",
+		DSN:                  dsn,
+		MinIOEndpoint:        endpoint,
+		MinIOAccessKey:       accessKey,
+		MinIOSecretKey:       secretKey,
+		ArtifactBucket:       artifactBucket,
+		MinIOCAFile:          caFile,
+		MinIOInsecure:        insecure,
+		RetryDispatchDelay:   retryDispatchDelay,
+		OutboxRetryBaseDelay: outboxRetryBaseDelay,
+		OutboxRetryMaxDelay:  outboxRetryMaxDelay,
+		CleanupInterval:      cleanupInterval,
+		OrphanGracePeriod:    orphanGracePeriod,
 	}, nil
 }
 
@@ -340,6 +376,18 @@ func loadLocal() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	retryDispatchDelay, err := boundedDuration("INGESTION_RETRY_DISPATCH_DELAY", time.Second, time.Minute, time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	outboxRetryBaseDelay, err := boundedDuration("INGESTION_OUTBOX_RETRY_BASE_DELAY", time.Second, time.Minute, time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	outboxRetryMaxDelay, err := boundedDuration("INGESTION_OUTBOX_RETRY_MAX_DELAY", time.Second, 10*time.Minute, 5*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
 	cleanupInterval, err := boundedDuration("INGESTION_CLEANUP_INTERVAL", time.Minute, 24*time.Hour, 15*time.Minute)
 	if err != nil {
 		return Config{}, err
@@ -428,6 +476,9 @@ func loadLocal() (Config, error) {
 		RabbitHeartbeat:                rabbitHeartbeat,
 		RabbitPublishTimeout:           rabbitPublishTimeout,
 		OutboxLease:                    outboxLease,
+		RetryDispatchDelay:             retryDispatchDelay,
+		OutboxRetryBaseDelay:           outboxRetryBaseDelay,
+		OutboxRetryMaxDelay:            outboxRetryMaxDelay,
 		CleanupInterval:                cleanupInterval,
 		OrphanGracePeriod:              orphanGracePeriod,
 		WorkerReadinessProbeTimeout:    workerReadinessProbeTimeout,

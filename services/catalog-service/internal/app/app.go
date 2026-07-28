@@ -88,7 +88,10 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		default:
 		}
 	}
-	bookRepository := repository.NewPostgresBookRepository(pool, wakeOutbox)
+	bookRepository := repository.NewPostgresBookRepository(pool, repository.Policy{
+		OutboxRetryBaseDelay: cfg.OutboxRetryBaseDelay,
+		OutboxRetryMaxDelay:  cfg.OutboxRetryMaxDelay,
+	}, wakeOutbox)
 	objects := repository.NewMinIOObjectStore(minioClient, cfg.MinIOBucket)
 	service := catalog.NewServiceWithOptions(bookRepository, objects, catalog.ServiceOptions{
 		MaxBytes:                 cfg.MaxUploadBytes,

@@ -57,7 +57,7 @@ func TestOutboxPublishesAcceptedUploadAfterBrokerRecovery(t *testing.T) {
 		OccurredAt:  now,
 		Payload:     payload,
 	}
-	store := repository.NewPostgresBookRepository(pool)
+	store := repository.NewPostgresBookRepository(pool, repository.Policy{OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute})
 	if err = store.Create(ctx, book, event); err != nil {
 		t.Fatalf("persist accepted upload: %v", err)
 	}

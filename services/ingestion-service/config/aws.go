@@ -210,6 +210,18 @@ func loadAWS(ctx context.Context) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	retryDispatchDelay, err := boundedDuration("INGESTION_RETRY_DISPATCH_DELAY", time.Second, time.Minute, time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	outboxRetryBaseDelay, err := boundedDuration("INGESTION_OUTBOX_RETRY_BASE_DELAY", time.Second, time.Minute, time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	outboxRetryMaxDelay, err := boundedDuration("INGESTION_OUTBOX_RETRY_MAX_DELAY", time.Second, 10*time.Minute, 5*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
 	cleanupInterval, err := boundedDuration("INGESTION_CLEANUP_INTERVAL", time.Minute, 24*time.Hour, 15*time.Minute)
 	if err != nil {
 		return Config{}, err
@@ -285,6 +297,9 @@ func loadAWS(ctx context.Context) (Config, error) {
 		RabbitHeartbeat:                rabbitHeartbeat,
 		RabbitPublishTimeout:           rabbitPublishTimeout,
 		OutboxLease:                    outboxLease,
+		RetryDispatchDelay:             retryDispatchDelay,
+		OutboxRetryBaseDelay:           outboxRetryBaseDelay,
+		OutboxRetryMaxDelay:            outboxRetryMaxDelay,
 		CleanupInterval:                cleanupInterval,
 		OrphanGracePeriod:              grace,
 		WorkerReadinessProbeTimeout:    workerReadinessProbeTimeout,

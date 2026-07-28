@@ -21,6 +21,13 @@ type Postgres struct {
 	pool    *pgxpool.Pool
 	wake    chan struct{}
 	profile chunking.Policy
+	policy  Policy
+}
+
+type Policy struct {
+	RetryDispatchDelay   time.Duration
+	OutboxRetryBaseDelay time.Duration
+	OutboxRetryMaxDelay  time.Duration
 }
 
 type PendingOutboxEvent struct {
@@ -36,24 +43,27 @@ type PendingRetryDispatch struct {
 	DispatchAfter  time.Time
 }
 
-func NewPostgres(pool *pgxpool.Pool) *Postgres {
+func NewPostgres(pool *pgxpool.Pool, policy Policy) *Postgres {
 	return NewPostgresWithProfile(pool, chunking.Policy{
 		MaximumTokens: chunking.DefaultMaximumTokens,
 		OverlapTokens: chunking.DefaultOverlapTokens,
 		TargetPages:   chunking.DefaultTargetPages,
 		MaximumPages:  chunking.DefaultMaximumPages,
 		MaximumChunks: 1,
-	})
+	}, policy)
 }
 
-func NewPostgresWithProfile(pool *pgxpool.Pool, profile chunking.Policy) *Postgres {
+func NewPostgresWithProfile(pool *pgxpool.Pool, profile chunking.Policy, policy Policy) *Postgres {
 	if pool == nil {
 		panic("ingestion repository: pool is required")
 	}
 	if profile.MaximumTokens < 1 || profile.OverlapTokens < 0 || profile.OverlapTokens >= profile.MaximumTokens {
 		panic("ingestion repository: invalid chunking profile")
 	}
-	return &Postgres{pool: pool, wake: make(chan struct{}, 1), profile: profile}
+	if policy.RetryDispatchDelay <= 0 || policy.OutboxRetryBaseDelay <= 0 || policy.OutboxRetryMaxDelay < policy.OutboxRetryBaseDelay {
+		panic("ingestion repository: invalid retry policy")
+	}
+	return &Postgres{pool: pool, wake: make(chan struct{}, 1), profile: profile, policy: policy}
 }
 
 func (r *Postgres) Wake() <-chan struct{} { return r.wake }
@@ -515,7 +525,7 @@ func (r *Postgres) MarkRetryPublished(ctx context.Context, jobID string, attempt
 }
 
 func (r *Postgres) RetryRetryDispatch(ctx context.Context, jobID string, attempt int, now time.Time) error {
-	_, err := r.pool.Exec(ctx, `UPDATE ingestion.retry_dispatches SET attempts=attempts+1,next_attempt_at=$3,leased_until=NULL WHERE job_id=$1 AND attempt=$2`, jobID, attempt, now.Add(time.Second))
+	_, err := r.pool.Exec(ctx, `UPDATE ingestion.retry_dispatches SET attempts=attempts+1,next_attempt_at=$3,leased_until=NULL WHERE job_id=$1 AND attempt=$2`, jobID, attempt, now.Add(r.policy.RetryDispatchDelay))
 	return err
 }
 
@@ -525,9 +535,9 @@ func (r *Postgres) MarkPublished(ctx context.Context, id string, now time.Time) 
 }
 
 func (r *Postgres) RetryOutbox(ctx context.Context, id string, now time.Time, attempt int) error {
-	delay := time.Second << min(attempt, 8)
-	if delay > 5*time.Minute {
-		delay = 5 * time.Minute
+	delay := r.policy.OutboxRetryBaseDelay << min(attempt, 8)
+	if delay > r.policy.OutboxRetryMaxDelay {
+		delay = r.policy.OutboxRetryMaxDelay
 	}
 	_, err := r.pool.Exec(ctx, `UPDATE ingestion.outbox SET attempts=attempts+1,next_attempt_at=$2,leased_until=NULL WHERE event_id=$1`, id, now.Add(delay))
 	return err

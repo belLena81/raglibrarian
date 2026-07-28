@@ -116,7 +116,7 @@ func TestRetryAdvancesPendingActiveLeaseRecoveryDispatch(t *testing.T) {
 	if err = job.ScheduleRetry(claim.Owner, retryAt, now); err != nil {
 		t.Fatal(err)
 	}
-	if err = NewPostgres(pool).Retry(ctx, job, claim); err != nil {
+	if err = NewPostgres(pool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute}).Retry(ctx, job, claim); err != nil {
 		t.Fatalf("schedule real retry: %v", err)
 	}
 
@@ -201,7 +201,7 @@ func TestDeletionBarrierWaitsForActiveLeaseAndCleanupRoleCanFinalize(t *testing.
 	ack := application.OutboxEvent{
 		ID: ackID, Type: "ingestion.book.artifacts-deleted.v1", Payload: []byte{1}, OccurredAt: now,
 	}
-	if err = NewPostgres(runtimePool).AcceptDeletion(ctx, deletion, sourceSHA256, ack, now); err != nil {
+	if err = NewPostgres(runtimePool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute}).AcceptDeletion(ctx, deletion, sourceSHA256, ack, now); err != nil {
 		t.Fatalf("accept deletion: %v", err)
 	}
 
@@ -212,7 +212,7 @@ func TestDeletionBarrierWaitsForActiveLeaseAndCleanupRoleCanFinalize(t *testing.
 	if !cleanupAfter.Equal(leaseExpiresAt) {
 		t.Fatalf("cleanup_after = %v, want active lease %v", cleanupAfter, leaseExpiresAt)
 	}
-	claimed, err := NewPostgres(runtimePool).ClaimDeletionArtifacts(ctx, now, time.Minute, 10)
+	claimed, err := NewPostgres(runtimePool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute}).ClaimDeletionArtifacts(ctx, now, time.Minute, 10)
 	if err != nil {
 		t.Fatalf("claim before lease: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestDeletionBarrierWaitsForActiveLeaseAndCleanupRoleCanFinalize(t *testing.
 		t.Fatal(err)
 	}
 	claim := application.ClaimToken{Owner: "worker-1", Attempt: 1, ExpiresAt: leaseExpiresAt}
-	if err = NewPostgres(runtimePool).Complete(ctx, job, claim, artifact.Result{}, application.OutboxEvent{}); err != nil {
+	if err = NewPostgres(runtimePool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute}).Complete(ctx, job, claim, artifact.Result{}, application.OutboxEvent{}); err != nil {
 		t.Fatalf("fenced completion reschedule: %v", err)
 	}
 	if err = runtimePool.QueryRow(ctx, `SELECT cleanup_after FROM ingestion.artifact_sets WHERE job_id=$1`, jobID).Scan(&cleanupAfter); err != nil {
@@ -250,12 +250,12 @@ func TestDeletionBarrierWaitsForActiveLeaseAndCleanupRoleCanFinalize(t *testing.
 	if !cleanupAfter.Equal(finalizedAt) {
 		t.Fatalf("cleanup_after = %v, want finalized time %v", cleanupAfter, finalizedAt)
 	}
-	claimed, err = NewPostgres(runtimePool).ClaimDeletionArtifacts(ctx, finalizedAt, time.Minute, 10)
+	claimed, err = NewPostgres(runtimePool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute}).ClaimDeletionArtifacts(ctx, finalizedAt, time.Minute, 10)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("claim after fenced final write = (%#v, %v), want one artifact", claimed, err)
 	}
 
-	if err = NewPostgres(cleanupPool).CompleteDeletionArtifact(ctx, eventID, jobID, finalizedAt); err != nil {
+	if err = NewPostgres(cleanupPool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute}).CompleteDeletionArtifact(ctx, eventID, jobID, finalizedAt); err != nil {
 		t.Fatalf("cleanup role finalize deletion: %v", err)
 	}
 	var outboxCount int
@@ -326,7 +326,7 @@ func TestAcceptRollsBackEarlierWritesWhenOutboxInsertFails(t *testing.T) {
 		_, _ = pool.Exec(cleanupCtx, "DELETE FROM ingestion.lifecycle_fences WHERE book_id=$1", bookID)
 	})
 
-	accepted, _, acceptErr := NewPostgres(pool).Accept(ctx, event, sourceSHA256, proposed, application.OutboxEvent{
+	accepted, _, acceptErr := NewPostgres(pool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute}).Accept(ctx, event, sourceSHA256, proposed, application.OutboxEvent{
 		ID: startedID, Type: "ingestion.book.processing-started.v1", Payload: []byte("started"), OccurredAt: now,
 	})
 	if acceptErr == nil || accepted.ID() != proposed.ID() {

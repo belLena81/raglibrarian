@@ -69,7 +69,7 @@ func TestFinalDeletionAcknowledgementEmitsAtomicStatusProjection(t *testing.T) {
 		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.books WHERE id=$1", bookID)
 	})
 
-	repository := NewPostgresBookRepository(pool)
+	repository := NewPostgresBookRepository(pool, Policy{OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute})
 	book, changed, err := repository.ApplyLifecycleAck(ctx, catalog.LifecycleAck{
 		EventID: ackID, EventType: "retrieval.book.index-deleted.v1", BookID: bookID,
 		CommandID: commandID, LifecycleVersion: 2, PayloadSHA256: sha256.Sum256([]byte("ack " + id)),
@@ -172,7 +172,7 @@ func TestCreateRollsBackBookWhenOutboxInsertFails(t *testing.T) {
 		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.books WHERE id=$1", bookID)
 	})
 
-	repository := NewPostgresBookRepository(pool)
+	repository := NewPostgresBookRepository(pool, Policy{OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute})
 	err = repository.Create(ctx, book,
 		catalog.OutboxEvent{ID: bookEventID, Type: "catalog.book.uploaded.v1", AggregateID: bookID, Sequence: 0, Payload: []byte("upload"), OccurredAt: now},
 		catalog.OutboxEvent{ID: statusEventID, Type: "catalog.book.processing-status-changed.v1", AggregateID: bookID, Sequence: 1, Payload: []byte("status"), OccurredAt: now},
@@ -240,7 +240,7 @@ func TestApplyRetrievalTerminalEventIsAtomicAndIdempotent(t *testing.T) {
 			OccurredAt: now,
 		},
 	}
-	repository := NewPostgresBookRepository(pool)
+	repository := NewPostgresBookRepository(pool, Policy{OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute})
 	book, changed, err := repository.ApplyProcessingEvent(ctx, event, statusEventID, now)
 	if err != nil || !changed || book.ProcessingStatus != catalog.BookStatusIndexed ||
 		book.ProcessingStage != catalog.BookStageIndexed || book.ProcessingVersion != 3 {
@@ -321,7 +321,7 @@ func TestLateChunksReadyPersistsManifestForIndexedBook(t *testing.T) {
 			OccurredAt: now,
 		},
 	}
-	repository := NewPostgresBookRepository(pool)
+	repository := NewPostgresBookRepository(pool, Policy{OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute})
 	book, changed, err := repository.ApplyProcessingEvent(ctx, event, statusEventID, now)
 	if err != nil {
 		t.Fatalf("ApplyProcessingEvent() error = %v", err)
@@ -379,7 +379,7 @@ func TestListPaginatesBooksWithSharedTimestamp(t *testing.T) {
 		}
 	})
 
-	repository := NewPostgresBookRepository(pool)
+	repository := NewPostgresBookRepository(pool, Policy{OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute})
 	firstPage, nextPageToken, err := repository.List(ctx, 2, "")
 	if err != nil {
 		t.Fatalf("list first page: %v", err)
@@ -420,7 +420,7 @@ func TestOutboxBacklogScansFractionalOldestAge(t *testing.T) {
 	eventID := "backlog-" + randomIntegrationID(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 
-	repository := NewPostgresBookRepository(pool)
+	repository := NewPostgresBookRepository(pool, Policy{OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute})
 	baseline, err := repository.OutboxBacklog(ctx, now)
 	if err != nil {
 		t.Fatalf("read outbox backlog baseline: %v", err)
@@ -496,7 +496,7 @@ func TestClaimOutboxDoesNotOvertakeAggregateSequence(t *testing.T) {
 		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.outbox WHERE aggregate_id=$1", aggregateID)
 	})
 
-	repository := NewPostgresBookRepository(pool)
+	repository := NewPostgresBookRepository(pool, Policy{OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute})
 	claimed, err := repository.ClaimOutbox(ctx, now, 30*time.Second)
 	if err != nil {
 		t.Fatalf("claim upload: %v", err)

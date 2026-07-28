@@ -150,7 +150,7 @@ func TestLoadAppliesOutboxPolicyDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.OutboxPollInterval != time.Second || cfg.OutboxDrainBudget != 250*time.Millisecond ||
-		cfg.OutboxLease != 30*time.Second || cfg.OutboxPublishTimeout != 5*time.Second {
+		cfg.OutboxLease != 30*time.Second || cfg.OutboxRetryBaseDelay != time.Second || cfg.OutboxRetryMaxDelay != 5*time.Minute || cfg.OutboxPublishTimeout != 5*time.Second {
 		t.Fatalf("unexpected outbox policy: %#v", cfg)
 	}
 }
@@ -160,6 +160,8 @@ func TestLoadParsesOutboxPolicy(t *testing.T) {
 	t.Setenv("CATALOG_OUTBOX_POLL_INTERVAL", "2s")
 	t.Setenv("CATALOG_OUTBOX_DRAIN_BUDGET", "500ms")
 	t.Setenv("CATALOG_OUTBOX_LEASE", "45s")
+	t.Setenv("CATALOG_OUTBOX_RETRY_BASE_DELAY", "2s")
+	t.Setenv("CATALOG_OUTBOX_RETRY_MAX_DELAY", "6m")
 	t.Setenv("CATALOG_OUTBOX_PUBLISH_TIMEOUT", "8s")
 
 	cfg, err := Load()
@@ -167,7 +169,7 @@ func TestLoadParsesOutboxPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.OutboxPollInterval != 2*time.Second || cfg.OutboxDrainBudget != 500*time.Millisecond ||
-		cfg.OutboxLease != 45*time.Second || cfg.OutboxPublishTimeout != 8*time.Second {
+		cfg.OutboxLease != 45*time.Second || cfg.OutboxRetryBaseDelay != 2*time.Second || cfg.OutboxRetryMaxDelay != 6*time.Minute || cfg.OutboxPublishTimeout != 8*time.Second {
 		t.Fatalf("unexpected outbox policy: %#v", cfg)
 	}
 }

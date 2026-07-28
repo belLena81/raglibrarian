@@ -25,7 +25,13 @@ import (
 // PostgresBookRepository persists a book and its outbox record in one transaction.
 type PostgresBookRepository struct {
 	pool       *pgxpool.Pool
+	policy     Policy
 	wakeOutbox func()
+}
+
+type Policy struct {
+	OutboxRetryBaseDelay time.Duration
+	OutboxRetryMaxDelay  time.Duration
 }
 
 // PendingOutboxEvent is a leased event awaiting broker confirmation.
@@ -42,15 +48,18 @@ type OutboxBacklog struct {
 	OldestAgeSecond int64
 }
 
-func NewPostgresBookRepository(pool *pgxpool.Pool, wakeOutbox ...func()) *PostgresBookRepository {
+func NewPostgresBookRepository(pool *pgxpool.Pool, policy Policy, wakeOutbox ...func()) *PostgresBookRepository {
 	if pool == nil {
 		panic("repository: pgx pool is required")
+	}
+	if policy.OutboxRetryBaseDelay <= 0 || policy.OutboxRetryMaxDelay < policy.OutboxRetryBaseDelay {
+		panic("repository: invalid outbox retry policy")
 	}
 	wake := func() {}
 	if len(wakeOutbox) > 0 && wakeOutbox[0] != nil {
 		wake = wakeOutbox[0]
 	}
-	return &PostgresBookRepository{pool: pool, wakeOutbox: wake}
+	return &PostgresBookRepository{pool: pool, policy: policy, wakeOutbox: wake}
 }
 
 func (r *PostgresBookRepository) Create(ctx context.Context, book catalog.Book, events ...catalog.OutboxEvent) error {
@@ -681,9 +690,9 @@ func (r *PostgresBookRepository) MarkPublished(ctx context.Context, id string, n
 }
 
 func (r *PostgresBookRepository) RetryOutbox(ctx context.Context, id string, now time.Time, attempt int) error {
-	delay := time.Second << min(attempt, 8)
-	if delay > 5*time.Minute {
-		delay = 5 * time.Minute
+	delay := r.policy.OutboxRetryBaseDelay << min(attempt, 8)
+	if delay > r.policy.OutboxRetryMaxDelay {
+		delay = r.policy.OutboxRetryMaxDelay
 	}
 	_, err := r.pool.Exec(ctx, `UPDATE catalog.outbox SET attempts=attempts+1,next_attempt_at=$2,leased_until=NULL WHERE event_id=$1`, id, now.Add(delay))
 	return err
