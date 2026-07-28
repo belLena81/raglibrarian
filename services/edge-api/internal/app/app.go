@@ -111,7 +111,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	}
 	defer func() { _ = answerConnection.Close() }()
 	identity := identityclient.New(identityv1.NewIdentityServiceClient(connection), grpc_health_v1.NewHealthClient(connection), identityclient.Policy{
-		RPCDeadline: cfg.IdentityRPCDeadline,
+		RPCDeadline: cfg.IdentityRPCDeadline, PendingPageMaxSize: cfg.AdminPendingPageMaxSize,
 	})
 	catalog := catalogclient.New(catalogv1.NewCatalogServiceClient(catalogConnection), catalogclient.Policy{
 		ReadinessTimeout: cfg.CatalogReadinessTimeout,
@@ -148,6 +148,8 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		ListTimeout:      cfg.BooksListTimeout,
 		PreviewTimeout:   cfg.CatalogPreviewDeadline,
 		LifecycleTimeout: cfg.BooksLifecycleTimeout,
+		ListPageMaxSize:  cfg.BooksPageMaxSize,
+		PageTokenMaxSize: cfg.BooksPageTokenMaxSize,
 	})
 	bookStatusHub := handler.NewBookStatusHub(cfg.BookStatusHubCapacity)
 	booksHandler.EnableEvents(handler.BookEventsConfig{
@@ -169,7 +171,10 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	})
 	setupHandler := handler.NewSetupHandler(identity)
 	hub := handler.NewPendingHub(cfg.PendingHubCapacity)
-	adminHandler := handler.NewAdminHandler(identity, hub)
+	adminHandler := handler.NewAdminHandler(identity, hub, handler.AdminPolicy{
+		PendingPageDefaultSize: cfg.AdminPendingPageDefaultSize,
+		PendingPageMaxSize:     cfg.AdminPendingPageMaxSize,
+	})
 	adminHandler.SetSSETiming(handler.SSEPolicy{
 		HeartbeatInterval:  cfg.SSEHeartbeatInterval,
 		RevalidateInterval: cfg.SSERevalidateInterval,

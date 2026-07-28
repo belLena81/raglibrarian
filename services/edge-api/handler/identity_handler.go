@@ -142,14 +142,20 @@ type AdminHandler struct {
 	identity AdminUseCase
 	hub      *PendingHub
 	timing   sseTiming
+	policy   AdminPolicy
+}
+
+type AdminPolicy struct {
+	PendingPageDefaultSize int
+	PendingPageMaxSize     int
 }
 
 // NewAdminHandler constructs an administrator handler with required dependencies.
-func NewAdminHandler(identity AdminUseCase, hub *PendingHub) *AdminHandler {
-	if identity == nil || hub == nil {
+func NewAdminHandler(identity AdminUseCase, hub *PendingHub, policy AdminPolicy) *AdminHandler {
+	if identity == nil || hub == nil || policy.PendingPageDefaultSize <= 0 || policy.PendingPageMaxSize < policy.PendingPageDefaultSize {
 		panic("handler: admin dependencies are required")
 	}
-	return &AdminHandler{identity: identity, hub: hub}
+	return &AdminHandler{identity: identity, hub: hub, policy: policy}
 }
 
 // SetSSETiming updates admin event stream timing policy.
@@ -164,10 +170,10 @@ func (h *AdminHandler) ListPending(w http.ResponseWriter, r *http.Request) {
 		writeIdentityError(w, r, http.StatusForbidden, "forbidden", "forbidden")
 		return
 	}
-	pageSize := 25
+	pageSize := h.policy.PendingPageDefaultSize
 	if raw := r.URL.Query().Get("page_size"); raw != "" {
 		value, err := strconv.Atoi(raw)
-		if err != nil || value < 1 || value > 100 {
+		if err != nil || value < 1 || value > h.policy.PendingPageMaxSize {
 			writeIdentityError(w, r, http.StatusBadRequest, "invalid_page", "invalid page")
 			return
 		}

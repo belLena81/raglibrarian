@@ -20,11 +20,13 @@ type Client struct {
 	rpc         identityv1.IdentityServiceClient
 	health      grpc_health_v1.HealthClient
 	rpcDeadline time.Duration
+	policy      Policy
 }
 
 // Policy defines runtime-tunable Identity RPC timing.
 type Policy struct {
-	RPCDeadline time.Duration
+	RPCDeadline        time.Duration
+	PendingPageMaxSize int
 }
 
 // New constructs a client with mandatory RPC and health dependencies.
@@ -34,6 +36,9 @@ func New(rpc identityv1.IdentityServiceClient, health grpc_health_v1.HealthClien
 	}
 	if policy.RPCDeadline <= 0 {
 		panic("identityclient: rpc deadline must be positive")
+	}
+	if policy.PendingPageMaxSize <= 0 {
+		panic("identityclient: pending page max size must be positive")
 	}
 	return &Client{rpc: rpc, health: health, rpcDeadline: policy.RPCDeadline}
 }
@@ -180,7 +185,7 @@ func (c *Client) BootstrapAdmin(ctx context.Context, name, email, password, code
 
 // ListPending returns one bounded page of librarians awaiting review.
 func (c *Client) ListPending(ctx context.Context, actor authflow.Principal, pageSize int, pageToken string) (authflow.PendingPage, error) {
-	if pageSize < 1 || pageSize > 100 {
+	if pageSize < 1 || pageSize > c.policy.PendingPageMaxSize {
 		return authflow.PendingPage{}, authflow.ErrInvalidRegistration
 	}
 	ctx, cancel := c.rpcContext(ctx)

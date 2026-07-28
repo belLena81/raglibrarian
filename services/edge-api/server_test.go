@@ -107,6 +107,13 @@ func (librarianIdentity) ValidateSession(_ context.Context, userID, sessionID st
 	return authflow.Principal{UserID: userID, SessionID: sessionID, Role: "librarian", Status: "active"}, nil
 }
 
+func testAdminPolicy() handler.AdminPolicy {
+	return handler.AdminPolicy{
+		PendingPageDefaultSize: 25,
+		PendingPageMaxSize:     100,
+	}
+}
+
 func TestRouterRequiresSessionValidatorAndAppliesSecurityHeaders(t *testing.T) {
 	verifier, err := testVerifier()
 	require.NoError(t, err)
@@ -119,7 +126,7 @@ func TestRouterRequiresSessionValidatorAndAppliesSecurityHeaders(t *testing.T) {
 		handler.NewAuthHandler(identity, diagnostics, testCookieConfig(true)),
 		handler.NewHealthHandler(identity),
 		handler.NewSetupHandler(identity),
-		handler.NewAdminHandler(identity, hub),
+		handler.NewAdminHandler(identity, hub, testAdminPolicy()),
 		verifier,
 		identity,
 		diagnostics,
@@ -142,7 +149,7 @@ func TestRouterPanicsWithoutSessionValidator(t *testing.T) {
 	diagnostics := diagnostic.New(log)
 	identity := fakeIdentity{}
 	assert.Panics(t, func() {
-		edgeapi.NewRouter(handler.NewQueryHandler(fakeRetrieval{}, 0.6, testQueryPolicy()), handler.NewAuthHandler(identity, diagnostics, testCookieConfig(false)), handler.NewHealthHandler(identity), handler.NewSetupHandler(identity), handler.NewAdminHandler(identity, handler.NewPendingHub(10)), verifier, nil, diagnostics, testRouterConfig())
+		edgeapi.NewRouter(handler.NewQueryHandler(fakeRetrieval{}, 0.6, testQueryPolicy()), handler.NewAuthHandler(identity, diagnostics, testCookieConfig(false)), handler.NewHealthHandler(identity), handler.NewSetupHandler(identity), handler.NewAdminHandler(identity, handler.NewPendingHub(10), testAdminPolicy()), verifier, nil, diagnostics, testRouterConfig())
 	})
 }
 
@@ -194,7 +201,7 @@ func TestQueryRouteRateLimitsTrustedPrincipalBeforeRetrieval(t *testing.T) {
 		handler.NewAuthHandler(identity, diagnostics, testCookieConfig(true)),
 		handler.NewHealthHandler(identity),
 		handler.NewSetupHandler(identity),
-		handler.NewAdminHandler(identity, handler.NewPendingHub(10)),
+		handler.NewAdminHandler(identity, handler.NewPendingHub(10), testAdminPolicy()),
 		verifier,
 		identity,
 		diagnostics,
@@ -225,7 +232,7 @@ func TestBookUploadRateLimitUsesRouterConfiguration(t *testing.T) {
 		handler.NewAuthHandler(identity, diagnostics, testCookieConfig(true)),
 		handler.NewHealthHandler(identity),
 		handler.NewSetupHandler(identity),
-		handler.NewAdminHandler(identity, handler.NewPendingHub(10)),
+		handler.NewAdminHandler(identity, handler.NewPendingHub(10), testAdminPolicy()),
 		verifier,
 		identity,
 		diagnostics,
@@ -239,6 +246,8 @@ func TestBookUploadRateLimitUsesRouterConfiguration(t *testing.T) {
 			ListTimeout:      6 * time.Second,
 			PreviewTimeout:   5 * time.Second,
 			LifecycleTimeout: 5 * time.Second,
+			ListPageMaxSize:  100,
+			PageTokenMaxSize: 512,
 		}),
 	)
 	token, err := signer.Issue(auth.Subject{UserID: "upload-user", Email: "librarian@example.test", Role: auth.RoleLibrarian, SessionID: "session-1"})
@@ -279,7 +288,7 @@ func newTestRouter(t *testing.T, identity *passwordResetIdentity) http.Handler {
 		handler.NewAuthHandler(identity, diagnostics, testCookieConfig(true)),
 		handler.NewHealthHandler(identity),
 		handler.NewSetupHandler(identity),
-		handler.NewAdminHandler(identity, handler.NewPendingHub(10)),
+		handler.NewAdminHandler(identity, handler.NewPendingHub(10), testAdminPolicy()),
 		verifier,
 		identity,
 		diagnostics,

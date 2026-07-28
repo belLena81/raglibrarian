@@ -51,6 +51,8 @@ type Config struct {
 	QueryRateLimit, QueryRateMaxKeys, QueryConcurrency                                int
 	QueryMaxQuestionLength, QueryMaxTags, QueryMaxTagLength, QueryMaxAuthorLength     int
 	QueryDefaultLimit, QueryMaxLimit                                                  int
+	AdminPendingPageDefaultSize, AdminPendingPageMaxSize                              int
+	BooksPageMaxSize, BooksPageTokenMaxSize                                           int
 	QueryRateWindow, QueryConcurrencyRetryAfter                                       time.Duration
 	AuthRegisterRateLimit, AuthRegisterRateMaxKeys                                    int
 	AuthVerifyEmailRateLimit, AuthVerifyEmailRateMaxKeys                              int
@@ -168,6 +170,22 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	queryMaxLimit, err := positiveInt("EDGE_QUERY_MAX_LIMIT", 20)
+	if err != nil {
+		return Config{}, err
+	}
+	adminPendingPageDefaultSize, err := positiveInt("EDGE_ADMIN_PENDING_PAGE_DEFAULT_SIZE", 25)
+	if err != nil {
+		return Config{}, err
+	}
+	adminPendingPageMaxSize, err := positiveInt("EDGE_ADMIN_PENDING_PAGE_MAX_SIZE", 100)
+	if err != nil {
+		return Config{}, err
+	}
+	booksPageMaxSize, err := positiveInt("EDGE_BOOKS_PAGE_MAX_SIZE", 100)
+	if err != nil {
+		return Config{}, err
+	}
+	booksPageTokenMaxSize, err := positiveInt("EDGE_BOOKS_PAGE_TOKEN_MAX_SIZE", 512)
 	if err != nil {
 		return Config{}, err
 	}
@@ -421,6 +439,9 @@ func Load() (Config, error) {
 	if queryDefaultLimit > queryMaxLimit {
 		return Config{}, fmt.Errorf("%w: EDGE_QUERY_DEFAULT_LIMIT must not exceed EDGE_QUERY_MAX_LIMIT", ErrQueryLimitConfiguration)
 	}
+	if adminPendingPageDefaultSize > adminPendingPageMaxSize {
+		return Config{}, fmt.Errorf("%w: EDGE_ADMIN_PENDING_PAGE_DEFAULT_SIZE must not exceed EDGE_ADMIN_PENDING_PAGE_MAX_SIZE", ErrQueryLimitConfiguration)
+	}
 	minimumEvidenceScore, err := boundedFloat("EDGE_MINIMUM_EVIDENCE_SCORE", 0.6, 0, 1)
 	if err != nil {
 		return Config{}, err
@@ -482,6 +503,10 @@ func Load() (Config, error) {
 		QueryMaxAuthorLength:                 queryMaxAuthorLength,
 		QueryDefaultLimit:                    queryDefaultLimit,
 		QueryMaxLimit:                        queryMaxLimit,
+		AdminPendingPageDefaultSize:          adminPendingPageDefaultSize,
+		AdminPendingPageMaxSize:              adminPendingPageMaxSize,
+		BooksPageMaxSize:                     booksPageMaxSize,
+		BooksPageTokenMaxSize:                booksPageTokenMaxSize,
 		AuthRegisterRateLimit:                authRegisterRateLimit,
 		AuthRegisterRateWindow:               authRegisterRateWindow,
 		AuthRegisterRateMaxKeys:              authRegisterRateMaxKeys,

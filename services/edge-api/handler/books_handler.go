@@ -83,6 +83,8 @@ type BooksPolicy struct {
 	ListTimeout      time.Duration
 	PreviewTimeout   time.Duration
 	LifecycleTimeout time.Duration
+	ListPageMaxSize  int
+	PageTokenMaxSize int
 }
 
 func NewBooksHandler(catalog BookCatalog, policy BooksPolicy) *BooksHandler {
@@ -90,7 +92,9 @@ func NewBooksHandler(catalog BookCatalog, policy BooksPolicy) *BooksHandler {
 		policy.UploadTimeout <= 0 ||
 		policy.ListTimeout <= 0 ||
 		policy.PreviewTimeout <= 0 ||
-		policy.LifecycleTimeout <= 0 {
+		policy.LifecycleTimeout <= 0 ||
+		policy.ListPageMaxSize <= 0 ||
+		policy.PageTokenMaxSize <= 0 {
 		panic("handler: book catalog is required")
 	}
 	return &BooksHandler{catalog: catalog, policy: policy}
@@ -147,12 +151,12 @@ func (h *BooksHandler) List(w http.ResponseWriter, r *http.Request) {
 	var err error
 	if sizeValue != "" {
 		size, err = strconv.Atoi(sizeValue)
-		if err != nil || size < 1 || size > 100 {
+		if err != nil || size < 1 || size > h.policy.ListPageMaxSize {
 			writeBookError(w, r, http.StatusBadRequest, "invalid_pagination", "invalid pagination")
 			return
 		}
 	}
-	if token := r.URL.Query().Get("page_token"); len(token) > 512 {
+	if token := r.URL.Query().Get("page_token"); len(token) > h.policy.PageTokenMaxSize {
 		writeBookError(w, r, http.StatusBadRequest, "invalid_pagination", "invalid pagination")
 		return
 	}

@@ -18,6 +18,11 @@ import (
 
 const testRPCDeadline = 3 * time.Second
 
+var testIdentityPolicy = Policy{
+	RPCDeadline:        testRPCDeadline,
+	PendingPageMaxSize: 100,
+}
+
 type fakeRPC struct {
 	identityv1.IdentityServiceClient
 	registerErr      error
@@ -59,7 +64,7 @@ func TestRegisterErrorMapping(t *testing.T) {
 }
 
 func TestRegisterNormalizesLegacyDuplicateAsAccepted(t *testing.T) {
-	client := New(&fakeRPC{registerErr: status.Error(codes.AlreadyExists, "legacy duplicate")}, fakeHealth{}, Policy{RPCDeadline: testRPCDeadline})
+	client := New(&fakeRPC{registerErr: status.Error(codes.AlreadyExists, "legacy duplicate")}, fakeHealth{}, testIdentityPolicy)
 	assert.NoError(t, client.Register(context.Background(), "Reader", "reader@example.test", "password-1234", "reader"))
 }
 
@@ -75,7 +80,7 @@ func TestPasswordResetClientPreservesOutages(t *testing.T) {
 	client := New(&fakeRPC{
 		verifyResetErr:   status.Error(codes.Unavailable, "database unavailable"),
 		completeResetErr: status.Error(codes.DeadlineExceeded, "database timeout"),
-	}, fakeHealth{}, Policy{RPCDeadline: testRPCDeadline})
+	}, fakeHealth{}, testIdentityPolicy)
 	_, _, err := client.VerifyPasswordReset(context.Background(), "reader@example.test", "123456")
 	assert.ErrorIs(t, err, authflow.ErrUnavailable)
 	assert.ErrorIs(t, client.CompletePasswordReset(context.Background(), "grant", "reader", "password-1234"), authflow.ErrUnavailable)
@@ -92,13 +97,13 @@ func TestCredentialErrorMapping(t *testing.T) {
 }
 
 func TestReadinessRequiresServingHealth(t *testing.T) {
-	client := New(&fakeRPC{}, fakeHealth{response: &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_SERVING}}, Policy{RPCDeadline: testRPCDeadline})
+	client := New(&fakeRPC{}, fakeHealth{response: &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_SERVING}}, testIdentityPolicy)
 	assert.NoError(t, client.CheckReady(context.Background()))
-	client = New(&fakeRPC{}, fakeHealth{err: errors.New("down")}, Policy{RPCDeadline: testRPCDeadline})
+	client = New(&fakeRPC{}, fakeHealth{err: errors.New("down")}, testIdentityPolicy)
 	assert.ErrorIs(t, client.CheckReady(context.Background()), authflow.ErrUnavailable)
 }
 
 func TestConstructorRequiresBothClients(t *testing.T) {
-	assert.Panics(t, func() { New(nil, fakeHealth{}, Policy{RPCDeadline: testRPCDeadline}) })
+	assert.Panics(t, func() { New(nil, fakeHealth{}, testIdentityPolicy) })
 	assert.Panics(t, func() { New(&fakeRPC{}, fakeHealth{}, Policy{}) })
 }

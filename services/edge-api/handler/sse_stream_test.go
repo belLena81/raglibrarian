@@ -31,6 +31,11 @@ type adminSSEUseCaseStub struct {
 	sseSessionStub
 }
 
+var testAdminPolicy = AdminPolicy{
+	PendingPageDefaultSize: 25,
+	PendingPageMaxSize:     100,
+}
+
 func (adminSSEUseCaseStub) ListPending(context.Context, authflow.Principal, int, string) (authflow.PendingPage, error) {
 	return authflow.PendingPage{}, nil
 }
@@ -102,7 +107,7 @@ func TestAdminEventsSurvivesServerAndFrameWriteDeadlines(t *testing.T) {
 	}
 	handler := NewAdminHandler(adminSSEUseCaseStub{
 		sseSessionStub: sseSessionStub{principal: principal},
-	}, NewPendingHub(1))
+	}, NewPendingHub(1), testAdminPolicy)
 	handler.timing = testSSETiming()
 
 	assertSSEHeartbeatsSurviveWriteTimeout(t, func(w http.ResponseWriter, r *http.Request) {
@@ -125,7 +130,7 @@ func TestAdminEventsEndsAtAccessTokenExpiry(t *testing.T) {
 	}
 	handler := NewAdminHandler(adminSSEUseCaseStub{
 		sseSessionStub: sseSessionStub{principal: principal},
-	}, NewPendingHub(1))
+	}, NewPendingHub(1), testAdminPolicy)
 	handler.timing = sseTiming{
 		heartbeatInterval:  20 * time.Millisecond,
 		revalidateInterval: time.Second,
@@ -212,7 +217,7 @@ func TestAdminEventsRejectsMissingOrExpiredClaims(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			handler := NewAdminHandler(adminSSEUseCaseStub{
 				sseSessionStub: sseSessionStub{principal: principal},
-			}, NewPendingHub(1))
+			}, NewPendingHub(1), testAdminPolicy)
 			handler.timing = testSSETiming()
 			request := httptest.NewRequest(http.MethodGet, "/admin/events", nil)
 			request = request.WithContext(test.context(request.Context()))

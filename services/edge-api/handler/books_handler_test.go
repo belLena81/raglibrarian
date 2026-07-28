@@ -27,6 +27,8 @@ var testBooksPolicy = handler.BooksPolicy{
 	ListTimeout:      6 * time.Second,
 	PreviewTimeout:   5 * time.Second,
 	LifecycleTimeout: 5 * time.Second,
+	ListPageMaxSize:  100,
+	PageTokenMaxSize: 512,
 }
 
 type uploadCatalog struct {
