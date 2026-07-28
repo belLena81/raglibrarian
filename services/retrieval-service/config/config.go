@@ -34,6 +34,7 @@ const (
 	defaultCleanupJobTimeout               = 90 * time.Second
 	defaultCleanupJobBatchSize             = 64
 	defaultTEIBatchSize                    = 8
+	defaultWorkerMaxRetryAttempts          = 4
 	DefaultSummaryProviderMaxInputRunes    = 4096
 	DefaultSummaryProviderMaxResponseBytes = 64 << 10
 	DefaultSummaryProviderMaxSummaryBytes  = 16 << 10
@@ -107,6 +108,7 @@ type WorkerConfig struct {
 	CleanupInterval                                               time.Duration
 	CleanupTimeout                                                time.Duration
 	CleanupBatchSize                                              int
+	MaxRetryAttempts                                              int
 	StaleBatchAge                                                 time.Duration
 	FailureRecordTimeout                                          time.Duration
 	PublishTimeout                                                time.Duration
@@ -351,6 +353,7 @@ func LoadWorker() (WorkerConfig, error) {
 	cleanupInterval, cleanupIntervalErr := optionalDuration("RETRIEVAL_WORKER_CLEANUP_INTERVAL", 15*time.Minute)
 	cleanupTimeout, cleanupTimeoutErr := optionalDuration("RETRIEVAL_WORKER_CLEANUP_TIMEOUT", 30*time.Second)
 	cleanupBatchSize, cleanupBatchSizeErr := boundedPositiveInteger("RETRIEVAL_WORKER_CLEANUP_BATCH_SIZE", defaultCleanupJobBatchSize, 1024)
+	maxRetryAttempts, maxRetryAttemptsErr := boundedPositiveInteger("RETRIEVAL_WORKER_MAX_RETRY_ATTEMPTS", defaultWorkerMaxRetryAttempts, 32)
 	staleBatchAge, staleBatchAgeErr := optionalDuration("RETRIEVAL_WORKER_STALE_BATCH_AGE", 15*time.Minute)
 	failureRecordTimeout, failureRecordTimeoutErr := optionalDuration("RETRIEVAL_WORKER_FAILURE_RECORD_TIMEOUT", 10*time.Second)
 	publishTimeout, publishTimeoutErr := optionalDuration("RETRIEVAL_WORKER_PUBLISH_TIMEOUT", 10*time.Second)
@@ -374,7 +377,7 @@ func LoadWorker() (WorkerConfig, error) {
 		MinimumSearchScore: minimumSearchScore, QdrantMaxResponseBytes: qdrantMaxResponseBytes, QdrantBatchResponseBytes: qdrantBatchResponseBytes, DBPingTimeout: dbPingTimeout, DependencyTimeout: dependencyTimeout, CollectionEnsureTimeout: collectionEnsureTimeout, FinalizationLease: finalizationLease,
 		ReadinessInitialDelay: readinessInitialDelay, ReadinessMaxDelay: readinessMaxDelay, ReadinessMaxAttempts: readinessMaxAttempts, ReadinessProbeTimeout: readinessProbeTimeout,
 		ReconnectInitialBackoff: reconnectInitialBackoff, ReconnectMaxBackoff: reconnectMaxBackoff, DispatchInterval: dispatchInterval, CleanupInterval: cleanupInterval,
-		CleanupTimeout: cleanupTimeout, CleanupBatchSize: cleanupBatchSize, StaleBatchAge: staleBatchAge, FailureRecordTimeout: failureRecordTimeout, PublishTimeout: publishTimeout,
+		CleanupTimeout: cleanupTimeout, CleanupBatchSize: cleanupBatchSize, MaxRetryAttempts: maxRetryAttempts, StaleBatchAge: staleBatchAge, FailureRecordTimeout: failureRecordTimeout, PublishTimeout: publishTimeout,
 		RabbitDialTimeout: rabbitDialTimeout, RabbitHeartbeat: rabbitHeartbeat,
 		ReadinessReadHeaderTimeout: readinessReadHeaderTimeout, ReadinessIdleTimeout: readinessIdleTimeout, ReadinessShutdownTimeout: readinessShutdownTimeout,
 		MetricsAddress: optional("RETRIEVAL_WORKER_METRICS_ADDR", os.Getenv("RETRIEVAL_METRICS_ADDR")), ServerlessInvocationTimeout: serverlessInvocationTimeout, Concurrency: concurrency, RunAs: process.Identity{UID: uid, GID: gid}}
@@ -382,7 +385,7 @@ func LoadWorker() (WorkerConfig, error) {
 	if uidErr != nil || gidErr != nil || concurrencyErr != nil || concurrency > 16 || insecureErr != nil || timeoutErr != nil ||
 		dbPingTimeoutErr != nil || dependencyTimeoutErr != nil || collectionEnsureTimeoutErr != nil || finalizationLeaseErr != nil || readinessInitialDelayErr != nil || readinessMaxDelayErr != nil ||
 		readinessMaxAttemptsErr != nil || readinessProbeTimeoutErr != nil || reconnectInitialBackoffErr != nil || reconnectMaxBackoffErr != nil ||
-		dispatchIntervalErr != nil || cleanupIntervalErr != nil || cleanupTimeoutErr != nil || cleanupBatchSizeErr != nil || staleBatchAgeErr != nil || failureRecordTimeoutErr != nil || publishTimeoutErr != nil ||
+		dispatchIntervalErr != nil || cleanupIntervalErr != nil || cleanupTimeoutErr != nil || cleanupBatchSizeErr != nil || maxRetryAttemptsErr != nil || staleBatchAgeErr != nil || failureRecordTimeoutErr != nil || publishTimeoutErr != nil ||
 		rabbitDialTimeoutErr != nil || rabbitHeartbeatErr != nil ||
 		readinessReadHeaderTimeoutErr != nil || readinessIdleTimeoutErr != nil || readinessShutdownTimeoutErr != nil ||
 		teiRequestsPerSecondErr != nil || teiMaxResponseBytesErr != nil || teiBatchSizeErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || minimumSearchScoreErr != nil || qdrantMaxResponseBytesErr != nil || qdrantBatchResponseBytesErr != nil ||

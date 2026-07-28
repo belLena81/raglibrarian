@@ -30,13 +30,12 @@ import (
 )
 
 const (
-	metadataQueue        = contracts.QueueRetrievalMetadata
-	manifestQueue        = contracts.QueueRetrievalManifest
-	batchQueue           = contracts.QueueRetrievalIndex
-	lifecycleQueue       = contracts.QueueRetrievalLifecycle
-	eventExchange        = contracts.ExchangeRetrievalEvents
-	retryExchange        = contracts.ExchangeRetrievalRetry
-	maximumRetryAttempts = int64(4)
+	metadataQueue  = contracts.QueueRetrievalMetadata
+	manifestQueue  = contracts.QueueRetrievalManifest
+	batchQueue     = contracts.QueueRetrievalIndex
+	lifecycleQueue = contracts.QueueRetrievalLifecycle
+	eventExchange  = contracts.ExchangeRetrievalEvents
+	retryExchange  = contracts.ExchangeRetrievalRetry
 )
 
 var errManifestArtifactRead = errors.New("manifest artifact read failed")
@@ -374,8 +373,10 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 	go func() {
 		defer handlers.Done()
 		defer func() { <-semaphore }()
+		maxRetryAttempts := r.maximumRetryAttempts()
+		currentRetryAttempt := retryAttempt(delivery.Headers, maxRetryAttempts)
 		bookID := deliveryBookID(sourceQueue, delivery.Type, delivery.Body)
-		r.logDeliveryReceived(sourceQueue, delivery.Type, delivery.MessageId, bookID, retryAttempt(delivery.Headers))
+		r.logDeliveryReceived(sourceQueue, delivery.Type, delivery.MessageId, bookID, currentRetryAttempt)
 		if delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > contracts.MaximumBrokerMessageBytes {
 			r.logRejectedDelivery(sourceQueue, delivery.Type, delivery.ContentType, "invalid_delivery", sanitizeFailureDetail("body constraints"))
 			settleNack(ctx, delivery, false)
@@ -400,7 +401,7 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 				return
 			}
 			r.logRetry(sourceQueue, "terminal_failure_record_failed", sanitizeFailureDetail(failureErr.Error()))
-			nextAttempt, retry := failureRecordingRetryAttempt(delivery.Headers)
+			nextAttempt, retry := failureRecordingRetryAttempt(delivery.Headers, maxRetryAttempts)
 			if !retry {
 				settleNack(ctx, delivery, false)
 				r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "nack")
@@ -425,7 +426,7 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 			r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "nack")
 			return
 		}
-		if retryAttempt(delivery.Headers) >= maximumRetryAttempts {
+		if currentRetryAttempt >= maxRetryAttempts {
 			if terminalFailure == nil {
 				r.logRejectedDelivery(sourceQueue, delivery.Type, delivery.ContentType, "invalid_event", sanitizeFailureDetail(err.Error()))
 				settleNack(ctx, delivery, false)
@@ -446,8 +447,9 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 			return
 		}
 		r.logRetry(sourceQueue, rejectionReason(err), sanitizeFailureDetail(err.Error()))
-		if r.publishRetry(ctx, publisher, sourceQueue, delivery, retryAttempt(delivery.Headers)+1) == nil {
-			r.logRetryPublished(sourceQueue, delivery.Type, delivery.MessageId, bookID, retryAttempt(delivery.Headers)+1)
+		nextAttempt := currentRetryAttempt + 1
+		if r.publishRetry(ctx, publisher, sourceQueue, delivery, nextAttempt) == nil {
+			r.logRetryPublished(sourceQueue, delivery.Type, delivery.MessageId, bookID, nextAttempt)
 			settleAck(ctx, delivery)
 			r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "ack")
 			return
@@ -475,7 +477,7 @@ func (r *Runtime) publishRetry(ctx context.Context, publisher retryPublisher, so
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	routingKey, err := retryRoutingKey(sourceQueue, attempt)
+	routingKey, err := retryRoutingKey(sourceQueue, attempt, r.maximumRetryAttempts())
 	if err != nil {
 		return err
 	}
@@ -492,16 +494,16 @@ func (r *Runtime) publishRetry(ctx context.Context, publisher retryPublisher, so
 	})
 }
 
-func failureRecordingRetryAttempt(headers amqp091.Table) (int64, bool) {
-	attempt := retryAttempt(headers)
-	if attempt >= maximumRetryAttempts {
+func failureRecordingRetryAttempt(headers amqp091.Table, maxRetryAttempts int64) (int64, bool) {
+	attempt := retryAttempt(headers, maxRetryAttempts)
+	if attempt >= maxRetryAttempts {
 		return 0, false
 	}
 	return attempt + 1, true
 }
 
-func retryRoutingKey(sourceQueue string, attempt int64) (string, error) {
-	if attempt < 1 || attempt > maximumRetryAttempts {
+func retryRoutingKey(sourceQueue string, attempt, maxRetryAttempts int64) (string, error) {
+	if attempt < 1 || attempt > maxRetryAttempts {
 		return "", errors.New("invalid retry attempt")
 	}
 	delay := "30s"
@@ -751,22 +753,29 @@ func deliveryAttempt(headers amqp091.Table) int64 {
 	}
 }
 
-func retryAttempt(headers amqp091.Table) int64 {
+func retryAttempt(headers amqp091.Table, maxRetryAttempts int64) int64 {
 	value, found := headers["x-retry-attempt"]
 	if !found {
 		return deliveryAttempt(headers)
 	}
 	switch count := value.(type) {
 	case int64:
-		if count >= 0 && count <= maximumRetryAttempts {
+		if count >= 0 && count <= maxRetryAttempts {
 			return count
 		}
 	case int32:
-		if count >= 0 && int64(count) <= maximumRetryAttempts {
+		if count >= 0 && int64(count) <= maxRetryAttempts {
 			return int64(count)
 		}
 	}
-	return maximumRetryAttempts
+	return maxRetryAttempts
+}
+
+func (r *Runtime) maximumRetryAttempts() int64 {
+	if r.configuration.MaxRetryAttempts > 0 {
+		return int64(r.configuration.MaxRetryAttempts)
+	}
+	return 4
 }
 
 func deliveryBookID(queue, eventType string, payload []byte) string {

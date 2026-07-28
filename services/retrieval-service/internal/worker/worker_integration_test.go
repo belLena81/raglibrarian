@@ -12,6 +12,7 @@ import (
 
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/diagnostic"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
@@ -46,21 +47,21 @@ func TestRetryRoutingUsesQueueSpecificDelayedLanes(t *testing.T) {
 		{batchQueue, 4, "retrieval.index-batch.v1.retry.30s"},
 	}
 	for _, test := range tests {
-		got, err := retryRoutingKey(test.queue, test.attempt)
+		got, err := retryRoutingKey(test.queue, test.attempt, 4)
 		if err != nil || got != test.want {
 			t.Fatalf("retryRoutingKey(%q, %d) = %q, %v", test.queue, test.attempt, got, err)
 		}
 	}
-	if _, err := retryRoutingKey("unknown", 1); err == nil {
+	if _, err := retryRoutingKey("unknown", 1, 4); err == nil {
 		t.Fatal("unknown queue accepted")
 	}
 }
 
 func TestRetryAttemptDoesNotTrustMalformedHeaders(t *testing.T) {
-	if got := retryAttempt(amqp091.Table{"x-retry-attempt": int64(3)}); got != 3 {
+	if got := retryAttempt(amqp091.Table{"x-retry-attempt": int64(3)}, 4); got != 3 {
 		t.Fatalf("retryAttempt() = %d", got)
 	}
-	if got := retryAttempt(amqp091.Table{"x-retry-attempt": "invalid"}); got != maximumRetryAttempts {
+	if got := retryAttempt(amqp091.Table{"x-retry-attempt": "invalid"}, 4); got != 4 {
 		t.Fatalf("invalid retryAttempt() = %d", got)
 	}
 }
@@ -68,11 +69,11 @@ func TestRetryAttemptDoesNotTrustMalformedHeaders(t *testing.T) {
 func TestHandleDeadLettersExhaustedTerminalFailureRecording(t *testing.T) {
 	acknowledger := &stubAcknowledger{}
 	publisher := &stubRetryPublisher{}
-	delivery := amqp091.Delivery{Acknowledger: acknowledger, DeliveryTag: 1, ContentType: "application/x-protobuf", Body: []byte{1}, Headers: amqp091.Table{"x-retry-attempt": maximumRetryAttempts}}
+	delivery := amqp091.Delivery{Acknowledger: acknowledger, DeliveryTag: 1, ContentType: "application/x-protobuf", Body: []byte{1}, Headers: amqp091.Table{"x-retry-attempt": int64(4)}}
 	semaphore := make(chan struct{}, 1)
 	var handlers sync.WaitGroup
 
-	(&Runtime{}).handle(context.Background(), semaphore, &handlers, publisher, batchQueue, delivery, func(context.Context, []byte) error {
+	(&Runtime{configuration: config.WorkerConfig{MaxRetryAttempts: 4}}).handle(context.Background(), semaphore, &handlers, publisher, batchQueue, delivery, func(context.Context, []byte) error {
 		return application.Failure(domain.FailureManifestIntegrity, errors.New("malformed shard"))
 	}, func(context.Context, []byte, error) error {
 		return errors.New("qdrant unavailable")
@@ -94,7 +95,7 @@ func TestHandleRetriesTerminalFailureRecordingBelowBudget(t *testing.T) {
 	semaphore := make(chan struct{}, 1)
 	var handlers sync.WaitGroup
 
-	(&Runtime{}).handle(context.Background(), semaphore, &handlers, publisher, batchQueue, delivery, func(context.Context, []byte) error {
+	(&Runtime{configuration: config.WorkerConfig{MaxRetryAttempts: 4}}).handle(context.Background(), semaphore, &handlers, publisher, batchQueue, delivery, func(context.Context, []byte) error {
 		return application.Failure(domain.FailureManifestIntegrity, errors.New("malformed shard"))
 	}, func(context.Context, []byte, error) error {
 		return errors.New("qdrant unavailable")
@@ -116,7 +117,7 @@ func TestHandleDeadLettersWhenTerminalFailureRetryPublishFails(t *testing.T) {
 	semaphore := make(chan struct{}, 1)
 	var handlers sync.WaitGroup
 
-	(&Runtime{}).handle(context.Background(), semaphore, &handlers, publisher, batchQueue, delivery, func(context.Context, []byte) error {
+	(&Runtime{configuration: config.WorkerConfig{MaxRetryAttempts: 4}}).handle(context.Background(), semaphore, &handlers, publisher, batchQueue, delivery, func(context.Context, []byte) error {
 		return application.Failure(domain.FailureManifestIntegrity, errors.New("malformed shard"))
 	}, func(context.Context, []byte, error) error {
 		return errors.New("database unavailable")
@@ -154,7 +155,7 @@ func TestHandleLeavesCanceledSessionDeliveryUnsettled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	(&Runtime{}).handle(ctx, semaphore, &handlers, publisher, metadataQueue, delivery, func(context.Context, []byte) error {
+	(&Runtime{configuration: config.WorkerConfig{MaxRetryAttempts: 4}}).handle(ctx, semaphore, &handlers, publisher, metadataQueue, delivery, func(context.Context, []byte) error {
 		return errors.New("database unavailable")
 	}, nil)
 	handlers.Wait()
@@ -190,7 +191,7 @@ func TestPublishRetrySanitizesUntrustedEnvelope(t *testing.T) {
 		Body:            []byte("payload"),
 	}
 
-	if err := (&Runtime{}).publishRetry(context.Background(), publisher, metadataQueue, delivery, 1); err != nil {
+	if err := (&Runtime{configuration: config.WorkerConfig{MaxRetryAttempts: 4}}).publishRetry(context.Background(), publisher, metadataQueue, delivery, 1); err != nil {
 		t.Fatal(err)
 	}
 	if len(publisher.messages) != 1 {
@@ -215,7 +216,7 @@ func TestHandleUsesRuntimeContextForTerminalFailureRecording(t *testing.T) {
 	var handlers sync.WaitGroup
 	ctx := context.WithValue(context.Background(), terminalFailureContextKey{}, "worker-session")
 
-	(&Runtime{}).handle(ctx, semaphore, &handlers, &stubRetryPublisher{}, batchQueue, delivery, func(context.Context, []byte) error {
+	(&Runtime{configuration: config.WorkerConfig{MaxRetryAttempts: 4}}).handle(ctx, semaphore, &handlers, &stubRetryPublisher{}, batchQueue, delivery, func(context.Context, []byte) error {
 		return application.Failure(domain.FailureManifestIntegrity, errors.New("malformed shard"))
 	}, func(failureContext context.Context, _ []byte, _ error) error {
 		if got := failureContext.Value(terminalFailureContextKey{}); got != "worker-session" {
@@ -328,7 +329,7 @@ func TestRetryPendingVectorCleanupRetriesFailedJobsAndCompletesSuccessfulOnes(t 
 func TestHandleDeadLettersExhaustedRetryWhenFailureRecordingFails(t *testing.T) {
 	acknowledger := &stubAcknowledger{}
 	publisher := &stubRetryPublisher{}
-	delivery := amqp091.Delivery{Acknowledger: acknowledger, DeliveryTag: 1, ContentType: "application/x-protobuf", Body: []byte{1}, Headers: amqp091.Table{"x-retry-attempt": maximumRetryAttempts}}
+	delivery := amqp091.Delivery{Acknowledger: acknowledger, DeliveryTag: 1, ContentType: "application/x-protobuf", Body: []byte{1}, Headers: amqp091.Table{"x-retry-attempt": int64(4)}}
 	semaphore := make(chan struct{}, 1)
 	var handlers sync.WaitGroup
 
@@ -382,7 +383,7 @@ func TestHandleRetriesManifestReadFailureBelowBudget(t *testing.T) {
 func TestHandleRecordsManifestReadFailureAfterRetryExhaustion(t *testing.T) {
 	acknowledger := &stubAcknowledger{}
 	publisher := &stubRetryPublisher{}
-	delivery := amqp091.Delivery{Acknowledger: acknowledger, DeliveryTag: 1, ContentType: "application/x-protobuf", Body: validWorkerManifestPayload(t), Headers: amqp091.Table{"x-retry-attempt": maximumRetryAttempts}}
+	delivery := amqp091.Delivery{Acknowledger: acknowledger, DeliveryTag: 1, ContentType: "application/x-protobuf", Body: validWorkerManifestPayload(t), Headers: amqp091.Table{"x-retry-attempt": int64(4)}}
 	semaphore := make(chan struct{}, 1)
 	var handlers sync.WaitGroup
 	recorder := &stubManifestFailureRecorder{}
@@ -408,7 +409,7 @@ func TestHandleRecordsManifestReadFailureAfterRetryExhaustion(t *testing.T) {
 func TestHandleDoesNotRecordManifestIntegrityForPlannerFailure(t *testing.T) {
 	acknowledger := &stubAcknowledger{}
 	publisher := &stubRetryPublisher{}
-	delivery := amqp091.Delivery{Acknowledger: acknowledger, DeliveryTag: 1, ContentType: "application/x-protobuf", Body: validWorkerManifestPayload(t), Headers: amqp091.Table{"x-retry-attempt": maximumRetryAttempts}}
+	delivery := amqp091.Delivery{Acknowledger: acknowledger, DeliveryTag: 1, ContentType: "application/x-protobuf", Body: validWorkerManifestPayload(t), Headers: amqp091.Table{"x-retry-attempt": int64(4)}}
 	semaphore := make(chan struct{}, 1)
 	var handlers sync.WaitGroup
 	recorder := &stubManifestFailureRecorder{}

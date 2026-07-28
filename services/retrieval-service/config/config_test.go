@@ -583,6 +583,7 @@ func TestLoadWorkerOverridesRuntimePolicy(t *testing.T) {
 	t.Setenv("RETRIEVAL_WORKER_DISPATCH_INTERVAL", "750ms")
 	t.Setenv("RETRIEVAL_WORKER_CLEANUP_INTERVAL", "16m")
 	t.Setenv("RETRIEVAL_WORKER_CLEANUP_TIMEOUT", "31s")
+	t.Setenv("RETRIEVAL_WORKER_MAX_RETRY_ATTEMPTS", "6")
 	t.Setenv("RETRIEVAL_FINALIZATION_LEASE", "18m")
 	t.Setenv("RETRIEVAL_WORKER_STALE_BATCH_AGE", "17m")
 	t.Setenv("RETRIEVAL_WORKER_FAILURE_RECORD_TIMEOUT", "11s")
@@ -601,6 +602,7 @@ func TestLoadWorkerOverridesRuntimePolicy(t *testing.T) {
 		configuration.ReadinessInitialDelay != 2*time.Second || configuration.ReadinessMaxDelay != 9*time.Second || configuration.ReadinessMaxAttempts != 12 ||
 		configuration.ReadinessProbeTimeout != 3*time.Second || configuration.ReconnectInitialBackoff != 2*time.Second || configuration.ReconnectMaxBackoff != 35*time.Second ||
 		configuration.DispatchInterval != 750*time.Millisecond || configuration.FinalizationLease != 18*time.Minute || configuration.CleanupInterval != 16*time.Minute || configuration.CleanupTimeout != 31*time.Second ||
+		configuration.MaxRetryAttempts != 6 ||
 		configuration.StaleBatchAge != 17*time.Minute || configuration.FailureRecordTimeout != 11*time.Second || configuration.PublishTimeout != 12*time.Second ||
 		configuration.RabbitDialTimeout != 13*time.Second || configuration.RabbitHeartbeat != 14*time.Second ||
 		configuration.ReadinessReadHeaderTimeout != 4*time.Second || configuration.ReadinessIdleTimeout != 35*time.Second || configuration.ReadinessShutdownTimeout != 5*time.Second {
@@ -621,6 +623,12 @@ func TestLoadWorkerRejectsInvalidRuntimePolicy(t *testing.T) {
 	t.Setenv("RETRIEVAL_WORKER_RECONNECT_MAX_BACKOFF", "30s")
 	if _, err := LoadWorker(); err == nil {
 		t.Fatal("LoadWorker() accepted reconnect initial backoff above max backoff")
+	}
+
+	setWorkerEnvironment(t)
+	t.Setenv("RETRIEVAL_WORKER_MAX_RETRY_ATTEMPTS", "33")
+	if _, err := LoadWorker(); err == nil {
+		t.Fatal("LoadWorker() accepted max retry attempts above bound")
 	}
 }
 
@@ -712,14 +720,21 @@ func TestLoadWorkerAndLambdaCleanupBatchSizeDefaultsAndOverrides(t *testing.T) {
 	if workerConfiguration.CleanupBatchSize != 64 {
 		t.Fatalf("Worker CleanupBatchSize = %d, want 64", workerConfiguration.CleanupBatchSize)
 	}
+	if workerConfiguration.MaxRetryAttempts != 4 {
+		t.Fatalf("Worker MaxRetryAttempts = %d, want 4", workerConfiguration.MaxRetryAttempts)
+	}
 
 	t.Setenv("RETRIEVAL_WORKER_CLEANUP_BATCH_SIZE", "11")
+	t.Setenv("RETRIEVAL_WORKER_MAX_RETRY_ATTEMPTS", "7")
 	workerConfiguration, err = LoadWorker()
 	if err != nil {
 		t.Fatalf("LoadWorker() override error = %v", err)
 	}
 	if workerConfiguration.CleanupBatchSize != 11 {
 		t.Fatalf("Worker CleanupBatchSize = %d, want 11", workerConfiguration.CleanupBatchSize)
+	}
+	if workerConfiguration.MaxRetryAttempts != 7 {
+		t.Fatalf("Worker MaxRetryAttempts = %d, want 7", workerConfiguration.MaxRetryAttempts)
 	}
 
 	lambdaConfiguration, err := LoadLambdaRuntimePolicy()
