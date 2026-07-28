@@ -106,6 +106,8 @@ func TestLoadParsesExplicitSecurityConfiguration(t *testing.T) {
 	assert.Equal(t, 10*time.Second, cfg.BookStatusHeartbeatTimeout)
 	assert.Equal(t, 20, cfg.BookStatusPrefetch)
 	assert.Equal(t, 64<<20, cfg.BookStatusQueueMaxLengthBytes)
+	assert.Equal(t, 200, cfg.BookStatusHubCapacity)
+	assert.Equal(t, 200, cfg.PendingHubCapacity)
 }
 
 func TestLoadParsesRetrievalReadinessPolicy(t *testing.T) {
@@ -183,6 +185,8 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	t.Setenv("EDGE_BOOK_STATUS_HEARTBEAT_TIMEOUT", "11s")
 	t.Setenv("EDGE_BOOK_STATUS_PREFETCH", "25")
 	t.Setenv("EDGE_BOOK_STATUS_QUEUE_MAX_LENGTH_BYTES", "1024")
+	t.Setenv("EDGE_BOOK_STATUS_HUB_CAPACITY", "250")
+	t.Setenv("EDGE_PENDING_HUB_CAPACITY", "180")
 	t.Setenv("EDGE_REFRESH_COOKIE_MAX_AGE", "168h")
 
 	cfg, err := config.Load()
@@ -252,6 +256,8 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	assert.Equal(t, 11*time.Second, cfg.BookStatusHeartbeatTimeout)
 	assert.Equal(t, 25, cfg.BookStatusPrefetch)
 	assert.Equal(t, 1024, cfg.BookStatusQueueMaxLengthBytes)
+	assert.Equal(t, 250, cfg.BookStatusHubCapacity)
+	assert.Equal(t, 180, cfg.PendingHubCapacity)
 }
 
 func TestLoadParsesMinimumEvidenceScore(t *testing.T) {

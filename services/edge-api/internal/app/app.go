@@ -142,7 +142,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		PreviewTimeout:   cfg.CatalogPreviewDeadline,
 		LifecycleTimeout: cfg.BooksLifecycleTimeout,
 	})
-	bookStatusHub := handler.NewBookStatusHub(200)
+	bookStatusHub := handler.NewBookStatusHub(cfg.BookStatusHubCapacity)
 	booksHandler.EnableEvents(handler.BookEventsConfig{
 		Sessions: identity, Hub: bookStatusHub, PublicOrigin: cfg.PublicOrigin, EnforceOrigin: cfg.EnforceBrowserOrigin,
 		Timing: handler.SSEPolicy{
@@ -161,7 +161,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		QueueMaxLengthBytes:     int64(cfg.BookStatusQueueMaxLengthBytes),
 	})
 	setupHandler := handler.NewSetupHandler(identity)
-	hub := handler.NewPendingHub(200)
+	hub := handler.NewPendingHub(cfg.PendingHubCapacity)
 	adminHandler := handler.NewAdminHandler(identity, hub)
 	adminHandler.SetSSETiming(handler.SSEPolicy{
 		HeartbeatInterval:  cfg.SSEHeartbeatInterval,

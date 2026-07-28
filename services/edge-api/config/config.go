@@ -79,6 +79,7 @@ type Config struct {
 	BookStatusReconnectInitialBackoff, BookStatusReconnectMaxBackoff                  time.Duration
 	BookStatusDialTimeout, BookStatusHeartbeatTimeout                                 time.Duration
 	BookStatusPrefetch, BookStatusQueueMaxLengthBytes                                 int
+	BookStatusHubCapacity, PendingHubCapacity                                         int
 	MinimumEvidenceScore                                                              float64
 	RunAs                                                                             process.Identity
 }
@@ -364,6 +365,14 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	bookStatusHubCapacity, err := positiveInt("EDGE_BOOK_STATUS_HUB_CAPACITY", 200)
+	if err != nil {
+		return Config{}, err
+	}
+	pendingHubCapacity, err := positiveInt("EDGE_PENDING_HUB_CAPACITY", 200)
+	if err != nil {
+		return Config{}, err
+	}
 	answerDeadline, err := boundedDuration("EDGE_ANSWER_DEADLINE", rpcpolicy.MaximumAnswerDeadline, rpcpolicy.MaximumAnswerDeadline)
 	if err != nil {
 		return Config{}, err
@@ -492,6 +501,8 @@ func Load() (Config, error) {
 		BookStatusHeartbeatTimeout:           bookStatusHeartbeatTimeout,
 		BookStatusPrefetch:                   bookStatusPrefetch,
 		BookStatusQueueMaxLengthBytes:        bookStatusQueueMaxLengthBytes,
+		BookStatusHubCapacity:                bookStatusHubCapacity,
+		PendingHubCapacity:                   pendingHubCapacity,
 		MinimumEvidenceScore:                 minimumEvidenceScore,
 		RunAs:                                runAs,
 	}, nil
