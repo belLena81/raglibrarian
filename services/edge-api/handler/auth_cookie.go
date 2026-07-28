@@ -1,6 +1,9 @@
 package handler
 
-import "net/http"
+import (
+	"net/http"
+	"time"
+)
 
 func (h *AuthHandler) setRefreshCookie(w http.ResponseWriter, value string) {
 	http.SetCookie(w, &http.Cookie{
@@ -10,7 +13,7 @@ func (h *AuthHandler) setRefreshCookie(w http.ResponseWriter, value string) {
 		HttpOnly: true,
 		Secure:   h.secureCookie,
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   60 * 60 * 24 * 30,
+		MaxAge:   int(h.refreshCookieMaxAge / time.Second),
 	})
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -48,7 +49,10 @@ func (f *fakeAuthUseCase) Refresh(context.Context, string) (authflow.Session, er
 func (*fakeAuthUseCase) Logout(context.Context, string) error { return nil }
 
 func newHandler(t *testing.T, useCase *fakeAuthUseCase) *handler.AuthHandler {
-	return handler.NewAuthHandler(useCase, diagnostic.New(zaptest.NewLogger(t)), handler.CookieConfig{Secure: true})
+	return handler.NewAuthHandler(useCase, diagnostic.New(zaptest.NewLogger(t)), handler.CookieConfig{
+		Secure:              true,
+		RefreshCookieMaxAge: 30 * 24 * time.Hour,
+	})
 }
 
 func post(t *testing.T, h http.HandlerFunc, body string) *httptest.ResponseRecorder {
@@ -165,15 +169,25 @@ func TestRefreshSuccessReplacesCookieWithoutExposingIt(t *testing.T) {
 	cookies := recorder.Result().Cookies()
 	if assert.Len(t, cookies, 1) {
 		assert.Equal(t, "refresh", cookies[0].Value)
+		assert.Equal(t, 30*24*60*60, cookies[0].MaxAge)
 	}
 	assert.NotContains(t, recorder.Body.String(), "refresh")
 }
 
 func TestConstructorRequiresDependencies(t *testing.T) {
-	assert.Panics(t, func() { handler.NewAuthHandler(nil, diagnostic.New(zaptest.NewLogger(t)), handler.CookieConfig{}) })
-	assert.Panics(t, func() { handler.NewAuthHandler(&fakeAuthUseCase{}, nil, handler.CookieConfig{}) })
+	assert.Panics(t, func() {
+		handler.NewAuthHandler(nil, diagnostic.New(zaptest.NewLogger(t)), handler.CookieConfig{RefreshCookieMaxAge: time.Hour})
+	})
+	assert.Panics(t, func() {
+		handler.NewAuthHandler(&fakeAuthUseCase{}, nil, handler.CookieConfig{RefreshCookieMaxAge: time.Hour})
+	})
 	var typedNil *diagnostic.Recorder
-	assert.Panics(t, func() { handler.NewAuthHandler(&fakeAuthUseCase{}, typedNil, handler.CookieConfig{}) })
+	assert.Panics(t, func() {
+		handler.NewAuthHandler(&fakeAuthUseCase{}, typedNil, handler.CookieConfig{RefreshCookieMaxAge: time.Hour})
+	})
+	assert.Panics(t, func() {
+		handler.NewAuthHandler(&fakeAuthUseCase{}, diagnostic.New(zaptest.NewLogger(t)), handler.CookieConfig{})
+	})
 }
 
 func TestRegisterDoesNotLogDependencyError(t *testing.T) {
@@ -183,7 +197,7 @@ func TestRegisterDoesNotLogDependencyError(t *testing.T) {
 	h := handler.NewAuthHandler(
 		&fakeAuthUseCase{registerErr: errors.New(canary)},
 		diagnostic.New(log),
-		handler.CookieConfig{Secure: true},
+		handler.CookieConfig{Secure: true, RefreshCookieMaxAge: 30 * 24 * time.Hour},
 	)
 
 	recorder := post(t, h.Register, `{"name":"Reader","email":"reader@example.com","password":"password-1234","role":"reader"}`)

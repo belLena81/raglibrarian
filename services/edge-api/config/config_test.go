@@ -36,6 +36,7 @@ func TestLoadParsesExplicitSecurityConfiguration(t *testing.T) {
 	cfg, err := config.Load()
 	require.NoError(t, err)
 	assert.False(t, cfg.SecureCookie)
+	assert.Equal(t, 30*24*time.Hour, cfg.RefreshCookieMaxAge)
 	require.Len(t, cfg.TrustedProxyCIDRs, 1)
 	assert.Equal(t, 65532, cfg.RunAs.UID)
 	assert.Equal(t, "retrieval-service:50054", cfg.RetrievalAddress)
@@ -182,10 +183,12 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	t.Setenv("EDGE_BOOK_STATUS_HEARTBEAT_TIMEOUT", "11s")
 	t.Setenv("EDGE_BOOK_STATUS_PREFETCH", "25")
 	t.Setenv("EDGE_BOOK_STATUS_QUEUE_MAX_LENGTH_BYTES", "1024")
+	t.Setenv("EDGE_REFRESH_COOKIE_MAX_AGE", "168h")
 
 	cfg, err := config.Load()
 
 	require.NoError(t, err)
+	assert.Equal(t, 7*24*time.Hour, cfg.RefreshCookieMaxAge)
 	assert.Equal(t, 12, cfg.QueryRateLimit)
 	assert.Equal(t, 30*time.Second, cfg.QueryRateWindow)
 	assert.Equal(t, 500, cfg.QueryRateMaxKeys)

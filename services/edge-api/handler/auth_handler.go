@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/belLena81/raglibrarian/services/edge-api/authflow"
 	"github.com/belLena81/raglibrarian/services/edge-api/diagnostic"
@@ -71,9 +72,10 @@ type MeResponse struct {
 
 // AuthHandler handles the /auth/* routes.
 type AuthHandler struct {
-	uc           AuthUseCase
-	diagnostics  authDiagnostics
-	secureCookie bool
+	uc                  AuthUseCase
+	diagnostics         authDiagnostics
+	secureCookie        bool
+	refreshCookieMaxAge time.Duration
 }
 
 type authDiagnostics interface {
@@ -82,7 +84,10 @@ type authDiagnostics interface {
 }
 
 // CookieConfig controls refresh-cookie transport security.
-type CookieConfig struct{ Secure bool }
+type CookieConfig struct {
+	Secure              bool
+	RefreshCookieMaxAge time.Duration
+}
 
 // NewAuthHandler constructs an AuthHandler with explicit cookie policy.
 func NewAuthHandler(uc AuthUseCase, diagnostics authDiagnostics, cookies CookieConfig) *AuthHandler {
@@ -92,7 +97,15 @@ func NewAuthHandler(uc AuthUseCase, diagnostics authDiagnostics, cookies CookieC
 	if dependencyMissing(diagnostics) {
 		panic("handler: Logger must not be nil")
 	}
-	return &AuthHandler{uc: uc, diagnostics: diagnostics, secureCookie: cookies.Secure}
+	if cookies.RefreshCookieMaxAge <= 0 {
+		panic("handler: refresh cookie max age must be positive")
+	}
+	return &AuthHandler{
+		uc:                  uc,
+		diagnostics:         diagnostics,
+		secureCookie:        cookies.Secure,
+		refreshCookieMaxAge: cookies.RefreshCookieMaxAge,
+	}
 }
 
 // AuthUseCase is the edge-facing identity contract. Its production adapter is

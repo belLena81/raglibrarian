@@ -124,7 +124,10 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		SearchDeadline:   cfg.RetrievalSearchDeadline,
 	})
 	answer := answerclient.New(answerv1.NewAnswerServiceClient(answerConnection), cfg.AnswerDeadline, cfg.MinimumEvidenceScore)
-	authHandler := handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: cfg.SecureCookie})
+	authHandler := handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{
+		Secure:              cfg.SecureCookie,
+		RefreshCookieMaxAge: cfg.RefreshCookieMaxAge,
+	})
 	answerAdmission := middleware.NewPrincipalRateLimiter(cfg.AnswerRateLimit, cfg.AnswerRateWindow, cfg.QueryRateMaxKeys)
 	queryHandler := handler.NewQueryHandler(retrieval, cfg.MinimumEvidenceScore, handler.WithAnswer(answer, answerAdmission))
 	healthHandler := handler.NewHealthHandler(readiness{

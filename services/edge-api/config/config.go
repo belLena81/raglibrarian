@@ -44,6 +44,7 @@ type Config struct {
 	TrustedProxyCIDRs                                                                 []netip.Prefix
 	TLS                                                                               internaltls.Files
 	SecureCookie                                                                      bool
+	RefreshCookieMaxAge                                                               time.Duration
 	PublicOrigin                                                                      string
 	EnforceBrowserOrigin                                                              bool
 	RetrievalReadinessRequired                                                        bool
@@ -110,6 +111,10 @@ func Load() (Config, error) {
 	insecureCookie, err := strconv.ParseBool(optional("EDGE_INSECURE_REFRESH_COOKIE", "false"))
 	if err != nil {
 		return Config{}, fmt.Errorf("%w: EDGE_INSECURE_REFRESH_COOKIE: %w", ErrRefreshCookieConfiguration, err)
+	}
+	refreshCookieMaxAge, err := positiveDuration("EDGE_REFRESH_COOKIE_MAX_AGE", 30*24*time.Hour)
+	if err != nil {
+		return Config{}, fmt.Errorf("%w: EDGE_REFRESH_COOKIE_MAX_AGE: %w", ErrRefreshCookieConfiguration, err)
 	}
 	enforceOrigin, err := strconv.ParseBool(optional("EDGE_ENFORCE_BROWSER_ORIGIN", "false"))
 	if err != nil {
@@ -420,6 +425,7 @@ func Load() (Config, error) {
 		TrustedProxyCIDRs:                    prefixes,
 		TLS:                                  internaltls.Files{CA: ca, Certificate: cert, Key: keyFile},
 		SecureCookie:                         !insecureCookie,
+		RefreshCookieMaxAge:                  refreshCookieMaxAge,
 		PublicOrigin:                         publicOrigin,
 		EnforceBrowserOrigin:                 enforceOrigin,
 		RetrievalReadinessRequired:           retrievalReadinessRequired,
