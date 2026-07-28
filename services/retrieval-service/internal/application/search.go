@@ -58,6 +58,10 @@ type EvidenceStore interface {
 	SearchDocuments(context.Context, domain.SearchQuery, []float32, int, int) (DocumentPage, error)
 }
 
+type LexicalEvidenceStore interface {
+	SearchLexical(context.Context, domain.SearchQuery, int, int) ([]Evidence, error)
+}
+
 type IndexVisibility interface {
 	FilterIndexed(context.Context, []Evidence) ([]Evidence, error)
 	FilterIndexedDocuments(context.Context, []DocumentResult) ([]DocumentResult, error)
@@ -70,6 +74,7 @@ type Searcher struct {
 	analyzer          QueryAnalyzer
 	chunkRetriever    ChunkRetriever
 	documentRetriever DocumentRetriever
+	lexicalRetriever  LexicalRetriever
 	fusion            CandidateFusion
 }
 
@@ -94,6 +99,17 @@ type SearchPolicy struct {
 }
 
 func NewSearcherWithPolicy(embedder QueryEmbedder, store EvidenceStore, visibility IndexVisibility, assessor EvidenceAssessor, policy SearchPolicy) (*Searcher, error) {
+	return NewSearcherWithPolicyAndLexical(embedder, store, nil, visibility, assessor, policy)
+}
+
+func NewSearcherWithPolicyAndLexical(
+	embedder QueryEmbedder,
+	store EvidenceStore,
+	lexicalStore LexicalEvidenceStore,
+	visibility IndexVisibility,
+	assessor EvidenceAssessor,
+	policy SearchPolicy,
+) (*Searcher, error) {
 	if embedder == nil || store == nil || visibility == nil || policy.AssessmentCallLimit < 0 ||
 		policy.CandidatePageMultiplier < 1 || policy.ReciprocalRankFusionK < 1 ||
 		policy.MaximumAssessmentInputRunes < 1 ||
@@ -103,6 +119,10 @@ func NewSearcherWithPolicy(embedder QueryEmbedder, store EvidenceStore, visibili
 		policy.RequestPolicy.DefaultResultLimit > policy.RequestPolicy.MaximumResultLimit {
 		return nil, errors.New("invalid searcher configuration")
 	}
+	var lexicalRetriever LexicalRetriever
+	if lexicalStore != nil {
+		lexicalRetriever = storeLexicalRetriever{store: lexicalStore, visibility: visibility}
+	}
 	return &Searcher{
 		embedder:          embedder,
 		evidenceAssessor:  assessor,
@@ -110,6 +130,7 @@ func NewSearcherWithPolicy(embedder QueryEmbedder, store EvidenceStore, visibili
 		analyzer:          heuristicQueryAnalyzer{policy: policy},
 		chunkRetriever:    storeChunkRetriever{store: store, visibility: visibility, policy: policy},
 		documentRetriever: storeDocumentRetriever{store: store, visibility: visibility, policy: policy},
+		lexicalRetriever:  lexicalRetriever,
 		fusion:            reciprocalRankFusion{k: policy.ReciprocalRankFusionK},
 	}, nil
 }
@@ -142,11 +163,17 @@ func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.
 	var (
 		chunkCandidates    []Evidence
 		documentCandidates []DocumentResult
+		lexicalCandidates  []Evidence
 		chunkErr           error
 		documentErr        error
+		lexicalErr         error
 	)
 	var work sync.WaitGroup
-	work.Add(2)
+	retrievalCount := 2
+	if s.lexicalRetriever != nil {
+		retrievalCount++
+	}
+	work.Add(retrievalCount)
 	go func() {
 		defer work.Done()
 		chunkCandidates, chunkErr = s.chunkRetriever.Retrieve(ctx, query, vector, plan)
@@ -155,6 +182,12 @@ func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.
 		defer work.Done()
 		documentCandidates, documentErr = s.documentRetriever.Retrieve(ctx, query, vector, plan)
 	}()
+	if s.lexicalRetriever != nil {
+		go func() {
+			defer work.Done()
+			lexicalCandidates, lexicalErr = s.lexicalRetriever.Retrieve(ctx, query, plan)
+		}()
+	}
 	work.Wait()
 	if chunkErr != nil {
 		return SearchResult{}, chunkErr
@@ -162,7 +195,10 @@ func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.
 	if documentErr != nil {
 		return SearchResult{}, documentErr
 	}
-	results := s.searchAcceptedEvidence(ctx, query, chunkCandidates, documentCandidates, assessmentCache)
+	if lexicalErr != nil {
+		return SearchResult{}, lexicalErr
+	}
+	results := s.searchAcceptedEvidence(ctx, query, chunkCandidates, documentCandidates, lexicalCandidates, assessmentCache)
 	documents := documentsFromEvidence(results)
 	documents = mergeDocumentMetadata(documents, documentCandidates)
 	documents = trimDocuments(documents, query.Limit())
@@ -229,8 +265,15 @@ func (s *Searcher) assessEvidence(ctx context.Context, question string, value Ev
 	return assessmentCache.assess(ctx, s.evidenceAssessor, SummaryRequest{Question: question, Passage: value.Passage})
 }
 
-func (s *Searcher) searchAcceptedEvidence(ctx context.Context, query domain.SearchQuery, chunkCandidates []Evidence, documentCandidates []DocumentResult, assessmentCache *searchAssessmentCache) []Evidence {
-	candidates := fusedEvidenceCandidates(s.fusion, query, chunkCandidates, documentCandidates)
+func (s *Searcher) searchAcceptedEvidence(
+	ctx context.Context,
+	query domain.SearchQuery,
+	chunkCandidates []Evidence,
+	documentCandidates []DocumentResult,
+	lexicalCandidates []Evidence,
+	assessmentCache *searchAssessmentCache,
+) []Evidence {
+	candidates := fusedEvidenceCandidates(s.fusion, query, chunkCandidates, documentCandidates, lexicalCandidates)
 	results := make([]Evidence, 0, query.Limit())
 	seen := make(map[string]struct{})
 	for _, value := range candidates {
@@ -251,7 +294,6 @@ func (s *Searcher) searchAcceptedEvidence(ctx context.Context, query domain.Sear
 		seen[value.EvidenceID] = struct{}{}
 		results = append(results, value)
 	}
-	sortEvidenceByScore(results)
 	return trimEvidence(results, query.Limit())
 }
 

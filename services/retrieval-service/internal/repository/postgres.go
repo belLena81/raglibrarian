@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
@@ -1437,6 +1438,84 @@ func failureProto(category domain.FailureCategory) (retrievalv1.BookIndexingFail
 	}
 	value, found := values[category]
 	return value, found
+}
+
+func (r *Postgres) SearchLexical(ctx context.Context, query domain.SearchQuery, limit, offset int) ([]application.Evidence, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	filters := query.Filters()
+	args := []any{query.Question(), limit, offset}
+	conditions := []string{"lexical_query.tsquery @@ lexical_document.tsvector"}
+	addCondition := func(condition string, value any) {
+		args = append(args, value)
+		conditions = append(conditions, fmt.Sprintf(condition, len(args)))
+	}
+	if filters.Author != "" {
+		addCondition("lower(regexp_replace(trim(e.author), '\\s+', ' ', 'g')) = $%d", filters.Author)
+	}
+	if filters.YearFrom != nil {
+		addCondition("e.publication_year >= $%d", *filters.YearFrom)
+	}
+	if filters.YearTo != nil {
+		addCondition("e.publication_year <= $%d", *filters.YearTo)
+	}
+	for _, tag := range filters.Tags {
+		addCondition("EXISTS (SELECT 1 FROM unnest(e.tags) indexed_tag WHERE lower(regexp_replace(trim(indexed_tag), '\\s+', ' ', 'g')) = $%d)", tag)
+	}
+	rows, err := r.pool.Query(ctx, fmt.Sprintf(`WITH lexical_query AS (
+			SELECT websearch_to_tsquery('simple', $1) AS tsquery
+		)
+		SELECT e.evidence_id,e.chunk_id,e.job_id,e.book_id,e.title,e.author,e.media_type,e.publication_year,e.tags,e.chapter,e.section,e.page_start,e.page_end,e.passage,
+		       ts_rank_cd(lexical_document.tsvector, lexical_query.tsquery) AS lexical_rank
+		FROM retrieval.evidence e
+		JOIN retrieval.index_jobs j ON j.id=e.job_id
+		JOIN retrieval.book_lifecycle l ON l.book_id=e.book_id AND l.active_job_id=e.job_id
+		CROSS JOIN lexical_query
+		CROSS JOIN LATERAL (
+			SELECT to_tsvector('simple', e.title || ' ' || e.author || ' ' || e.chapter || ' ' || e.section || ' ' || e.passage) AS tsvector
+		) lexical_document
+		WHERE j.state='indexed'
+		  AND l.state IN ('active','reindexing')
+		  AND %s
+		ORDER BY lexical_rank DESC, e.evidence_id
+		LIMIT $2 OFFSET $3`, strings.Join(conditions, "\n\t\t  AND ")), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	results := make([]application.Evidence, 0, limit)
+	for rows.Next() {
+		var evidence application.Evidence
+		var pageStart int
+		var pageEnd int
+		if err = rows.Scan(
+			&evidence.EvidenceID,
+			&evidence.ChunkID,
+			&evidence.JobID,
+			&evidence.BookID,
+			&evidence.Title,
+			&evidence.Author,
+			&evidence.MediaType,
+			&evidence.Year,
+			&evidence.Tags,
+			&evidence.Chapter,
+			&evidence.Section,
+			&pageStart,
+			&pageEnd,
+			&evidence.Passage,
+			&evidence.Score,
+		); err != nil {
+			return nil, err
+		}
+		evidence.PageStart = uint32(pageStart)
+		evidence.PageEnd = uint32(pageEnd)
+		results = append(results, evidence)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 func (r *Postgres) FilterIndexed(ctx context.Context, values []application.Evidence) ([]application.Evidence, error) {

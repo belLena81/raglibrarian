@@ -72,12 +72,17 @@ Ingestion, Retrieval, and Answer boundaries:
 - **Small-to-big parent retrieval:** Retrieval indexes precise chunk vectors and
   document centroid vectors. Document hits are expanded to a bounded number of
   stored chunk passages for generation context.
+- **Hybrid dense/sparse retrieval:** Retrieval combines Qdrant chunk/document
+  vector recall with PostgreSQL full-text evidence search over title, author,
+  chapter, section, and passage text. Sparse recall improves exact-term matches
+  such as codes, rare identifiers, and proper nouns without adding new
+  infrastructure.
 - **Metadata filtering:** Retrieval applies author, tag, and publication-year
-  filters in Qdrant before candidates are returned.
-- **RAG-Fusion:** Retrieval merges chunk and document evidence candidates with
-  reciprocal-rank fusion. The fusion constant and document hydration limit are
-  runtime-tunable policy, while the index profile remains a compatibility
-  contract.
+  filters in both Qdrant and PostgreSQL before candidates are returned.
+- **RAG-Fusion:** Retrieval merges chunk, document-expanded, and lexical
+  evidence candidates with reciprocal-rank fusion. The fusion constant and
+  document hydration limit are runtime-tunable policy, while the index profile
+  remains a compatibility contract.
 - **Context filtering/compression:** Optional Retrieval-side provider assessment
   accepts only passages relevant to the user question and stores a concise
   passage summary; provider failure falls back to bounded local summaries.
@@ -85,9 +90,9 @@ Ingestion, Retrieval, and Answer boundaries:
   evidence set, sends only Retrieval-owned evidence to the provider, and accepts
   generated output only when citations match returned evidence IDs.
 
-Future candidates remain explicit product/design choices: hybrid keyword/vector
-search, reranking, query rewriting, HyDE, semantic re-chunking, and GraphRAG are
-not part of the current implementation.
+Future candidates remain explicit product/design choices: reranking, query
+rewriting, HyDE, semantic re-chunking, and GraphRAG are not part of the current
+implementation.
 
 ## Architecture
 

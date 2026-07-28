@@ -120,6 +120,121 @@ func TestReplayRecoveryTerminalFailureAndVisibilityUseDurableState(t *testing.T)
 	}
 }
 
+func TestSearchLexicalReturnsOnlyVisibleFilteredEvidence(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
+	suffix := randomIntegrationID(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	visibleBookID, visibleJobID := "book-visible-"+suffix, "job-visible-"+suffix
+	hiddenBookID, hiddenJobID := "book-hidden-"+suffix, "job-hidden-"+suffix
+	for index, bookID := range []string{visibleBookID, hiddenBookID} {
+		jobID := visibleJobID
+		if index == 1 {
+			jobID = hiddenJobID
+		}
+		payloadDigest := integrationDigest(byte(20 + index))
+		sourceDigest := integrationDigest(byte(30 + index))
+		manifestDigest := integrationDigest(byte(40 + index))
+		profileDigest := domain.SupportedIndexProfile().Digest
+		contentDigest := integrationDigest(byte(50 + index))
+		_, err = pool.Exec(ctx, `INSERT INTO retrieval.metadata_facts
+			(book_id,event_id,payload_digest,source_sha256,title,author,publication_year,tags,correlation_id,causation_id,occurred_at)
+			VALUES($1,$2,$3,$4,'Protocol search systems','RAGLibrarian QA',2026,$5,$6,$7,$8)`,
+			bookID,
+			"metadata-"+bookID,
+			payloadDigest[:],
+			sourceDigest[:],
+			[]string{"protocol", "synthetic"},
+			"correlation-"+suffix,
+			"cause-"+suffix,
+			now,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_jobs
+			(id,book_id,source_sha256,manifest_sha256,profile_digest,state,expected_batches,evidence_count,correlation_id,created_at,updated_at)
+			VALUES($1,$2,$3,$4,$5,'indexed',1,1,$6,$7,$7)`,
+			jobID,
+			bookID,
+			sourceDigest[:],
+			manifestDigest[:],
+			profileDigest[:],
+			"correlation-"+suffix,
+			now,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = pool.Exec(ctx, `INSERT INTO retrieval.evidence
+			(evidence_id,chunk_id,job_id,book_id,title,author,publication_year,tags,chapter,section,page_start,page_end,passage,content_sha256,created_at)
+			VALUES($1,$2,$3,$4,'Protocol search systems','RAGLibrarian QA',2026,$5,'Operations','Exact codes',1,2,$6,$7,$8)`,
+			"evidence-"+bookID,
+			"chunk-"+bookID,
+			jobID,
+			bookID,
+			[]string{"protocol", "synthetic"},
+			"Protocol NX 42 rollover instructions stay searchable for exact sparse recall.",
+			contentDigest[:],
+			now,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = insertActiveBookLifecycle(t, ctx, pool, visibleBookID, visibleJobID, "correlation-"+suffix, now); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.book_lifecycle WHERE book_id=ANY($1)`, []string{visibleBookID, hiddenBookID})
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE id=ANY($1)`, []string{visibleJobID, hiddenJobID})
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=ANY($1)`, []string{visibleBookID, hiddenBookID})
+	})
+	yearFrom, yearTo := 2025, 2027
+	query, err := domain.NewSearchQuery(domain.SearchQueryInput{
+		Question: `"NX-42" + rollover?`,
+		Filters: domain.SearchFilters{
+			Author:   " RAGLibrarian   QA ",
+			Tags:     []string{" Protocol "},
+			YearFrom: &yearFrom,
+			YearTo:   &yearTo,
+		},
+		Limit: 5,
+	}, domain.SearchRequestPolicy{
+		MaximumQuestionCharacters: 2000,
+		MaximumFilterTags:         20,
+		MaximumTagCharacters:      64,
+		MaximumAuthorCharacters:   256,
+		DefaultResultLimit:        5,
+		MaximumResultLimit:        20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := repository.SearchLexical(ctx, query, 10, 0)
+	if err != nil {
+		t.Fatalf("SearchLexical() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("SearchLexical() returned %#v, want one visible result", results)
+	}
+	if results[0].EvidenceID != "evidence-"+visibleBookID || results[0].JobID != visibleJobID || results[0].Score <= 0 {
+		t.Fatalf("SearchLexical() result = %#v", results[0])
+	}
+}
+
 func TestApplyReindexCreatesNewLifecycleGenerationWithoutHidingPriorIndex(t *testing.T) {
 	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
 		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
@@ -242,7 +357,7 @@ func TestApplyReindexCreatesNewLifecycleGenerationWithoutHidingPriorIndex(t *tes
 		ManifestReference: "books/" + bookID + "/" + hex.EncodeToString(sourceSHA256[:]) + "/" + hex.EncodeToString(processingConfigDigest[:]) + "/manifest.pb",
 		OccurredAt:        now,
 	}
-	if err = event.Validate(application.MetadataPolicy{MaxTags: 20}); err != nil {
+	if err = event.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	if transitioned, applyErr := repository.ApplyReindex(ctx, event, newJobID, now); applyErr != nil || !transitioned {

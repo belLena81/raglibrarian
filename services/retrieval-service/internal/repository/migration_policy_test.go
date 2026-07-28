@@ -29,6 +29,26 @@ func TestRetrievalSchemaIsCreateOnly(t *testing.T) {
 	}
 }
 
+func TestRetrievalLexicalSearchMigrationAddsOnlyIndexAndGrant(t *testing.T) {
+	contents := strings.Join(strings.Fields(readMigration(t, "../../migrations/002_retrieval_lexical_search.up.sql")), " ")
+
+	for _, fragment := range []string{
+		"CREATE INDEX IF NOT EXISTS retrieval_evidence_lexical_search_idx",
+		"USING GIN ( to_tsvector('simple', title || ' ' || author || ' ' || chapter || ' ' || section || ' ' || passage) )",
+		"GRANT SELECT ON retrieval.evidence TO retrieval_search;",
+	} {
+		if !strings.Contains(contents, fragment) {
+			t.Fatalf("retrieval lexical search migration is missing %q", fragment)
+		}
+	}
+
+	for _, forbidden := range []string{"ALTER TABLE", "DROP TABLE", "DROP INDEX", "DELETE FROM", "TRUNCATE"} {
+		if strings.Contains(contents, forbidden) {
+			t.Fatalf("retrieval lexical search migration contains %q", forbidden)
+		}
+	}
+}
+
 func readMigration(t *testing.T, path string) string {
 	t.Helper()
 	contents, err := os.ReadFile(path) // #nosec G304 -- fixed repository-owned migration fixture.

@@ -69,7 +69,7 @@ func main() {
 	}
 	defer pool.Close()
 	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: configuration.FinalizationLease})
-	searcher, err := application.NewSearcherWithPolicy(embedder, store, records, evidenceAssessor, application.SearchPolicy{
+	searcher, err := application.NewSearcherWithPolicyAndLexical(embedder, store, records, records, evidenceAssessor, application.SearchPolicy{
 		MinimumVisibleScore:         configuration.MinimumSearchScore,
 		AssessmentCallLimit:         configuration.EvidenceAssessor.MaxCalls,
 		AssessmentTimeout:           configuration.EvidenceAssessor.Timeout,

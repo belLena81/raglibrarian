@@ -43,6 +43,22 @@ func newTestSearcher(
 	return searcher
 }
 
+func newTestSearcherWithLexical(
+	t *testing.T,
+	embedder QueryEmbedder,
+	store EvidenceStore,
+	lexicalStore LexicalEvidenceStore,
+	visibility IndexVisibility,
+	summaryCallLimit int,
+) *Searcher {
+	t.Helper()
+	searcher, err := NewSearcherWithPolicyAndLexical(embedder, store, lexicalStore, visibility, nil, testSearchPolicy(summaryCallLimit))
+	if err != nil {
+		t.Fatalf("NewSearcherWithPolicyAndLexical() error = %v", err)
+	}
+	return searcher
+}
+
 func TestSearcherAuthorizesBeforeCallingDependencies(t *testing.T) {
 	embedder := &stubEmbedder{}
 	store := &stubEvidenceStore{}
@@ -268,8 +284,11 @@ func TestSearcherWithPolicyUsesConfiguredCandidatePageMultiplier(t *testing.T) {
 	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "relevant-1" {
 		t.Fatalf("unexpected result = %#v", result.Evidence)
 	}
-	if len(store.requests) != 3 || store.requests[0].limit != 1 || store.requests[0].offset != 0 || store.requests[1].limit != 3 || store.requests[1].offset != 0 || store.requests[2].limit != 3 || store.requests[2].offset != 3 {
-		t.Fatalf("unexpected paging requests: %#v", store.requests)
+	if len(store.documentRequests) != 1 || store.documentRequests[0].limit != 1 || store.documentRequests[0].offset != 0 {
+		t.Fatalf("unexpected document paging requests: %#v", store.documentRequests)
+	}
+	if len(store.requests) != 2 || store.requests[0].limit != 3 || store.requests[0].offset != 0 || store.requests[1].limit != 3 || store.requests[1].offset != 3 {
+		t.Fatalf("unexpected chunk paging requests: %#v", store.requests)
 	}
 }
 
@@ -458,6 +477,71 @@ func TestSearcherUsesDocumentCandidatesWhenChunkCandidatesMiss(t *testing.T) {
 	}
 }
 
+func TestSearcherUsesLexicalCandidatesWhenDenseCandidatesMiss(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{}
+	lexicalStore := &stubLexicalEvidenceStore{
+		results: []Evidence{{
+			EvidenceID: "lexical-evidence-1",
+			JobID:      "job-1",
+			BookID:     "book-1",
+			Title:      "Systems",
+			Passage:    "Exact protocol code NX-42 appears only in lexical evidence.",
+			Score:      0.12,
+		}},
+	}
+	searcher := newTestSearcherWithLexical(t, embedder, store, lexicalStore, visibleIndexes{}, 4)
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{
+		Question: "NX-42",
+		Limit:    2,
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "lexical-evidence-1" {
+		t.Fatalf("lexical candidate was not returned as evidence: %#v", result.Evidence)
+	}
+	if len(result.Documents) != 1 || result.Documents[0].DocumentID != "book-1:job-1" {
+		t.Fatalf("lexical evidence was not grouped into a document: %#v", result.Documents)
+	}
+	if store.calls != 1 || store.documentCalls != 1 || lexicalStore.calls != 1 {
+		t.Fatalf("retrieval calls dense/document/lexical = %d/%d/%d, want 1/1/1", store.calls, store.documentCalls, lexicalStore.calls)
+	}
+}
+
+func TestSearcherBackfillsLexicalCandidatesAfterVisibilityFiltering(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{}
+	lexicalStore := &stubLexicalEvidenceStore{
+		resultsByPage: [][]Evidence{
+			{
+				{EvidenceID: "hidden-1", JobID: "pending-1", BookID: "book-hidden", Passage: "hidden lexical one", Score: 0.30},
+				{EvidenceID: "hidden-2", JobID: "pending-2", BookID: "book-hidden", Passage: "hidden lexical two", Score: 0.29},
+			},
+			{
+				{EvidenceID: "visible-1", JobID: "indexed-1", BookID: "book-1", Passage: "visible lexical evidence", Score: 0.20},
+			},
+		},
+	}
+	visibility := filteringVisibility{indexedJobs: map[string]struct{}{"indexed-1": {}}}
+	searcher := newTestSearcherWithLexical(t, embedder, store, lexicalStore, visibility, 4)
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{
+		Question: "exact code",
+		Limit:    1,
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "visible-1" {
+		t.Fatalf("unexpected lexical visible results: %#v", result.Evidence)
+	}
+	if lexicalStore.calls != 2 || len(lexicalStore.requests) != 2 || lexicalStore.requests[0].limit != 2 || lexicalStore.requests[0].offset != 0 || lexicalStore.requests[1].limit != 2 || lexicalStore.requests[1].offset != 2 {
+		t.Fatalf("unexpected lexical paging requests: calls=%d requests=%#v", lexicalStore.calls, lexicalStore.requests)
+	}
+}
+
 func TestSearcherUsesAuthoritativeDocumentChunkCountFromSearchDocuments(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{
@@ -482,7 +566,7 @@ func TestSearcherUsesAuthoritativeDocumentChunkCountFromSearchDocuments(t *testi
 	}
 }
 
-func TestSearcherSortsEvidenceDocumentsAndSupportingPassagesByScore(t *testing.T) {
+func TestSearcherKeepsFusedEvidenceOrderAndSortsDocumentGroupsByScore(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{
 		results: []Evidence{
@@ -513,13 +597,13 @@ func TestSearcherSortsEvidenceDocumentsAndSupportingPassagesByScore(t *testing.T
 	if len(result.Evidence) < 3 {
 		t.Fatalf("evidence ordering = %#v", result.Evidence)
 	}
-	if got := []string{result.Evidence[0].EvidenceID, result.Evidence[1].EvidenceID, result.Evidence[2].EvidenceID}; got[0] != "support-high" || got[1] != "evidence-high" || got[2] != "support-mid" {
+	if got := []string{result.Evidence[0].EvidenceID, result.Evidence[1].EvidenceID, result.Evidence[2].EvidenceID}; got[0] != "evidence-high" || got[1] != "evidence-mid" || got[2] != "evidence-low" {
 		t.Fatalf("evidence ordering = %#v", got)
 	}
-	if len(result.Documents) != 2 {
+	if len(result.Documents) != 3 {
 		t.Fatalf("document ordering = %#v", result.Documents)
 	}
-	if got := []string{result.Documents[0].DocumentID, result.Documents[1].DocumentID}; got[0] != "book-2:job-2" || got[1] != "book-3:job-3" {
+	if got := []string{result.Documents[0].DocumentID, result.Documents[1].DocumentID, result.Documents[2].DocumentID}; got[0] != "book-2:job-2" || got[1] != "book-3:job-3" || got[2] != "book-1:job-1" {
 		t.Fatalf("document ordering = %#v", got)
 	}
 }
@@ -538,9 +622,12 @@ func TestReciprocalRankFusionUsesConfiguredRankConstant(t *testing.T) {
 		Evidence: []Evidence{
 			{EvidenceID: "both", Passage: "document support", Score: 0.51},
 		},
-	}})
+	}}, []Evidence{
+		{EvidenceID: "lexical-only", Passage: "lexical support", Score: 0.10},
+		{EvidenceID: "both", Passage: "lexical support for both", Score: 0.49},
+	})
 
-	if len(results) != 2 || results[0].EvidenceID != "both" || results[0].Passage != "document support" {
+	if len(results) != 3 || results[0].EvidenceID != "both" || results[0].Passage != "document support" {
 		t.Fatalf("unexpected RRF results: %#v", results)
 	}
 }
@@ -608,8 +695,11 @@ func TestSearcherBackfillsAfterVisibilityFiltering(t *testing.T) {
 	if store.calls != 2 || store.documentCalls != 1 {
 		t.Fatalf("search pages evidence/documents = %d/%d, want 2/1", store.calls, store.documentCalls)
 	}
-	if len(store.requests) != 3 || store.requests[0].limit != 1 || store.requests[0].offset != 0 || store.requests[1].limit != 2 || store.requests[1].offset != 0 || store.requests[2].limit != 2 || store.requests[2].offset != 2 {
-		t.Fatalf("unexpected paging requests: %#v", store.requests)
+	if len(store.documentRequests) != 1 || store.documentRequests[0].limit != 1 || store.documentRequests[0].offset != 0 {
+		t.Fatalf("unexpected document paging requests: %#v", store.documentRequests)
+	}
+	if len(store.requests) != 2 || store.requests[0].limit != 2 || store.requests[0].offset != 0 || store.requests[1].limit != 2 || store.requests[1].offset != 2 {
+		t.Fatalf("unexpected chunk paging requests: %#v", store.requests)
 	}
 }
 
@@ -625,16 +715,18 @@ func (s *stubEmbedder) EmbedQuery(context.Context, string) ([]float32, error) {
 }
 
 type stubEvidenceStore struct {
-	calls           int
-	documentCalls   int
-	query           domain.SearchQuery
-	results         []Evidence
-	documents       []DocumentResult
-	resultsByPage   [][]Evidence
-	documentsByPage [][]DocumentResult
-	documentPages   []DocumentPage
-	requests        []searchRequest
-	err             error
+	mu               sync.Mutex
+	calls            int
+	documentCalls    int
+	query            domain.SearchQuery
+	results          []Evidence
+	documents        []DocumentResult
+	resultsByPage    [][]Evidence
+	documentsByPage  [][]DocumentResult
+	documentPages    []DocumentPage
+	requests         []searchRequest
+	documentRequests []searchRequest
+	err              error
 }
 
 type searchRequest struct {
@@ -643,6 +735,8 @@ type searchRequest struct {
 }
 
 func (s *stubEvidenceStore) Search(_ context.Context, query domain.SearchQuery, _ []float32, limit, offset int) ([]Evidence, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.calls++
 	s.query = query
 	s.requests = append(s.requests, searchRequest{limit: limit, offset: offset})
@@ -657,9 +751,11 @@ func (s *stubEvidenceStore) Search(_ context.Context, query domain.SearchQuery, 
 }
 
 func (s *stubEvidenceStore) SearchDocuments(_ context.Context, query domain.SearchQuery, _ []float32, limit, offset int) (DocumentPage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.documentCalls++
 	s.query = query
-	s.requests = append(s.requests, searchRequest{limit: limit, offset: offset})
+	s.documentRequests = append(s.documentRequests, searchRequest{limit: limit, offset: offset})
 	if len(s.documentPages) > 0 {
 		index := offset / limit
 		if index < len(s.documentPages) {
@@ -675,6 +771,29 @@ func (s *stubEvidenceStore) SearchDocuments(_ context.Context, query domain.Sear
 		return DocumentPage{Exhausted: true}, s.err
 	}
 	return DocumentPage{Documents: s.documents, Exhausted: true}, s.err
+}
+
+type stubLexicalEvidenceStore struct {
+	calls         int
+	query         domain.SearchQuery
+	results       []Evidence
+	resultsByPage [][]Evidence
+	requests      []searchRequest
+	err           error
+}
+
+func (s *stubLexicalEvidenceStore) SearchLexical(_ context.Context, query domain.SearchQuery, limit, offset int) ([]Evidence, error) {
+	s.calls++
+	s.query = query
+	s.requests = append(s.requests, searchRequest{limit: limit, offset: offset})
+	if len(s.resultsByPage) > 0 {
+		index := offset / limit
+		if index < len(s.resultsByPage) {
+			return s.resultsByPage[index], s.err
+		}
+		return nil, s.err
+	}
+	return s.results, s.err
 }
 
 type visibleIndexes struct{}

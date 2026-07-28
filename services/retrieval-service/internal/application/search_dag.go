@@ -20,14 +20,20 @@ type DocumentRetriever interface {
 	Retrieve(context.Context, domain.SearchQuery, []float32, RetrievalPlan) ([]DocumentResult, error)
 }
 
+type LexicalRetriever interface {
+	Retrieve(context.Context, domain.SearchQuery, RetrievalPlan) ([]Evidence, error)
+}
+
 type CandidateFusion interface {
-	Fuse(domain.SearchQuery, []Evidence, []DocumentResult) []Evidence
+	Fuse(domain.SearchQuery, []Evidence, []DocumentResult, []Evidence) []Evidence
 }
 
 type RetrievalPlan struct {
-	ChunkCandidateBudget int
-	ChunkPageLimit       int
-	DocumentLimit        int
+	ChunkCandidateBudget   int
+	ChunkPageLimit         int
+	DocumentLimit          int
+	LexicalCandidateBudget int
+	LexicalPageLimit       int
 }
 
 type heuristicQueryAnalyzer struct {
@@ -42,9 +48,11 @@ func (a heuristicQueryAnalyzer) Analyze(query domain.SearchQuery) RetrievalPlan 
 		documentLimit = a.policy.RequestPolicy.MaximumResultLimit
 	}
 	return RetrievalPlan{
-		ChunkCandidateBudget: chunkCandidateBudget,
-		ChunkPageLimit:       chunkPageLimit,
-		DocumentLimit:        documentLimit,
+		ChunkCandidateBudget:   chunkCandidateBudget,
+		ChunkPageLimit:         chunkPageLimit,
+		DocumentLimit:          documentLimit,
+		LexicalCandidateBudget: chunkCandidateBudget,
+		LexicalPageLimit:       chunkPageLimit,
 	}
 }
 
@@ -125,17 +133,54 @@ func (r storeDocumentRetriever) Retrieve(ctx context.Context, query domain.Searc
 	return results, nil
 }
 
+type storeLexicalRetriever struct {
+	store      LexicalEvidenceStore
+	visibility IndexVisibility
+}
+
+func (r storeLexicalRetriever) Retrieve(ctx context.Context, query domain.SearchQuery, plan RetrievalPlan) ([]Evidence, error) {
+	results := make([]Evidence, 0, query.Limit())
+	seen := make(map[string]struct{})
+	for offset := 0; offset < plan.LexicalCandidateBudget; offset += plan.LexicalPageLimit {
+		candidateLimit := searchCandidateLimit(plan.LexicalPageLimit, offset, plan.LexicalCandidateBudget)
+		candidates, err := r.store.SearchLexical(ctx, query, candidateLimit, offset)
+		if err != nil {
+			return nil, errors.New("search lexical evidence")
+		}
+		candidateCount := len(candidates)
+		visible, err := r.visibility.FilterIndexed(ctx, candidates)
+		if err != nil {
+			return nil, errors.New("validate index visibility")
+		}
+		for _, value := range visible {
+			if value.EvidenceID == "" {
+				continue
+			}
+			if _, found := seen[value.EvidenceID]; found {
+				continue
+			}
+			seen[value.EvidenceID] = struct{}{}
+			results = append(results, value)
+		}
+		if candidateCount < candidateLimit {
+			break
+		}
+	}
+	sortEvidenceByScore(results)
+	return results, nil
+}
+
 type reciprocalRankFusion struct {
 	k int
 }
 
-func (f reciprocalRankFusion) Fuse(_ domain.SearchQuery, chunkCandidates []Evidence, documents []DocumentResult) []Evidence {
+func (f reciprocalRankFusion) Fuse(_ domain.SearchQuery, chunkCandidates []Evidence, documents []DocumentResult, lexicalCandidates []Evidence) []Evidence {
 	type scoredEvidence struct {
 		evidence Evidence
 		score    float64
 	}
 
-	merged := make(map[string]scoredEvidence, len(chunkCandidates)+(len(documents)*2))
+	merged := make(map[string]scoredEvidence, len(chunkCandidates)+(len(documents)*2)+len(lexicalCandidates))
 	merge := func(candidate Evidence, rank int) {
 		if candidate.EvidenceID == "" {
 			return
@@ -160,6 +205,9 @@ func (f reciprocalRankFusion) Fuse(_ domain.SearchQuery, chunkCandidates []Evide
 		for evidenceRank, candidate := range document.Evidence {
 			merge(candidate, len(chunkCandidates)+documentRank+evidenceRank)
 		}
+	}
+	for index, candidate := range lexicalCandidates {
+		merge(candidate, index)
 	}
 
 	results := make([]Evidence, 0, len(merged))
@@ -246,15 +294,39 @@ func deduplicateEvidenceByScore(values []Evidence) []Evidence {
 	return results
 }
 
-func fusedEvidenceCandidates(fusion CandidateFusion, query domain.SearchQuery, chunkCandidates []Evidence, documents []DocumentResult) []Evidence {
+func deduplicateEvidenceInOrder(values []Evidence) []Evidence {
+	if len(values) == 0 {
+		return nil
+	}
+	results := make([]Evidence, 0, len(values))
+	seen := make(map[string]int, len(values))
+	for _, value := range values {
+		if value.EvidenceID == "" {
+			continue
+		}
+		index, found := seen[value.EvidenceID]
+		if !found {
+			seen[value.EvidenceID] = len(results)
+			results = append(results, value)
+			continue
+		}
+		if value.Score > results[index].Score {
+			results[index] = value
+		}
+	}
+	return results
+}
+
+func fusedEvidenceCandidates(fusion CandidateFusion, query domain.SearchQuery, chunkCandidates []Evidence, documents []DocumentResult, lexicalCandidates []Evidence) []Evidence {
 	if fusion != nil {
-		return deduplicateEvidenceByScore(fusion.Fuse(query, chunkCandidates, documents))
+		return deduplicateEvidenceInOrder(fusion.Fuse(query, chunkCandidates, documents, lexicalCandidates))
 	}
 	results := append([]Evidence{}, chunkCandidates...)
 	for _, document := range documents {
 		results = append(results, document.Evidence...)
 	}
-	return deduplicateEvidenceByScore(results)
+	results = append(results, lexicalCandidates...)
+	return deduplicateEvidenceInOrder(results)
 }
 
 func trimDocuments(values []DocumentResult, limit int) []DocumentResult {

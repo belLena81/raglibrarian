@@ -22,12 +22,13 @@ Retrieval agree on the same digest and limits.
 Retrieval uses layered RAG rather than a single naive top-k vector pass. It
 embeds and searches stored chunks for precise recall, searches document
 centroid vectors for broader parent-context recall, hydrates each document hit
-with a bounded number of stored chunk passages, and merges chunk/document
+with a bounded number of stored chunk passages, searches Retrieval-owned
+PostgreSQL full-text evidence for exact sparse recall, and merges dense/sparse
 candidates with reciprocal-rank fusion. Metadata filters remain part of the
-Qdrant query, so author, tag, and year restrictions apply before evidence is
-returned. Fusion and document-hydration tuning are config-backed operational
-policy with current defaults of RRF K `60` and three hydrated passages per
-document.
+Qdrant and PostgreSQL queries, so author, tag, and year restrictions apply
+before evidence is returned. Fusion and document-hydration tuning are
+config-backed operational policy with current defaults of RRF K `60` and three
+hydrated passages per document.
 
 Retrieval treats vector similarity as a candidate signal, not final relevance,
 when the optional Retrieval LLM provider is configured. Each candidate passage
