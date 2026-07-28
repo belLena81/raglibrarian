@@ -1118,6 +1118,9 @@ func TestCompleteBatchRejectsDuplicateChunkID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err = insertActiveBookLifecycle(ctx, pool, bookID, jobID, work.CorrelationID, now); err != nil {
+		t.Fatal(err)
+	}
 	_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_batches(id,job_id,shard_reference,shard_sha256,compressed_byte_size,uncompressed_byte_size,chunk_count,state,updated_at)
 		VALUES($1,$2,$3,$4,$5,$6,$7,'processing',$8)`, batchID, jobID, work.ShardReference, work.ShardSHA256[:], work.CompressedBytes, work.UncompressedBytes, work.ChunkCount, now)
 	if err != nil {
@@ -1128,6 +1131,7 @@ func TestCompleteBatchRejectsDuplicateChunkID(t *testing.T) {
 		defer cleanupCancel()
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.outbox WHERE aggregate_id=$1`, jobID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE id=$1`, jobID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.book_lifecycle WHERE book_id=$1`, bookID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
 	})
 	vector := make([]float32, domain.EmbeddingDimensions)
@@ -1187,6 +1191,7 @@ func TestCompleteBatchPersistsNilTagsAsEmptyArray(t *testing.T) {
 		defer cleanupCancel()
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.outbox WHERE aggregate_id=$1`, jobID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE id=$1`, jobID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.book_lifecycle WHERE book_id=$1`, bookID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
 	})
 	vector := make([]float32, domain.EmbeddingDimensions)
@@ -1248,6 +1253,9 @@ func TestCompleteBatchRejectsDuplicateChunkIDAcrossBatches(t *testing.T) {
 	_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_jobs(id,book_id,source_sha256,manifest_sha256,profile_digest,state,expected_batches,correlation_id,created_at,updated_at)
 		VALUES($1,$2,$3,$4,$5,'pending',2,$6,$7,$7)`, jobID, bookID, sourceSHA256[:], manifestSHA256[:], profileDigest[:], "correlation-"+suffix, now)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = insertActiveBookLifecycle(ctx, pool, bookID, jobID, "correlation-"+suffix, now); err != nil {
 		t.Fatal(err)
 	}
 	batchIDs := []string{"batch-a-" + suffix, "batch-b-" + suffix}
@@ -1986,4 +1994,14 @@ func insertManifestFact(t *testing.T, ctx context.Context, pool *pgxpool.Pool, b
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func insertActiveBookLifecycle(t *testing.T, ctx context.Context, pool *pgxpool.Pool, bookID, activeJobID, correlationID string, occurredAt time.Time) error {
+	t.Helper()
+	payloadDigest := integrationDigest(8)
+	_, err := pool.Exec(ctx, `INSERT INTO retrieval.book_lifecycle
+		(book_id,lifecycle_version,state,active_job_id,event_id,command_id,event_type,payload_digest,cleanup_pending,correlation_id,updated_at)
+		VALUES($1,1,'active',$2,$3,$4,'metadata',$5,false,$6,$7)`,
+		bookID, activeJobID, "lifecycle-"+bookID, "command-"+bookID, payloadDigest[:], correlationID, occurredAt)
+	return err
 }
