@@ -38,9 +38,12 @@ type Consumer struct {
 }
 
 type BrokerPolicy struct {
-	DialTimeout    time.Duration
-	Heartbeat      time.Duration
-	PublishTimeout time.Duration
+	DialTimeout          time.Duration
+	Heartbeat            time.Duration
+	PublishTimeout       time.Duration
+	FirstRetryDelay      time.Duration
+	SecondRetryDelay     time.Duration
+	SubsequentRetryDelay time.Duration
 }
 
 type OutboxPolicy struct {
@@ -56,7 +59,8 @@ func ProcessOneDelivery(ctx context.Context, delivery amqp091.Delivery, processo
 }
 
 func NewConsumer(channel *amqp091.Channel, queue string, concurrency int, processor EventProcessor, publisher Publisher, policy BrokerPolicy) (*Consumer, error) {
-	if channel == nil || queue == "" || concurrency < 1 || processor == nil || publisher == nil || policy.DialTimeout <= 0 || policy.Heartbeat <= 0 || policy.PublishTimeout <= 0 {
+	if channel == nil || queue == "" || concurrency < 1 || processor == nil || publisher == nil || policy.DialTimeout <= 0 || policy.Heartbeat <= 0 || policy.PublishTimeout <= 0 ||
+		policy.FirstRetryDelay <= 0 || policy.SecondRetryDelay <= 0 || policy.SubsequentRetryDelay <= 0 {
 		return nil, errors.New("invalid RabbitMQ consumer")
 	}
 	if err := channel.Qos(concurrency, 0, false); err != nil {
@@ -93,7 +97,7 @@ func (c *Consumer) Run(ctx context.Context, concurrency int) error {
 }
 
 func (c *Consumer) handle(ctx context.Context, delivery amqp091.Delivery) {
-	if (delivery.Type != UploadRoute && delivery.Type != DeletionRoute) || delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > 256<<10 {
+	if (delivery.Type != UploadRoute && delivery.Type != DeletionRoute) || delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > contracts.MaximumBrokerMessageBytes {
 		settleReject(ctx, delivery)
 		return
 	}
@@ -141,7 +145,7 @@ func (c *Consumer) retry(ctx context.Context, delivery amqp091.Delivery) {
 	err := c.publisher.PublishWithContext(
 		publishCtx,
 		RetryExchange,
-		deliveryRetryRoute(delivery.Type, retryDelay(nextAttempt)),
+		deliveryRetryRoute(delivery.Type, c.retryDelay(nextAttempt)),
 		true,
 		false,
 		amqp091.Publishing{
@@ -208,14 +212,14 @@ func deliveryAttempt(headers amqp091.Table) (int, bool) {
 	return int(attempt), true
 }
 
-func retryDelay(attempt int) time.Duration {
+func (c *Consumer) retryDelay(attempt int) time.Duration {
 	switch {
 	case attempt <= 1:
-		return 5 * time.Second
+		return c.policy.FirstRetryDelay
 	case attempt <= 3:
-		return 30 * time.Second
+		return c.policy.SecondRetryDelay
 	default:
-		return 2 * time.Minute
+		return c.policy.SubsequentRetryDelay
 	}
 }
 

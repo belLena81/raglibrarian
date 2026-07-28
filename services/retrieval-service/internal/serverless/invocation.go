@@ -9,8 +9,6 @@ import (
 
 var ErrInvalidMessage = errors.New("invalid broker message")
 
-const maximumMessageBytes = 256 << 10
-
 const (
 	MetadataQueue  = contracts.QueueRetrievalMetadata
 	ManifestQueue  = contracts.QueueRetrievalManifest
@@ -55,5 +53,5 @@ func Validate(message Message) error {
 func valid(message Message) bool {
 	// The portable worker validates content type and bounded body only; it does
 	// not use broker MessageID for retrieval event identity.
-	return message.ContentType == "application/x-protobuf" && len(message.Body) > 0 && len(message.Body) <= maximumMessageBytes
+	return message.ContentType == "application/x-protobuf" && len(message.Body) > 0 && len(message.Body) <= contracts.MaximumBrokerMessageBytes
 }

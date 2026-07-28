@@ -29,6 +29,7 @@ type Config struct {
 	IngestionRabbitURI                string
 	RetrievalRabbitURI                string
 	MaxUploadBytes                    int64
+	MaxPreviewBytes                   int
 	UploadConcurrency                 int
 	PreviewConcurrency                int
 	PreviewTimeout                    time.Duration
@@ -139,6 +140,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	maxUploadBytes, err := fixedInt64("CATALOG_MAX_UPLOAD_BYTES", 25<<20)
+	if err != nil {
+		return Config{}, err
+	}
+	maxPreviewBytes, err := boundedInt("CATALOG_MAX_PREVIEW_BYTES", 1<<20, 1<<20)
 	if err != nil {
 		return Config{}, err
 	}
@@ -290,7 +295,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{Address: optional("CATALOG_GRPC_ADDR", ":50052"), DSN: dsn, MinIOEndpoint: endpoint, MinIOAccessKey: minioAccessKey, MinIOSecretKey: minioSecretKey, MinIOBucket: bucket, MinIOInsecure: minioInsecure, MinIOCAFile: minioCAFile, RabbitURI: rabbitURI, IngestionRabbitURI: ingestionRabbitURI, RetrievalRabbitURI: retrievalRabbitURI, MaxUploadBytes: maxUploadBytes, UploadConcurrency: uploadConcurrency, PreviewConcurrency: previewConcurrency, PreviewTimeout: previewTimeout, PersistenceLookupTimeout: persistenceLookupTimeout, ObjectDeleteTimeout: objectDeleteTimeout, OutboxPollInterval: outboxPollInterval, OutboxDrainBudget: outboxDrainBudget, OutboxLease: outboxLease, OutboxRetryBaseDelay: outboxRetryBaseDelay, OutboxRetryMaxDelay: outboxRetryMaxDelay, OutboxPublishTimeout: outboxPublishTimeout, DBPingTimeout: dbPingTimeout, HealthProbeTimeout: healthProbeTimeout, HealthUpdateInterval: healthUpdateInterval, BacklogPollInterval: backlogPollInterval, BacklogProbeTimeout: backlogProbeTimeout, MetricsReadHeaderTimeout: metricsReadHeaderTimeout, MetricsReadTimeout: metricsReadTimeout, MetricsWriteTimeout: metricsWriteTimeout, MetricsIdleTimeout: metricsIdleTimeout, GRPCGracefulStopTimeout: grpcGracefulStopTimeout, MetricsShutdownTimeout: metricsShutdownTimeout, GRPCReadinessProbeTimeout: grpcReadinessProbeTimeout, GRPCUploadTimeout: grpcUploadTimeout, GRPCLifecycleTimeout: grpcLifecycleTimeout, GRPCListTimeout: grpcListTimeout, ProcessingReconnectInitialBackoff: processingReconnectInitialBackoff, ProcessingReconnectMaxBackoff: processingReconnectMaxBackoff, ProcessingDialTimeout: processingDialTimeout, ProcessingHeartbeatTimeout: processingHeartbeatTimeout, ProcessingHandleTimeout: processingHandleTimeout, ProcessingRetryLimit: processingRetryLimit, ProcessingRetryDelayStep: processingRetryDelayStep, ProcessingRetryPublishTimeout: processingRetryPublishTimeout, MetricsAddress: metricsAddress, ReconcileInterval: reconcileInterval, OrphanGracePeriod: orphanGracePeriod, TLS: internaltls.Files{CA: ca, Certificate: cert, Key: key}, RunAs: process.Identity{UID: uid, GID: gid}}, nil
+	return Config{Address: optional("CATALOG_GRPC_ADDR", ":50052"), DSN: dsn, MinIOEndpoint: endpoint, MinIOAccessKey: minioAccessKey, MinIOSecretKey: minioSecretKey, MinIOBucket: bucket, MinIOInsecure: minioInsecure, MinIOCAFile: minioCAFile, RabbitURI: rabbitURI, IngestionRabbitURI: ingestionRabbitURI, RetrievalRabbitURI: retrievalRabbitURI, MaxUploadBytes: maxUploadBytes, MaxPreviewBytes: maxPreviewBytes, UploadConcurrency: uploadConcurrency, PreviewConcurrency: previewConcurrency, PreviewTimeout: previewTimeout, PersistenceLookupTimeout: persistenceLookupTimeout, ObjectDeleteTimeout: objectDeleteTimeout, OutboxPollInterval: outboxPollInterval, OutboxDrainBudget: outboxDrainBudget, OutboxLease: outboxLease, OutboxRetryBaseDelay: outboxRetryBaseDelay, OutboxRetryMaxDelay: outboxRetryMaxDelay, OutboxPublishTimeout: outboxPublishTimeout, DBPingTimeout: dbPingTimeout, HealthProbeTimeout: healthProbeTimeout, HealthUpdateInterval: healthUpdateInterval, BacklogPollInterval: backlogPollInterval, BacklogProbeTimeout: backlogProbeTimeout, MetricsReadHeaderTimeout: metricsReadHeaderTimeout, MetricsReadTimeout: metricsReadTimeout, MetricsWriteTimeout: metricsWriteTimeout, MetricsIdleTimeout: metricsIdleTimeout, GRPCGracefulStopTimeout: grpcGracefulStopTimeout, MetricsShutdownTimeout: metricsShutdownTimeout, GRPCReadinessProbeTimeout: grpcReadinessProbeTimeout, GRPCUploadTimeout: grpcUploadTimeout, GRPCLifecycleTimeout: grpcLifecycleTimeout, GRPCListTimeout: grpcListTimeout, ProcessingReconnectInitialBackoff: processingReconnectInitialBackoff, ProcessingReconnectMaxBackoff: processingReconnectMaxBackoff, ProcessingDialTimeout: processingDialTimeout, ProcessingHeartbeatTimeout: processingHeartbeatTimeout, ProcessingHandleTimeout: processingHandleTimeout, ProcessingRetryLimit: processingRetryLimit, ProcessingRetryDelayStep: processingRetryDelayStep, ProcessingRetryPublishTimeout: processingRetryPublishTimeout, MetricsAddress: metricsAddress, ReconcileInterval: reconcileInterval, OrphanGracePeriod: orphanGracePeriod, TLS: internaltls.Files{CA: ca, Certificate: cert, Key: key}, RunAs: process.Identity{UID: uid, GID: gid}}, nil
 }
 
 func strictBool(key string, fallback bool) (bool, error) {

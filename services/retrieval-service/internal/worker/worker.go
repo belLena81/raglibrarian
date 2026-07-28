@@ -21,10 +21,9 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/embedding"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/rabbitmq"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
+	retrievalruntime "github.com/belLena81/raglibrarian/services/retrieval-service/internal/runtime"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/storage"
-	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/throttle"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/transport"
-	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
@@ -116,21 +115,13 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 		pool.Close()
 		return nil, err
 	}
-	httpClient := &http.Client{Timeout: configuration.DependencyTimeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
-	teiLimiter, err := throttle.New(configuration.TEIRequestsPerSecond)
+	httpClient := retrievalruntime.NewDependencyHTTPClient(configuration.DependencyTimeout)
+	embedder, err := retrievalruntime.NewWorkerEmbedder(configuration, httpClient, log)
 	if err != nil {
 		pool.Close()
 		return nil, err
 	}
-	embedder, err := embedding.NewTEIWithOptions(configuration.TEIURL, httpClient, log, teiLimiter, embedding.RawResponseLog{
-		Enabled:      configuration.TEILogRawResponse,
-		MaximumBytes: configuration.TEILogRawResponseMaxBytes,
-	})
-	if err != nil {
-		pool.Close()
-		return nil, err
-	}
-	index, err := vector.NewAuthenticatedQdrant(configuration.QdrantURL, configuration.QdrantCollection, configuration.QdrantAPIKey, httpClient, configuration.MinimumSearchScore)
+	index, err := retrievalruntime.NewWorkerVectorStore(configuration, httpClient)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -345,9 +336,9 @@ func (r *Runtime) runBrokerSession(ctx context.Context) error {
 			cleanupContext, cleanupCancel := context.WithTimeout(sessionContext, r.configuration.CleanupTimeout)
 			recovered, _ := r.repository.RecoverStaleBatches(cleanupContext, now.UTC().Add(-r.configuration.StaleBatchAge), now.UTC())
 			r.logStaleBatchesRecovered(recovered)
-			_ = r.retryPendingVectorCleanup(cleanupContext, now.UTC(), 64)
+			_ = r.retryPendingVectorCleanup(cleanupContext, now.UTC(), r.configuration.CleanupBatchSize)
 			if r.lifecycle != nil {
-				_ = r.lifecycle.RetryDeletions(cleanupContext, 64)
+				_ = r.lifecycle.RetryDeletions(cleanupContext, r.configuration.CleanupBatchSize)
 			}
 			cleanupCancel()
 		}
@@ -385,7 +376,7 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 		defer func() { <-semaphore }()
 		bookID := deliveryBookID(sourceQueue, delivery.Type, delivery.Body)
 		r.logDeliveryReceived(sourceQueue, delivery.Type, delivery.MessageId, bookID, retryAttempt(delivery.Headers))
-		if delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > 256<<10 {
+		if delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > contracts.MaximumBrokerMessageBytes {
 			r.logRejectedDelivery(sourceQueue, delivery.Type, delivery.ContentType, "invalid_delivery", sanitizeFailureDetail("body constraints"))
 			settleNack(ctx, delivery, false)
 			r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "nack")
@@ -602,7 +593,7 @@ func (r *Runtime) handleManifest(ctx context.Context, payload []byte) error {
 		return err
 	}
 	r.logManifestReceived(event.BookID)
-	manifestPayload, err := r.objects.ReadBounded(ctx, event.ManifestReference, 4<<20)
+	manifestPayload, err := r.objects.ReadBounded(ctx, event.ManifestReference, contracts.MaximumManifestBytes)
 	if err != nil {
 		return errors.Join(errManifestArtifactRead, err)
 	}

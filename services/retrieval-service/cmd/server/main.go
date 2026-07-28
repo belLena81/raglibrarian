@@ -19,6 +19,7 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	retrievalgrpc "github.com/belLena81/raglibrarian/services/retrieval-service/internal/grpc"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
+	retrievalruntime "github.com/belLena81/raglibrarian/services/retrieval-service/internal/runtime"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 )
@@ -35,13 +36,13 @@ func main() {
 		log.Print("retrieval server could not load transport credentials")
 		os.Exit(1)
 	}
-	httpClient := &http.Client{Timeout: configuration.DependencyTimeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
-	embedder, err := configureEmbedder(configuration, httpClient, serviceLogger)
+	httpClient := retrievalruntime.NewDependencyHTTPClient(configuration.DependencyTimeout)
+	embedder, err := retrievalruntime.NewEmbedder(configuration, httpClient, serviceLogger)
 	if err != nil {
 		log.Print("retrieval server could not configure embedding dependency")
 		os.Exit(1)
 	}
-	store, err := configureVectorStore(configuration, httpClient)
+	store, err := retrievalruntime.NewVectorStore(configuration, httpClient)
 	if err != nil {
 		log.Print("retrieval server could not configure vector dependency")
 		os.Exit(1)
@@ -51,7 +52,7 @@ func main() {
 		log.Print("retrieval server could not read database credentials")
 		os.Exit(1)
 	}
-	summaryProvider, err := configureSummaryProvider(configuration, serviceLogger)
+	summaryProvider, err := retrievalruntime.NewSummaryProvider(configuration, serviceLogger)
 	if err != nil {
 		log.Print("retrieval server could not configure summary provider")
 		os.Exit(1)

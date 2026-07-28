@@ -4,6 +4,7 @@ package transport
 import (
 	"crypto/sha256"
 
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
@@ -11,8 +12,6 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 	"google.golang.org/protobuf/proto"
 )
-
-const maximumEventBytes = 256 << 10
 
 func ManifestReference(payload []byte) (string, error) {
 	event, err := DecodeManifestEnvelope(payload)
@@ -23,12 +22,12 @@ func ManifestReference(payload []byte) (string, error) {
 }
 
 func DecodeManifestEnvelope(payload []byte) (application.ManifestEvent, error) {
-	if len(payload) == 0 || len(payload) > maximumEventBytes {
+	if len(payload) == 0 || len(payload) > contracts.MaximumBrokerMessageBytes {
 		return application.ManifestEvent{}, application.ErrInvalidEvent
 	}
 	var message ingestionv1.BookChunksReadyV1
 	if err := (proto.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(payload, &message); err != nil || len(message.SourceSha256) != sha256.Size || len(message.ManifestSha256) != sha256.Size ||
-		message.OccurredAt == nil || !message.OccurredAt.IsValid() || message.ManifestByteSize < 1 || message.ManifestByteSize > 4<<20 {
+		message.OccurredAt == nil || !message.OccurredAt.IsValid() || message.ManifestByteSize < 1 || message.ManifestByteSize > int64(contracts.MaximumManifestBytes) {
 		return application.ManifestEvent{}, application.ErrInvalidEvent
 	}
 	lifecycleVersion, ok := decodeLifecycleVersion(message.LifecycleVersion)
@@ -45,7 +44,7 @@ func DecodeManifestEnvelope(payload []byte) (application.ManifestEvent, error) {
 }
 
 func DecodeMetadata(payload []byte) (application.MetadataEvent, error) {
-	if len(payload) == 0 || len(payload) > maximumEventBytes {
+	if len(payload) == 0 || len(payload) > contracts.MaximumBrokerMessageBytes {
 		return application.MetadataEvent{}, application.ErrInvalidEvent
 	}
 	var message catalogv1.BookUploadedV1
@@ -72,7 +71,7 @@ func DecodeManifest(payload, manifestPayload []byte) (application.ManifestEvent,
 	if err = (proto.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(payload, &message); err != nil {
 		return application.ManifestEvent{}, application.ErrInvalidEvent
 	}
-	if len(manifestPayload) == 0 || len(manifestPayload) > 4<<20 || int64(len(manifestPayload)) != message.ManifestByteSize || sha256.Sum256(manifestPayload) != event.ManifestSHA256 {
+	if len(manifestPayload) == 0 || len(manifestPayload) > contracts.MaximumManifestBytes || int64(len(manifestPayload)) != message.ManifestByteSize || sha256.Sum256(manifestPayload) != event.ManifestSHA256 {
 		return event, application.ErrInvalidEvent
 	}
 	var manifestMessage ingestionv1.ChunkManifestV1
@@ -111,7 +110,7 @@ func DecodeManifest(payload, manifestPayload []byte) (application.ManifestEvent,
 }
 
 func DecodeBatch(payload []byte) (application.BatchWork, error) {
-	if len(payload) == 0 || len(payload) > maximumEventBytes {
+	if len(payload) == 0 || len(payload) > contracts.MaximumBrokerMessageBytes {
 		return application.BatchWork{}, application.ErrInvalidEvent
 	}
 	var message retrievalv1.IndexBatchRequestedV1
@@ -134,7 +133,7 @@ func DecodeBatch(payload []byte) (application.BatchWork, error) {
 }
 
 func DecodeReindex(payload []byte) (application.LifecycleEvent, error) {
-	if len(payload) == 0 || len(payload) > maximumEventBytes {
+	if len(payload) == 0 || len(payload) > contracts.MaximumBrokerMessageBytes {
 		return application.LifecycleEvent{}, application.ErrInvalidEvent
 	}
 	var message catalogv1.BookReindexRequestedV1
@@ -159,7 +158,7 @@ func DecodeReindex(payload []byte) (application.LifecycleEvent, error) {
 }
 
 func DecodeDeletion(payload []byte) (application.LifecycleEvent, error) {
-	if len(payload) == 0 || len(payload) > maximumEventBytes {
+	if len(payload) == 0 || len(payload) > contracts.MaximumBrokerMessageBytes {
 		return application.LifecycleEvent{}, application.ErrInvalidEvent
 	}
 	var message catalogv1.BookDeletionRequestedV1

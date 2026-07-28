@@ -16,8 +16,6 @@ import (
 	"unicode/utf8"
 )
 
-const OpenAICompatibleProviderKind = "openai_compatible"
-
 func OpenAIChatCompletionsURL(baseURL string) (*url.URL, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || len(baseURL) > 2048 || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||

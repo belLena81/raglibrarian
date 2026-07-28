@@ -23,4 +23,7 @@ const (
 	EventIngestionBookArtifactsDeleted  = "ingestion.book.artifacts-deleted.v1"
 
 	EventRetrievalIndexBatch = "retrieval.index-batch.v1"
+
+	MaximumBrokerMessageBytes = 256 << 10
+	MaximumManifestBytes      = 4 << 20
 )

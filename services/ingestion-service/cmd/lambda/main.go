@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/config"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/bootstrap"
@@ -71,11 +72,11 @@ func decodeInvocation(incoming events.RabbitMQEvent) (invocation, bool, error) {
 	if err != nil {
 		return invocation{}, false, err
 	}
-	if message.BasicProperties.ContentType != "application/x-protobuf" || message.BasicProperties.Type == nil || message.BasicProperties.BodySize > 256<<10 {
+	if message.BasicProperties.ContentType != "application/x-protobuf" || message.BasicProperties.Type == nil || message.BasicProperties.BodySize > contracts.MaximumBrokerMessageBytes {
 		return invocation{}, false, nil
 	}
 	payload, err := base64.StdEncoding.DecodeString(message.Data)
-	if err != nil || len(payload) == 0 || len(payload) > 256<<10 {
+	if err != nil || len(payload) == 0 || len(payload) > contracts.MaximumBrokerMessageBytes {
 		return invocation{}, false, nil
 	}
 	switch *message.BasicProperties.Type {

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/artifact"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/chunking"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/domain"
@@ -118,7 +119,7 @@ type UploadedEvent struct {
 }
 
 func (e UploadedEvent) Validate(maximumBytes int64) error {
-	if !safeID(e.EventID) || !safeID(e.BookID) || !safeID(e.CorrelationID) || !safeID(e.CausationID) || e.IdempotencyKey != e.BookID || e.Producer != "catalog-service" || e.SchemaVersion != "v1" || e.LifecycleVersion < 1 || e.ByteSize < 1 || e.ByteSize > maximumBytes || e.OccurredAt.IsZero() || len(e.Payload) == 0 || len(e.Payload) > 256<<10 {
+	if !safeID(e.EventID) || !safeID(e.BookID) || !safeID(e.CorrelationID) || !safeID(e.CausationID) || e.IdempotencyKey != e.BookID || e.Producer != "catalog-service" || e.SchemaVersion != "v1" || e.LifecycleVersion < 1 || e.ByteSize < 1 || e.ByteSize > maximumBytes || e.OccurredAt.IsZero() || len(e.Payload) == 0 || len(e.Payload) > contracts.MaximumBrokerMessageBytes {
 		return ErrInvalidEvent
 	}
 	if !validSourceReference(e.ObjectReference, e.MediaType) {

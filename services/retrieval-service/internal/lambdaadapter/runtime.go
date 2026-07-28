@@ -24,9 +24,9 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/embedding"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/rabbitmq"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
+	retrievalruntime "github.com/belLena81/raglibrarian/services/retrieval-service/internal/runtime"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/storage"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/transport"
-	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
@@ -156,8 +156,8 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 			pool.Close()
 			return nil, err
 		}
-		httpClient := &http.Client{Timeout: policy.DependencyTimeout, CheckRedirect: rejectRedirect}
-		index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, retrievalconfig.DefaultQdrantCollection, secret.QdrantAPIKey, httpClient, minimumSearchScore)
+		httpClient := retrievalruntime.NewDependencyHTTPClient(policy.DependencyTimeout)
+		index, err := retrievalruntime.NewDirectVectorStore(secret.QdrantURL, retrievalconfig.DefaultQdrantCollection, secret.QdrantAPIKey, minimumSearchScore, httpClient)
 		if err != nil {
 			pool.Close()
 			return nil, err
@@ -217,13 +217,13 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
-	httpClient := &http.Client{Timeout: policy.DependencyTimeout, CheckRedirect: rejectRedirect}
-	embedder, err := embedding.NewTEI(secret.TEIURL, httpClient, zap.NewNop(), nil)
+	httpClient := retrievalruntime.NewDependencyHTTPClient(policy.DependencyTimeout)
+	embedder, err := retrievalruntime.NewDirectEmbedder(secret.TEIURL, 0, embedding.RawResponseLog{}, httpClient, zap.NewNop())
 	if err != nil {
 		pool.Close()
 		return nil, err
 	}
-	index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, retrievalconfig.DefaultQdrantCollection, secret.QdrantAPIKey, httpClient, minimumSearchScore)
+	index, err := retrievalruntime.NewDirectVectorStore(secret.QdrantURL, retrievalconfig.DefaultQdrantCollection, secret.QdrantAPIKey, minimumSearchScore, httpClient)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -284,8 +284,8 @@ func NewCleanupRuntime(ctx context.Context) (*Runtime, error) {
 		return nil, errors.New("configure retrieval database")
 	}
 	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: policy.FinalizationLease})
-	httpClient := &http.Client{Timeout: policy.DependencyTimeout, CheckRedirect: rejectRedirect}
-	index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, retrievalconfig.DefaultQdrantCollection, secret.QdrantAPIKey, httpClient, minimumSearchScore)
+	httpClient := retrievalruntime.NewDependencyHTTPClient(policy.DependencyTimeout)
+	index, err := retrievalruntime.NewDirectVectorStore(secret.QdrantURL, retrievalconfig.DefaultQdrantCollection, secret.QdrantAPIKey, minimumSearchScore, httpClient)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -369,7 +369,7 @@ func (r *Runtime) Plan(ctx context.Context, event RabbitEvent) error {
 	if err != nil {
 		return err
 	}
-	manifestPayload, err := r.objects.ReadBounded(ctx, manifest.ManifestReference, 4<<20)
+	manifestPayload, err := r.objects.ReadBounded(ctx, manifest.ManifestReference, contracts.MaximumManifestBytes)
 	if err != nil {
 		if eventAttempt(event) >= 4 {
 			return r.recordManifestArtifactRead(ctx, payload, errors.Join(errManifestArtifactRead, err))
@@ -506,11 +506,11 @@ func (r *Runtime) Cleanup(ctx context.Context) error {
 	if _, err := r.repository.RecoverStaleBatches(ctx, now.Add(-r.policy.StaleBatchAge), now); err != nil {
 		return err
 	}
-	if err := r.retryPendingVectorCleanup(ctx, now, 64); err != nil {
+	if err := r.retryPendingVectorCleanup(ctx, now, r.policy.CleanupBatchSize); err != nil {
 		return err
 	}
 	if r.lifecycle != nil {
-		return r.lifecycle.RetryDeletions(ctx, 64)
+		return r.lifecycle.RetryDeletions(ctx, r.policy.CleanupBatchSize)
 	}
 	return nil
 }

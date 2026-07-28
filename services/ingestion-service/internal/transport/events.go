@@ -25,7 +25,7 @@ const (
 )
 
 func DecodeUploaded(payload []byte) (application.UploadedEvent, error) {
-	if len(payload) == 0 || len(payload) > 256<<10 {
+	if len(payload) == 0 || len(payload) > contracts.MaximumBrokerMessageBytes {
 		return application.UploadedEvent{}, application.ErrInvalidEvent
 	}
 	var event catalogv1.BookUploadedV1
@@ -45,7 +45,7 @@ func DecodeUploaded(payload []byte) (application.UploadedEvent, error) {
 }
 
 func DecodeDeletion(payload []byte) (application.DeletionEvent, error) {
-	if len(payload) == 0 || len(payload) > 256<<10 {
+	if len(payload) == 0 || len(payload) > contracts.MaximumBrokerMessageBytes {
 		return application.DeletionEvent{}, application.ErrInvalidEvent
 	}
 	var event catalogv1.BookDeletionRequestedV1

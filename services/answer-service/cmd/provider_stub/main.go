@@ -58,10 +58,29 @@ func main() {
 		Certificates: []tls.Certificate{keyPair},
 		MinVersion:   tls.VersionTLS13,
 	})
-	server := &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 30 * time.Second}
+	server := &http.Server{
+		Addr:              address,
+		Handler:           handler,
+		ReadHeaderTimeout: envDuration("ANSWER_STUB_READ_HEADER_TIMEOUT", 2*time.Second),
+		ReadTimeout:       envDuration("ANSWER_STUB_READ_TIMEOUT", 5*time.Second),
+		WriteTimeout:      envDuration("ANSWER_STUB_WRITE_TIMEOUT", 15*time.Second),
+		IdleTimeout:       envDuration("ANSWER_STUB_IDLE_TIMEOUT", 30*time.Second),
+	}
 	if err = server.Serve(tlsListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal("provider stub listener failed")
 	}
+}
+
+func envDuration(key string, fallback time.Duration) time.Duration {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func parseRunAs() (process.Identity, error) {

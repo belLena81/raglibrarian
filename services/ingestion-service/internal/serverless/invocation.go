@@ -4,12 +4,11 @@ package serverless
 import (
 	"errors"
 
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/transport"
 )
 
 var ErrInvalidMessage = errors.New("invalid broker message")
-
-const maximumMessageBytes = 256 << 10
 
 // Message is the broker metadata required to validate one AMQP delivery.
 // It intentionally contains no transport connection or credential details.
@@ -23,7 +22,7 @@ type Message struct {
 // Validate is the authoritative serverless boundary validation. Processing and
 // AMQP settlement remain separate so the worker retry policy stays unchanged.
 func Validate(message Message) error {
-	if message.ContentType != "application/x-protobuf" || message.MessageID == "" || len(message.Body) == 0 || len(message.Body) > maximumMessageBytes {
+	if message.ContentType != "application/x-protobuf" || message.MessageID == "" || len(message.Body) == 0 || len(message.Body) > contracts.MaximumBrokerMessageBytes {
 		return ErrInvalidMessage
 	}
 	switch message.EventType {

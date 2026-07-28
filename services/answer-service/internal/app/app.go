@@ -20,6 +20,7 @@ import (
 	answergrpc "github.com/belLena81/raglibrarian/services/answer-service/internal/grpc"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/metrics"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/retrieval"
+	answersruntime "github.com/belLena81/raglibrarian/services/answer-service/internal/runtime"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )
@@ -51,7 +52,7 @@ func New(configuration config.Config) (*App, error) {
 	if err != nil {
 		return nil, errors.New("load client transport credentials")
 	}
-	providerAdapter, err := configureLLMProvider(configuration)
+	providerAdapter, err := answersruntime.NewLLMProvider(configuration)
 	if err != nil {
 		return nil, errors.New("configure provider")
 	}

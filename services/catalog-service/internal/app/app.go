@@ -95,6 +95,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	objects := repository.NewMinIOObjectStore(minioClient, cfg.MinIOBucket)
 	service := catalog.NewServiceWithOptions(bookRepository, objects, catalog.ServiceOptions{
 		MaxBytes:                 cfg.MaxUploadBytes,
+		MaxPreviewBytes:          cfg.MaxPreviewBytes,
 		UploadConcurrency:        cfg.UploadConcurrency,
 		PreviewConcurrency:       cfg.PreviewConcurrency,
 		PreviewTimeout:           cfg.PreviewTimeout,

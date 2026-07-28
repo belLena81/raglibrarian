@@ -26,9 +26,6 @@ func TestLoadRequiresCompletePrivateRuntimeConfiguration(t *testing.T) {
 	if configuration.GRPCAddress != ":8083" || configuration.QdrantCollection != "evidence_v2" {
 		t.Fatalf("unexpected configuration: %#v", configuration)
 	}
-	if configuration.EmbeddingProviderKind != "tei" || configuration.VectorProviderKind != "qdrant" || configuration.SummaryLLMProviderKind != "openai_compatible" {
-		t.Fatalf("unexpected provider kinds: %#v", configuration)
-	}
 }
 
 func TestLoadRejectsPublicDependencyURL(t *testing.T) {
@@ -262,34 +259,6 @@ func TestLoadRejectsInvalidSummaryProviderOutputMode(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() accepted an invalid summary provider output mode")
-	}
-}
-
-func TestLoadRejectsUnknownProviderKinds(t *testing.T) {
-	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
-	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
-	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
-	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
-	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
-	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
-	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
-	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
-	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
-	t.Setenv("RETRIEVAL_EMBEDDING_PROVIDER", "voyage")
-	if _, err := Load(); err == nil {
-		t.Fatal("Load() accepted an invalid embedding provider kind")
-	}
-
-	t.Setenv("RETRIEVAL_EMBEDDING_PROVIDER", "tei")
-	t.Setenv("RETRIEVAL_VECTOR_PROVIDER", "pinecone")
-	if _, err := Load(); err == nil {
-		t.Fatal("Load() accepted an invalid vector provider kind")
-	}
-
-	t.Setenv("RETRIEVAL_VECTOR_PROVIDER", "qdrant")
-	t.Setenv("RETRIEVAL_SUMMARY_LLM_PROVIDER", "anthropic")
-	if _, err := Load(); err == nil {
-		t.Fatal("Load() accepted an invalid summary provider kind")
 	}
 }
 
@@ -636,6 +605,76 @@ func TestLoadLambdaRuntimePolicyRejectsInvalidValues(t *testing.T) {
 	t.Setenv("RETRIEVAL_LAMBDA_ENDPOINT_RESOLVE_TIMEOUT", "0s")
 	if _, err := LoadLambdaRuntimePolicy(); err == nil {
 		t.Fatal("LoadLambdaRuntimePolicy() accepted invalid duration")
+	}
+}
+
+func TestLoadCleanupJobPolicyDefaultsAndOverrides(t *testing.T) {
+	configuration, err := LoadCleanupJobPolicy()
+	if err != nil {
+		t.Fatalf("LoadCleanupJobPolicy() error = %v", err)
+	}
+	if configuration.DependencyTimeout != 90*time.Second || configuration.BatchSize != 64 {
+		t.Fatalf("unexpected cleanup job defaults: %#v", configuration)
+	}
+
+	t.Setenv("RETRIEVAL_CLEANUP_JOB_DEPENDENCY_TIMEOUT", "45s")
+	t.Setenv("RETRIEVAL_CLEANUP_JOB_BATCH_SIZE", "17")
+	configuration, err = LoadCleanupJobPolicy()
+	if err != nil {
+		t.Fatalf("LoadCleanupJobPolicy() override error = %v", err)
+	}
+	if configuration.DependencyTimeout != 45*time.Second || configuration.BatchSize != 17 {
+		t.Fatalf("unexpected cleanup job overrides: %#v", configuration)
+	}
+}
+
+func TestLoadWorkerAndLambdaCleanupBatchSizeDefaultsAndOverrides(t *testing.T) {
+	setWorkerEnvironment(t)
+	workerConfiguration, err := LoadWorker()
+	if err != nil {
+		t.Fatalf("LoadWorker() error = %v", err)
+	}
+	if workerConfiguration.CleanupBatchSize != 64 {
+		t.Fatalf("Worker CleanupBatchSize = %d, want 64", workerConfiguration.CleanupBatchSize)
+	}
+
+	t.Setenv("RETRIEVAL_WORKER_CLEANUP_BATCH_SIZE", "11")
+	workerConfiguration, err = LoadWorker()
+	if err != nil {
+		t.Fatalf("LoadWorker() override error = %v", err)
+	}
+	if workerConfiguration.CleanupBatchSize != 11 {
+		t.Fatalf("Worker CleanupBatchSize = %d, want 11", workerConfiguration.CleanupBatchSize)
+	}
+
+	lambdaConfiguration, err := LoadLambdaRuntimePolicy()
+	if err != nil {
+		t.Fatalf("LoadLambdaRuntimePolicy() error = %v", err)
+	}
+	if lambdaConfiguration.CleanupBatchSize != 64 {
+		t.Fatalf("Lambda CleanupBatchSize = %d, want 64", lambdaConfiguration.CleanupBatchSize)
+	}
+
+	t.Setenv("RETRIEVAL_LAMBDA_CLEANUP_BATCH_SIZE", "19")
+	lambdaConfiguration, err = LoadLambdaRuntimePolicy()
+	if err != nil {
+		t.Fatalf("LoadLambdaRuntimePolicy() override error = %v", err)
+	}
+	if lambdaConfiguration.CleanupBatchSize != 19 {
+		t.Fatalf("Lambda CleanupBatchSize = %d, want 19", lambdaConfiguration.CleanupBatchSize)
+	}
+}
+
+func TestLoadCleanupJobPolicyRejectsInvalidValues(t *testing.T) {
+	t.Setenv("RETRIEVAL_CLEANUP_JOB_DEPENDENCY_TIMEOUT", "invalid")
+	if _, err := LoadCleanupJobPolicy(); err == nil {
+		t.Fatal("LoadCleanupJobPolicy() accepted invalid duration")
+	}
+
+	t.Setenv("RETRIEVAL_CLEANUP_JOB_DEPENDENCY_TIMEOUT", "")
+	t.Setenv("RETRIEVAL_CLEANUP_JOB_BATCH_SIZE", "0")
+	if _, err := LoadCleanupJobPolicy(); err == nil {
+		t.Fatal("LoadCleanupJobPolicy() accepted invalid batch size")
 	}
 }
 

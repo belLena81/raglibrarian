@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -23,7 +24,7 @@ func TestValidatePreservesWorkerMessageValidation(t *testing.T) {
 		t.Fatalf("Validate() with empty MessageID = %v", err)
 	}
 	message = metadataMessage(t)
-	message.Body = make([]byte, maximumMessageBytes+1)
+	message.Body = make([]byte, contracts.MaximumBrokerMessageBytes+1)
 	if err := Validate(message); err == nil {
 		t.Fatal("Validate() accepted oversized body")
 	}

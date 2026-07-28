@@ -144,6 +144,14 @@ func loadAWS(ctx context.Context) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	artifactChunksPerShard, err := boundedInt("INGESTION_ARTIFACT_CHUNKS_PER_SHARD", 256, 1024)
+	if err != nil {
+		return Config{}, err
+	}
+	artifactMaximumShardBytes, err := boundedInt64("INGESTION_ARTIFACT_MAX_SHARD_BYTES", 4<<20, 32<<20)
+	if err != nil {
+		return Config{}, err
+	}
 	maximumTemporary, err := boundedInt64("INGESTION_MAX_TEMP_BYTES", 2<<30, 10<<30)
 	if err != nil || maximumTemporary < maximumSource {
 		return Config{}, fmt.Errorf("INGESTION_MAX_TEMP_BYTES is invalid")
@@ -281,6 +289,8 @@ func loadAWS(ctx context.Context) (Config, error) {
 		MaximumExtractedBytes:          maximumExtracted,
 		MaximumPageBytes:               maximumPage,
 		MaximumManifestBytes:           maximumManifest,
+		ArtifactChunksPerShard:         artifactChunksPerShard,
+		ArtifactMaximumShardBytes:      artifactMaximumShardBytes,
 		MaximumTemporaryBytes:          maximumTemporary,
 		MaximumPages:                   uint32(maximumPages), // #nosec G115 -- bounded above.
 		MemoryLimitBytes:               memoryLimit,

@@ -33,6 +33,8 @@ type Config struct {
 	ChunkMaximumTokens, ChunkOverlapTokens, ChunkTargetPages, ChunkMaximumPages int
 	MaximumSourceBytes, MaximumExtractedBytes, MaximumPageBytes                 int64
 	MaximumManifestBytes, MaximumTemporaryBytes                                 int64
+	ArtifactChunksPerShard                                                      int
+	ArtifactMaximumShardBytes                                                   int64
 	MemoryLimitBytes, ParserSandboxMemoryBytes                                  int64
 	MaximumPages                                                                uint32
 	ProcessingTimeout, PersistenceTimeout, ArtifactAbortTimeout, JobLease       time.Duration
@@ -303,6 +305,14 @@ func loadLocal() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	artifactChunksPerShard, err := boundedInt("INGESTION_ARTIFACT_CHUNKS_PER_SHARD", 256, 1024)
+	if err != nil {
+		return Config{}, err
+	}
+	artifactMaximumShardBytes, err := boundedInt64("INGESTION_ARTIFACT_MAX_SHARD_BYTES", 4<<20, 32<<20)
+	if err != nil {
+		return Config{}, err
+	}
 	maximumTemporary, err := boundedInt64("INGESTION_MAX_TEMP_BYTES", 1<<30, 10<<30)
 	if err != nil {
 		return Config{}, err
@@ -460,6 +470,8 @@ func loadLocal() (Config, error) {
 		MaximumExtractedBytes:          maximumExtracted,
 		MaximumPageBytes:               maximumPage,
 		MaximumManifestBytes:           maximumManifest,
+		ArtifactChunksPerShard:         artifactChunksPerShard,
+		ArtifactMaximumShardBytes:      artifactMaximumShardBytes,
 		MaximumTemporaryBytes:          maximumTemporary,
 		MemoryLimitBytes:               memoryLimit,
 		ParserSandboxMemoryBytes:       parserMemory,

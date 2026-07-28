@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 	"github.com/belLena81/raglibrarian/pkg/rabbitmqconn"
 	"github.com/rabbitmq/amqp091-go"
 
@@ -174,7 +175,7 @@ func consumeConnection(ctx context.Context, uri, queue string, service handler, 
 }
 
 func handleDelivery(ctx context.Context, queue string, service handler, recorder Recorder, retry retryPublisher, delivery amqp091.Delivery, policy Policy) {
-	if delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > 64<<10 {
+	if delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > contracts.MaximumBrokerMessageBytes {
 		recorder.ProcessingEventRejected()
 		_ = delivery.Nack(false, false)
 		return

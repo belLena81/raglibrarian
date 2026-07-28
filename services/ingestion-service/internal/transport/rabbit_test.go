@@ -72,6 +72,17 @@ func (p *countingProcessor) ProcessDeletion(context.Context, application.Deletio
 	return p.err
 }
 
+func testBrokerPolicy() BrokerPolicy {
+	return BrokerPolicy{
+		DialTimeout:          5 * time.Second,
+		Heartbeat:            10 * time.Second,
+		PublishTimeout:       10 * time.Second,
+		FirstRetryDelay:      5 * time.Second,
+		SecondRetryDelay:     30 * time.Second,
+		SubsequentRetryDelay: 2 * time.Minute,
+	}
+}
+
 func TestConsumerRejectsMissingOrMismatchedMessageID(t *testing.T) {
 	payload, err := proto.Marshal(validUploadMessage())
 	if err != nil {
@@ -113,7 +124,7 @@ func TestConsumerAppliesSharedDeliveryDisposition(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			acknowledger := &recordingAcknowledger{}
 			processor := &countingProcessor{err: test.processErr}
-			consumer := &Consumer{processor: processor, publisher: &recordingPublisher{}, now: time.Now}
+			consumer := &Consumer{processor: processor, publisher: &recordingPublisher{}, policy: testBrokerPolicy(), now: time.Now}
 			consumer.handle(context.Background(), amqp091.Delivery{
 				Acknowledger: acknowledger,
 				ContentType:  "application/x-protobuf",
@@ -148,7 +159,7 @@ func TestConsumerAppliesDispositionAfterShutdownCancellation(t *testing.T) {
 			cancel()
 			acknowledger := &recordingAcknowledger{}
 			processor := &countingProcessor{err: test.processErr}
-			consumer := &Consumer{processor: processor, publisher: &recordingPublisher{}, now: time.Now}
+			consumer := &Consumer{processor: processor, publisher: &recordingPublisher{}, policy: testBrokerPolicy(), now: time.Now}
 
 			consumer.handle(ctx, amqp091.Delivery{
 				Acknowledger: acknowledger,
@@ -192,7 +203,12 @@ func TestConsumerRepublishesTransientDeliveryWithBoundedSanitizedRetry(t *testin
 		t.Run(test.name, func(t *testing.T) {
 			acknowledger := &recordingAcknowledger{}
 			publisher := &recordingPublisher{}
-			consumer := &Consumer{processor: &countingProcessor{err: errors.New("temporary")}, publisher: publisher, now: func() time.Time { return now }}
+			consumer := &Consumer{
+				processor: &countingProcessor{err: errors.New("temporary")},
+				publisher: publisher,
+				policy:    testBrokerPolicy(),
+				now:       func() time.Time { return now },
+			}
 			headers := amqp091.Table{
 				"CC":          []any{"untrusted.route"},
 				"x-death":     []any{"untrusted"},
@@ -290,7 +306,7 @@ func TestConsumerDeadLettersWhenRetryPublishFailsWhileActive(t *testing.T) {
 	consumer := &Consumer{
 		processor: &countingProcessor{err: errors.New("temporary")},
 		publisher: &recordingPublisher{err: errors.New("publish unavailable")},
-		policy:    BrokerPolicy{DialTimeout: 5 * time.Second, Heartbeat: 10 * time.Second, PublishTimeout: 10 * time.Second},
+		policy:    testBrokerPolicy(),
 		now:       time.Now,
 	}
 	consumer.handle(context.Background(), amqp091.Delivery{Acknowledger: acknowledger, ContentType: "application/x-protobuf", Type: UploadRoute, MessageId: validUploadMessage().EventId, Body: payload})
@@ -309,7 +325,7 @@ func TestConsumerLeavesDeliveryUnsettledWhenContextCancelsDuringRetryPublish(t *
 	consumer := &Consumer{
 		processor: &countingProcessor{err: errors.New("temporary")},
 		publisher: &recordingPublisher{err: context.Canceled, cancel: cancel},
-		policy:    BrokerPolicy{DialTimeout: 5 * time.Second, Heartbeat: 10 * time.Second, PublishTimeout: 10 * time.Second},
+		policy:    testBrokerPolicy(),
 		now:       time.Now,
 	}
 	consumer.handle(ctx, amqp091.Delivery{Acknowledger: acknowledger, ContentType: "application/x-protobuf", Type: UploadRoute, MessageId: validUploadMessage().EventId, Body: payload})
@@ -319,12 +335,19 @@ func TestConsumerLeavesDeliveryUnsettledWhenContextCancelsDuringRetryPublish(t *
 }
 
 func TestNewConsumerRejectsMissingRetryPublisher(t *testing.T) {
-	consumer, err := NewConsumer(&amqp091.Channel{}, "ingestion", 1, &countingProcessor{}, nil, BrokerPolicy{
+	consumer, err := NewConsumer(&amqp091.Channel{}, "ingestion", 1, &countingProcessor{}, nil, testBrokerPolicy())
+	if err == nil || consumer != nil {
+		t.Fatal("missing retry publisher must be rejected before channel setup")
+	}
+}
+
+func TestNewConsumerRejectsMissingRetryDelays(t *testing.T) {
+	consumer, err := NewConsumer(&amqp091.Channel{}, "ingestion", 1, &countingProcessor{}, &recordingPublisher{}, BrokerPolicy{
 		DialTimeout:    5 * time.Second,
 		Heartbeat:      10 * time.Second,
 		PublishTimeout: 10 * time.Second,
 	})
 	if err == nil || consumer != nil {
-		t.Fatal("missing retry publisher must be rejected before channel setup")
+		t.Fatal("missing retry delays must be rejected before channel setup")
 	}
 }

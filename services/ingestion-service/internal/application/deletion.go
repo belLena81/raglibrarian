@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"time"
+
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 )
 
 // DeletionEvent requests cleanup of every artifact generation at or before the
@@ -27,7 +29,7 @@ func (e DeletionEvent) Validate() error {
 		!safeID(e.CorrelationID) || !safeID(e.CausationID) ||
 		e.IdempotencyKey != e.CommandID || e.Producer != "catalog-service" ||
 		e.SchemaVersion != "v1" || e.LifecycleVersion < 1 ||
-		e.OccurredAt.IsZero() || len(e.Payload) == 0 || len(e.Payload) > 256<<10 {
+		e.OccurredAt.IsZero() || len(e.Payload) == 0 || len(e.Payload) > contracts.MaximumBrokerMessageBytes {
 		return ErrInvalidEvent
 	}
 	return nil

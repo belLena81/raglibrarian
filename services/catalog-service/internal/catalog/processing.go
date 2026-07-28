@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 	"google.golang.org/protobuf/proto"
 
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
@@ -17,10 +18,8 @@ import (
 )
 
 const (
-	maxProcessingEventBytes = 64 << 10
-	maxManifestBytes        = 1 << 20
-	maxProcessedPages       = 1000
-	maxProcessedChunks      = 50_000
+	maxProcessedPages  = 1000
+	maxProcessedChunks = 50_000
 )
 
 type processingProfile struct {
@@ -194,7 +193,7 @@ func (s *ProcessingService) handle(ctx context.Context, eventType, messageID str
 }
 
 func decodeLifecycleAck(eventType string, payload []byte) (LifecycleAck, error) {
-	if len(payload) == 0 || len(payload) > maxProcessingEventBytes {
+	if len(payload) == 0 || len(payload) > contracts.MaximumBrokerMessageBytes {
 		return LifecycleAck{}, ErrInvalidProcessingEvent
 	}
 	ack := LifecycleAck{EventType: eventType, PayloadSHA256: sha256.Sum256(payload)}
@@ -236,7 +235,7 @@ func decodeLifecycleAck(eventType string, payload []byte) (LifecycleAck, error) 
 }
 
 func decodeProcessingEvent(eventType string, payload []byte) (ProcessingEvent, error) {
-	if len(payload) == 0 || len(payload) > maxProcessingEventBytes {
+	if len(payload) == 0 || len(payload) > contracts.MaximumBrokerMessageBytes {
 		return ProcessingEvent{}, ErrInvalidProcessingEvent
 	}
 	event := ProcessingEvent{EventType: eventType, PayloadSHA256: sha256.Sum256(payload)}
@@ -379,7 +378,7 @@ func validProcessingProfile(message processingProfileDescriptor) bool {
 func validReadyDescriptor(message *ingestionv1.BookChunksReadyV1) bool {
 	profile, profileFound := processingProfileForExtraction(message.GetExtractionVersion())
 	if message == nil || !validEventIdentifier(message.GetBookId()) || len(message.GetSourceSha256()) != sha256.Size ||
-		len(message.GetManifestSha256()) != sha256.Size || message.GetManifestByteSize() <= 0 || message.GetManifestByteSize() > maxManifestBytes ||
+		len(message.GetManifestSha256()) != sha256.Size || message.GetManifestByteSize() <= 0 || message.GetManifestByteSize() > int64(contracts.MaximumManifestBytes) ||
 		message.GetPageCount() == 0 || message.GetPageCount() > maxProcessedPages ||
 		message.GetChunkCount() == 0 || message.GetChunkCount() > maxProcessedChunks ||
 		!validProcessingProfile(message) ||

@@ -24,9 +24,9 @@ import (
 )
 
 const (
-	ChunkSize       = 64 << 10
-	DefaultMaxBytes = 25 << 20
-	maxPreviewBytes = 1 << 20
+	ChunkSize              = 64 << 10
+	DefaultMaxBytes        = 25 << 20
+	defaultMaxPreviewBytes = 1 << 20
 )
 
 var (
@@ -109,6 +109,7 @@ type Service struct {
 	uploads                  chan struct{}
 	preview                  chan struct{}
 	previewBook              func(context.Context, Book, OriginalObjectStore) (string, error)
+	maxPreviewBytes          int
 	previewTimeout           time.Duration
 	persistenceLookupTimeout time.Duration
 	objectDeleteTimeout      time.Duration
@@ -120,6 +121,7 @@ type ServiceOptions struct {
 	MaxBytes                 int64
 	UploadConcurrency        int
 	PreviewConcurrency       int
+	MaxPreviewBytes          int
 	PreviewTimeout           time.Duration
 	PersistenceLookupTimeout time.Duration
 	ObjectDeleteTimeout      time.Duration
@@ -141,6 +143,9 @@ func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStor
 	}
 	if options.PreviewConcurrency <= 0 {
 		options.PreviewConcurrency = 2
+	}
+	if options.MaxPreviewBytes <= 0 {
+		options.MaxPreviewBytes = defaultMaxPreviewBytes
 	}
 	if options.PreviewTimeout <= 0 {
 		options.PreviewTimeout = 5 * time.Second
@@ -169,6 +174,7 @@ func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStor
 		preview:                  make(chan struct{}, options.PreviewConcurrency),
 		newID:                    options.NewID,
 		previewBook:              options.PreviewBook,
+		maxPreviewBytes:          options.MaxPreviewBytes,
 		previewTimeout:           options.PreviewTimeout,
 		persistenceLookupTimeout: options.PersistenceLookupTimeout,
 		objectDeleteTimeout:      options.ObjectDeleteTimeout,
@@ -421,7 +427,7 @@ func (s *Service) GetBook(ctx context.Context, id string) (Book, error) {
 		previewContext, cancel := context.WithTimeout(ctx, s.previewTimeout)
 		preview, previewErr := s.previewBook(previewContext, book, s.objects)
 		cancel()
-		if previewErr == nil && len(preview) <= maxPreviewBytes {
+		if previewErr == nil && len(preview) <= s.maxPreviewBytes {
 			book.Preview = preview
 		}
 	}

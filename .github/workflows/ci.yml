@@ -31,7 +31,7 @@ jobs:
           version: v2.11.4
           install-only: true
       - name: Run Go quality gates
-        run: make fmt-check vet lint test test-race arch-check vuln proto-check proto-breaking dev-secrets-test m6-dev-config-test
+        run: make ci-go
 
   ui:
     runs-on: ubuntu-latest
@@ -46,7 +46,7 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - name: Build, lint, and type-check UI
-        run: make ui-check
+        run: make ci-ui
 
   security:
     runs-on: ubuntu-latest
@@ -71,7 +71,7 @@ jobs:
       - name: Install UI dependencies for dependency audit
         run: npm --prefix ui ci
       - name: Scan repository, Dockerfile, and service images
-        run: make security-check-ci
+        run: make ci-security
 
   iac:
     runs-on: ubuntu-latest
@@ -80,7 +80,7 @@ jobs:
       - name: Install pinned AWS SAM CLI
         run: pipx install aws-sam-cli==1.145.2
       - name: Validate the M4 and M5 SAM/CloudFormation graphs
-        run: make sam-validate sam-m5-validate
+        run: make ci-iac
 
   integration:
     runs-on: ubuntu-latest
@@ -88,21 +88,9 @@ jobs:
       - uses: actions/checkout@v4.2.2
       - uses: ./.github/actions/setup-go-ci
       - name: Create ephemeral file-backed local configuration
-        run: |
-          cp .env.example .env
-          make dev-secrets dev-certs
-          bash ./scripts/ensure-m5-dev-cert.sh
-          bash ./scripts/ensure-m6-dev-cert.sh
-          umask 077
-          openssl rand -base64 24 | tr -d '\n' > .dev/secrets/e2e_bootstrap_code
-          { printf 'raglibrarian/admin-bootstrap/v1\0'; cat .dev/secrets/e2e_bootstrap_code; } \
-            | openssl dgst -sha256 -binary > .dev/secrets/identity_bootstrap_verifier
-          chmod 400 .dev/secrets/e2e_bootstrap_code .dev/secrets/identity_bootstrap_verifier
-          echo "ANSWER_LLM_API_KEY_PATH=.dev/secrets/answer_llm_test_api_key" >> "$GITHUB_ENV"
-      - name: Run M5 Retrieval contract suite
-        run: make m5-contract-ci-test
-      - name: Run M6 Answer contract and deterministic quality suites
-        run: make m6-contract-test m6-answer-quality-test
+        run: make ci-bootstrap-local-config
+      - name: Run Retrieval and Answer contract suites
+        run: make ci-contract
       - name: Validate and start the local stack
         run: |
           make compose-config
@@ -215,14 +203,7 @@ jobs:
       - uses: actions/checkout@v4.2.2
       - uses: ./.github/actions/setup-go-ci
       - name: Create ephemeral file-backed local configuration
-        run: |
-          cp .env.example .env
-          make dev-secrets dev-certs
-          umask 077
-          openssl rand -base64 24 | tr -d '\n' > .dev/secrets/e2e_bootstrap_code
-          { printf 'raglibrarian/admin-bootstrap/v1\0'; cat .dev/secrets/e2e_bootstrap_code; } \
-            | openssl dgst -sha256 -binary > .dev/secrets/identity_bootstrap_verifier
-          chmod 400 .dev/secrets/e2e_bootstrap_code .dev/secrets/identity_bootstrap_verifier
+        run: make ci-bootstrap-local-config
       - name: Start isolated M4 stack
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian up -d --build --wait --wait-timeout 240
       - name: Run M4 performance smoke and soak suites

@@ -539,7 +539,7 @@ func TestGetBookDropsOversizedPreview(t *testing.T) {
 	service := NewServiceWithOptions(repository, objects, ServiceOptions{
 		MaxBytes: 1024,
 		PreviewBook: func(_ context.Context, _ Book, _ OriginalObjectStore) (string, error) {
-			return strings.Repeat("a", maxPreviewBytes+1), nil
+			return strings.Repeat("a", defaultMaxPreviewBytes+1), nil
 		},
 	})
 	book, err := service.UploadBook(context.Background(), validUploadInput(strings.NewReader("%PDF-1.7\nbody")))

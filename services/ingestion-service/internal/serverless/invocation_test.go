@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/transport"
 	"google.golang.org/protobuf/proto"
@@ -30,7 +31,7 @@ func TestValidateRejectsInvalidMessages(t *testing.T) {
 			return message
 		}},
 		{name: "oversized", update: func(message Message) Message {
-			message.Body = make([]byte, maximumMessageBytes+1)
+			message.Body = make([]byte, contracts.MaximumBrokerMessageBytes+1)
 			return message
 		}},
 		{name: "route", update: func(message Message) Message {

@@ -71,12 +71,16 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	cleanupPolicy, err := retrievalconfig.LoadCleanupJobPolicy()
+	if err != nil {
+		return err
+	}
 	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: policy.FinalizationLease})
 	minimumSearchScore, err := retrievalconfig.LoadMinimumSearchScore()
 	if err != nil {
 		return err
 	}
-	index, err := newQdrant(qdrantURL, retrievalconfig.DefaultQdrantCollection, qdrantKey, &http.Client{Timeout: 90 * time.Second}, minimumSearchScore)
+	index, err := newQdrant(qdrantURL, retrievalconfig.DefaultQdrantCollection, qdrantKey, &http.Client{Timeout: cleanupPolicy.DependencyTimeout}, minimumSearchScore)
 	if err != nil {
 		return err
 	}
@@ -84,7 +88,7 @@ func run(ctx context.Context) error {
 		return errors.New("invalid vector client")
 	}
 	now := time.Now().UTC()
-	jobs, err := records.PendingVectorCleanup(ctx, 64, now)
+	jobs, err := records.PendingVectorCleanup(ctx, cleanupPolicy.BatchSize, now)
 	if err != nil {
 		return err
 	}
@@ -103,7 +107,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return lifecycle.RetryDeletions(ctx, 64)
+	return lifecycle.RetryDeletions(ctx, cleanupPolicy.BatchSize)
 }
 
 func readSecretFile(key string, maximum int64) (string, error) {

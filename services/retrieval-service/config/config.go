@@ -14,7 +14,6 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/process"
-	"github.com/belLena81/raglibrarian/pkg/providerhttp"
 )
 
 const (
@@ -24,9 +23,8 @@ const (
 	defaultSummaryLLMMaxCalls      = 100
 	defaultSummaryLLMOutputMode    = "json_or_plain"
 	summaryLLMOutputModeStrictJSON = "strict_json"
-	defaultEmbeddingProviderKind   = "tei"
-	defaultVectorProviderKind      = "qdrant"
-	defaultSummaryProviderKind     = providerhttp.OpenAICompatibleProviderKind
+	defaultCleanupJobTimeout       = 90 * time.Second
+	defaultCleanupJobBatchSize     = 64
 )
 
 type Config struct {
@@ -37,18 +35,15 @@ type Config struct {
 	ReadinessReadHeaderTimeout  time.Duration
 	ReadinessIdleTimeout        time.Duration
 	ReadinessShutdownTimeout    time.Duration
-	EmbeddingProviderKind       string
 	TEIURL                      string
 	TEIRequestsPerSecond        int
 	DependencyTimeout           time.Duration
 	SearchTimeout               time.Duration
 	MinimumSearchScore          float64
-	VectorProviderKind          string
 	QdrantURL                   string
 	QdrantCollection            string
 	QdrantAPIKeyFile            string
 	PostgresDSNFile             string
-	SummaryLLMProviderKind      string
 	SummaryLLMBaseURL           string
 	SummaryLLMModel             string
 	SummaryLLMTimeout           time.Duration
@@ -87,6 +82,7 @@ type WorkerConfig struct {
 	FinalizationLease                                             time.Duration
 	CleanupInterval                                               time.Duration
 	CleanupTimeout                                                time.Duration
+	CleanupBatchSize                                              int
 	StaleBatchAge                                                 time.Duration
 	FailureRecordTimeout                                          time.Duration
 	PublishTimeout                                                time.Duration
@@ -105,10 +101,16 @@ type LambdaRuntimePolicy struct {
 	CollectionEnsureTimeout time.Duration
 	FinalizationLease       time.Duration
 	StaleBatchAge           time.Duration
+	CleanupBatchSize        int
 	FailureRecordTimeout    time.Duration
 	RabbitDialTimeout       time.Duration
 	RabbitHeartbeat         time.Duration
 	EndpointResolveTimeout  time.Duration
+}
+
+type CleanupJobPolicy struct {
+	DependencyTimeout time.Duration
+	BatchSize         int
 }
 
 func Load() (Config, error) {
@@ -124,10 +126,10 @@ func Load() (Config, error) {
 	gid, gidErr := positiveInteger(os.Getenv("RUN_AS_GID"), 65532)
 	finalizationLease, finalizationLeaseErr := optionalDuration("RETRIEVAL_FINALIZATION_LEASE", 15*time.Minute)
 	configuration := Config{
-		GRPCAddress: grpcAddress, MetricsAddress: os.Getenv("RETRIEVAL_METRICS_ADDR"), FinalizationLease: finalizationLease, EmbeddingProviderKind: strings.ToLower(strings.TrimSpace(optional("RETRIEVAL_EMBEDDING_PROVIDER", defaultEmbeddingProviderKind))),
-		TEIURL: os.Getenv("RETRIEVAL_TEI_URL"), VectorProviderKind: strings.ToLower(strings.TrimSpace(optional("RETRIEVAL_VECTOR_PROVIDER", defaultVectorProviderKind))),
+		GRPCAddress: grpcAddress, MetricsAddress: os.Getenv("RETRIEVAL_METRICS_ADDR"), FinalizationLease: finalizationLease,
+		TEIURL:    os.Getenv("RETRIEVAL_TEI_URL"),
 		QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: collection, QdrantAPIKeyFile: os.Getenv("RETRIEVAL_QDRANT_API_KEY_FILE"),
-		PostgresDSNFile: os.Getenv("RETRIEVAL_POSTGRES_DSN_FILE"), SummaryLLMProviderKind: strings.ToLower(strings.TrimSpace(optional("RETRIEVAL_SUMMARY_LLM_PROVIDER", defaultSummaryProviderKind))), SummaryLLMBaseURL: os.Getenv("RETRIEVAL_SUMMARY_LLM_BASE_URL"),
+		PostgresDSNFile: os.Getenv("RETRIEVAL_POSTGRES_DSN_FILE"), SummaryLLMBaseURL: os.Getenv("RETRIEVAL_SUMMARY_LLM_BASE_URL"),
 		SummaryLLMModel: os.Getenv("RETRIEVAL_SUMMARY_LLM_MODEL"), SummaryLLMAPIKeyFile: os.Getenv("RETRIEVAL_SUMMARY_LLM_API_KEY_FILE"),
 		SummaryLLMCAFile: os.Getenv("RETRIEVAL_SUMMARY_LLM_CA_FILE"), SummaryLLMOutputMode: strings.ToLower(strings.TrimSpace(os.Getenv("RETRIEVAL_SUMMARY_LLM_OUTPUT_MODE"))),
 		TLS:   internaltls.Files{CA: os.Getenv("RETRIEVAL_TLS_CA_FILE"), Certificate: os.Getenv("RETRIEVAL_TLS_CERT_FILE"), Key: os.Getenv("RETRIEVAL_TLS_KEY_FILE")},
@@ -167,8 +169,7 @@ func Load() (Config, error) {
 	configuration.ReadinessReadHeaderTimeout = readinessReadHeaderTimeout
 	configuration.ReadinessIdleTimeout = readinessIdleTimeout
 	configuration.ReadinessShutdownTimeout = readinessShutdownTimeout
-	if configuration.GRPCAddress == "" || !validEmbeddingProviderKind(configuration.EmbeddingProviderKind) || !validVectorProviderKind(configuration.VectorProviderKind) ||
-		!validSummaryProviderKind(configuration.SummaryLLMProviderKind) || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
+	if configuration.GRPCAddress == "" || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
 		configuration.PostgresDSNFile == "" || configuration.QdrantAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || uidErr != nil || gidErr != nil || finalizationLeaseErr != nil ||
 		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || summaryLLMOutputModeErr != nil || teiRequestsPerSecondErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil ||
@@ -196,18 +197,6 @@ func validSummaryProviderConfiguration(configuration Config) bool {
 	}
 	return validProviderURL(configuration.SummaryLLMBaseURL) && strings.TrimSpace(configuration.SummaryLLMModel) != "" && len(configuration.SummaryLLMModel) <= 256 &&
 		!strings.ContainsAny(configuration.SummaryLLMModel, "\r\n") && configuration.SummaryLLMAPIKeyFile != ""
-}
-
-func validEmbeddingProviderKind(value string) bool {
-	return value == defaultEmbeddingProviderKind
-}
-
-func validVectorProviderKind(value string) bool {
-	return value == defaultVectorProviderKind
-}
-
-func validSummaryProviderKind(value string) bool {
-	return value == defaultSummaryProviderKind
 }
 
 func positiveInteger(value string, fallback int) (int, error) {
@@ -320,6 +309,7 @@ func LoadWorker() (WorkerConfig, error) {
 	dispatchInterval, dispatchIntervalErr := optionalDuration("RETRIEVAL_WORKER_DISPATCH_INTERVAL", 500*time.Millisecond)
 	cleanupInterval, cleanupIntervalErr := optionalDuration("RETRIEVAL_WORKER_CLEANUP_INTERVAL", 15*time.Minute)
 	cleanupTimeout, cleanupTimeoutErr := optionalDuration("RETRIEVAL_WORKER_CLEANUP_TIMEOUT", 30*time.Second)
+	cleanupBatchSize, cleanupBatchSizeErr := boundedPositiveInteger("RETRIEVAL_WORKER_CLEANUP_BATCH_SIZE", defaultCleanupJobBatchSize, 1024)
 	staleBatchAge, staleBatchAgeErr := optionalDuration("RETRIEVAL_WORKER_STALE_BATCH_AGE", 15*time.Minute)
 	failureRecordTimeout, failureRecordTimeoutErr := optionalDuration("RETRIEVAL_WORKER_FAILURE_RECORD_TIMEOUT", 10*time.Second)
 	publishTimeout, publishTimeoutErr := optionalDuration("RETRIEVAL_WORKER_PUBLISH_TIMEOUT", 10*time.Second)
@@ -339,7 +329,7 @@ func LoadWorker() (WorkerConfig, error) {
 		MinimumSearchScore: minimumSearchScore, DBPingTimeout: dbPingTimeout, DependencyTimeout: dependencyTimeout, CollectionEnsureTimeout: collectionEnsureTimeout, FinalizationLease: finalizationLease,
 		ReadinessInitialDelay: readinessInitialDelay, ReadinessMaxDelay: readinessMaxDelay, ReadinessMaxAttempts: readinessMaxAttempts, ReadinessProbeTimeout: readinessProbeTimeout,
 		ReconnectInitialBackoff: reconnectInitialBackoff, ReconnectMaxBackoff: reconnectMaxBackoff, DispatchInterval: dispatchInterval, CleanupInterval: cleanupInterval,
-		CleanupTimeout: cleanupTimeout, StaleBatchAge: staleBatchAge, FailureRecordTimeout: failureRecordTimeout, PublishTimeout: publishTimeout,
+		CleanupTimeout: cleanupTimeout, CleanupBatchSize: cleanupBatchSize, StaleBatchAge: staleBatchAge, FailureRecordTimeout: failureRecordTimeout, PublishTimeout: publishTimeout,
 		RabbitDialTimeout: rabbitDialTimeout, RabbitHeartbeat: rabbitHeartbeat,
 		ReadinessReadHeaderTimeout: readinessReadHeaderTimeout, ReadinessIdleTimeout: readinessIdleTimeout, ReadinessShutdownTimeout: readinessShutdownTimeout,
 		MetricsAddress: optional("RETRIEVAL_WORKER_METRICS_ADDR", os.Getenv("RETRIEVAL_METRICS_ADDR")), ServerlessInvocationTimeout: serverlessInvocationTimeout, Concurrency: concurrency, RunAs: process.Identity{UID: uid, GID: gid}}
@@ -347,7 +337,7 @@ func LoadWorker() (WorkerConfig, error) {
 	if uidErr != nil || gidErr != nil || concurrencyErr != nil || concurrency > 16 || insecureErr != nil || timeoutErr != nil ||
 		dbPingTimeoutErr != nil || dependencyTimeoutErr != nil || collectionEnsureTimeoutErr != nil || finalizationLeaseErr != nil || readinessInitialDelayErr != nil || readinessMaxDelayErr != nil ||
 		readinessMaxAttemptsErr != nil || readinessProbeTimeoutErr != nil || reconnectInitialBackoffErr != nil || reconnectMaxBackoffErr != nil ||
-		dispatchIntervalErr != nil || cleanupIntervalErr != nil || cleanupTimeoutErr != nil || staleBatchAgeErr != nil || failureRecordTimeoutErr != nil || publishTimeoutErr != nil ||
+		dispatchIntervalErr != nil || cleanupIntervalErr != nil || cleanupTimeoutErr != nil || cleanupBatchSizeErr != nil || staleBatchAgeErr != nil || failureRecordTimeoutErr != nil || publishTimeoutErr != nil ||
 		rabbitDialTimeoutErr != nil || rabbitHeartbeatErr != nil ||
 		readinessReadHeaderTimeoutErr != nil || readinessIdleTimeoutErr != nil || readinessShutdownTimeoutErr != nil ||
 		teiRequestsPerSecondErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || minimumSearchScoreErr != nil ||
@@ -364,11 +354,12 @@ func LoadLambdaRuntimePolicy() (LambdaRuntimePolicy, error) {
 	collectionEnsureTimeout, collectionEnsureTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_COLLECTION_TIMEOUT", 10*time.Second)
 	finalizationLease, finalizationLeaseErr := optionalDuration("RETRIEVAL_FINALIZATION_LEASE", 15*time.Minute)
 	staleBatchAge, staleBatchAgeErr := optionalDuration("RETRIEVAL_LAMBDA_STALE_BATCH_AGE", 15*time.Minute)
+	cleanupBatchSize, cleanupBatchSizeErr := boundedPositiveInteger("RETRIEVAL_LAMBDA_CLEANUP_BATCH_SIZE", defaultCleanupJobBatchSize, 1024)
 	failureRecordTimeout, failureRecordTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_FAILURE_RECORD_TIMEOUT", 10*time.Second)
 	rabbitDialTimeout, rabbitDialTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_RABBITMQ_DIAL_TIMEOUT", 5*time.Second)
 	rabbitHeartbeat, rabbitHeartbeatErr := optionalDuration("RETRIEVAL_LAMBDA_RABBITMQ_HEARTBEAT", 10*time.Second)
 	endpointResolveTimeout, endpointResolveTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_ENDPOINT_RESOLVE_TIMEOUT", 3*time.Second)
-	if dependencyTimeoutErr != nil || collectionEnsureTimeoutErr != nil || finalizationLeaseErr != nil || staleBatchAgeErr != nil || failureRecordTimeoutErr != nil ||
+	if dependencyTimeoutErr != nil || collectionEnsureTimeoutErr != nil || finalizationLeaseErr != nil || staleBatchAgeErr != nil || cleanupBatchSizeErr != nil || failureRecordTimeoutErr != nil ||
 		rabbitDialTimeoutErr != nil || rabbitHeartbeatErr != nil || endpointResolveTimeoutErr != nil {
 		return LambdaRuntimePolicy{}, errors.New("invalid retrieval lambda runtime policy")
 	}
@@ -377,10 +368,23 @@ func LoadLambdaRuntimePolicy() (LambdaRuntimePolicy, error) {
 		CollectionEnsureTimeout: collectionEnsureTimeout,
 		FinalizationLease:       finalizationLease,
 		StaleBatchAge:           staleBatchAge,
+		CleanupBatchSize:        cleanupBatchSize,
 		FailureRecordTimeout:    failureRecordTimeout,
 		RabbitDialTimeout:       rabbitDialTimeout,
 		RabbitHeartbeat:         rabbitHeartbeat,
 		EndpointResolveTimeout:  endpointResolveTimeout,
+	}, nil
+}
+
+func LoadCleanupJobPolicy() (CleanupJobPolicy, error) {
+	dependencyTimeout, dependencyTimeoutErr := optionalDuration("RETRIEVAL_CLEANUP_JOB_DEPENDENCY_TIMEOUT", defaultCleanupJobTimeout)
+	batchSize, batchSizeErr := boundedPositiveInteger("RETRIEVAL_CLEANUP_JOB_BATCH_SIZE", defaultCleanupJobBatchSize, 1024)
+	if dependencyTimeoutErr != nil || batchSizeErr != nil {
+		return CleanupJobPolicy{}, errors.New("invalid retrieval cleanup job policy")
+	}
+	return CleanupJobPolicy{
+		DependencyTimeout: dependencyTimeout,
+		BatchSize:         batchSize,
 	}, nil
 }
 

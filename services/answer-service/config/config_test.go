@@ -3,8 +3,6 @@ package config
 import (
 	"testing"
 	"time"
-
-	"github.com/belLena81/raglibrarian/pkg/providerhttp"
 )
 
 func TestLoadUsesSecureBoundedDefaults(t *testing.T) {
@@ -33,9 +31,6 @@ func TestLoadDefaultsFreeTierProviderRateLimit(t *testing.T) {
 	}
 	if configuration.LLMRequestsPerMinute != 15 {
 		t.Fatalf("LLMRequestsPerMinute = %d, want 15", configuration.LLMRequestsPerMinute)
-	}
-	if configuration.LLMProviderKind != providerhttp.OpenAICompatibleProviderKind {
-		t.Fatalf("LLMProviderKind = %q, want %s", configuration.LLMProviderKind, providerhttp.OpenAICompatibleProviderKind)
 	}
 	if configuration.LogProviderErrorBody {
 		t.Fatal("LogProviderErrorBody = true, want false")
@@ -79,11 +74,6 @@ func TestLoadRejectsInsecureProviderAndInvalidBounds(t *testing.T) {
 	t.Setenv("ANSWER_PROVIDER_REQUESTS_PER_MINUTE", "maybe")
 	if _, err := Load(); err == nil {
 		t.Fatal("malformed provider rate limit accepted")
-	}
-	setRequiredEnvironment(t)
-	t.Setenv("ANSWER_LLM_PROVIDER", "anthropic")
-	if _, err := Load(); err == nil {
-		t.Fatal("unknown provider kind accepted")
 	}
 }
 

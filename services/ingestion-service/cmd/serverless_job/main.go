@@ -44,7 +44,14 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer runtime.Close()
-	brokerPolicy := transport.BrokerPolicy{DialTimeout: cfg.RabbitDialTimeout, Heartbeat: cfg.RabbitHeartbeat, PublishTimeout: cfg.RabbitPublishTimeout}
+	brokerPolicy := transport.BrokerPolicy{
+		DialTimeout:          cfg.RabbitDialTimeout,
+		Heartbeat:            cfg.RabbitHeartbeat,
+		PublishTimeout:       cfg.RabbitPublishTimeout,
+		FirstRetryDelay:      cfg.FirstRetryDelay,
+		SecondRetryDelay:     cfg.SecondRetryDelay,
+		SubsequentRetryDelay: cfg.SubsequentRetryDelay,
+	}
 	connection, err := transport.DialConsumer(invocationContext, cfg.RabbitURI, brokerPolicy)
 	if err != nil {
 		return err

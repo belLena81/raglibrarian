@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/process"
 )
@@ -29,5 +30,29 @@ func TestParseRunAsUsesDefaultsAndValidatesOverrides(t *testing.T) {
 				t.Fatal("invalid identity accepted")
 			}
 		})
+	}
+}
+
+func TestEnvDurationUsesFallbackForMissingAndInvalidValues(t *testing.T) {
+	t.Setenv("ANSWER_STUB_READ_TIMEOUT", "")
+	if value := envDuration("ANSWER_STUB_READ_TIMEOUT", 5*time.Second); value != 5*time.Second {
+		t.Fatalf("envDuration() = %v, want fallback", value)
+	}
+
+	t.Setenv("ANSWER_STUB_READ_TIMEOUT", "invalid")
+	if value := envDuration("ANSWER_STUB_READ_TIMEOUT", 5*time.Second); value != 5*time.Second {
+		t.Fatalf("envDuration() invalid = %v, want fallback", value)
+	}
+
+	t.Setenv("ANSWER_STUB_READ_TIMEOUT", "0s")
+	if value := envDuration("ANSWER_STUB_READ_TIMEOUT", 5*time.Second); value != 5*time.Second {
+		t.Fatalf("envDuration() zero = %v, want fallback", value)
+	}
+}
+
+func TestEnvDurationParsesPositiveDuration(t *testing.T) {
+	t.Setenv("ANSWER_STUB_READ_TIMEOUT", "7s")
+	if value := envDuration("ANSWER_STUB_READ_TIMEOUT", 5*time.Second); value != 7*time.Second {
+		t.Fatalf("envDuration() = %v, want 7s", value)
 	}
 }

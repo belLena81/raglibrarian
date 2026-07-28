@@ -69,7 +69,11 @@ func NewDispatcher(ctx context.Context, cfg config.DispatcherConfig) (*Dispatche
 		pool.Close()
 		return nil, errors.New("database unavailable")
 	}
-	brokerPolicy := transport.BrokerPolicy{DialTimeout: cfg.RabbitDialTimeout, Heartbeat: cfg.RabbitHeartbeat, PublishTimeout: cfg.RabbitPublishTimeout}
+	brokerPolicy := transport.BrokerPolicy{
+		DialTimeout:    cfg.RabbitDialTimeout,
+		Heartbeat:      cfg.RabbitHeartbeat,
+		PublishTimeout: cfg.RabbitPublishTimeout,
+	}
 	publisher := transport.NewReconnectingPublisher(cfg.RabbitURI, brokerPolicy)
 	outbox, err := transport.NewOutboxWorker(repository.NewPostgres(pool, repository.Policy{
 		RetryDispatchDelay:   cfg.RetryDispatchDelay,
@@ -208,8 +212,8 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		artifactStore,
 		chunkPolicy,
 		artifact.Limits{
-			ChunksPerShard:       256,
-			MaximumShardBytes:    4 << 20,
+			ChunksPerShard:       cfg.ArtifactChunksPerShard,
+			MaximumShardBytes:    int(cfg.ArtifactMaximumShardBytes),
 			MaximumManifestBytes: int(cfg.MaximumManifestBytes),
 		},
 	)
@@ -301,7 +305,14 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		cleanup()
 		return nil, err
 	}
-	brokerPolicy := transport.BrokerPolicy{DialTimeout: cfg.RabbitDialTimeout, Heartbeat: cfg.RabbitHeartbeat, PublishTimeout: cfg.RabbitPublishTimeout}
+	brokerPolicy := transport.BrokerPolicy{
+		DialTimeout:          cfg.RabbitDialTimeout,
+		Heartbeat:            cfg.RabbitHeartbeat,
+		PublishTimeout:       cfg.RabbitPublishTimeout,
+		FirstRetryDelay:      cfg.FirstRetryDelay,
+		SecondRetryDelay:     cfg.SecondRetryDelay,
+		SubsequentRetryDelay: cfg.SubsequentRetryDelay,
+	}
 	publisher := transport.NewReconnectingPublisher(cfg.RabbitURI, brokerPolicy)
 	outbox, err := transport.NewOutboxWorker(repo, publisher, cfg.ResultExchange, cfg.OutboxInterval, transport.OutboxPolicy{Lease: cfg.OutboxLease, PublishTimeout: cfg.RabbitPublishTimeout}, diagnosticsLogger)
 	if err != nil {
