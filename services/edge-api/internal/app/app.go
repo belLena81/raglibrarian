@@ -129,7 +129,14 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		RefreshCookieMaxAge: cfg.RefreshCookieMaxAge,
 	})
 	answerAdmission := middleware.NewPrincipalRateLimiter(cfg.AnswerRateLimit, cfg.AnswerRateWindow, cfg.QueryRateMaxKeys)
-	queryHandler := handler.NewQueryHandler(retrieval, cfg.MinimumEvidenceScore, handler.WithAnswer(answer, answerAdmission))
+	queryHandler := handler.NewQueryHandler(retrieval, cfg.MinimumEvidenceScore, handler.QueryPolicy{
+		MaxQuestionLength: cfg.QueryMaxQuestionLength,
+		MaxTags:           cfg.QueryMaxTags,
+		MaxTagLength:      cfg.QueryMaxTagLength,
+		MaxAuthorLength:   cfg.QueryMaxAuthorLength,
+		DefaultLimit:      cfg.QueryDefaultLimit,
+		MaxLimit:          cfg.QueryMaxLimit,
+	}, handler.WithAnswer(answer, answerAdmission))
 	healthHandler := handler.NewHealthHandler(readiness{
 		identity:                   identity,
 		catalog:                    catalog,

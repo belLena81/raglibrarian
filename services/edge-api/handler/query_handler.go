@@ -11,15 +11,6 @@ import (
 	querymiddleware "github.com/belLena81/raglibrarian/services/edge-api/middleware"
 )
 
-const (
-	maxQueryQuestionLength = 2000
-	maxQueryTags           = 20
-	maxQueryTagLength      = 64
-	maxQueryAuthorLength   = 256
-	defaultQueryLimit      = 5
-	maxQueryLimit          = 20
-)
-
 var (
 	// ErrInvalidSearch identifies a request rejected by Retrieval validation.
 	ErrInvalidSearch = errors.New("invalid search")
@@ -145,6 +136,17 @@ type QueryHandler struct {
 	answer               Answerer
 	answerAdmission      AnswerAdmission
 	minimumEvidenceScore float64
+	policy               QueryPolicy
+}
+
+// QueryPolicy defines request-bound validation and pagination limits.
+type QueryPolicy struct {
+	MaxQuestionLength int
+	MaxTags           int
+	MaxTagLength      int
+	MaxAuthorLength   int
+	DefaultLimit      int
+	MaxLimit          int
 }
 
 // QueryHandlerOption configures optional query capabilities.
@@ -162,14 +164,18 @@ func WithAnswer(answer Answerer, admission AnswerAdmission) QueryHandlerOption {
 }
 
 // NewQueryHandler constructs the semantic query boundary.
-func NewQueryHandler(retrieval Searcher, minimumEvidenceScore float64, options ...QueryHandlerOption) *QueryHandler {
+func NewQueryHandler(retrieval Searcher, minimumEvidenceScore float64, policy QueryPolicy, options ...QueryHandlerOption) *QueryHandler {
 	if dependencyMissing(retrieval) {
 		panic("handler: Retrieval must not be nil")
 	}
 	if minimumEvidenceScore <= 0 || minimumEvidenceScore > 1 {
 		panic("handler: minimum evidence score must be within (0, 1]")
 	}
-	handler := &QueryHandler{retrieval: retrieval, minimumEvidenceScore: minimumEvidenceScore}
+	if policy.MaxQuestionLength <= 0 || policy.MaxTags <= 0 || policy.MaxTagLength <= 0 || policy.MaxAuthorLength <= 0 ||
+		policy.DefaultLimit <= 0 || policy.MaxLimit <= 0 || policy.DefaultLimit > policy.MaxLimit {
+		panic("handler: query policy is invalid")
+	}
+	handler := &QueryHandler{retrieval: retrieval, minimumEvidenceScore: minimumEvidenceScore, policy: policy}
 	for _, option := range options {
 		if option == nil {
 			panic("handler: query option must not be nil")
@@ -191,7 +197,7 @@ func (h *QueryHandler) Query(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
-	if err := normalizeQueryRequest(&request); err != nil {
+	if err := h.normalizeQueryRequest(&request); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, "invalid query")
 		return
 	}
@@ -243,7 +249,7 @@ func writeQueryError(w http.ResponseWriter, err error) {
 	}
 }
 
-func normalizeQueryRequest(request *QueryRequest) error {
+func (h *QueryHandler) normalizeQueryRequest(request *QueryRequest) error {
 	request.Question = strings.TrimSpace(request.Question)
 	request.Mode = strings.TrimSpace(request.Mode)
 	if request.Mode == "" {
@@ -253,15 +259,15 @@ func normalizeQueryRequest(request *QueryRequest) error {
 		return ErrInvalidSearch
 	}
 	request.Filters.Author = strings.TrimSpace(request.Filters.Author)
-	if request.Question == "" || utf8.RuneCountInString(request.Question) > maxQueryQuestionLength || utf8.RuneCountInString(request.Filters.Author) > maxQueryAuthorLength {
+	if request.Question == "" || utf8.RuneCountInString(request.Question) > h.policy.MaxQuestionLength || utf8.RuneCountInString(request.Filters.Author) > h.policy.MaxAuthorLength {
 		return ErrInvalidSearch
 	}
-	if len(request.Filters.Tags) > maxQueryTags {
+	if len(request.Filters.Tags) > h.policy.MaxTags {
 		return ErrInvalidSearch
 	}
 	for index, tag := range request.Filters.Tags {
 		request.Filters.Tags[index] = strings.TrimSpace(tag)
-		if request.Filters.Tags[index] == "" || utf8.RuneCountInString(request.Filters.Tags[index]) > maxQueryTagLength {
+		if request.Filters.Tags[index] == "" || utf8.RuneCountInString(request.Filters.Tags[index]) > h.policy.MaxTagLength {
 			return ErrInvalidSearch
 		}
 	}
@@ -272,9 +278,9 @@ func normalizeQueryRequest(request *QueryRequest) error {
 		return ErrInvalidSearch
 	}
 	if request.Limit == 0 {
-		request.Limit = defaultQueryLimit
+		request.Limit = h.policy.DefaultLimit
 	}
-	if request.Limit < 1 || request.Limit > maxQueryLimit {
+	if request.Limit < 1 || request.Limit > h.policy.MaxLimit {
 		return ErrInvalidSearch
 	}
 	return nil

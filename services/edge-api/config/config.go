@@ -49,6 +49,8 @@ type Config struct {
 	EnforceBrowserOrigin                                                              bool
 	RetrievalReadinessRequired                                                        bool
 	QueryRateLimit, QueryRateMaxKeys, QueryConcurrency                                int
+	QueryMaxQuestionLength, QueryMaxTags, QueryMaxTagLength, QueryMaxAuthorLength     int
+	QueryDefaultLimit, QueryMaxLimit                                                  int
 	QueryRateWindow                                                                   time.Duration
 	AuthRegisterRateLimit, AuthRegisterRateMaxKeys                                    int
 	AuthVerifyEmailRateLimit, AuthVerifyEmailRateMaxKeys                              int
@@ -138,6 +140,30 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	queryConcurrency, err := positiveInt("EDGE_QUERY_CONCURRENCY", 8)
+	if err != nil {
+		return Config{}, err
+	}
+	queryMaxQuestionLength, err := positiveInt("EDGE_QUERY_MAX_QUESTION_LENGTH", 2000)
+	if err != nil {
+		return Config{}, err
+	}
+	queryMaxTags, err := positiveInt("EDGE_QUERY_MAX_TAGS", 20)
+	if err != nil {
+		return Config{}, err
+	}
+	queryMaxTagLength, err := positiveInt("EDGE_QUERY_MAX_TAG_LENGTH", 64)
+	if err != nil {
+		return Config{}, err
+	}
+	queryMaxAuthorLength, err := positiveInt("EDGE_QUERY_MAX_AUTHOR_LENGTH", 256)
+	if err != nil {
+		return Config{}, err
+	}
+	queryDefaultLimit, err := positiveInt("EDGE_QUERY_DEFAULT_LIMIT", 5)
+	if err != nil {
+		return Config{}, err
+	}
+	queryMaxLimit, err := positiveInt("EDGE_QUERY_MAX_LIMIT", 20)
 	if err != nil {
 		return Config{}, err
 	}
@@ -388,6 +414,9 @@ func Load() (Config, error) {
 	if catalogPreviewDeadline >= retrievalSearchDeadline {
 		return Config{}, fmt.Errorf("%w: EDGE_CATALOG_PREVIEW_DEADLINE must be shorter than EDGE_RETRIEVAL_SEARCH_DEADLINE", ErrQueryLimitConfiguration)
 	}
+	if queryDefaultLimit > queryMaxLimit {
+		return Config{}, fmt.Errorf("%w: EDGE_QUERY_DEFAULT_LIMIT must not exceed EDGE_QUERY_MAX_LIMIT", ErrQueryLimitConfiguration)
+	}
 	minimumEvidenceScore, err := boundedFloat("EDGE_MINIMUM_EVIDENCE_SCORE", 0.6, 0, 1)
 	if err != nil {
 		return Config{}, err
@@ -442,6 +471,12 @@ func Load() (Config, error) {
 		QueryRateWindow:                      queryRateWindow,
 		QueryRateMaxKeys:                     queryRateMaxKeys,
 		QueryConcurrency:                     queryConcurrency,
+		QueryMaxQuestionLength:               queryMaxQuestionLength,
+		QueryMaxTags:                         queryMaxTags,
+		QueryMaxTagLength:                    queryMaxTagLength,
+		QueryMaxAuthorLength:                 queryMaxAuthorLength,
+		QueryDefaultLimit:                    queryDefaultLimit,
+		QueryMaxLimit:                        queryMaxLimit,
 		AuthRegisterRateLimit:                authRegisterRateLimit,
 		AuthRegisterRateWindow:               authRegisterRateWindow,
 		AuthRegisterRateMaxKeys:              authRegisterRateMaxKeys,
