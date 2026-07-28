@@ -1118,7 +1118,7 @@ func TestCompleteBatchRejectsDuplicateChunkID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = insertActiveBookLifecycle(ctx, pool, bookID, jobID, work.CorrelationID, now); err != nil {
+	if err = insertActiveBookLifecycle(t, ctx, pool, bookID, jobID, work.CorrelationID, now); err != nil {
 		t.Fatal(err)
 	}
 	_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_batches(id,job_id,shard_reference,shard_sha256,compressed_byte_size,uncompressed_byte_size,chunk_count,state,updated_at)
@@ -1179,6 +1179,9 @@ func TestCompleteBatchPersistsNilTagsAsEmptyArray(t *testing.T) {
 	_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_jobs(id,book_id,source_sha256,manifest_sha256,profile_digest,state,expected_batches,correlation_id,created_at,updated_at)
 		VALUES($1,$2,$3,$4,$5,'pending',1,$6,$7,$7)`, jobID, bookID, work.SourceSHA256[:], work.ManifestSHA256[:], work.ProfileDigest[:], work.CorrelationID, now)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = insertActiveBookLifecycle(t, ctx, pool, bookID, jobID, work.CorrelationID, now); err != nil {
 		t.Fatal(err)
 	}
 	_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_batches(id,job_id,shard_reference,shard_sha256,compressed_byte_size,uncompressed_byte_size,chunk_count,state,updated_at)
@@ -1255,7 +1258,7 @@ func TestCompleteBatchRejectsDuplicateChunkIDAcrossBatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = insertActiveBookLifecycle(ctx, pool, bookID, jobID, "correlation-"+suffix, now); err != nil {
+	if err = insertActiveBookLifecycle(t, ctx, pool, bookID, jobID, "correlation-"+suffix, now); err != nil {
 		t.Fatal(err)
 	}
 	batchIDs := []string{"batch-a-" + suffix, "batch-b-" + suffix}
@@ -1349,6 +1352,9 @@ func TestCompleteBatchSerializesFinalBatchCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err = insertActiveBookLifecycle(t, ctx, pool, bookID, jobID, "correlation-"+suffix, now); err != nil {
+		t.Fatal(err)
+	}
 	batchIDs := []string{"batch-a-" + suffix, "batch-b-" + suffix}
 	for index, batchID := range batchIDs {
 		shardSHA256 := integrationDigest(byte(10 + index))
@@ -1365,7 +1371,6 @@ func TestCompleteBatchSerializesFinalBatchCompletion(t *testing.T) {
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE id=$1`, jobID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
 	})
-
 	works := make([]application.BatchWork, len(batchIDs))
 	vector := make([]float32, domain.EmbeddingDimensions)
 	for index, batchID := range batchIDs {
@@ -1391,7 +1396,7 @@ func TestCompleteBatchSerializesFinalBatchCompletion(t *testing.T) {
 		}
 	}
 
-	completed := make(chan bool, len(works))
+	completed := make(chan application.BatchWork, len(works))
 	errs := make(chan error, len(works))
 	var waitGroup sync.WaitGroup
 	for index := range works {
@@ -1418,7 +1423,9 @@ func TestCompleteBatchSerializesFinalBatchCompletion(t *testing.T) {
 				errs <- completeErr
 				return
 			}
-			completed <- ready
+			if ready {
+				completed <- work
+			}
 		}()
 	}
 	waitGroup.Wait()
@@ -1427,20 +1434,18 @@ func TestCompleteBatchSerializesFinalBatchCompletion(t *testing.T) {
 	for completeErr := range errs {
 		t.Fatal(completeErr)
 	}
-	finalizers := 0
-	for ready := range completed {
-		if ready {
-			finalizers++
-			if err = repository.FinalizeJob(ctx, works[0], now); err != nil {
-				t.Fatal(err)
-			}
-		}
+	finalizerWork, ok := <-completed
+	if !ok {
+		t.Fatal("final batch completions = 0, want 1")
 	}
-	if finalizers != 1 {
-		t.Fatalf("final batch completions = %d, want 1", finalizers)
+	if _, more := <-completed; more {
+		t.Fatal("final batch completions = 2, want 1")
 	}
-	if err = repository.FinalizeJob(ctx, works[1], now.Add(time.Second)); err != nil {
+	if err = repository.FinalizeJob(ctx, finalizerWork, now); err != nil {
 		t.Fatal(err)
+	}
+	if err = repository.FinalizeJob(ctx, works[1], now.Add(time.Second)); !errors.Is(err, application.ErrConflictingEvent) {
+		t.Fatalf("FinalizeJob() error=%v, want conflicting retrieval event", err)
 	}
 	var state string
 	var terminalEvents int

@@ -15,6 +15,14 @@ vulnerabilities:
       The official qdrant/qdrant:v1.18.3 image bundles this Node.js dependency
       in upstream SBOM metadata. Remove this exception when Qdrant publishes an
       image with axios 1.18.0 or later.
+  - id: CVE-2026-14257
+    purls:
+      - pkg:npm/brace-expansion@1.1.13
+    expired_at: 2026-08-20
+    statement: >-
+      The official qdrant/qdrant:v1.18.3 image bundles this Node.js dependency
+      in upstream SBOM metadata. Remove this exception when Qdrant publishes an
+      image with brace-expansion 1.1.16, 2.1.2, or 5.0.7 or later.
   - id: CVE-2026-13149
     purls:
       - pkg:npm/brace-expansion@1.1.13
@@ -23,6 +31,14 @@ vulnerabilities:
       The official qdrant/qdrant:v1.18.3 image bundles this Node.js dependency
       in upstream SBOM metadata. Remove this exception when Qdrant publishes an
       image with brace-expansion 1.1.16, 2.1.2, or 5.0.7 or later.
+  - id: GHSA-r28c-9q8g-f849
+    purls:
+      - pkg:npm/postcss@8.5.13
+    expired_at: 2026-08-20
+    statement: >-
+      The official qdrant/qdrant:v1.18.3 image bundles this Node.js dependency
+      in upstream SBOM metadata. Remove this exception when Qdrant publishes an
+      image with postcss 8.5.18 or later.
   - id: CVE-2026-59869
     purls:
       - pkg:npm/js-yaml@4.2.0
@@ -47,3 +63,11 @@ vulnerabilities:
       The official qdrant/qdrant:v1.18.3 image bundles this Node.js dependency
       in upstream SBOM metadata. Remove this exception when Qdrant publishes an
       image with tar 7.5.18 or later.
+  - id: GHSA-4w2j-m93h-cj5j
+    purls:
+      - pkg:cargo/quinn-proto@0.11.14
+    expired_at: 2026-08-20
+    statement: >-
+      The official qdrant/qdrant:v1.18.3 image bundles this Rust dependency in
+      upstream SBOM metadata. Remove this exception when Qdrant publishes an
+      image with quinn-proto 0.11.15 or later.
