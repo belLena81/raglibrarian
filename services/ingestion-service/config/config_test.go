@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadUsesBoundedProductionDefaults(t *testing.T) {
@@ -14,6 +15,10 @@ func TestLoadUsesBoundedProductionDefaults(t *testing.T) {
 	}
 	if value.MaximumSourceBytes != 25<<20 || value.MaximumPages != 1000 || value.MaximumChunks != 50_000 || value.MaximumManifestBytes != 1<<20 || value.WorkConcurrency != 1 {
 		t.Fatalf("unexpected defaults: %#v", value)
+	}
+	if value.WorkerReadinessProbeTimeout != 5*time.Second || value.WorkerReadinessRefreshInterval != 5*time.Second ||
+		value.WorkerMetricsReadHeaderTimeout != 10*time.Second || value.WorkerMetricsShutdownTimeout != 10*time.Second {
+		t.Fatalf("unexpected worker runtime defaults: %#v", value)
 	}
 	if value.MemoryLimitBytes != 2<<30 || value.ParserSandboxMemoryBytes != 1536<<20 {
 		t.Fatalf("unexpected parser memory defaults: %#v", value)
@@ -112,6 +117,25 @@ func TestLoadRejectsTemporaryLimitBelowAcceptedSource(t *testing.T) {
 	t.Setenv("INGESTION_MAX_TEMP_BYTES", "1024")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected temporary storage validation error")
+	}
+}
+
+func TestLoadParsesWorkerRuntimePolicy(t *testing.T) {
+	setRequiredEnvironment(t)
+	t.Setenv("INGESTION_WORKER_READINESS_PROBE_TIMEOUT", "1500ms")
+	t.Setenv("INGESTION_WORKER_READINESS_REFRESH_INTERVAL", "3s")
+	t.Setenv("INGESTION_WORKER_METRICS_READ_HEADER_TIMEOUT", "6s")
+	t.Setenv("INGESTION_WORKER_METRICS_SHUTDOWN_TIMEOUT", "7s")
+
+	value, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.WorkerReadinessProbeTimeout != 1500*time.Millisecond ||
+		value.WorkerReadinessRefreshInterval != 3*time.Second ||
+		value.WorkerMetricsReadHeaderTimeout != 6*time.Second ||
+		value.WorkerMetricsShutdownTimeout != 7*time.Second {
+		t.Fatalf("unexpected worker runtime policy: %#v", value)
 	}
 }
 

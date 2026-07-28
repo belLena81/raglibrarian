@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"log"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -238,12 +237,18 @@ func (r *Runtime) runBrokerLoop(ctx context.Context, run func(context.Context) e
 func (r *Runtime) runBrokerSession(ctx context.Context) error {
 	sessionContext, sessionCancel := context.WithCancel(ctx)
 	defer sessionCancel()
-	consumerConnection, err := dial(ctx, r.configuration.ConsumerRabbitURI)
+	consumerConnection, err := rabbitmq.Dial(ctx, r.configuration.ConsumerRabbitURI, rabbitmq.DialPolicy{
+		Timeout:   r.configuration.RabbitDialTimeout,
+		Heartbeat: r.configuration.RabbitHeartbeat,
+	})
 	if err != nil {
 		return errors.New("retrieval consumer broker unavailable")
 	}
 	defer func() { _ = consumerConnection.Close() }()
-	publisherConnection, err := dial(ctx, r.configuration.PublisherRabbitURI)
+	publisherConnection, err := rabbitmq.Dial(ctx, r.configuration.PublisherRabbitURI, rabbitmq.DialPolicy{
+		Timeout:   r.configuration.RabbitDialTimeout,
+		Heartbeat: r.configuration.RabbitHeartbeat,
+	})
 	if err != nil {
 		return errors.New("retrieval publisher broker unavailable")
 	}
@@ -1031,13 +1036,6 @@ func (r *Runtime) logOutboxMarkedPublished() {
 	if r.diagnostic != nil {
 		r.diagnostic.OutboxMarkedPublished()
 	}
-}
-
-func dial(ctx context.Context, uri string) (*amqp091.Connection, error) {
-	dialer := net.Dialer{Timeout: 5 * time.Second}
-	return amqp091.DialConfig(uri, amqp091.Config{Heartbeat: 10 * time.Second, Dial: func(network, address string) (net.Conn, error) {
-		return dialer.DialContext(ctx, network, address)
-	}})
 }
 
 func randomID() (string, error) {

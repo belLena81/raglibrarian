@@ -449,7 +449,10 @@ func (r *Runtime) failureRecordingContext() (context.Context, context.CancelFunc
 }
 
 func (r *Runtime) Dispatch(ctx context.Context) error {
-	connection, err := dial(ctx, r.secret.PublisherRabbitURI)
+	connection, err := rabbitmq.Dial(ctx, r.secret.PublisherRabbitURI, rabbitmq.DialPolicy{
+		Timeout:   5 * time.Second,
+		Heartbeat: 10 * time.Second,
+	})
 	if err != nil {
 		return errors.New("publisher unavailable")
 	}
@@ -593,11 +596,6 @@ func (r *Runtime) retryPendingVectorCleanup(ctx context.Context, now time.Time, 
 
 func queueContains(value, queue string) bool {
 	return value == queue || len(value) > len(queue) && value[:len(queue)] == queue
-}
-
-func dial(ctx context.Context, uri string) (*amqp091.Connection, error) {
-	dialer := net.Dialer{Timeout: 5 * time.Second}
-	return amqp091.DialConfig(uri, amqp091.Config{Heartbeat: 10 * time.Second, Dial: func(network, address string) (net.Conn, error) { return dialer.DialContext(ctx, network, address) }})
 }
 
 func randomID() (string, error) {

@@ -539,6 +539,8 @@ func TestLoadWorkerOverridesRuntimePolicy(t *testing.T) {
 	t.Setenv("RETRIEVAL_WORKER_STALE_BATCH_AGE", "17m")
 	t.Setenv("RETRIEVAL_WORKER_FAILURE_RECORD_TIMEOUT", "11s")
 	t.Setenv("RETRIEVAL_WORKER_PUBLISH_TIMEOUT", "12s")
+	t.Setenv("RETRIEVAL_WORKER_RABBITMQ_DIAL_TIMEOUT", "13s")
+	t.Setenv("RETRIEVAL_WORKER_RABBITMQ_HEARTBEAT", "14s")
 	t.Setenv("RETRIEVAL_WORKER_READY_READ_HEADER_TIMEOUT", "4s")
 	t.Setenv("RETRIEVAL_WORKER_READY_IDLE_TIMEOUT", "35s")
 	t.Setenv("RETRIEVAL_WORKER_READY_SHUTDOWN_TIMEOUT", "5s")
@@ -552,6 +554,7 @@ func TestLoadWorkerOverridesRuntimePolicy(t *testing.T) {
 		configuration.ReadinessProbeTimeout != 3*time.Second || configuration.ReconnectInitialBackoff != 2*time.Second || configuration.ReconnectMaxBackoff != 35*time.Second ||
 		configuration.DispatchInterval != 750*time.Millisecond || configuration.CleanupInterval != 16*time.Minute || configuration.CleanupTimeout != 31*time.Second ||
 		configuration.StaleBatchAge != 17*time.Minute || configuration.FailureRecordTimeout != 11*time.Second || configuration.PublishTimeout != 12*time.Second ||
+		configuration.RabbitDialTimeout != 13*time.Second || configuration.RabbitHeartbeat != 14*time.Second ||
 		configuration.ReadinessReadHeaderTimeout != 4*time.Second || configuration.ReadinessIdleTimeout != 35*time.Second || configuration.ReadinessShutdownTimeout != 5*time.Second {
 		t.Fatalf("unexpected worker policy: %#v", configuration)
 	}

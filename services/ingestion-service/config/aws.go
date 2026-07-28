@@ -170,6 +170,22 @@ func loadAWS(ctx context.Context) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	workerReadinessProbeTimeout, err := boundedDuration("INGESTION_WORKER_READINESS_PROBE_TIMEOUT", time.Second, time.Minute, 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	workerReadinessRefreshInterval, err := boundedDuration("INGESTION_WORKER_READINESS_REFRESH_INTERVAL", 2*time.Second, time.Minute, 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	workerMetricsReadHeaderTimeout, err := boundedDuration("INGESTION_WORKER_METRICS_READ_HEADER_TIMEOUT", 5*time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	workerMetricsShutdownTimeout, err := boundedDuration("INGESTION_WORKER_METRICS_SHUTDOWN_TIMEOUT", 5*time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
 	uid, err := boundedInt("RUN_AS_UID", 65532, 1<<30)
 	if err != nil {
 		return Config{}, err
@@ -179,42 +195,46 @@ func loadAWS(ctx context.Context) (Config, error) {
 		return Config{}, err
 	}
 	return Config{
-		RuntimeBackend:           "aws",
-		DSN:                      dsn,
-		RabbitURI:                rabbitURI,
-		SourceBucket:             sourceBucket,
-		ArtifactBucket:           artifactBucket,
-		AWSRegion:                region,
-		KMSKeyARN:                kmsKey,
-		MetricsAddress:           metrics,
-		TokenizerFile:            tokenizerFile,
-		PDFInfoPath:              optional("INGESTION_PDFINFO_PATH", "/usr/bin/pdfinfo"),
-		PDFTextPath:              optional("INGESTION_PDFTOTEXT_PATH", "/usr/bin/pdftotext"),
-		EPUBParserPath:           optional("INGESTION_EPUB_PARSER_PATH", "/usr/local/bin/epub-parser"),
-		TemporaryDirectory:       "/tmp",
-		Queue:                    optional("INGESTION_QUEUE", "ingestion.book-uploaded.v1"),
-		ResultExchange:           optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
-		WorkConcurrency:          workConcurrency,
-		MaximumAttempts:          maximumAttempts,
-		MaximumChunks:            maximumChunks,
-		ChunkMaximumTokens:       chunkMaximumTokens,
-		ChunkOverlapTokens:       chunkOverlapTokens,
-		ChunkTargetPages:         chunkTargetPages,
-		ChunkMaximumPages:        chunkMaximumPages,
-		MaximumSourceBytes:       maximumSource,
-		MaximumExtractedBytes:    maximumExtracted,
-		MaximumPageBytes:         maximumPage,
-		MaximumManifestBytes:     maximumManifest,
-		MaximumTemporaryBytes:    maximumTemporary,
-		MaximumPages:             uint32(maximumPages), // #nosec G115 -- bounded above.
-		MemoryLimitBytes:         memoryLimit,
-		ParserSandboxMemoryBytes: parserMemory,
-		ProcessingTimeout:        timeout,
-		JobLease:                 lease,
-		OutboxInterval:           outboxInterval,
-		CleanupInterval:          cleanupInterval,
-		OrphanGracePeriod:        grace,
-		RunAs:                    process.Identity{UID: uid, GID: gid},
+		RuntimeBackend:                 "aws",
+		DSN:                            dsn,
+		RabbitURI:                      rabbitURI,
+		SourceBucket:                   sourceBucket,
+		ArtifactBucket:                 artifactBucket,
+		AWSRegion:                      region,
+		KMSKeyARN:                      kmsKey,
+		MetricsAddress:                 metrics,
+		TokenizerFile:                  tokenizerFile,
+		PDFInfoPath:                    optional("INGESTION_PDFINFO_PATH", "/usr/bin/pdfinfo"),
+		PDFTextPath:                    optional("INGESTION_PDFTOTEXT_PATH", "/usr/bin/pdftotext"),
+		EPUBParserPath:                 optional("INGESTION_EPUB_PARSER_PATH", "/usr/local/bin/epub-parser"),
+		TemporaryDirectory:             "/tmp",
+		Queue:                          optional("INGESTION_QUEUE", "ingestion.book-uploaded.v1"),
+		ResultExchange:                 optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
+		WorkConcurrency:                workConcurrency,
+		MaximumAttempts:                maximumAttempts,
+		MaximumChunks:                  maximumChunks,
+		ChunkMaximumTokens:             chunkMaximumTokens,
+		ChunkOverlapTokens:             chunkOverlapTokens,
+		ChunkTargetPages:               chunkTargetPages,
+		ChunkMaximumPages:              chunkMaximumPages,
+		MaximumSourceBytes:             maximumSource,
+		MaximumExtractedBytes:          maximumExtracted,
+		MaximumPageBytes:               maximumPage,
+		MaximumManifestBytes:           maximumManifest,
+		MaximumTemporaryBytes:          maximumTemporary,
+		MaximumPages:                   uint32(maximumPages), // #nosec G115 -- bounded above.
+		MemoryLimitBytes:               memoryLimit,
+		ParserSandboxMemoryBytes:       parserMemory,
+		ProcessingTimeout:              timeout,
+		JobLease:                       lease,
+		OutboxInterval:                 outboxInterval,
+		CleanupInterval:                cleanupInterval,
+		OrphanGracePeriod:              grace,
+		WorkerReadinessProbeTimeout:    workerReadinessProbeTimeout,
+		WorkerReadinessRefreshInterval: workerReadinessRefreshInterval,
+		WorkerMetricsReadHeaderTimeout: workerMetricsReadHeaderTimeout,
+		WorkerMetricsShutdownTimeout:   workerMetricsShutdownTimeout,
+		RunAs:                          process.Identity{UID: uid, GID: gid},
 	}, nil
 }
 

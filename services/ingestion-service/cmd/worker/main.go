@@ -58,28 +58,28 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	initialProbeCtx, cancelInitialProbe := context.WithTimeout(ctx, time.Second)
+	initialProbeCtx, cancelInitialProbe := context.WithTimeout(ctx, cfg.WorkerReadinessProbeTimeout)
 	postgresReady, storageReady := runtime.DependenciesReady(initialProbeCtx)
 	cancelInitialProbe()
 	runtime.Metrics.SetReadiness(postgresReady, storageReady, !connection.IsClosed())
 	readinessDone := make(chan struct{})
 	defer close(readinessDone)
 	go func() {
-		ticker := time.NewTicker(2 * time.Second)
+		ticker := time.NewTicker(cfg.WorkerReadinessRefreshInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-readinessDone:
 				return
 			case <-ticker.C:
-				probeCtx, cancel := context.WithTimeout(ctx, time.Second)
+				probeCtx, cancel := context.WithTimeout(ctx, cfg.WorkerReadinessProbeTimeout)
 				postgresReady, storageReady := runtime.DependenciesReady(probeCtx)
 				cancel()
 				runtime.Metrics.SetReadiness(postgresReady, storageReady, !connection.IsClosed())
 			}
 		}
 	}()
-	metricsServer := &http.Server{Addr: cfg.MetricsAddress, Handler: runtime.Metrics.Handler(), ReadHeaderTimeout: 5 * time.Second}
+	metricsServer := &http.Server{Addr: cfg.MetricsAddress, Handler: runtime.Metrics.Handler(), ReadHeaderTimeout: cfg.WorkerMetricsReadHeaderTimeout}
 	serverErrors := make(chan error, 1)
 	go func() { serverErrors <- metricsServer.ListenAndServe() }()
 	outboxErrors := make(chan error, 1)
@@ -99,7 +99,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	)
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.WorkerMetricsShutdownTimeout)
 		defer cancel()
 		_ = metricsServer.Shutdown(shutdownCtx)
 		return ctx.Err()

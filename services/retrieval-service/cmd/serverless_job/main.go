@@ -53,7 +53,10 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer runtime.Close()
-	connection, err := amqp091.Dial(cfg.ConsumerRabbitURI)
+	connection, err := rabbitmq.Dial(invocationContext, cfg.ConsumerRabbitURI, rabbitmq.DialPolicy{
+		Timeout:   cfg.RabbitDialTimeout,
+		Heartbeat: cfg.RabbitHeartbeat,
+	})
 	if err != nil {
 		return errors.New("broker unavailable")
 	}
@@ -63,7 +66,10 @@ func run(ctx context.Context) error {
 		return errors.New("broker channel unavailable")
 	}
 	defer func() { _ = channel.Close() }()
-	publisherConnection, err := amqp091.Dial(cfg.PublisherRabbitURI)
+	publisherConnection, err := rabbitmq.Dial(invocationContext, cfg.PublisherRabbitURI, rabbitmq.DialPolicy{
+		Timeout:   cfg.RabbitDialTimeout,
+		Heartbeat: cfg.RabbitHeartbeat,
+	})
 	if err != nil {
 		return errors.New("publisher unavailable")
 	}

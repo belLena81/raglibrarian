@@ -87,6 +87,8 @@ type WorkerConfig struct {
 	StaleBatchAge                                                 time.Duration
 	FailureRecordTimeout                                          time.Duration
 	PublishTimeout                                                time.Duration
+	RabbitDialTimeout                                             time.Duration
+	RabbitHeartbeat                                               time.Duration
 	ReadinessReadHeaderTimeout                                    time.Duration
 	ReadinessIdleTimeout                                          time.Duration
 	ReadinessShutdownTimeout                                      time.Duration
@@ -305,6 +307,8 @@ func LoadWorker() (WorkerConfig, error) {
 	staleBatchAge, staleBatchAgeErr := optionalDuration("RETRIEVAL_WORKER_STALE_BATCH_AGE", 15*time.Minute)
 	failureRecordTimeout, failureRecordTimeoutErr := optionalDuration("RETRIEVAL_WORKER_FAILURE_RECORD_TIMEOUT", 10*time.Second)
 	publishTimeout, publishTimeoutErr := optionalDuration("RETRIEVAL_WORKER_PUBLISH_TIMEOUT", 10*time.Second)
+	rabbitDialTimeout, rabbitDialTimeoutErr := optionalDuration("RETRIEVAL_WORKER_RABBITMQ_DIAL_TIMEOUT", 5*time.Second)
+	rabbitHeartbeat, rabbitHeartbeatErr := optionalDuration("RETRIEVAL_WORKER_RABBITMQ_HEARTBEAT", 10*time.Second)
 	readinessReadHeaderTimeout, readinessReadHeaderTimeoutErr := optionalDuration("RETRIEVAL_WORKER_READY_READ_HEADER_TIMEOUT", 2*time.Second)
 	readinessIdleTimeout, readinessIdleTimeoutErr := optionalDuration("RETRIEVAL_WORKER_READY_IDLE_TIMEOUT", 30*time.Second)
 	readinessShutdownTimeout, readinessShutdownTimeoutErr := optionalDuration("RETRIEVAL_WORKER_READY_SHUTDOWN_TIMEOUT", 3*time.Second)
@@ -320,6 +324,7 @@ func LoadWorker() (WorkerConfig, error) {
 		ReadinessInitialDelay: readinessInitialDelay, ReadinessMaxDelay: readinessMaxDelay, ReadinessMaxAttempts: readinessMaxAttempts, ReadinessProbeTimeout: readinessProbeTimeout,
 		ReconnectInitialBackoff: reconnectInitialBackoff, ReconnectMaxBackoff: reconnectMaxBackoff, DispatchInterval: dispatchInterval, CleanupInterval: cleanupInterval,
 		CleanupTimeout: cleanupTimeout, StaleBatchAge: staleBatchAge, FailureRecordTimeout: failureRecordTimeout, PublishTimeout: publishTimeout,
+		RabbitDialTimeout: rabbitDialTimeout, RabbitHeartbeat: rabbitHeartbeat,
 		ReadinessReadHeaderTimeout: readinessReadHeaderTimeout, ReadinessIdleTimeout: readinessIdleTimeout, ReadinessShutdownTimeout: readinessShutdownTimeout,
 		MetricsAddress: optional("RETRIEVAL_WORKER_METRICS_ADDR", os.Getenv("RETRIEVAL_METRICS_ADDR")), ServerlessInvocationTimeout: serverlessInvocationTimeout, Concurrency: concurrency, RunAs: process.Identity{UID: uid, GID: gid}}
 	configuration.TEIRequestsPerSecond = teiRequestsPerSecond
@@ -327,6 +332,7 @@ func LoadWorker() (WorkerConfig, error) {
 		dbPingTimeoutErr != nil || dependencyTimeoutErr != nil || collectionEnsureTimeoutErr != nil || readinessInitialDelayErr != nil || readinessMaxDelayErr != nil ||
 		readinessMaxAttemptsErr != nil || readinessProbeTimeoutErr != nil || reconnectInitialBackoffErr != nil || reconnectMaxBackoffErr != nil ||
 		dispatchIntervalErr != nil || cleanupIntervalErr != nil || cleanupTimeoutErr != nil || staleBatchAgeErr != nil || failureRecordTimeoutErr != nil || publishTimeoutErr != nil ||
+		rabbitDialTimeoutErr != nil || rabbitHeartbeatErr != nil ||
 		readinessReadHeaderTimeoutErr != nil || readinessIdleTimeoutErr != nil || readinessShutdownTimeoutErr != nil ||
 		teiRequestsPerSecondErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || minimumSearchScoreErr != nil ||
 		configuration.ReadinessInitialDelay > configuration.ReadinessMaxDelay || configuration.ReconnectInitialBackoff > configuration.ReconnectMaxBackoff ||

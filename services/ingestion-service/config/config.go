@@ -37,6 +37,8 @@ type Config struct {
 	MaximumPages                                                                uint32
 	ProcessingTimeout, JobLease, OutboxInterval                                 time.Duration
 	CleanupInterval, OrphanGracePeriod                                          time.Duration
+	WorkerReadinessProbeTimeout, WorkerReadinessRefreshInterval                 time.Duration
+	WorkerMetricsReadHeaderTimeout, WorkerMetricsShutdownTimeout                time.Duration
 	RunAs                                                                       process.Identity
 }
 
@@ -284,6 +286,22 @@ func loadLocal() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	workerReadinessProbeTimeout, err := boundedDuration("INGESTION_WORKER_READINESS_PROBE_TIMEOUT", time.Second, time.Minute, 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	workerReadinessRefreshInterval, err := boundedDuration("INGESTION_WORKER_READINESS_REFRESH_INTERVAL", 2*time.Second, time.Minute, 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	workerMetricsReadHeaderTimeout, err := boundedDuration("INGESTION_WORKER_METRICS_READ_HEADER_TIMEOUT", 5*time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	workerMetricsShutdownTimeout, err := boundedDuration("INGESTION_WORKER_METRICS_SHUTDOWN_TIMEOUT", 5*time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
 	uid, err := boundedInt("RUN_AS_UID", 65532, 1<<30)
 	if err != nil {
 		return Config{}, err
@@ -302,46 +320,50 @@ func loadLocal() (Config, error) {
 		return Config{}, fmt.Errorf("INGESTION_DEBUG_DUMP_PDFTEXT_DIR must be an absolute debug directory")
 	}
 	return Config{
-		RuntimeBackend:            "local",
-		DSN:                       dsn,
-		RabbitURI:                 rabbitURI,
-		MinIOEndpoint:             endpoint,
-		MinIOAccessKey:            accessKey,
-		MinIOSecretKey:            secretKey,
-		SourceBucket:              sourceBucket,
-		ArtifactBucket:            artifactBucket,
-		MinIOCAFile:               caFile,
-		MetricsAddress:            metrics,
-		TokenizerFile:             tokenizerFile,
-		PDFInfoPath:               optional("INGESTION_PDFINFO_PATH", "/usr/bin/pdfinfo"),
-		PDFTextPath:               optional("INGESTION_PDFTOTEXT_PATH", "/usr/bin/pdftotext"),
-		EPUBParserPath:            optional("INGESTION_EPUB_PARSER_PATH", "/usr/local/bin/epub-parser"),
-		TemporaryDirectory:        temporaryDirectory,
-		DebugDumpPDFTextDirectory: debugDumpPDFTextDirectory,
-		Queue:                     optional("INGESTION_QUEUE", "ingestion.book-uploaded.v1"),
-		ResultExchange:            optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
-		MinIOInsecure:             insecure,
-		WorkConcurrency:           workConcurrency,
-		MaximumAttempts:           maximumAttempts,
-		MaximumChunks:             maximumChunks,
-		ChunkMaximumTokens:        chunkMaximumTokens,
-		ChunkOverlapTokens:        chunkOverlapTokens,
-		ChunkTargetPages:          chunkTargetPages,
-		ChunkMaximumPages:         chunkMaximumPages,
-		MaximumSourceBytes:        maximumSource,
-		MaximumExtractedBytes:     maximumExtracted,
-		MaximumPageBytes:          maximumPage,
-		MaximumManifestBytes:      maximumManifest,
-		MaximumTemporaryBytes:     maximumTemporary,
-		MemoryLimitBytes:          memoryLimit,
-		ParserSandboxMemoryBytes:  parserMemory,
-		MaximumPages:              maximumPages,
-		ProcessingTimeout:         timeout,
-		JobLease:                  lease,
-		OutboxInterval:            outboxInterval,
-		CleanupInterval:           cleanupInterval,
-		OrphanGracePeriod:         orphanGracePeriod,
-		RunAs:                     process.Identity{UID: uid, GID: gid},
+		RuntimeBackend:                 "local",
+		DSN:                            dsn,
+		RabbitURI:                      rabbitURI,
+		MinIOEndpoint:                  endpoint,
+		MinIOAccessKey:                 accessKey,
+		MinIOSecretKey:                 secretKey,
+		SourceBucket:                   sourceBucket,
+		ArtifactBucket:                 artifactBucket,
+		MinIOCAFile:                    caFile,
+		MetricsAddress:                 metrics,
+		TokenizerFile:                  tokenizerFile,
+		PDFInfoPath:                    optional("INGESTION_PDFINFO_PATH", "/usr/bin/pdfinfo"),
+		PDFTextPath:                    optional("INGESTION_PDFTOTEXT_PATH", "/usr/bin/pdftotext"),
+		EPUBParserPath:                 optional("INGESTION_EPUB_PARSER_PATH", "/usr/local/bin/epub-parser"),
+		TemporaryDirectory:             temporaryDirectory,
+		DebugDumpPDFTextDirectory:      debugDumpPDFTextDirectory,
+		Queue:                          optional("INGESTION_QUEUE", "ingestion.book-uploaded.v1"),
+		ResultExchange:                 optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
+		MinIOInsecure:                  insecure,
+		WorkConcurrency:                workConcurrency,
+		MaximumAttempts:                maximumAttempts,
+		MaximumChunks:                  maximumChunks,
+		ChunkMaximumTokens:             chunkMaximumTokens,
+		ChunkOverlapTokens:             chunkOverlapTokens,
+		ChunkTargetPages:               chunkTargetPages,
+		ChunkMaximumPages:              chunkMaximumPages,
+		MaximumSourceBytes:             maximumSource,
+		MaximumExtractedBytes:          maximumExtracted,
+		MaximumPageBytes:               maximumPage,
+		MaximumManifestBytes:           maximumManifest,
+		MaximumTemporaryBytes:          maximumTemporary,
+		MemoryLimitBytes:               memoryLimit,
+		ParserSandboxMemoryBytes:       parserMemory,
+		MaximumPages:                   maximumPages,
+		ProcessingTimeout:              timeout,
+		JobLease:                       lease,
+		OutboxInterval:                 outboxInterval,
+		CleanupInterval:                cleanupInterval,
+		OrphanGracePeriod:              orphanGracePeriod,
+		WorkerReadinessProbeTimeout:    workerReadinessProbeTimeout,
+		WorkerReadinessRefreshInterval: workerReadinessRefreshInterval,
+		WorkerMetricsReadHeaderTimeout: workerMetricsReadHeaderTimeout,
+		WorkerMetricsShutdownTimeout:   workerMetricsShutdownTimeout,
+		RunAs:                          process.Identity{UID: uid, GID: gid},
 	}, nil
 }
 
