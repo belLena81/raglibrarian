@@ -7,8 +7,10 @@ import (
 	"io"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"strings"
 
+	"github.com/belLena81/raglibrarian/services/ingestion-service/config"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/extractor"
 )
 
@@ -30,7 +32,8 @@ func run(arguments []string, output io.Writer) (code int) {
 		_, _ = fmt.Fprintln(os.Stderr, "epub_parser_invalid_args")
 		return 2
 	}
-	pages, err := extractor.ParseEPUBFile(sourcePath, extractor.DefaultEPUBArchiveLimits())
+	limits := epubArchiveLimits()
+	pages, err := extractor.ParseEPUBFile(sourcePath, limits)
 	if err != nil {
 		if detail, ok := extractor.EPUBParserFailureDetail(err); ok {
 			_, _ = fmt.Fprintln(os.Stderr, detail) // #nosec G705 -- parser failure detail is bounded and emitted only on the local stderr trace path.
@@ -42,6 +45,40 @@ func run(arguments []string, output io.Writer) (code int) {
 		return extractor.EPUBParserExitInternal
 	}
 	return 0
+}
+
+func epubArchiveLimits() extractor.EPUBArchiveLimits {
+	return extractor.EPUBArchiveLimits{
+		MaximumEntries:       envInt("INGESTION_EPUB_MAX_ENTRIES", config.DefaultEPUBMaximumEntries, 3, config.MaximumEPUBMaximumEntries),
+		MaximumSpineItems:    uint32(envInt64("INGESTION_EPUB_MAX_SPINE_ITEMS", config.DefaultEPUBMaximumSpineItems, 1, config.MaximumEPUBMaximumSpineItems)), // #nosec G115 -- bounded above.
+		MaximumEntryBytes:    envInt64("INGESTION_EPUB_MAX_ENTRY_BYTES", config.DefaultEPUBMaximumEntryBytes, 1, config.MaximumEPUBMaximumEntryBytes),
+		MaximumExpandedBytes: envInt64("INGESTION_EPUB_MAX_EXPANDED_BYTES", config.DefaultEPUBMaximumExpandedBytes, 1, config.MaximumEPUBMaximumExpandedBytes),
+		MaximumTextBytes:     envInt64("INGESTION_EPUB_MAX_TEXT_BYTES", config.DefaultEPUBMaximumTextBytes, 1, config.MaximumEPUBMaximumTextBytes),
+	}
+}
+
+func envInt(key string, fallback, minimum, maximum int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return fallback
+	}
+	return parsed
+}
+
+func envInt64(key string, fallback, minimum, maximum int64) int64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return fallback
+	}
+	return parsed
 }
 
 func epubParserSourcePath(arguments []string) string {

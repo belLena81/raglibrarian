@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/retrydelay"
+	ingestionconfig "github.com/belLena81/raglibrarian/services/ingestion-service/config"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/artifact"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/chunking"
@@ -48,8 +49,8 @@ func NewPostgres(pool *pgxpool.Pool, policy Policy) *Postgres {
 	return NewPostgresWithProfile(pool, chunking.Policy{
 		MaximumTokens: chunking.DefaultMaximumTokens,
 		OverlapTokens: chunking.DefaultOverlapTokens,
-		TargetPages:   chunking.DefaultTargetPages,
-		MaximumPages:  chunking.DefaultMaximumPages,
+		TargetPages:   ingestionconfig.DefaultChunkTargetPages,
+		MaximumPages:  ingestionconfig.DefaultChunkMaximumPages,
 		MaximumChunks: 1,
 	}, policy)
 }
@@ -58,7 +59,8 @@ func NewPostgresWithProfile(pool *pgxpool.Pool, profile chunking.Policy, policy 
 	if pool == nil {
 		panic("ingestion repository: pool is required")
 	}
-	if profile.MaximumTokens < 1 || profile.OverlapTokens < 0 || profile.OverlapTokens >= profile.MaximumTokens {
+	if profile.MaximumTokens < 1 || profile.OverlapTokens < 0 || profile.OverlapTokens >= profile.MaximumTokens ||
+		profile.TargetPages < 1 || profile.MaximumPages < profile.TargetPages {
 		panic("ingestion repository: invalid chunking profile")
 	}
 	if policy.RetryDispatchDelay <= 0 || policy.OutboxRetryBaseDelay <= 0 || policy.OutboxRetryMaxDelay < policy.OutboxRetryBaseDelay {

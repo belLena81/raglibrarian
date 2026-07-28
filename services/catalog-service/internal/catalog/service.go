@@ -24,8 +24,7 @@ import (
 )
 
 const (
-	ChunkSize       = 64 << 10
-	DefaultMaxBytes = 25 << 20
+	ChunkSize = 64 << 10
 )
 
 var (
@@ -139,7 +138,7 @@ func NewService(repository BookRepository, objects OriginalObjectStore, maxBytes
 
 func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStore, options ServiceOptions) *Service {
 	if options.MaxBytes <= 0 {
-		options.MaxBytes = DefaultMaxBytes
+		panic("catalog service: max upload bytes must be positive")
 	}
 	if options.UploadConcurrency <= 0 {
 		options.UploadConcurrency = 2

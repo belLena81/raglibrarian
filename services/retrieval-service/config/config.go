@@ -17,60 +17,64 @@ import (
 )
 
 const (
-	defaultMinimumSearchScore       = 0.6
-	minimumSearchScoreKey           = "RETRIEVAL_MINIMUM_SEARCH_SCORE"
-	DefaultQdrantCollection         = "evidence_v2"
-	defaultSummaryLLMMaxCalls       = 100
-	defaultSummaryLLMOutputMode     = "json_or_plain"
-	summaryLLMOutputModeStrictJSON  = "strict_json"
-	defaultCleanupJobTimeout        = 90 * time.Second
-	defaultCleanupJobBatchSize      = 64
-	defaultTEIResponseMaxBytes      = 8 << 20
-	defaultTEIBatchSize             = 8
-	defaultSummaryInputRunes        = 4096
-	defaultSummaryResponseBytes     = 64 << 10
-	defaultSummaryCandidateBytes    = 16 << 10
-	defaultQdrantResponseBytes      = 4 << 20
-	defaultQdrantBatchResponseBytes = 8 << 20
+	defaultMinimumSearchScore              = 0.6
+	minimumSearchScoreKey                  = "RETRIEVAL_MINIMUM_SEARCH_SCORE"
+	DefaultQdrantCollection                = "evidence_v2"
+	defaultSearchCandidatePageMultiplier   = 2
+	DefaultLambdaProcessingTimeout         = 13*time.Minute + 30*time.Second
+	DefaultLambdaFailureRecordTimeout      = 10 * time.Second
+	defaultSummaryLLMMaxCalls              = 100
+	defaultSummaryLLMOutputMode            = "json_or_plain"
+	summaryLLMOutputModeStrictJSON         = "strict_json"
+	defaultCleanupJobTimeout               = 90 * time.Second
+	defaultCleanupJobBatchSize             = 64
+	defaultTEIResponseMaxBytes             = 8 << 20
+	defaultTEIBatchSize                    = 8
+	DefaultSummaryProviderMaxInputRunes    = 4096
+	DefaultSummaryProviderMaxResponseBytes = 64 << 10
+	DefaultSummaryProviderMaxSummaryBytes  = 16 << 10
+	defaultQdrantResponseBytes             = 4 << 20
+	defaultQdrantBatchResponseBytes        = 8 << 20
 )
 
 type Config struct {
-	GRPCAddress                 string
-	MetricsAddress              string
-	FinalizationLease           time.Duration
-	ReadinessProbeTimeout       time.Duration
-	ReadinessReadHeaderTimeout  time.Duration
-	ReadinessIdleTimeout        time.Duration
-	ReadinessShutdownTimeout    time.Duration
-	TEIURL                      string
-	TEIRequestsPerSecond        int
-	TEIMaxResponseBytes         int
-	TEIBatchSize                int
-	DependencyTimeout           time.Duration
-	SearchTimeout               time.Duration
-	MinimumSearchScore          float64
-	QdrantURL                   string
-	QdrantCollection            string
-	QdrantAPIKeyFile            string
-	QdrantMaxResponseBytes      int
-	QdrantBatchResponseBytes    int
-	PostgresDSNFile             string
-	SummaryLLMBaseURL           string
-	SummaryLLMModel             string
-	SummaryLLMTimeout           time.Duration
-	SummaryLLMMaxOutputTokens   int
-	SummaryLLMMaxCalls          int
-	SummaryLLMMaxInputRunes     int
-	SummaryLLMMaxResponseBytes  int
-	SummaryLLMMaxSummaryBytes   int
-	SummaryLLMRequestsPerMinute int
-	SummaryLLMOutputMode        string
-	SummaryLLMAPIKeyFile        string
-	SummaryLLMCAFile            string
-	TEILogRawResponse           bool
-	TEILogRawResponseMaxBytes   int
-	TLS                         internaltls.Files
-	RunAs                       process.Identity
+	GRPCAddress                   string
+	MetricsAddress                string
+	FinalizationLease             time.Duration
+	ReadinessProbeTimeout         time.Duration
+	ReadinessReadHeaderTimeout    time.Duration
+	ReadinessIdleTimeout          time.Duration
+	ReadinessShutdownTimeout      time.Duration
+	TEIURL                        string
+	TEIRequestsPerSecond          int
+	TEIMaxResponseBytes           int
+	TEIBatchSize                  int
+	DependencyTimeout             time.Duration
+	SearchTimeout                 time.Duration
+	MinimumSearchScore            float64
+	SearchCandidatePageMultiplier int
+	QdrantURL                     string
+	QdrantCollection              string
+	QdrantAPIKeyFile              string
+	QdrantMaxResponseBytes        int
+	QdrantBatchResponseBytes      int
+	PostgresDSNFile               string
+	SummaryLLMBaseURL             string
+	SummaryLLMModel               string
+	SummaryLLMTimeout             time.Duration
+	SummaryLLMMaxOutputTokens     int
+	SummaryLLMMaxCalls            int
+	SummaryLLMMaxInputRunes       int
+	SummaryLLMMaxResponseBytes    int
+	SummaryLLMMaxSummaryBytes     int
+	SummaryLLMRequestsPerMinute   int
+	SummaryLLMOutputMode          string
+	SummaryLLMAPIKeyFile          string
+	SummaryLLMCAFile              string
+	TEILogRawResponse             bool
+	TEILogRawResponseMaxBytes     int
+	TLS                           internaltls.Files
+	RunAs                         process.Identity
 }
 
 type WorkerConfig struct {
@@ -162,6 +166,7 @@ func Load() (Config, error) {
 	summaryTimeout, summaryTimeoutErr := optionalDuration("RETRIEVAL_SUMMARY_LLM_TIMEOUT", summaryTimeoutDefault)
 	summaryMaxOutputTokens, summaryMaxOutputTokensErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_OUTPUT_TOKENS", 64, 256)
 	summaryMaxCalls, summaryMaxCallsErr := nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_MAX_CALLS", defaultSummaryLLMMaxCalls, 1000)
+	searchCandidatePageMultiplier, searchCandidatePageMultiplierErr := boundedPositiveInteger("RETRIEVAL_SEARCH_CANDIDATE_PAGE_MULTIPLIER", defaultSearchCandidatePageMultiplier, 16)
 	minimumSearchScore, minimumSearchScoreErr := LoadMinimumSearchScore()
 	summaryLLMRequestsPerMinute, summaryLLMRequestsPerMinuteErr := nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_REQUESTS_PER_MINUTE", 15, 1000)
 	summaryLLMOutputMode, summaryLLMOutputModeErr := summaryOutputMode(configuration.SummaryLLMOutputMode)
@@ -172,9 +177,9 @@ func Load() (Config, error) {
 	teiLogRawResponseMaxBytes, teiLogRawResponseMaxBytesErr := nonNegativeInteger("RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", 4096, 64<<10)
 	qdrantMaxResponseBytes, qdrantMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_MAX_RESPONSE_BYTES", defaultQdrantResponseBytes, 32<<20)
 	qdrantBatchResponseBytes, qdrantBatchResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_BATCH_RESPONSE_BYTES", defaultQdrantBatchResponseBytes, 32<<20)
-	summaryMaxInputRunes, summaryMaxInputRunesErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_INPUT_RUNES", defaultSummaryInputRunes, 32768)
-	summaryMaxResponseBytes, summaryMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_RESPONSE_BYTES", defaultSummaryResponseBytes, 1<<20)
-	summaryMaxSummaryBytes, summaryMaxSummaryBytesErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_SUMMARY_BYTES", defaultSummaryCandidateBytes, 256<<10)
+	summaryMaxInputRunes, summaryMaxInputRunesErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_INPUT_RUNES", DefaultSummaryProviderMaxInputRunes, 32768)
+	summaryMaxResponseBytes, summaryMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_RESPONSE_BYTES", DefaultSummaryProviderMaxResponseBytes, 1<<20)
+	summaryMaxSummaryBytes, summaryMaxSummaryBytesErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_SUMMARY_BYTES", DefaultSummaryProviderMaxSummaryBytes, 256<<10)
 	readinessProbeTimeout, readinessProbeTimeoutErr := optionalDuration("RETRIEVAL_READY_PROBE_TIMEOUT", 2*time.Second)
 	readinessReadHeaderTimeout, readinessReadHeaderTimeoutErr := optionalDuration("RETRIEVAL_READY_READ_HEADER_TIMEOUT", 2*time.Second)
 	readinessIdleTimeout, readinessIdleTimeoutErr := optionalDuration("RETRIEVAL_READY_IDLE_TIMEOUT", 30*time.Second)
@@ -184,6 +189,7 @@ func Load() (Config, error) {
 	configuration.SummaryLLMTimeout = summaryTimeout
 	configuration.SummaryLLMMaxOutputTokens = summaryMaxOutputTokens
 	configuration.SummaryLLMMaxCalls = summaryMaxCalls
+	configuration.SearchCandidatePageMultiplier = searchCandidatePageMultiplier
 	configuration.SummaryLLMMaxInputRunes = summaryMaxInputRunes
 	configuration.SummaryLLMMaxResponseBytes = summaryMaxResponseBytes
 	configuration.SummaryLLMMaxSummaryBytes = summaryMaxSummaryBytes
@@ -204,7 +210,7 @@ func Load() (Config, error) {
 	if configuration.GRPCAddress == "" || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
 		configuration.PostgresDSNFile == "" || configuration.QdrantAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || uidErr != nil || gidErr != nil || finalizationLeaseErr != nil ||
-		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || summaryMaxInputRunesErr != nil || summaryMaxResponseBytesErr != nil || summaryMaxSummaryBytesErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || summaryLLMOutputModeErr != nil || teiRequestsPerSecondErr != nil || teiMaxResponseBytesErr != nil || teiBatchSizeErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || qdrantMaxResponseBytesErr != nil || qdrantBatchResponseBytesErr != nil ||
+		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || searchCandidatePageMultiplierErr != nil || summaryMaxInputRunesErr != nil || summaryMaxResponseBytesErr != nil || summaryMaxSummaryBytesErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || summaryLLMOutputModeErr != nil || teiRequestsPerSecondErr != nil || teiMaxResponseBytesErr != nil || teiBatchSizeErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || qdrantMaxResponseBytesErr != nil || qdrantBatchResponseBytesErr != nil ||
 		readinessProbeTimeoutErr != nil || readinessReadHeaderTimeoutErr != nil || readinessIdleTimeoutErr != nil || readinessShutdownTimeoutErr != nil ||
 		configuration.SummaryLLMTimeout >= configuration.SearchTimeout ||
 		configuration.QdrantBatchResponseBytes < configuration.QdrantMaxResponseBytes || configuration.TEILogRawResponseMaxBytes > configuration.TEIMaxResponseBytes ||
@@ -393,7 +399,7 @@ func LoadLambdaRuntimePolicy() (LambdaRuntimePolicy, error) {
 	finalizationLease, finalizationLeaseErr := optionalDuration("RETRIEVAL_FINALIZATION_LEASE", 15*time.Minute)
 	staleBatchAge, staleBatchAgeErr := optionalDuration("RETRIEVAL_LAMBDA_STALE_BATCH_AGE", 15*time.Minute)
 	cleanupBatchSize, cleanupBatchSizeErr := boundedPositiveInteger("RETRIEVAL_LAMBDA_CLEANUP_BATCH_SIZE", defaultCleanupJobBatchSize, 1024)
-	failureRecordTimeout, failureRecordTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_FAILURE_RECORD_TIMEOUT", 10*time.Second)
+	failureRecordTimeout, failureRecordTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_FAILURE_RECORD_TIMEOUT", DefaultLambdaFailureRecordTimeout)
 	rabbitDialTimeout, rabbitDialTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_RABBITMQ_DIAL_TIMEOUT", 5*time.Second)
 	rabbitHeartbeat, rabbitHeartbeatErr := optionalDuration("RETRIEVAL_LAMBDA_RABBITMQ_HEARTBEAT", 10*time.Second)
 	endpointResolveTimeout, endpointResolveTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_ENDPOINT_RESOLVE_TIMEOUT", 3*time.Second)
@@ -412,6 +418,14 @@ func LoadLambdaRuntimePolicy() (LambdaRuntimePolicy, error) {
 		RabbitHeartbeat:         rabbitHeartbeat,
 		EndpointResolveTimeout:  endpointResolveTimeout,
 	}, nil
+}
+
+func LoadLambdaProcessingTimeout() (time.Duration, error) {
+	value, err := optionalDuration("RETRIEVAL_PROCESSING_TIMEOUT", DefaultLambdaProcessingTimeout)
+	if err != nil || value < time.Minute || value > DefaultLambdaProcessingTimeout {
+		return 0, errors.New("invalid retrieval processing timeout")
+	}
+	return value, nil
 }
 
 func LoadCleanupJobPolicy() (CleanupJobPolicy, error) {

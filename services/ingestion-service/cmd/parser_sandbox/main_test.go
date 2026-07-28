@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/belLena81/raglibrarian/services/ingestion-service/config"
 	"golang.org/x/sys/unix"
 )
 
@@ -60,8 +61,8 @@ func TestParserSandboxLimitsDoNotRestrictProcessCount(t *testing.T) {
 func TestParserSandboxMemoryLimitUsesEPUBSafeDefault(t *testing.T) {
 	t.Setenv("INGESTION_PARSER_SANDBOX_MEMORY_BYTES", "")
 	for _, limit := range parserSandboxLimits() {
-		if limit.resource == unix.RLIMIT_AS && limit.value != uint64(defaultParserSandboxMemoryBytes) {
-			t.Fatalf("RLIMIT_AS = %d, want %d", limit.value, defaultParserSandboxMemoryBytes)
+		if limit.resource == unix.RLIMIT_AS && limit.value != uint64(config.DefaultParserSandboxMemoryBytes) {
+			t.Fatalf("RLIMIT_AS = %d, want %d", limit.value, config.DefaultParserSandboxMemoryBytes)
 		}
 	}
 }
@@ -210,12 +211,28 @@ func TestFilesystemPolicyAllowsPreviewWorkspaceWrites(t *testing.T) {
 }
 
 func TestParserSandboxEnvironmentIncludesEPUBSourcePath(t *testing.T) {
+	t.Setenv("INGESTION_EPUB_MAX_ENTRIES", "3000")
+	t.Setenv("INGESTION_EPUB_MAX_SPINE_ITEMS", "700")
+	t.Setenv("INGESTION_EPUB_MAX_ENTRY_BYTES", "1048576")
+	t.Setenv("INGESTION_EPUB_MAX_EXPANDED_BYTES", "8388608")
+	t.Setenv("INGESTION_EPUB_MAX_TEXT_BYTES", "2097152")
 	environment := parserSandboxEnvironment("/tmp/source.epub")
 	if !containsEnvironmentValue(environment, "LANG=C.UTF-8") {
 		t.Fatalf("environment missing LANG entry: %#v", environment)
 	}
 	if !containsEnvironmentValue(environment, "EPUB_PARSER_SOURCE_PATH=/tmp/source.epub") {
 		t.Fatalf("environment missing EPUB source entry: %#v", environment)
+	}
+	for _, entry := range []string{
+		"INGESTION_EPUB_MAX_ENTRIES=3000",
+		"INGESTION_EPUB_MAX_SPINE_ITEMS=700",
+		"INGESTION_EPUB_MAX_ENTRY_BYTES=1048576",
+		"INGESTION_EPUB_MAX_EXPANDED_BYTES=8388608",
+		"INGESTION_EPUB_MAX_TEXT_BYTES=2097152",
+	} {
+		if !containsEnvironmentValue(environment, entry) {
+			t.Fatalf("environment missing EPUB limit entry %q: %#v", entry, environment)
+		}
 	}
 }
 

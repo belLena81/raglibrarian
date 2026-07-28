@@ -19,14 +19,9 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/belLena81/raglibrarian/pkg/providerhttp"
+	retrievalconfig "github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/throttle"
-)
-
-const (
-	defaultMaximumProviderResponseBytes = 64 << 10
-	defaultMaximumSummaryBytes          = 16 << 10
-	defaultMaximumSummaryInputRunes     = 4096
 )
 
 type Policy struct {
@@ -372,9 +367,9 @@ func normalizeSummaryInput(value string, maximumSummaryInputRunes int) string {
 
 func defaultPolicy() Policy {
 	return Policy{
-		MaximumResponseBytes: defaultMaximumProviderResponseBytes,
-		MaximumSummaryBytes:  defaultMaximumSummaryBytes,
-		MaximumInputRunes:    defaultMaximumSummaryInputRunes,
+		MaximumResponseBytes: retrievalconfig.DefaultSummaryProviderMaxResponseBytes,
+		MaximumSummaryBytes:  retrievalconfig.DefaultSummaryProviderMaxSummaryBytes,
+		MaximumInputRunes:    retrievalconfig.DefaultSummaryProviderMaxInputRunes,
 	}
 }
 

@@ -21,8 +21,6 @@ const (
 	StructureVersion     = indexprofile.StructureChapterBoundary
 	DefaultMaximumTokens = indexprofile.MaximumTokens
 	DefaultOverlapTokens = indexprofile.OverlapTokens
-	DefaultTargetPages   = 2
-	DefaultMaximumPages  = 3
 )
 
 var ErrChunkLimit = errors.New("chunk limit exceeded")
@@ -73,12 +71,6 @@ type Chunker struct {
 }
 
 func New(tokenizer Tokenizer, policy Policy) (*Chunker, error) {
-	if policy.TargetPages == 0 {
-		policy.TargetPages = DefaultTargetPages
-	}
-	if policy.MaximumPages == 0 {
-		policy.MaximumPages = DefaultMaximumPages
-	}
 	if tokenizer == nil || policy.MaximumTokens < 1 || policy.OverlapTokens < 0 || policy.OverlapTokens >= policy.MaximumTokens ||
 		policy.MaximumChunks < 1 || policy.TargetPages < 1 || policy.MaximumPages < policy.TargetPages {
 		return nil, errors.New("invalid chunking policy")

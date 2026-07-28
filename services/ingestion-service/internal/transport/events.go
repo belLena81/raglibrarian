@@ -9,6 +9,7 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/contracts"
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
+	ingestionconfig "github.com/belLena81/raglibrarian/services/ingestion-service/config"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/artifact"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/chunking"
@@ -83,8 +84,8 @@ func NewProtoEventFactory(newID application.IDGenerator) (*ProtoEventFactory, er
 	return NewProtoEventFactoryWithProfile(newID, chunking.Policy{
 		MaximumTokens: chunking.DefaultMaximumTokens,
 		OverlapTokens: chunking.DefaultOverlapTokens,
-		TargetPages:   chunking.DefaultTargetPages,
-		MaximumPages:  chunking.DefaultMaximumPages,
+		TargetPages:   ingestionconfig.DefaultChunkTargetPages,
+		MaximumPages:  ingestionconfig.DefaultChunkMaximumPages,
 		MaximumChunks: 1,
 	})
 }
@@ -93,7 +94,8 @@ func NewProtoEventFactoryWithProfile(newID application.IDGenerator, profile chun
 	if newID == nil {
 		return nil, errors.New("event ID generator is required")
 	}
-	if profile.MaximumTokens < 1 || profile.OverlapTokens < 0 || profile.OverlapTokens >= profile.MaximumTokens {
+	if profile.MaximumTokens < 1 || profile.OverlapTokens < 0 || profile.OverlapTokens >= profile.MaximumTokens ||
+		profile.TargetPages < 1 || profile.MaximumPages < profile.TargetPages {
 		return nil, errors.New("invalid chunking profile")
 	}
 	return &ProtoEventFactory{newID: newID, profile: profile}, nil

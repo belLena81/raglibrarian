@@ -27,8 +27,8 @@ const (
 	defaultRequestTimeout            = 5 * time.Minute
 	defaultRetrievalTimeout          = 4*time.Minute + 45*time.Second
 	defaultProviderTimeout           = 4*time.Minute + 30*time.Second
-	defaultProviderMaxResponseBytes  = 128 << 10
-	defaultProviderMaxCandidateBytes = 32 << 10
+	DefaultProviderMaxResponseBytes  = 128 << 10
+	DefaultProviderMaxCandidateBytes = 32 << 10
 )
 
 type Config struct {
@@ -102,8 +102,8 @@ func Load() (Config, error) {
 		return Config{}, errors.New("invalid answer configuration")
 	}
 	configuration.LLMRequestsPerMinute = rpm
-	maxResponseBytes, maxResponseBytesErr := positiveInteger("ANSWER_PROVIDER_MAX_RESPONSE_BYTES", defaultProviderMaxResponseBytes, 1, 1<<20)
-	maxCandidateBytes, maxCandidateBytesErr := positiveInteger("ANSWER_PROVIDER_MAX_CANDIDATE_BYTES", defaultProviderMaxCandidateBytes, 1, 256<<10)
+	maxResponseBytes, maxResponseBytesErr := positiveInteger("ANSWER_PROVIDER_MAX_RESPONSE_BYTES", DefaultProviderMaxResponseBytes, 1, 1<<20)
+	maxCandidateBytes, maxCandidateBytesErr := positiveInteger("ANSWER_PROVIDER_MAX_CANDIDATE_BYTES", DefaultProviderMaxCandidateBytes, 1, 256<<10)
 	configuration.LLMMaxResponseBytes = maxResponseBytes
 	configuration.LLMMaxCandidateBytes = maxCandidateBytes
 	logProviderErrorBody, logProviderErrorBodyErr := boolean("ANSWER_PROVIDER_LOG_ERROR_BODY", false)

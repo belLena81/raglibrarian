@@ -16,8 +16,20 @@ import (
 )
 
 const (
-	defaultParserSandboxMemoryBytes = int64(1536 << 20)
-	maximumParserSandboxMemoryBytes = int64(8 << 30)
+	DefaultChunkTargetPages         = 2
+	DefaultChunkMaximumPages        = 3
+	DefaultParserSandboxMemoryBytes = int64(1536 << 20)
+	MaximumParserSandboxMemoryBytes = int64(8 << 30)
+	DefaultEPUBMaximumEntries       = 2048
+	MaximumEPUBMaximumEntries       = 8192
+	DefaultEPUBMaximumSpineItems    = int64(500)
+	MaximumEPUBMaximumSpineItems    = int64(5000)
+	DefaultEPUBMaximumEntryBytes    = int64(32 << 20)
+	MaximumEPUBMaximumEntryBytes    = int64(256 << 20)
+	DefaultEPUBMaximumExpandedBytes = int64(256 << 20)
+	MaximumEPUBMaximumExpandedBytes = int64(2 << 30)
+	DefaultEPUBMaximumTextBytes     = int64(128 << 20)
+	MaximumEPUBMaximumTextBytes     = int64(1 << 30)
 )
 
 type Config struct {
@@ -32,6 +44,9 @@ type Config struct {
 	WorkConcurrency, MaximumAttempts, MaximumChunks                             int
 	ChunkMaximumTokens, ChunkOverlapTokens, ChunkTargetPages, ChunkMaximumPages int
 	MaximumSourceBytes, MaximumExtractedBytes, MaximumPageBytes                 int64
+	EPUBMaximumEntries                                                          int
+	EPUBMaximumSpineItems                                                       uint32
+	EPUBMaximumEntryBytes, EPUBMaximumExpandedBytes, EPUBMaximumTextBytes       int64
 	MaximumManifestBytes, MaximumTemporaryBytes                                 int64
 	ArtifactChunksPerShard                                                      int
 	ArtifactVersionCleanupPasses                                                int
@@ -58,6 +73,8 @@ type CleanupConfig struct {
 	AWSRegion, KMSKeyARN                               string
 	MinIOInsecure                                      bool
 	ArtifactVersionCleanupPasses                       int
+	ChunkMaximumTokens, ChunkOverlapTokens             int
+	ChunkTargetPages, ChunkMaximumPages                int
 	RetryDispatchDelay, OutboxRetryBaseDelay           time.Duration
 	OutboxRetryMaxDelay                                time.Duration
 	CleanupInterval, OrphanGracePeriod                 time.Duration
@@ -72,6 +89,10 @@ type DispatcherConfig struct {
 	RabbitURI      string
 	ResultExchange string
 	OutboxInterval time.Duration
+	ChunkMaximumTokens,
+	ChunkOverlapTokens,
+	ChunkTargetPages,
+	ChunkMaximumPages int
 	RabbitDialTimeout,
 	RabbitHeartbeat,
 	RabbitPublishTimeout,
@@ -123,6 +144,10 @@ func loadLocalDispatcher() (DispatcherConfig, error) {
 	if err != nil {
 		return DispatcherConfig{}, err
 	}
+	chunkMaximumTokens, chunkOverlapTokens, chunkTargetPages, chunkMaximumPages, err := chunkPolicyValues()
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
 	uid, err := boundedInt("RUN_AS_UID", 65532, 1<<30)
 	if err != nil {
 		return DispatcherConfig{}, err
@@ -137,6 +162,10 @@ func loadLocalDispatcher() (DispatcherConfig, error) {
 		RabbitURI:            rabbitURI,
 		ResultExchange:       optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
 		OutboxInterval:       outboxInterval,
+		ChunkMaximumTokens:   chunkMaximumTokens,
+		ChunkOverlapTokens:   chunkOverlapTokens,
+		ChunkTargetPages:     chunkTargetPages,
+		ChunkMaximumPages:    chunkMaximumPages,
 		RabbitDialTimeout:    rabbitDialTimeout,
 		RabbitHeartbeat:      rabbitHeartbeat,
 		RabbitPublishTimeout: rabbitPublishTimeout,
@@ -204,6 +233,10 @@ func loadLocalCleanup() (CleanupConfig, error) {
 	if err != nil {
 		return CleanupConfig{}, err
 	}
+	chunkMaximumTokens, chunkOverlapTokens, chunkTargetPages, chunkMaximumPages, err := chunkPolicyValues()
+	if err != nil {
+		return CleanupConfig{}, err
+	}
 	return CleanupConfig{
 		RuntimeBackend:               "local",
 		DSN:                          dsn,
@@ -212,6 +245,10 @@ func loadLocalCleanup() (CleanupConfig, error) {
 		MinIOSecretKey:               secretKey,
 		ArtifactBucket:               artifactBucket,
 		ArtifactVersionCleanupPasses: artifactVersionCleanupPasses,
+		ChunkMaximumTokens:           chunkMaximumTokens,
+		ChunkOverlapTokens:           chunkOverlapTokens,
+		ChunkTargetPages:             chunkTargetPages,
+		ChunkMaximumPages:            chunkMaximumPages,
 		MinIOCAFile:                  caFile,
 		MinIOInsecure:                insecure,
 		RetryDispatchDelay:           retryDispatchDelay,
@@ -288,6 +325,26 @@ func loadLocal() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	epubMaximumEntries, err := boundedInt("INGESTION_EPUB_MAX_ENTRIES", DefaultEPUBMaximumEntries, MaximumEPUBMaximumEntries)
+	if err != nil {
+		return Config{}, err
+	}
+	epubMaximumSpineItems64, err := boundedInt64("INGESTION_EPUB_MAX_SPINE_ITEMS", DefaultEPUBMaximumSpineItems, MaximumEPUBMaximumSpineItems)
+	if err != nil {
+		return Config{}, err
+	}
+	epubMaximumEntryBytes, err := boundedInt64("INGESTION_EPUB_MAX_ENTRY_BYTES", DefaultEPUBMaximumEntryBytes, MaximumEPUBMaximumEntryBytes)
+	if err != nil {
+		return Config{}, err
+	}
+	epubMaximumExpandedBytes, err := boundedInt64("INGESTION_EPUB_MAX_EXPANDED_BYTES", DefaultEPUBMaximumExpandedBytes, MaximumEPUBMaximumExpandedBytes)
+	if err != nil {
+		return Config{}, err
+	}
+	epubMaximumTextBytes, err := boundedInt64("INGESTION_EPUB_MAX_TEXT_BYTES", DefaultEPUBMaximumTextBytes, MaximumEPUBMaximumTextBytes)
+	if err != nil {
+		return Config{}, err
+	}
 	chunkMaximumTokens, chunkOverlapTokens, chunkTargetPages, chunkMaximumPages, err := chunkPolicyValues()
 	if err != nil {
 		return Config{}, err
@@ -335,7 +392,7 @@ func loadLocal() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	parserMemory, err := boundedInt64("INGESTION_PARSER_SANDBOX_MEMORY_BYTES", defaultParserSandboxMemoryBytes, maximumParserSandboxMemoryBytes)
+	parserMemory, err := boundedInt64("INGESTION_PARSER_SANDBOX_MEMORY_BYTES", DefaultParserSandboxMemoryBytes, MaximumParserSandboxMemoryBytes)
 	if err != nil {
 		return Config{}, err
 	}
@@ -343,8 +400,11 @@ func loadLocal() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if parserMemory < defaultParserSandboxMemoryBytes {
-		return Config{}, fmt.Errorf("INGESTION_PARSER_SANDBOX_MEMORY_BYTES must be at least %d", defaultParserSandboxMemoryBytes)
+	if parserMemory < DefaultParserSandboxMemoryBytes {
+		return Config{}, fmt.Errorf("INGESTION_PARSER_SANDBOX_MEMORY_BYTES must be at least %d", DefaultParserSandboxMemoryBytes)
+	}
+	if epubMaximumExpandedBytes < epubMaximumEntryBytes || epubMaximumTextBytes > epubMaximumExpandedBytes {
+		return Config{}, fmt.Errorf("INGESTION_EPUB archive policy is invalid")
 	}
 	if int64(workConcurrency)*parserMemory+parserRuntimeHeadroomBytes > memoryLimit {
 		return Config{}, fmt.Errorf("INGESTION_WORK_CONCURRENCY exceeds INGESTION_MEMORY_LIMIT_BYTES")
@@ -476,6 +536,11 @@ func loadLocal() (Config, error) {
 		WorkConcurrency:                workConcurrency,
 		MaximumAttempts:                maximumAttempts,
 		MaximumChunks:                  maximumChunks,
+		EPUBMaximumEntries:             epubMaximumEntries,
+		EPUBMaximumSpineItems:          uint32(epubMaximumSpineItems64), // #nosec G115 -- bounded above.
+		EPUBMaximumEntryBytes:          epubMaximumEntryBytes,
+		EPUBMaximumExpandedBytes:       epubMaximumExpandedBytes,
+		EPUBMaximumTextBytes:           epubMaximumTextBytes,
 		ChunkMaximumTokens:             chunkMaximumTokens,
 		ChunkOverlapTokens:             chunkOverlapTokens,
 		ChunkTargetPages:               chunkTargetPages,
@@ -544,11 +609,11 @@ func chunkPolicyValues() (int, int, int, int, error) {
 	if err != nil {
 		return 0, 0, 0, 0, err
 	}
-	targetPages, err := fixedInt("INGESTION_CHUNK_TARGET_PAGES", chunking.DefaultTargetPages)
+	targetPages, err := fixedInt("INGESTION_CHUNK_TARGET_PAGES", DefaultChunkTargetPages)
 	if err != nil {
 		return 0, 0, 0, 0, err
 	}
-	maximumPages, err := fixedInt("INGESTION_CHUNK_MAX_PAGES", chunking.DefaultMaximumPages)
+	maximumPages, err := fixedInt("INGESTION_CHUNK_MAX_PAGES", DefaultChunkMaximumPages)
 	if err != nil {
 		return 0, 0, 0, 0, err
 	}

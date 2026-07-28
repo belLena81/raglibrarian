@@ -200,7 +200,7 @@ func TestSearcherDoesNotFallbackWhenParentContextIsCanceled(t *testing.T) {
 }
 
 func TestSearchAssessmentCacheDoesNotOpenCircuitForCanceledParentContext(t *testing.T) {
-	cache := newSearchAssessmentCache(2, 0)
+	cache := newSearchAssessmentCache(2, 0, defaultMaximumSummaryInputRunes)
 	provider := &stubSummaryProvider{err: context.Canceled}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -216,6 +216,45 @@ func TestSearchAssessmentCacheDoesNotOpenCircuitForCanceledParentContext(t *test
 	}
 	if provider.calls() != 1 {
 		t.Fatalf("provider calls = %d, want 1", provider.calls())
+	}
+}
+
+func TestSearcherWithPolicyUsesConfiguredCandidatePageMultiplier(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{
+		resultsByPage: [][]Evidence{
+			{
+				{EvidenceID: "irrelevant-1", JobID: "job-1", BookID: "book-1", Passage: "off topic one", Score: 0.99},
+				{EvidenceID: "irrelevant-2", JobID: "job-2", BookID: "book-2", Passage: "off topic two", Score: 0.98},
+				{EvidenceID: "relevant-1", JobID: "job-3", BookID: "book-3", Passage: "relevant one", Score: 0.80},
+			},
+		},
+	}
+	provider := &stubSummaryProvider{response: func(value SummaryRequest) EvidenceAssessment {
+		if strings.HasPrefix(value.Passage, "relevant ") {
+			return EvidenceAssessment{Relevant: true, Summary: value.Passage}
+		}
+		return EvidenceAssessment{Relevant: false}
+	}}
+	searcher, err := NewSearcherWithPolicy(embedder, store, visibleIndexes{}, provider, SearchPolicy{
+		MinimumVisibleScore:      0.6,
+		SummaryCallLimit:         4,
+		CandidatePageMultiplier:  3,
+		MaximumSummaryInputRunes: defaultMaximumSummaryInputRunes,
+	})
+	if err != nil {
+		t.Fatalf("NewSearcherWithPolicy() error = %v", err)
+	}
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 1})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "relevant-1" {
+		t.Fatalf("unexpected result = %#v", result.Evidence)
+	}
+	if len(store.requests) != 2 || store.requests[0].limit != 3 || store.requests[0].offset != 0 {
+		t.Fatalf("unexpected paging requests: %#v", store.requests)
 	}
 }
 

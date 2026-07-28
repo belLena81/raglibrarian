@@ -68,13 +68,17 @@ func main() {
 	}
 	defer pool.Close()
 	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: configuration.FinalizationLease})
-	searcher, err := application.NewSearcher(embedder, store, records, configuration.MinimumSearchScore, configuration.SummaryLLMMaxCalls)
+	searcher, err := application.NewSearcherWithPolicy(embedder, store, records, summaryProvider, application.SearchPolicy{
+		MinimumVisibleScore:      configuration.MinimumSearchScore,
+		SummaryCallLimit:         configuration.SummaryLLMMaxCalls,
+		SummaryTimeout:           configuration.SummaryLLMTimeout,
+		CandidatePageMultiplier:  configuration.SearchCandidatePageMultiplier,
+		MaximumSummaryInputRunes: configuration.SummaryLLMMaxInputRunes,
+	})
 	if err != nil {
 		log.Print("retrieval server could not configure search")
 		os.Exit(1)
 	}
-	searcher.SetSummaryProvider(summaryProvider)
-	searcher.SetSummaryProviderTimeout(configuration.SummaryLLMTimeout)
 	listener, err := net.Listen("tcp", configuration.GRPCAddress)
 	if err != nil {
 		log.Print("retrieval server listener unavailable")

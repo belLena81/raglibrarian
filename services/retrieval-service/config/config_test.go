@@ -78,6 +78,9 @@ func TestLoadAcceptsOptionalSummaryProviderConfiguration(t *testing.T) {
 	if configuration.SummaryLLMMaxCalls != 100 {
 		t.Fatalf("SummaryLLMMaxCalls = %d, want 100", configuration.SummaryLLMMaxCalls)
 	}
+	if configuration.SearchCandidatePageMultiplier != 2 {
+		t.Fatalf("SearchCandidatePageMultiplier = %d, want 2", configuration.SearchCandidatePageMultiplier)
+	}
 	if configuration.SummaryLLMMaxOutputTokens != 64 {
 		t.Fatalf("SummaryLLMMaxOutputTokens = %d, want 64", configuration.SummaryLLMMaxOutputTokens)
 	}
@@ -119,6 +122,9 @@ func TestLoadDefaultsSummaryProviderRateLimit(t *testing.T) {
 	}
 	if configuration.SummaryLLMMaxCalls != 100 {
 		t.Fatalf("SummaryLLMMaxCalls = %d, want 100", configuration.SummaryLLMMaxCalls)
+	}
+	if configuration.SearchCandidatePageMultiplier != 2 {
+		t.Fatalf("SearchCandidatePageMultiplier = %d, want 2", configuration.SearchCandidatePageMultiplier)
 	}
 	if configuration.SearchTimeout != 2*time.Minute {
 		t.Fatalf("SearchTimeout = %s, want 2m", configuration.SearchTimeout)
@@ -164,6 +170,9 @@ func TestLoadDefaultsSearchTimeoutAndMinimumScore(t *testing.T) {
 	if configuration.SummaryLLMMaxCalls != 100 {
 		t.Fatalf("SummaryLLMMaxCalls = %d, want 100", configuration.SummaryLLMMaxCalls)
 	}
+	if configuration.SearchCandidatePageMultiplier != 2 {
+		t.Fatalf("SearchCandidatePageMultiplier = %d, want 2", configuration.SearchCandidatePageMultiplier)
+	}
 }
 
 func TestLoadOverridesSummaryProviderRateLimit(t *testing.T) {
@@ -207,6 +216,27 @@ func TestLoadOverridesSummaryProviderMaxCalls(t *testing.T) {
 	}
 	if configuration.SummaryLLMMaxCalls != 2 {
 		t.Fatalf("SummaryLLMMaxCalls = %d, want 2", configuration.SummaryLLMMaxCalls)
+	}
+}
+
+func TestLoadOverridesSearchCandidatePageMultiplier(t *testing.T) {
+	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+	t.Setenv("RETRIEVAL_SEARCH_CANDIDATE_PAGE_MULTIPLIER", "3")
+
+	configuration, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if configuration.SearchCandidatePageMultiplier != 3 {
+		t.Fatalf("SearchCandidatePageMultiplier = %d, want 3", configuration.SearchCandidatePageMultiplier)
 	}
 }
 

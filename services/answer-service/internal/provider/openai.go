@@ -15,14 +15,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/belLena81/raglibrarian/pkg/providerhttp"
+	answerconfig "github.com/belLena81/raglibrarian/services/answer-service/config"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/domain"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/throttle"
-)
-
-const (
-	defaultMaximumProviderResponseBytes = 128 << 10
-	defaultMaximumCandidateBytes        = 32 << 10
 )
 
 type Policy struct {
@@ -207,8 +203,8 @@ func (p *OpenAI) generate(ctx context.Context, input application.ProviderRequest
 
 func defaultPolicy() Policy {
 	return Policy{
-		MaximumResponseBytes:  defaultMaximumProviderResponseBytes,
-		MaximumCandidateBytes: defaultMaximumCandidateBytes,
+		MaximumResponseBytes:  answerconfig.DefaultProviderMaxResponseBytes,
+		MaximumCandidateBytes: answerconfig.DefaultProviderMaxCandidateBytes,
 	}
 }
 

@@ -63,7 +63,9 @@ func TestGetBookUsesConfiguredPreviewTimeout(t *testing.T) {
 	}}
 	deadlineObserved := make(chan time.Duration, 1)
 	service := catalog.NewServiceWithOptions(repository, nil, catalog.ServiceOptions{
-		PreviewTimeout: configuredPreviewTimeout,
+		MaxBytes:        1024,
+		MaxPreviewBytes: 1024,
+		PreviewTimeout:  configuredPreviewTimeout,
 		PreviewBook: func(ctx context.Context, _ catalog.Book, _ catalog.OriginalObjectStore) (string, error) {
 			deadline, ok := ctx.Deadline()
 			if !ok {

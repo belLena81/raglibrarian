@@ -7,11 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/belLena81/raglibrarian/services/catalog-service/config"
 )
 
 const (
@@ -21,9 +24,55 @@ const (
 )
 
 func TestDefaultUploadEnvelopeMatchesM4SourceProfile(t *testing.T) {
-	if DefaultMaxBytes != 25<<20 {
-		t.Fatalf("DefaultMaxBytes = %d, want %d", DefaultMaxBytes, 25<<20)
+	cfg := mustLoadCatalogConfigForTest(t)
+	if cfg.MaxUploadBytes != 25<<20 {
+		t.Fatalf("MaxUploadBytes = %d, want %d", cfg.MaxUploadBytes, 25<<20)
 	}
+}
+
+func TestNewServiceWithOptionsRequiresPositiveMaxBytes(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for invalid max upload bytes")
+		}
+	}()
+	_ = NewServiceWithOptions(NewMemoryRepository(), NewMemoryObjectStore(), ServiceOptions{})
+}
+
+func mustLoadCatalogConfigForTest(t *testing.T) config.Config {
+	t.Helper()
+	setCatalogTestEnvironment(t)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func setCatalogTestEnvironment(t *testing.T) {
+	t.Helper()
+	tempDir := t.TempDir()
+	writeSecret := func(name, value string) string {
+		t.Helper()
+		path := tempDir + "/" + name
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	t.Setenv("CATALOG_POSTGRES_DSN_FILE", writeSecret("dsn", "postgres://catalog:catalog@db.internal/catalog?sslmode=disable"))
+	t.Setenv("CATALOG_MINIO_ACCESS_KEY_FILE", writeSecret("minio-access", "access"))
+	t.Setenv("CATALOG_MINIO_SECRET_KEY_FILE", writeSecret("minio-secret", "secret"))
+	t.Setenv("CATALOG_RABBITMQ_URI_FILE", writeSecret("rabbit", "amqps://catalog:secret@rabbit.internal:5671/catalog"))
+	t.Setenv("CATALOG_INGESTION_RABBITMQ_URI_FILE", writeSecret("rabbit-ingestion", "amqps://catalog:secret@rabbit.internal:5671/catalog"))
+	t.Setenv("CATALOG_RETRIEVAL_RABBITMQ_URI_FILE", writeSecret("rabbit-retrieval", "amqps://catalog:secret@rabbit.internal:5671/catalog"))
+	t.Setenv("INTERNAL_TLS_CA_FILE", writeSecret("ca.pem", "test-ca"))
+	t.Setenv("CATALOG_TLS_CERT_FILE", writeSecret("cert.pem", "test-cert"))
+	t.Setenv("CATALOG_TLS_KEY_FILE", writeSecret("key.pem", "test-key"))
+	t.Setenv("CATALOG_MINIO_ENDPOINT", "minio.internal:9000")
+	t.Setenv("CATALOG_MINIO_BUCKET", "books")
+	t.Setenv("CATALOG_GRPC_ADDR", ":50052")
+	t.Setenv("CATALOG_METRICS_ADDR", "127.0.0.1:9090")
 }
 
 func TestUploadBookStoresPendingPDF(t *testing.T) {

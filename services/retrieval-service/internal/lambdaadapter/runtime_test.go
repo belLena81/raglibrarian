@@ -13,6 +13,7 @@ import (
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
+	retrievalconfig "github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
@@ -317,20 +318,20 @@ func TestIndexPreservesDependencyFailureCategoryWithoutTimeout(t *testing.T) {
 func TestRetrievalProcessingTimeoutRejectsInvalidValue(t *testing.T) {
 	t.Setenv("RETRIEVAL_PROCESSING_TIMEOUT", "30s")
 
-	if _, err := retrievalProcessingTimeout(); err == nil {
-		t.Fatal("retrievalProcessingTimeout() error = nil")
+	if _, err := retrievalconfig.LoadLambdaProcessingTimeout(); err == nil {
+		t.Fatal("LoadLambdaProcessingTimeout() error = nil")
 	}
 }
 
 func TestRetrievalProcessingTimeoutUsesDefault(t *testing.T) {
 	t.Setenv("RETRIEVAL_PROCESSING_TIMEOUT", "")
 
-	value, err := retrievalProcessingTimeout()
+	value, err := retrievalconfig.LoadLambdaProcessingTimeout()
 	if err != nil {
-		t.Fatalf("retrievalProcessingTimeout() error = %v", err)
+		t.Fatalf("LoadLambdaProcessingTimeout() error = %v", err)
 	}
-	if value != defaultProcessingTimeout {
-		t.Fatalf("retrievalProcessingTimeout() = %v, want %v", value, defaultProcessingTimeout)
+	if value != retrievalconfig.DefaultLambdaProcessingTimeout {
+		t.Fatalf("LoadLambdaProcessingTimeout() = %v, want %v", value, retrievalconfig.DefaultLambdaProcessingTimeout)
 	}
 }
 

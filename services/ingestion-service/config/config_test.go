@@ -40,7 +40,11 @@ func TestLoadUsesBoundedProductionDefaults(t *testing.T) {
 	if value.ParserRuntimeHeadroomBytes != 256<<20 {
 		t.Fatalf("unexpected parser runtime headroom default: %#v", value)
 	}
-	if value.ChunkMaximumTokens != 512 || value.ChunkOverlapTokens != 120 || value.ChunkTargetPages != 2 || value.ChunkMaximumPages != 3 {
+	if value.EPUBMaximumEntries != DefaultEPUBMaximumEntries || value.EPUBMaximumSpineItems != uint32(DefaultEPUBMaximumSpineItems) ||
+		value.EPUBMaximumEntryBytes != DefaultEPUBMaximumEntryBytes || value.EPUBMaximumExpandedBytes != DefaultEPUBMaximumExpandedBytes || value.EPUBMaximumTextBytes != DefaultEPUBMaximumTextBytes {
+		t.Fatalf("unexpected EPUB archive defaults: %#v", value)
+	}
+	if value.ChunkMaximumTokens != 512 || value.ChunkOverlapTokens != 120 || value.ChunkTargetPages != DefaultChunkTargetPages || value.ChunkMaximumPages != DefaultChunkMaximumPages {
 		t.Fatalf("unexpected chunk profile defaults: %#v", value)
 	}
 	if value.SourceBucket == value.ArtifactBucket {
@@ -151,12 +155,18 @@ func TestLoadParsesArtifactShardPolicy(t *testing.T) {
 	t.Setenv("INGESTION_ARTIFACT_MAX_SHARD_BYTES", "2097152")
 	t.Setenv("INGESTION_ARTIFACT_VERSION_CLEANUP_PASSES", "512")
 	t.Setenv("INGESTION_PARSER_RUNTIME_HEADROOM_BYTES", "536870912")
+	t.Setenv("INGESTION_EPUB_MAX_ENTRIES", "3000")
+	t.Setenv("INGESTION_EPUB_MAX_SPINE_ITEMS", "700")
+	t.Setenv("INGESTION_EPUB_MAX_ENTRY_BYTES", "1048576")
+	t.Setenv("INGESTION_EPUB_MAX_EXPANDED_BYTES", "8388608")
+	t.Setenv("INGESTION_EPUB_MAX_TEXT_BYTES", "2097152")
 
 	value, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.ArtifactChunksPerShard != 128 || value.ArtifactMaximumShardBytes != 2<<20 || value.ArtifactVersionCleanupPasses != 512 || value.ParserRuntimeHeadroomBytes != 512<<20 {
+	if value.ArtifactChunksPerShard != 128 || value.ArtifactMaximumShardBytes != 2<<20 || value.ArtifactVersionCleanupPasses != 512 || value.ParserRuntimeHeadroomBytes != 512<<20 ||
+		value.EPUBMaximumEntries != 3000 || value.EPUBMaximumSpineItems != 700 || value.EPUBMaximumEntryBytes != 1048576 || value.EPUBMaximumExpandedBytes != 8388608 || value.EPUBMaximumTextBytes != 2097152 {
 		t.Fatalf("unexpected artifact shard policy: %#v", value)
 	}
 }

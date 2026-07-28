@@ -13,15 +13,11 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/belLena81/raglibrarian/services/ingestion-service/config"
 	"golang.org/x/sys/unix"
 )
 
 const landlockPreflightArgument = "--landlock-preflight"
-
-const (
-	defaultParserSandboxMemoryBytes = 1536 << 20
-	maximumParserSandboxMemoryBytes = 8 << 30
-)
 
 const (
 	defaultPDFInfoPath     = "/usr/bin/pdfinfo"
@@ -186,6 +182,17 @@ func parserSandboxEnvironment(sourcePath string) []string {
 	}
 	if sourcePath != "" {
 		environment = append(environment, "EPUB_PARSER_SOURCE_PATH="+sourcePath)
+	}
+	for _, key := range []string{
+		"INGESTION_EPUB_MAX_ENTRIES",
+		"INGESTION_EPUB_MAX_SPINE_ITEMS",
+		"INGESTION_EPUB_MAX_ENTRY_BYTES",
+		"INGESTION_EPUB_MAX_EXPANDED_BYTES",
+		"INGESTION_EPUB_MAX_TEXT_BYTES",
+	} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			environment = append(environment, key+"="+value)
+		}
 	}
 	return environment
 }
@@ -405,11 +412,11 @@ func parserSandboxLimits() []struct {
 func parserSandboxMemoryLimitBytes() int64 {
 	value := strings.TrimSpace(os.Getenv("INGESTION_PARSER_SANDBOX_MEMORY_BYTES"))
 	if value == "" {
-		return defaultParserSandboxMemoryBytes
+		return config.DefaultParserSandboxMemoryBytes
 	}
 	parsed, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || parsed < defaultParserSandboxMemoryBytes || parsed > maximumParserSandboxMemoryBytes {
-		return defaultParserSandboxMemoryBytes
+	if err != nil || parsed < config.DefaultParserSandboxMemoryBytes || parsed > config.MaximumParserSandboxMemoryBytes {
+		return config.DefaultParserSandboxMemoryBytes
 	}
 	return parsed
 }

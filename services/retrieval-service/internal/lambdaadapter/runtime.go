@@ -72,8 +72,6 @@ var errManifestArtifactRead = errors.New("manifest artifact read failed")
 const (
 	minimumProcessingTimeout = time.Minute
 	maximumProcessingTimeout = 13*time.Minute + 30*time.Second
-	defaultProcessingTimeout = 13*time.Minute + 30*time.Second
-	defaultFailureRecordTime = 10 * time.Second
 )
 
 type manifestFailureRecorder interface {
@@ -185,7 +183,7 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 	if err := validateMode(); err != nil {
 		return nil, err
 	}
-	processingTimeout, err := retrievalProcessingTimeout()
+	processingTimeout, err := retrievalconfig.LoadLambdaProcessingTimeout()
 	if err != nil {
 		return nil, err
 	}
@@ -442,14 +440,6 @@ func (r *Runtime) Index(ctx context.Context, event RabbitEvent) error {
 	return nil
 }
 
-func retrievalProcessingTimeout() (time.Duration, error) {
-	value, err := time.ParseDuration(optionalEnv("RETRIEVAL_PROCESSING_TIMEOUT", defaultProcessingTimeout.String()))
-	if err != nil || value < minimumProcessingTimeout || value > maximumProcessingTimeout {
-		return 0, errors.New("invalid retrieval processing timeout")
-	}
-	return value, nil
-}
-
 func optionalEnv(key, fallback string) string {
 	value := os.Getenv(key)
 	if value == "" {
@@ -461,7 +451,7 @@ func optionalEnv(key, fallback string) string {
 func (r *Runtime) failureRecordingContext() (context.Context, context.CancelFunc) {
 	limit := r.failureRecordLimit
 	if limit <= 0 {
-		limit = defaultFailureRecordTime
+		limit = retrievalconfig.DefaultLambdaFailureRecordTimeout
 	}
 	return context.WithTimeout(context.Background(), limit)
 }

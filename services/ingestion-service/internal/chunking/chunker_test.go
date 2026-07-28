@@ -45,7 +45,7 @@ func (textPreservingTokenizer) Decode(tokens []int) string {
 }
 
 func TestChunkerUsesBoundedOverlappingWindows(t *testing.T) {
-	chunker, err := New(wordTokenizer{}, Policy{MaximumTokens: 4, OverlapTokens: 1, MaximumChunks: 10})
+	chunker, err := New(wordTokenizer{}, Policy{MaximumTokens: 4, OverlapTokens: 1, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestChunkerUsesBoundedOverlappingWindows(t *testing.T) {
 }
 
 func TestChunkerEmitsExactFinalWindowOnce(t *testing.T) {
-	chunker, err := New(wordTokenizer{}, Policy{MaximumTokens: 4, OverlapTokens: 1, MaximumChunks: 10})
+	chunker, err := New(wordTokenizer{}, Policy{MaximumTokens: 4, OverlapTokens: 1, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestChunkerEmitsExactFinalWindowOnce(t *testing.T) {
 }
 
 func TestChunkerDoesNotEmitOverlapOnlyChunkBeforeHeading(t *testing.T) {
-	chunker, err := New(wordTokenizer{}, Policy{MaximumTokens: 4, OverlapTokens: 1, MaximumChunks: 10})
+	chunker, err := New(wordTokenizer{}, Policy{MaximumTokens: 4, OverlapTokens: 1, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestChunkerDoesNotEmitOverlapOnlyChunkBeforeHeading(t *testing.T) {
 }
 
 func TestChunkerCarriesStructureAcrossPagesAndSpansPages(t *testing.T) {
-	chunker, err := New(wordTokenizer{}, Policy{MaximumTokens: 7, OverlapTokens: 1, MaximumChunks: 10})
+	chunker, err := New(wordTokenizer{}, Policy{MaximumTokens: 7, OverlapTokens: 1, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +432,7 @@ func TestChunkerDropsLargeBoundaryOverlapOnlyTailBeforeNewChapter(t *testing.T) 
 func TestChunkerPreservesCrossPageSeparation(t *testing.T) {
 	chunkDocument := func(t *testing.T) []domain.Chunk {
 		t.Helper()
-		chunker, err := New(textPreservingTokenizer{}, Policy{MaximumTokens: 20, OverlapTokens: 2, MaximumChunks: 10})
+		chunker, err := New(textPreservingTokenizer{}, Policy{MaximumTokens: 20, OverlapTokens: 2, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -470,7 +470,7 @@ func TestChunkerPreservesCrossPageSeparation(t *testing.T) {
 }
 
 func TestChunkerAttributesCrossPageSeparatorToIncomingPageDuringOverlap(t *testing.T) {
-	chunker, err := New(textPreservingTokenizer{}, Policy{MaximumTokens: 7, OverlapTokens: 2, MaximumChunks: 10})
+	chunker, err := New(textPreservingTokenizer{}, Policy{MaximumTokens: 7, OverlapTokens: 2, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +501,7 @@ func TestChunkerAttributesCrossPageSeparatorToIncomingPageDuringOverlap(t *testi
 }
 
 func TestChunkerInsertsOneSeparatorAcrossBlankPages(t *testing.T) {
-	chunker, err := New(textPreservingTokenizer{}, Policy{MaximumTokens: 20, OverlapTokens: 2, MaximumChunks: 10})
+	chunker, err := New(textPreservingTokenizer{}, Policy{MaximumTokens: 20, OverlapTokens: 2, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -527,7 +527,7 @@ func TestChunkerInsertsOneSeparatorAcrossBlankPages(t *testing.T) {
 }
 
 func TestChunkerDoesNotCarrySeparatorAcrossHeadingFlush(t *testing.T) {
-	chunker, err := New(textPreservingTokenizer{}, Policy{MaximumTokens: 40, OverlapTokens: 2, MaximumChunks: 10})
+	chunker, err := New(textPreservingTokenizer{}, Policy{MaximumTokens: 40, OverlapTokens: 2, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -74,8 +74,15 @@ func NewDispatcher(ctx context.Context, cfg config.DispatcherConfig) (*Dispatche
 		Heartbeat:      cfg.RabbitHeartbeat,
 		PublishTimeout: cfg.RabbitPublishTimeout,
 	}
+	chunkPolicy := chunking.Policy{
+		MaximumTokens: cfg.ChunkMaximumTokens,
+		OverlapTokens: cfg.ChunkOverlapTokens,
+		TargetPages:   cfg.ChunkTargetPages,
+		MaximumPages:  cfg.ChunkMaximumPages,
+		MaximumChunks: 1,
+	}
 	publisher := transport.NewReconnectingPublisher(cfg.RabbitURI, brokerPolicy)
-	outbox, err := transport.NewOutboxWorker(repository.NewPostgres(pool, repository.Policy{
+	outbox, err := transport.NewOutboxWorker(repository.NewPostgresWithProfile(pool, chunkPolicy, repository.Policy{
 		RetryDispatchDelay:   cfg.RetryDispatchDelay,
 		OutboxRetryBaseDelay: cfg.OutboxRetryBaseDelay,
 		OutboxRetryMaxDelay:  cfg.OutboxRetryMaxDelay,
@@ -125,7 +132,14 @@ func NewCleanup(ctx context.Context, cfg config.CleanupConfig) (*CleanupRuntime,
 		pool.Close()
 		return nil, err
 	}
-	cleaner, err := artifact.NewCleaner(repository.NewPostgres(pool, repository.Policy{
+	chunkPolicy := chunking.Policy{
+		MaximumTokens: cfg.ChunkMaximumTokens,
+		OverlapTokens: cfg.ChunkOverlapTokens,
+		TargetPages:   cfg.ChunkTargetPages,
+		MaximumPages:  cfg.ChunkMaximumPages,
+		MaximumChunks: 1,
+	}
+	cleaner, err := artifact.NewCleaner(repository.NewPostgresWithProfile(pool, chunkPolicy, repository.Policy{
 		RetryDispatchDelay:   cfg.RetryDispatchDelay,
 		OutboxRetryBaseDelay: cfg.OutboxRetryBaseDelay,
 		OutboxRetryMaxDelay:  cfg.OutboxRetryMaxDelay,

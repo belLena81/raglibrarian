@@ -120,6 +120,26 @@ func loadAWS(ctx context.Context) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	epubMaximumEntries, err := boundedInt("INGESTION_EPUB_MAX_ENTRIES", DefaultEPUBMaximumEntries, MaximumEPUBMaximumEntries)
+	if err != nil {
+		return Config{}, err
+	}
+	epubMaximumSpineItems64, err := boundedInt64("INGESTION_EPUB_MAX_SPINE_ITEMS", DefaultEPUBMaximumSpineItems, MaximumEPUBMaximumSpineItems)
+	if err != nil {
+		return Config{}, err
+	}
+	epubMaximumEntryBytes, err := boundedInt64("INGESTION_EPUB_MAX_ENTRY_BYTES", DefaultEPUBMaximumEntryBytes, MaximumEPUBMaximumEntryBytes)
+	if err != nil {
+		return Config{}, err
+	}
+	epubMaximumExpandedBytes, err := boundedInt64("INGESTION_EPUB_MAX_EXPANDED_BYTES", DefaultEPUBMaximumExpandedBytes, MaximumEPUBMaximumExpandedBytes)
+	if err != nil {
+		return Config{}, err
+	}
+	epubMaximumTextBytes, err := boundedInt64("INGESTION_EPUB_MAX_TEXT_BYTES", DefaultEPUBMaximumTextBytes, MaximumEPUBMaximumTextBytes)
+	if err != nil {
+		return Config{}, err
+	}
 	chunkMaximumTokens, chunkOverlapTokens, chunkTargetPages, chunkMaximumPages, err := chunkPolicyValues()
 	if err != nil {
 		return Config{}, err
@@ -164,7 +184,7 @@ func loadAWS(ctx context.Context) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	parserMemory, err := boundedInt64("INGESTION_PARSER_SANDBOX_MEMORY_BYTES", defaultParserSandboxMemoryBytes, maximumParserSandboxMemoryBytes)
+	parserMemory, err := boundedInt64("INGESTION_PARSER_SANDBOX_MEMORY_BYTES", DefaultParserSandboxMemoryBytes, MaximumParserSandboxMemoryBytes)
 	if err != nil {
 		return Config{}, err
 	}
@@ -172,8 +192,11 @@ func loadAWS(ctx context.Context) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if parserMemory < defaultParserSandboxMemoryBytes {
-		return Config{}, fmt.Errorf("INGESTION_PARSER_SANDBOX_MEMORY_BYTES must be at least %d", defaultParserSandboxMemoryBytes)
+	if parserMemory < DefaultParserSandboxMemoryBytes {
+		return Config{}, fmt.Errorf("INGESTION_PARSER_SANDBOX_MEMORY_BYTES must be at least %d", DefaultParserSandboxMemoryBytes)
+	}
+	if epubMaximumExpandedBytes < epubMaximumEntryBytes || epubMaximumTextBytes > epubMaximumExpandedBytes {
+		return Config{}, fmt.Errorf("INGESTION_EPUB archive policy is invalid")
 	}
 	if int64(workConcurrency)*parserMemory+parserRuntimeHeadroomBytes > memoryLimit {
 		return Config{}, fmt.Errorf("INGESTION_WORK_CONCURRENCY exceeds INGESTION_MEMORY_LIMIT_BYTES")
@@ -289,6 +312,11 @@ func loadAWS(ctx context.Context) (Config, error) {
 		WorkConcurrency:                workConcurrency,
 		MaximumAttempts:                maximumAttempts,
 		MaximumChunks:                  maximumChunks,
+		EPUBMaximumEntries:             epubMaximumEntries,
+		EPUBMaximumSpineItems:          uint32(epubMaximumSpineItems64), // #nosec G115 -- bounded above.
+		EPUBMaximumEntryBytes:          epubMaximumEntryBytes,
+		EPUBMaximumExpandedBytes:       epubMaximumExpandedBytes,
+		EPUBMaximumTextBytes:           epubMaximumTextBytes,
 		ChunkMaximumTokens:             chunkMaximumTokens,
 		ChunkOverlapTokens:             chunkOverlapTokens,
 		ChunkTargetPages:               chunkTargetPages,
@@ -366,6 +394,22 @@ func loadAWSDispatcher(ctx context.Context) (DispatcherConfig, error) {
 	if err != nil {
 		return DispatcherConfig{}, err
 	}
+	retryDispatchDelay, err := boundedDuration("INGESTION_RETRY_DISPATCH_DELAY", time.Second, time.Minute, time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	outboxRetryBaseDelay, err := boundedDuration("INGESTION_OUTBOX_RETRY_BASE_DELAY", time.Second, time.Minute, time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	outboxRetryMaxDelay, err := boundedDuration("INGESTION_OUTBOX_RETRY_MAX_DELAY", time.Second, 10*time.Minute, 5*time.Minute)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	chunkMaximumTokens, chunkOverlapTokens, chunkTargetPages, chunkMaximumPages, err := chunkPolicyValues()
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
 	uid, err := boundedInt("RUN_AS_UID", 65532, 1<<30)
 	if err != nil {
 		return DispatcherConfig{}, err
@@ -380,10 +424,17 @@ func loadAWSDispatcher(ctx context.Context) (DispatcherConfig, error) {
 		RabbitURI:            rabbitURI,
 		ResultExchange:       optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
 		OutboxInterval:       outboxInterval,
+		ChunkMaximumTokens:   chunkMaximumTokens,
+		ChunkOverlapTokens:   chunkOverlapTokens,
+		ChunkTargetPages:     chunkTargetPages,
+		ChunkMaximumPages:    chunkMaximumPages,
 		RabbitDialTimeout:    rabbitDialTimeout,
 		RabbitHeartbeat:      rabbitHeartbeat,
 		RabbitPublishTimeout: rabbitPublishTimeout,
 		OutboxLease:          outboxLease,
+		RetryDispatchDelay:   retryDispatchDelay,
+		OutboxRetryBaseDelay: outboxRetryBaseDelay,
+		OutboxRetryMaxDelay:  outboxRetryMaxDelay,
 		RunAs:                process.Identity{UID: uid, GID: gid},
 	}, nil
 }
@@ -417,7 +468,42 @@ func loadAWSCleanup(ctx context.Context) (CleanupConfig, error) {
 		return CleanupConfig{}, err
 	}
 	grace, err := boundedDuration("INGESTION_ORPHAN_GRACE_PERIOD", 15*time.Minute, 7*24*time.Hour, time.Hour)
-	return CleanupConfig{RuntimeBackend: "aws", DSN: dsn, ArtifactBucket: bucket, ArtifactVersionCleanupPasses: artifactVersionCleanupPasses, AWSRegion: region, KMSKeyARN: kmsKey, CleanupInterval: interval, OrphanGracePeriod: grace}, err
+	if err != nil {
+		return CleanupConfig{}, err
+	}
+	retryDispatchDelay, err := boundedDuration("INGESTION_RETRY_DISPATCH_DELAY", time.Second, time.Minute, time.Second)
+	if err != nil {
+		return CleanupConfig{}, err
+	}
+	outboxRetryBaseDelay, err := boundedDuration("INGESTION_OUTBOX_RETRY_BASE_DELAY", time.Second, time.Minute, time.Second)
+	if err != nil {
+		return CleanupConfig{}, err
+	}
+	outboxRetryMaxDelay, err := boundedDuration("INGESTION_OUTBOX_RETRY_MAX_DELAY", time.Second, 10*time.Minute, 5*time.Minute)
+	if err != nil {
+		return CleanupConfig{}, err
+	}
+	chunkMaximumTokens, chunkOverlapTokens, chunkTargetPages, chunkMaximumPages, err := chunkPolicyValues()
+	if err != nil {
+		return CleanupConfig{}, err
+	}
+	return CleanupConfig{
+		RuntimeBackend:               "aws",
+		DSN:                          dsn,
+		ArtifactBucket:               bucket,
+		ArtifactVersionCleanupPasses: artifactVersionCleanupPasses,
+		ChunkMaximumTokens:           chunkMaximumTokens,
+		ChunkOverlapTokens:           chunkOverlapTokens,
+		ChunkTargetPages:             chunkTargetPages,
+		ChunkMaximumPages:            chunkMaximumPages,
+		AWSRegion:                    region,
+		KMSKeyARN:                    kmsKey,
+		RetryDispatchDelay:           retryDispatchDelay,
+		OutboxRetryBaseDelay:         outboxRetryBaseDelay,
+		OutboxRetryMaxDelay:          outboxRetryMaxDelay,
+		CleanupInterval:              interval,
+		OrphanGracePeriod:            grace,
+	}, nil
 }
 
 type secretsAPI interface {
