@@ -27,7 +27,7 @@ func TestMinIOObjectStoreVerifiesSuccessfulMultipartUpload(t *testing.T) {
 
 	client := integrationMinIOClient(t)
 	bucket := os.Getenv("CATALOG_MINIO_BUCKET")
-	store := NewMinIOObjectStore(client, bucket)
+	store := NewMinIOObjectStore(client, bucket, 5*time.Second)
 	key := integrationObjectKey(t)
 	payload := bytes.Repeat([]byte("r2-compatible-integrity-check\n"), 220_000)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -78,7 +78,7 @@ func TestS3CredentialBoundaries(t *testing.T) {
 	catalogClient := integrationMinIOClient(t)
 	ingestionClient := integrationClient(t, "INGESTION_MINIO_ACCESS_KEY_FILE", "INGESTION_MINIO_SECRET_KEY_FILE")
 	retrievalClient := integrationClient(t, "RETRIEVAL_MINIO_ACCESS_KEY_FILE", "RETRIEVAL_MINIO_SECRET_KEY_FILE")
-	originalStore := NewMinIOObjectStore(catalogClient, originalBucket)
+	originalStore := NewMinIOObjectStore(catalogClient, originalBucket, 5*time.Second)
 	originalKey := integrationObjectKey(t)
 	forbiddenOriginalKey := originalKey + ".forbidden"
 	artifactKey := "books/integration-" + randomSuffix(t) + "/manifest.json"
@@ -144,7 +144,7 @@ func TestMinIOObjectStoreCleansFailedMultipartUploads(t *testing.T) {
 
 	client := integrationMinIOClient(t)
 	bucket := os.Getenv("CATALOG_MINIO_BUCKET")
-	store := NewMinIOObjectStore(client, bucket)
+	store := NewMinIOObjectStore(client, bucket, 5*time.Second)
 
 	t.Run("reader failure", func(t *testing.T) {
 		key := integrationObjectKey(t)
@@ -192,7 +192,7 @@ func TestMinIOObjectStoreListsBoundedContinuation(t *testing.T) {
 
 	client := integrationMinIOClient(t)
 	bucket := os.Getenv("CATALOG_MINIO_BUCKET")
-	store := NewMinIOObjectStore(client, bucket)
+	store := NewMinIOObjectStore(client, bucket, 5*time.Second)
 	prefix := "originals/zz-listing-" + randomSuffix(t) + "/"
 	keys := []string{prefix + "a.pdf", prefix + "b.pdf", prefix + "c.pdf"}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

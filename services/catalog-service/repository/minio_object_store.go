@@ -15,15 +15,16 @@ import (
 
 // MinIOObjectStore stores original uploads in a pre-provisioned private bucket.
 type MinIOObjectStore struct {
-	client *minio.Client
-	bucket string
+	client         *minio.Client
+	bucket         string
+	cleanupTimeout time.Duration
 }
 
-func NewMinIOObjectStore(client *minio.Client, bucket string) *MinIOObjectStore {
-	if client == nil || bucket == "" {
-		panic("repository: MinIO client and bucket are required")
+func NewMinIOObjectStore(client *minio.Client, bucket string, cleanupTimeout time.Duration) *MinIOObjectStore {
+	if client == nil || bucket == "" || cleanupTimeout <= 0 {
+		panic("repository: MinIO client, bucket, and cleanup timeout are required")
 	}
-	return &MinIOObjectStore{client: client, bucket: bucket}
+	return &MinIOObjectStore{client: client, bucket: bucket, cleanupTimeout: cleanupTimeout}
 }
 
 func (s *MinIOObjectStore) Put(ctx context.Context, key string, reader io.Reader) (catalog.ObjectReceipt, error) {
@@ -65,7 +66,7 @@ func (s *MinIOObjectStore) Put(ctx context.Context, key string, reader io.Reader
 // already be cancelled when a multipart reader fails. Object keys are generated
 // per upload, so cleanup cannot affect another request's object.
 func (s *MinIOObjectStore) cleanupFailedPut(key string) {
-	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), s.cleanupTimeout)
 	defer cancel()
 	_ = s.client.RemoveIncompleteUpload(cleanupCtx, s.bucket, key)
 	_ = s.client.RemoveObject(cleanupCtx, s.bucket, key, minio.RemoveObjectOptions{})

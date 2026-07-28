@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -164,7 +165,7 @@ func testMinIOStore(t *testing.T, server *httptest.Server) *MinIOObjectStore {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewMinIOObjectStore(client, "original-books")
+	return NewMinIOObjectStore(client, "original-books", 5*time.Second)
 }
 
 func writeListResponse(response http.ResponseWriter, keys []string, truncated bool) {
