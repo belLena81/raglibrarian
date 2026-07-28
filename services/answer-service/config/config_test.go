@@ -11,7 +11,7 @@ func TestLoadUsesSecureBoundedDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if configuration.Limits.MaximumEvidence != 8 || configuration.Limits.MaximumContextBytes != 32<<10 || configuration.Limits.ProviderConcurrency != 4 {
+	if configuration.Limits.MaximumEvidence != 8 || configuration.Limits.MaximumContextBytes != 32<<10 || configuration.Limits.GeneratorConcurrency != 4 {
 		t.Fatalf("unexpected limits: %#v", configuration.Limits)
 	}
 	if configuration.RequestPolicy.MaximumQuestionCharacters != 2000 || configuration.RequestPolicy.MaximumFilterTags != 20 ||

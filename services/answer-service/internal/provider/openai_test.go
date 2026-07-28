@@ -52,7 +52,7 @@ func TestOpenAIGeneratesStrictStructuredSegments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	segments, err := adapter.Generate(context.Background(), application.ProviderRequest{Question: "question", Evidence: []domain.ContextEvidence{{EvidenceID: "e-1", Passage: "passage"}}, MaxTokens: 10})
+	segments, err := adapter.Generate(context.Background(), application.GeneratorRequest{Question: "question", Evidence: []domain.ContextEvidence{{EvidenceID: "e-1", Passage: "passage"}}, MaxTokens: 10})
 	if err != nil || len(segments) != 1 || segments[0].Text != "answer" {
 		t.Fatalf("Generate() = %#v, %v", segments, err)
 	}
@@ -113,7 +113,7 @@ func TestOpenAIFallsBackToPlainTextCitationPreamble(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	segments, err := adapter.Generate(context.Background(), application.ProviderRequest{
+	segments, err := adapter.Generate(context.Background(), application.GeneratorRequest{
 		Question:  "vim shortcuts",
 		Evidence:  []domain.ContextEvidence{{EvidenceID: "e-1", Passage: "passage 1"}, {EvidenceID: "e-2", Passage: "passage 2"}},
 		MaxTokens: 10,
@@ -171,7 +171,7 @@ func TestOpenAIFallsBackToPlainTextWhenJSONModeIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	segments, err := adapter.Generate(context.Background(), application.ProviderRequest{
+	segments, err := adapter.Generate(context.Background(), application.GeneratorRequest{
 		Question:  "vim shortcuts",
 		Evidence:  []domain.ContextEvidence{{EvidenceID: "e-1", Passage: "passage 1"}},
 		MaxTokens: 10,
@@ -203,7 +203,7 @@ func TestOpenAIAcceptsPlainTextCandidateWithCitationPreamble(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	segments, err := adapter.Generate(context.Background(), application.ProviderRequest{
+	segments, err := adapter.Generate(context.Background(), application.GeneratorRequest{
 		Question:  "vim shortcuts",
 		Evidence:  []domain.ContextEvidence{{EvidenceID: "e-1", Passage: "passage 1"}},
 		MaxTokens: 10,
@@ -235,7 +235,7 @@ func TestOpenAIRejectsPlainTextCandidateWithoutCitationPreamble(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = adapter.Generate(context.Background(), application.ProviderRequest{
+	_, err = adapter.Generate(context.Background(), application.GeneratorRequest{
 		Question:  "vim shortcuts",
 		Evidence:  []domain.ContextEvidence{{EvidenceID: "e-1", Passage: "passage 1"}},
 		MaxTokens: 10,
@@ -271,7 +271,7 @@ func TestOpenAIRejectsPlainTextCandidateWithUnknownCitationPreamble(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = adapter.Generate(context.Background(), application.ProviderRequest{
+	_, err = adapter.Generate(context.Background(), application.GeneratorRequest{
 		Question:  "vim shortcuts",
 		Evidence:  []domain.ContextEvidence{{EvidenceID: "e-1", Passage: "passage 1"}},
 		MaxTokens: 10,
@@ -317,7 +317,7 @@ func TestOpenAIReportsProviderErrorBodyOnlyWhenEnabled(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = adapter.Generate(context.Background(), application.ProviderRequest{Question: "q", Evidence: []domain.ContextEvidence{{EvidenceID: "e", Passage: "p"}}, MaxTokens: 10})
+			_, err = adapter.Generate(context.Background(), application.GeneratorRequest{Question: "q", Evidence: []domain.ContextEvidence{{EvidenceID: "e", Passage: "p"}}, MaxTokens: 10})
 			if err == nil {
 				t.Fatal("Generate() error = nil, want provider error")
 			}
@@ -382,7 +382,7 @@ func TestOpenAIRejectsRedirectUnknownAndDuplicateCandidateFields(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = adapter.Generate(context.Background(), application.ProviderRequest{Question: "q", Evidence: []domain.ContextEvidence{{EvidenceID: "e", Passage: "p"}}, MaxTokens: 10})
+		_, err = adapter.Generate(context.Background(), application.GeneratorRequest{Question: "q", Evidence: []domain.ContextEvidence{{EvidenceID: "e", Passage: "p"}}, MaxTokens: 10})
 		if err == nil {
 			t.Fatalf("case %d unexpectedly passed", index)
 		}
@@ -411,7 +411,7 @@ func TestOpenAIReportsSanitizedInvalidProviderResponseDetails(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = adapter.Generate(context.Background(), application.ProviderRequest{Question: "q", Evidence: []domain.ContextEvidence{{EvidenceID: "e", Passage: "p"}}, MaxTokens: 10})
+			_, err = adapter.Generate(context.Background(), application.GeneratorRequest{Question: "q", Evidence: []domain.ContextEvidence{{EvidenceID: "e", Passage: "p"}}, MaxTokens: 10})
 			if err == nil {
 				t.Fatal("Generate() error = nil, want invalid provider response")
 			}

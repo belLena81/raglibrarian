@@ -30,7 +30,7 @@ func (r *Recorder) Observe(outcome application.Outcome, duration time.Duration) 
 		r.emptyEvidence.Add(1)
 	case application.OutcomeRetrievalFailure:
 		r.retrievalFailure.Add(1)
-	case application.OutcomeProviderFailure:
+	case application.OutcomeGeneratorFailure:
 		r.providerFailure.Add(1)
 	case application.OutcomeInvalidOutput:
 		r.invalidOutput.Add(1)
@@ -42,8 +42,8 @@ func (r *Recorder) Observe(outcome application.Outcome, duration time.Duration) 
 	}
 }
 
-func (r *Recorder) ProviderStarted()  { r.providerInFlight.Add(1) }
-func (r *Recorder) ProviderFinished() { r.providerInFlight.Add(-1) }
+func (r *Recorder) GeneratorStarted()  { r.providerInFlight.Add(1) }
+func (r *Recorder) GeneratorFinished() { r.providerInFlight.Add(-1) }
 func (r *Recorder) SetRetrievalReady(ready bool) {
 	if ready {
 		r.retrievalReady.Store(1)

@@ -42,18 +42,18 @@ func (r *Recorder) Failure(outcome application.Outcome, stage, reasonCode, reaso
 	)
 }
 
-func (r *Recorder) ProviderStarted() {
-	r.metrics.ProviderStarted()
+func (r *Recorder) GeneratorStarted() {
+	r.metrics.GeneratorStarted()
 	r.log.Info("answer.provider.request")
 }
 
-func (r *Recorder) ProviderResponse(segmentCount, summaryLength int) {
+func (r *Recorder) GeneratorResponse(segmentCount, summaryLength int) {
 	r.log.Info("answer.provider.response",
 		zap.Int("segment_count", segmentCount),
 		zap.Int("summary_length", summaryLength),
 	)
 }
 
-func (r *Recorder) ProviderFinished() {
-	r.metrics.ProviderFinished()
+func (r *Recorder) GeneratorFinished() {
+	r.metrics.GeneratorFinished()
 }

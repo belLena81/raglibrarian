@@ -31,10 +31,10 @@ const (
 	defaultMaximumFailureDetailRunes = 160
 	defaultMaximumCitations          = 8
 	defaultMaximumOutputTokens       = 768
-	defaultProviderConcurrency       = 4
+	defaultGeneratorConcurrency      = 4
 	defaultRequestTimeout            = 5 * time.Minute
 	defaultRetrievalTimeout          = 4*time.Minute + 45*time.Second
-	defaultProviderTimeout           = 4*time.Minute + 30*time.Second
+	defaultGeneratorTimeout          = 4*time.Minute + 30*time.Second
 	DefaultProviderMaxResponseBytes  = 128 << 10
 	DefaultProviderMaxCandidateBytes = 32 << 10
 )
@@ -88,10 +88,10 @@ func Load() (Config, error) {
 	maximumFailureDetailRunes, failureDetailErr := positiveInteger("ANSWER_MAX_FAILURE_DETAIL_RUNES", defaultMaximumFailureDetailRunes, 1, 1<<20)
 	maximumCitations, citationErr := positiveInteger("ANSWER_MAX_CITATIONS_PER_SEGMENT", defaultMaximumCitations, 1, 64)
 	maximumTokens, tokenErr := positiveInteger("ANSWER_MAX_OUTPUT_TOKENS", defaultMaximumOutputTokens, 1, 8192)
-	concurrency, concurrencyErr := positiveInteger("ANSWER_PROVIDER_CONCURRENCY", defaultProviderConcurrency, 1, 64)
+	concurrency, concurrencyErr := positiveInteger("ANSWER_PROVIDER_CONCURRENCY", defaultGeneratorConcurrency, 1, 64)
 	requestTimeout, requestErr := duration("ANSWER_REQUEST_TIMEOUT", defaultRequestTimeout, 100*time.Millisecond, 5*time.Minute)
 	retrievalTimeout, retrievalErr := duration("ANSWER_RETRIEVAL_TIMEOUT", defaultRetrievalTimeout, 100*time.Millisecond, 5*time.Minute)
-	providerTimeout, providerErr := duration("ANSWER_PROVIDER_TIMEOUT", defaultProviderTimeout, 100*time.Millisecond, 5*time.Minute)
+	providerTimeout, providerErr := duration("ANSWER_PROVIDER_TIMEOUT", defaultGeneratorTimeout, 100*time.Millisecond, 5*time.Minute)
 	providerHTTPTimeout, providerHTTPTimeoutErr := nonNegativeDuration("ANSWER_PROVIDER_HTTP_TIMEOUT", 0, 5*time.Minute)
 	readinessProbeTimeout, readinessProbeErr := duration("ANSWER_READINESS_PROBE_TIMEOUT", 2*time.Second, 100*time.Millisecond, time.Minute)
 	readinessPollInterval, readinessPollErr := duration("ANSWER_READINESS_POLL_INTERVAL", 2*time.Second, 100*time.Millisecond, time.Minute)
@@ -130,7 +130,7 @@ func Load() (Config, error) {
 			MaximumEvidenceBytes: maximumItem, MaximumSegments: maximumSegments, MaximumAnswerBytes: maximumAnswer, MaximumSummaryRunes: maximumSummaryRunes,
 			MaximumFailureDetailRunes: maximumFailureDetailRunes,
 			MaximumCitations:          maximumCitations,
-			MaximumOutputTokens:       maximumTokens, ProviderConcurrency: concurrency, RequestTimeout: requestTimeout, RetrievalTimeout: retrievalTimeout, ProviderTimeout: providerTimeout},
+			MaximumOutputTokens:       maximumTokens, GeneratorConcurrency: concurrency, RequestTimeout: requestTimeout, RetrievalTimeout: retrievalTimeout, GeneratorTimeout: providerTimeout},
 		ReadinessProbeTimeout:    readinessProbeTimeout,
 		ReadinessPollInterval:    readinessPollInterval,
 		ShutdownTimeout:          shutdownTimeout,
@@ -175,9 +175,9 @@ func Load() (Config, error) {
 		!validProviderURL(configuration.Generator.BaseURL) || strings.TrimSpace(configuration.Generator.Model) == "" || len(configuration.Generator.Model) > 256 || strings.ContainsAny(configuration.Generator.Model, "\r\n") ||
 		configuration.Generator.APIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		configuration.Generator.MaxCandidateBytes > configuration.Generator.MaxResponseBytes ||
-		(configuration.Generator.HTTPClientTimeout > 0 && configuration.Generator.HTTPClientTimeout > configuration.Limits.ProviderTimeout) ||
+		(configuration.Generator.HTTPClientTimeout > 0 && configuration.Generator.HTTPClientTimeout > configuration.Limits.GeneratorTimeout) ||
 		configuration.Limits.MaximumEvidenceBytes > configuration.Limits.MaximumContextBytes || configuration.Limits.RetrievalTimeout >= configuration.Limits.RequestTimeout ||
-		configuration.Limits.ProviderTimeout >= configuration.Limits.RequestTimeout {
+		configuration.Limits.GeneratorTimeout >= configuration.Limits.RequestTimeout {
 		return Config{}, errors.New("invalid answer configuration")
 	}
 	return configuration, nil

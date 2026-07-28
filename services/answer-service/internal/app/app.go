@@ -52,9 +52,9 @@ func New(configuration config.Config) (*App, error) {
 	if err != nil {
 		return nil, errors.New("load client transport credentials")
 	}
-	providerAdapter, err := answersruntime.NewProvider(configuration.Generator)
+	generatorAdapter, err := answersruntime.NewGenerator(configuration.Generator)
 	if err != nil {
-		return nil, errors.New("configure provider")
+		return nil, errors.New("configure answer generator")
 	}
 	if err = process.DropPrivileges(configuration.RunAs); err != nil {
 		return nil, errors.New("reduce process privileges")
@@ -65,7 +65,7 @@ func New(configuration config.Config) (*App, error) {
 	}
 	retriever := retrieval.NewClient(retrievalv1.NewRetrievalServiceClient(connection))
 	metricRecorder := &metrics.Recorder{}
-	service, err := application.NewService(retriever, providerAdapter, diagnostic.New(log, metricRecorder), configuration.Limits, configuration.RequestPolicy)
+	service, err := application.NewService(retriever, generatorAdapter, diagnostic.New(log, metricRecorder), configuration.Limits, configuration.RequestPolicy)
 	if err != nil {
 		_ = connection.Close()
 		return nil, err

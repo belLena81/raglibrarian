@@ -88,16 +88,16 @@ jobs:
       - name: Validate and start the local stack
         run: |
           make compose-config
-          docker compose $CI_COMPOSE_FILES --profile raglibrarian config --quiet
+          bash ./scripts/ci-compose.sh config --quiet
           POSTGRES_PORT=5432 MINIO_API_PORT=9000 RABBITMQ_AMQP_PORT=5672 EDGE_RETRIEVAL_READINESS_REQUIRED=true \
-            docker compose $CI_COMPOSE_FILES --profile raglibrarian up -d --build --wait --wait-timeout 300
+            bash ./scripts/ci-compose.sh up -d --build --wait --wait-timeout 300
       - name: Configure host-side integration clients
         run: bash ./scripts/configure-ci-host-clients.sh
       - name: Show TEI startup diagnostics
         if: failure()
         run: |
           docker inspect --format 'exit={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{.State.Error}} memory_bytes={{.HostConfig.Memory}} nano_cpus={{.HostConfig.NanoCPUs}}' raglibrarian-text-embeddings-inference-1 || true
-          docker compose $CI_COMPOSE_FILES logs --no-color --tail=200 text-embeddings-inference || true
+          bash ./scripts/ci-compose.sh logs --no-color --tail=200 text-embeddings-inference || true
       - name: Run live mTLS service contracts
         run: make m4-contract-test
       - name: Verify MinIO multipart cleanup
@@ -110,12 +110,12 @@ jobs:
       - name: Show integration diagnostics
         if: failure()
         run: |
-          docker compose $CI_COMPOSE_FILES logs --no-color --tail=300 ingestion-service retrieval-worker retrieval-service answer-service llm-provider-stub rabbitmq qdrant || true
+          bash ./scripts/ci-compose.sh logs --no-color --tail=300 ingestion-service retrieval-worker retrieval-service answer-service llm-provider-stub rabbitmq qdrant || true
       - name: Run focused M5 worker-recovery tests
         run: make m5-worker-recovery-test
       - name: Verify database-loss readiness behavior
         run: |
-          docker compose stop postgres
+          bash ./scripts/ci-compose.sh stop postgres
           for attempt in $(seq 1 30); do
             ready_status=$(curl --silent --output /dev/null --write-out '%{http_code}' http://localhost:8080/readyz)
             live_status=$(curl --silent --output /dev/null --write-out '%{http_code}' http://localhost:8080/healthz)
@@ -127,10 +127,10 @@ jobs:
           exit 1
       - name: Show container state
         if: failure()
-        run: docker compose $CI_COMPOSE_FILES --profile raglibrarian ps --all
+        run: bash ./scripts/ci-compose.sh ps --all
       - name: Tear down stack
         if: always()
-        run: docker compose $CI_COMPOSE_FILES --profile raglibrarian down -v
+        run: bash ./scripts/ci-compose.sh down -v
 
   m4-performance:
     if: github.event_name == 'schedule'
@@ -143,7 +143,7 @@ jobs:
       - uses: actions/checkout@v4.2.2
       - uses: ./.github/actions/bootstrap-local-stack-ci
       - name: Start isolated M4 stack
-        run: docker compose $CI_COMPOSE_FILES --profile raglibrarian up -d --build --wait --wait-timeout 240
+        run: bash ./scripts/ci-compose.sh up -d --build --wait --wait-timeout 240
       - name: Run M4 performance smoke and soak suites
         env:
           E2E_BASE_URL: http://127.0.0.1:8080
@@ -165,7 +165,7 @@ jobs:
           M4_E2E_REFRESH_COOKIE_FILE="$token_dir/refresh" make m4-soak
       - name: Show container state and logs
         if: failure()
-        run: docker compose $CI_COMPOSE_FILES --profile raglibrarian ps --all
+        run: bash ./scripts/ci-compose.sh ps --all
       - name: Tear down stack
         if: always()
-        run: docker compose $CI_COMPOSE_FILES --profile raglibrarian down -v
+        run: bash ./scripts/ci-compose.sh down -v

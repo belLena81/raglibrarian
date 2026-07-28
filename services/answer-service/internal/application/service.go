@@ -1,4 +1,4 @@
-// Package application orchestrates Retrieval and provider calls without transport dependencies.
+// Package application orchestrates Retrieval and answer generation without transport dependencies.
 package application
 
 import (
@@ -19,15 +19,15 @@ type Retriever interface {
 	CheckReady(context.Context) error
 }
 
-type ProviderRequest struct {
+type GeneratorRequest struct {
 	Question   string
 	Evidence   []domain.ContextEvidence
 	MaxTokens  int
 	MaxSegment int
 }
 
-type AnswerProvider interface {
-	Generate(context.Context, ProviderRequest) ([]domain.AnswerSegment, error)
+type AnswerGenerator interface {
+	Generate(context.Context, GeneratorRequest) ([]domain.AnswerSegment, error)
 }
 
 type Outcome string
@@ -36,7 +36,7 @@ const (
 	OutcomeAnswered          Outcome = "answered"
 	OutcomeEmptyEvidence     Outcome = "empty_evidence"
 	OutcomeRetrievalFailure  Outcome = "retrieval_failure"
-	OutcomeProviderFailure   Outcome = "provider_failure"
+	OutcomeGeneratorFailure  Outcome = "provider_failure"
 	OutcomeInvalidOutput     Outcome = "invalid_output"
 	OutcomeCapacityExhausted Outcome = "capacity_exhausted"
 )
@@ -44,9 +44,9 @@ const (
 type Observer interface {
 	Observe(Outcome, time.Duration)
 	Failure(Outcome, string, string, string, time.Duration)
-	ProviderStarted()
-	ProviderResponse(segmentCount, summaryLength int)
-	ProviderFinished()
+	GeneratorStarted()
+	GeneratorResponse(segmentCount, summaryLength int)
+	GeneratorFinished()
 }
 
 type codedReason interface {
@@ -67,34 +67,34 @@ type Limits struct {
 	MaximumFailureDetailRunes int
 	MaximumCitations          int
 	MaximumOutputTokens       int
-	ProviderConcurrency       int
+	GeneratorConcurrency      int
 	RequestTimeout            time.Duration
 	RetrievalTimeout          time.Duration
-	ProviderTimeout           time.Duration
+	GeneratorTimeout          time.Duration
 }
 
 type Service struct {
 	retriever     Retriever
-	provider      AnswerProvider
+	generator     AnswerGenerator
 	observer      Observer
 	limits        Limits
 	requestPolicy domain.RequestPolicy
 	permits       chan struct{}
 }
 
-func NewService(retriever Retriever, provider AnswerProvider, observer Observer, limits Limits, requestPolicy domain.RequestPolicy) (*Service, error) {
-	if retriever == nil || provider == nil || observer == nil || !validLimits(limits) || requestPolicy.MaximumResultLimit == 0 ||
+func NewService(retriever Retriever, generator AnswerGenerator, observer Observer, limits Limits, requestPolicy domain.RequestPolicy) (*Service, error) {
+	if retriever == nil || generator == nil || observer == nil || !validLimits(limits) || requestPolicy.MaximumResultLimit == 0 ||
 		requestPolicy.MaximumQuestionCharacters == 0 || requestPolicy.MaximumFilterTags == 0 || requestPolicy.MaximumTagCharacters == 0 ||
 		requestPolicy.MaximumAuthorCharacters == 0 {
 		return nil, errors.New("invalid answer service configuration")
 	}
 	return &Service{
 		retriever:     retriever,
-		provider:      provider,
+		generator:     generator,
 		observer:      observer,
 		limits:        limits,
 		requestPolicy: requestPolicy,
-		permits:       make(chan struct{}, limits.ProviderConcurrency),
+		permits:       make(chan struct{}, limits.GeneratorConcurrency),
 	}, nil
 }
 
@@ -104,8 +104,8 @@ func validLimits(l Limits) bool {
 		l.MaximumAnswerBytes > 0 && l.MaximumAnswerBytes <= 1<<20 && l.MaximumSummaryRunes > 0 && l.MaximumSummaryRunes <= 1<<20 &&
 		l.MaximumFailureDetailRunes > 0 && l.MaximumFailureDetailRunes <= 1<<20 &&
 		l.MaximumCitations > 0 && l.MaximumCitations <= 64 &&
-		l.MaximumOutputTokens > 0 && l.MaximumOutputTokens <= 8192 && l.ProviderConcurrency > 0 && l.ProviderConcurrency <= 64 &&
-		l.RequestTimeout > 0 && l.RetrievalTimeout > 0 && l.ProviderTimeout > 0 && l.RetrievalTimeout < l.RequestTimeout && l.ProviderTimeout < l.RequestTimeout
+		l.MaximumOutputTokens > 0 && l.MaximumOutputTokens <= 8192 && l.GeneratorConcurrency > 0 && l.GeneratorConcurrency <= 64 &&
+		l.RequestTimeout > 0 && l.RetrievalTimeout > 0 && l.GeneratorTimeout > 0 && l.RetrievalTimeout < l.RequestTimeout && l.GeneratorTimeout < l.RequestTimeout
 }
 
 func (s *Service) CheckReady(ctx context.Context) error {
@@ -141,17 +141,17 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 		s.observer.Observe(OutcomeCapacityExhausted, time.Since(started))
 		return result, nil
 	}
-	s.observer.ProviderStarted()
+	s.observer.GeneratorStarted()
 	defer func() {
 		<-s.permits
-		s.observer.ProviderFinished()
+		s.observer.GeneratorFinished()
 	}()
-	providerContext, providerCancel := context.WithTimeout(ctx, s.limits.ProviderTimeout)
-	segments, err := s.provider.Generate(providerContext, ProviderRequest{Question: strings.TrimSpace(request.Question), Evidence: evidence,
+	generatorContext, generatorCancel := context.WithTimeout(ctx, s.limits.GeneratorTimeout)
+	segments, err := s.generator.Generate(generatorContext, GeneratorRequest{Question: strings.TrimSpace(request.Question), Evidence: evidence,
 		MaxTokens: s.limits.MaximumOutputTokens, MaxSegment: s.limits.MaximumSegments})
-	providerCancel()
+	generatorCancel()
 	if err != nil {
-		s.observer.Failure(OutcomeProviderFailure, "provider", failureReasonCode(err, "provider"), failureReasonDetail(err, s.limits.MaximumFailureDetailRunes), time.Since(started))
+		s.observer.Failure(OutcomeGeneratorFailure, "generator", failureReasonCode(err, "generator"), failureReasonDetail(err, s.limits.MaximumFailureDetailRunes), time.Since(started))
 		return result, nil
 	}
 	validated, err := validateSegments(segments, evidence, s.limits)
@@ -162,7 +162,7 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 	summary := summarizeSegments(validated, s.limits.MaximumSummaryRunes)
 	result.Answer = &domain.GroundedAnswer{Segments: validated}
 	result.Summary = summary
-	s.observer.ProviderResponse(len(validated), utf8.RuneCountInString(summary))
+	s.observer.GeneratorResponse(len(validated), utf8.RuneCountInString(summary))
 	s.observer.Observe(OutcomeAnswered, time.Since(started))
 	return result, nil
 }
@@ -337,9 +337,9 @@ func failureReasonCode(err error, stage string) string {
 		return "deadline_exceeded"
 	case errors.Is(err, context.Canceled):
 		return "canceled"
-	case stage == "provider" && strings.Contains(err.Error(), "provider unavailable"):
+	case stage == "generator" && strings.Contains(err.Error(), "provider unavailable"):
 		return "provider_unavailable"
-	case stage == "provider" && strings.Contains(err.Error(), "invalid provider response"):
+	case stage == "generator" && strings.Contains(err.Error(), "invalid provider response"):
 		return "invalid_provider_response"
 	case stage == "validation" && strings.Contains(err.Error(), "invalid provider output"):
 		return "invalid_provider_output"

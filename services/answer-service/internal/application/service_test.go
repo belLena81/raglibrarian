@@ -28,10 +28,10 @@ type fakeProvider struct {
 	err      error
 	calls    atomic.Int32
 	block    <-chan struct{}
-	input    ProviderRequest
+	input    GeneratorRequest
 }
 
-func (f *fakeProvider) Generate(ctx context.Context, input ProviderRequest) ([]domain.AnswerSegment, error) {
+func (f *fakeProvider) Generate(ctx context.Context, input GeneratorRequest) ([]domain.AnswerSegment, error) {
 	f.calls.Add(1)
 	f.input = input
 	if f.block != nil {
@@ -78,9 +78,9 @@ func (o *fakeObserver) Observe(Outcome, time.Duration) {}
 func (o *fakeObserver) Failure(_ Outcome, _ string, _ string, detail string, _ time.Duration) {
 	o.lastFailureDetail = detail
 }
-func (o *fakeObserver) ProviderStarted()          {}
-func (o *fakeObserver) ProviderResponse(int, int) {}
-func (o *fakeObserver) ProviderFinished()         {}
+func (o *fakeObserver) GeneratorStarted()          {}
+func (o *fakeObserver) GeneratorResponse(int, int) {}
+func (o *fakeObserver) GeneratorFinished()         {}
 
 func TestAnswerReturnsValidatedGroundedSegments(t *testing.T) {
 	retriever := &fakeRetriever{result: searchResult("evidence-1")}
@@ -179,7 +179,7 @@ func TestAnswerDegradesForProviderAndCitationFailures(t *testing.T) {
 
 func TestAnswerBoundsContextAndUsesNonBlockingConcurrency(t *testing.T) {
 	limits := testLimits()
-	limits.ProviderConcurrency = 1
+	limits.GeneratorConcurrency = 1
 	block := make(chan struct{})
 	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}, block: block}
 	service := newTestService(t, &fakeRetriever{result: searchResult("evidence-1")}, provider, limits)
@@ -238,9 +238,9 @@ func TestAnswerTruncatesFailureDetailUsingConfiguredLimit(t *testing.T) {
 	}
 }
 
-func newTestService(t *testing.T, retriever Retriever, provider AnswerProvider, limits Limits) *Service {
+func newTestService(t *testing.T, retriever Retriever, generator AnswerGenerator, limits Limits) *Service {
 	t.Helper()
-	service, err := NewService(retriever, provider, &fakeObserver{}, limits, testRequestPolicy())
+	service, err := NewService(retriever, generator, &fakeObserver{}, limits, testRequestPolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,10 +268,10 @@ func testLimits() Limits {
 		MaximumFailureDetailRunes: 160,
 		MaximumCitations:          8,
 		MaximumOutputTokens:       768,
-		ProviderConcurrency:       4,
+		GeneratorConcurrency:      4,
 		RequestTimeout:            5 * time.Minute,
 		RetrievalTimeout:          4*time.Minute + 45*time.Second,
-		ProviderTimeout:           4*time.Minute + 30*time.Second,
+		GeneratorTimeout:          4*time.Minute + 30*time.Second,
 	}
 }
 

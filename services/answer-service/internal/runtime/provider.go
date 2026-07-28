@@ -11,7 +11,7 @@ import (
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/throttle"
 )
 
-func NewProvider(configuration config.GeneratorConfig) (application.AnswerProvider, error) {
+func NewGenerator(configuration config.GeneratorConfig) (application.AnswerGenerator, error) {
 	apiKey, err := providerhttp.ReadSingleLineSecret(configuration.APIKeyFile, 4096)
 	if err != nil {
 		return nil, errors.New("load provider credentials")
