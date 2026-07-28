@@ -25,14 +25,17 @@ import (
 )
 
 type App struct {
-	grpcServer   *grpc.Server
-	httpServer   *http.Server
-	grpcListener net.Listener
-	httpListener net.Listener
-	connection   *grpc.ClientConn
-	service      *application.Service
-	metrics      *metrics.Recorder
-	log          *zap.Logger
+	grpcServer            *grpc.Server
+	httpServer            *http.Server
+	grpcListener          net.Listener
+	httpListener          net.Listener
+	connection            *grpc.ClientConn
+	service               *application.Service
+	metrics               *metrics.Recorder
+	log                   *zap.Logger
+	readinessProbeTimeout time.Duration
+	readinessPollInterval time.Duration
+	shutdownTimeout       time.Duration
 }
 
 func New(configuration config.Config) (*App, error) {
@@ -81,9 +84,10 @@ func New(configuration config.Config) (*App, error) {
 		Service: "answer.v1.AnswerService", DNSName: "edge-api",
 	})))
 	answerv1.RegisterAnswerServiceServer(grpcServer, answergrpc.NewServer(service))
-	return &App{grpcServer: grpcServer, httpServer: &http.Server{Handler: metricRecorder.Handler(), ReadTimeout: 3 * time.Second,
-		ReadHeaderTimeout: 2 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10},
-		grpcListener: grpcListener, httpListener: httpListener, connection: connection, service: service, metrics: metricRecorder, log: log}, nil
+	return &App{grpcServer: grpcServer, httpServer: &http.Server{Handler: metricRecorder.Handler(), ReadTimeout: configuration.MetricsReadTimeout,
+		ReadHeaderTimeout: configuration.MetricsReadHeaderTimeout, WriteTimeout: configuration.MetricsWriteTimeout, IdleTimeout: configuration.MetricsIdleTimeout, MaxHeaderBytes: 16 << 10},
+		grpcListener: grpcListener, httpListener: httpListener, connection: connection, service: service, metrics: metricRecorder, log: log,
+		readinessProbeTimeout: configuration.ReadinessProbeTimeout, readinessPollInterval: configuration.ReadinessPollInterval, shutdownTimeout: configuration.ShutdownTimeout}, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -93,7 +97,7 @@ func (a *App) Run(ctx context.Context) error {
 		_ = a.log.Sync()
 	}()
 	a.updateReadiness(ctx)
-	go a.probeReadiness(ctx)
+	go a.probeReadiness(ctx, a.readinessPollInterval)
 	grpcErrors := make(chan error, 1)
 	httpErrors := make(chan error, 1)
 	go func() { grpcErrors <- a.grpcServer.Serve(a.grpcListener) }()
@@ -116,8 +120,8 @@ func (a *App) Run(ctx context.Context) error {
 	}
 }
 
-func (a *App) probeReadiness(ctx context.Context) {
-	ticker := time.NewTicker(2 * time.Second)
+func (a *App) probeReadiness(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -130,14 +134,14 @@ func (a *App) probeReadiness(ctx context.Context) {
 }
 
 func (a *App) updateReadiness(ctx context.Context) {
-	probeContext, cancel := context.WithTimeout(ctx, 2*time.Second)
+	probeContext, cancel := context.WithTimeout(ctx, a.readinessProbeTimeout)
 	defer cancel()
 	a.metrics.SetRetrievalReady(a.service.CheckReady(probeContext) == nil)
 }
 
 func (a *App) shutdown(ctx context.Context) {
 	a.metrics.SetRetrievalReady(false)
-	shutdownContext, cancel := context.WithTimeout(ctx, 3*time.Second)
+	shutdownContext, cancel := context.WithTimeout(ctx, a.shutdownTimeout)
 	defer cancel()
 	done := make(chan struct{})
 	go func() {

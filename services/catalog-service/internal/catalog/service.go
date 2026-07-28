@@ -101,27 +101,31 @@ type OutboxEvent struct {
 
 // Service coordinates validation, private object storage and atomic persistence.
 type Service struct {
-	repository     BookRepository
-	objects        OriginalObjectStore
-	now            func() time.Time
-	newID          func() (string, error)
-	maxBytes       int64
-	uploads        chan struct{}
-	preview        chan struct{}
-	previewBook    func(context.Context, Book, OriginalObjectStore) (string, error)
-	previewTimeout time.Duration
+	repository               BookRepository
+	objects                  OriginalObjectStore
+	now                      func() time.Time
+	newID                    func() (string, error)
+	maxBytes                 int64
+	uploads                  chan struct{}
+	preview                  chan struct{}
+	previewBook              func(context.Context, Book, OriginalObjectStore) (string, error)
+	previewTimeout           time.Duration
+	persistenceLookupTimeout time.Duration
+	objectDeleteTimeout      time.Duration
 }
 
 // ServiceOptions supplies bounded runtime dependencies without exposing
 // transport or storage implementation details to Catalog's application logic.
 type ServiceOptions struct {
-	MaxBytes           int64
-	UploadConcurrency  int
-	PreviewConcurrency int
-	PreviewTimeout     time.Duration
-	Clock              func() time.Time
-	NewID              func() (string, error)
-	PreviewBook        func(context.Context, Book, OriginalObjectStore) (string, error)
+	MaxBytes                 int64
+	UploadConcurrency        int
+	PreviewConcurrency       int
+	PreviewTimeout           time.Duration
+	PersistenceLookupTimeout time.Duration
+	ObjectDeleteTimeout      time.Duration
+	Clock                    func() time.Time
+	NewID                    func() (string, error)
+	PreviewBook              func(context.Context, Book, OriginalObjectStore) (string, error)
 }
 
 func NewService(repository BookRepository, objects OriginalObjectStore, maxBytes int64) *Service {
@@ -141,6 +145,12 @@ func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStor
 	if options.PreviewTimeout <= 0 {
 		options.PreviewTimeout = 5 * time.Second
 	}
+	if options.PersistenceLookupTimeout <= 0 {
+		options.PersistenceLookupTimeout = 5 * time.Second
+	}
+	if options.ObjectDeleteTimeout <= 0 {
+		options.ObjectDeleteTimeout = 5 * time.Second
+	}
 	if options.Clock == nil {
 		options.Clock = func() time.Time { return time.Now().UTC() }
 	}
@@ -151,15 +161,17 @@ func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStor
 		options.PreviewBook = defaultPreviewBook
 	}
 	return &Service{
-		repository:     repository,
-		objects:        objects,
-		now:            options.Clock,
-		maxBytes:       options.MaxBytes,
-		uploads:        make(chan struct{}, options.UploadConcurrency),
-		preview:        make(chan struct{}, options.PreviewConcurrency),
-		newID:          options.NewID,
-		previewBook:    options.PreviewBook,
-		previewTimeout: options.PreviewTimeout,
+		repository:               repository,
+		objects:                  objects,
+		now:                      options.Clock,
+		maxBytes:                 options.MaxBytes,
+		uploads:                  make(chan struct{}, options.UploadConcurrency),
+		preview:                  make(chan struct{}, options.PreviewConcurrency),
+		newID:                    options.NewID,
+		previewBook:              options.PreviewBook,
+		previewTimeout:           options.PreviewTimeout,
+		persistenceLookupTimeout: options.PersistenceLookupTimeout,
+		objectDeleteTimeout:      options.ObjectDeleteTimeout,
 	}
 }
 
@@ -268,7 +280,7 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 	}
 	statusEvent := OutboxEvent{ID: statusEventID, Type: contracts.EventCatalogBookProcessingStatusChange, AggregateID: book.ID, Sequence: book.ProcessingVersion, OccurredAt: now, Payload: statusPayload}
 	if err = s.repository.Create(ctx, book, event, statusEvent); err != nil {
-		lookupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		lookupCtx, cancel := context.WithTimeout(context.Background(), s.persistenceLookupTimeout)
 		defer cancel()
 		persisted, lookupErr := s.repository.Get(lookupCtx, book.ID)
 		if lookupErr == nil {
@@ -368,7 +380,7 @@ func validCommandID(value string) bool {
 }
 
 func (s *Service) deleteObject(reference string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), s.objectDeleteTimeout)
 	defer cancel()
 	_ = s.objects.Delete(ctx, reference)
 }

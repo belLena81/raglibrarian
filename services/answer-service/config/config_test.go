@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoadUsesSecureBoundedDefaults(t *testing.T) {
 	setRequiredEnvironment(t)
@@ -10,6 +13,12 @@ func TestLoadUsesSecureBoundedDefaults(t *testing.T) {
 	}
 	if configuration.Limits.MaximumEvidence != 8 || configuration.Limits.MaximumContextBytes != 32<<10 || configuration.Limits.ProviderConcurrency != 4 {
 		t.Fatalf("unexpected limits: %#v", configuration.Limits)
+	}
+	if configuration.ReadinessProbeTimeout != 2*time.Second || configuration.ReadinessPollInterval != 2*time.Second ||
+		configuration.ShutdownTimeout != 3*time.Second || configuration.MetricsReadTimeout != 3*time.Second ||
+		configuration.MetricsReadHeaderTimeout != 2*time.Second || configuration.MetricsWriteTimeout != 5*time.Second ||
+		configuration.MetricsIdleTimeout != 30*time.Second {
+		t.Fatalf("unexpected app runtime policy: %#v", configuration)
 	}
 }
 

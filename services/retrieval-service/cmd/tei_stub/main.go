@@ -32,19 +32,31 @@ func main() {
 	server := &http.Server{
 		Addr:              address,
 		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: envDuration("TEI_STUB_READ_HEADER_TIMEOUT", 5*time.Second),
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go func() {
 		<-ctx.Done()
-		shutdownContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		shutdownContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), envDuration("TEI_STUB_SHUTDOWN_TIMEOUT", 5*time.Second))
 		defer cancel()
 		_ = server.Shutdown(shutdownContext)
 	}()
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+}
+
+func envDuration(key string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func health(w http.ResponseWriter, _ *http.Request) {

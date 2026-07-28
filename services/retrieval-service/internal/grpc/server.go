@@ -21,27 +21,28 @@ type SearchService interface {
 
 type Server struct {
 	retrievalv1.UnimplementedRetrievalServiceServer
-	search    SearchService
-	log       *zap.Logger
-	timeout   time.Duration
-	readiness []interface{ CheckReady(context.Context) error }
+	search                SearchService
+	log                   *zap.Logger
+	timeout               time.Duration
+	readinessProbeTimeout time.Duration
+	readiness             []interface{ CheckReady(context.Context) error }
 }
 
-func NewServer(search SearchService, log *zap.Logger, timeout time.Duration, readiness ...interface{ CheckReady(context.Context) error }) *Server {
+func NewServer(search SearchService, log *zap.Logger, timeout, readinessProbeTimeout time.Duration, readiness ...interface{ CheckReady(context.Context) error }) *Server {
 	if search == nil {
 		panic("retrievalgrpc: search service is required")
 	}
-	if timeout <= 0 {
-		panic("retrievalgrpc: search timeout is required")
+	if timeout <= 0 || readinessProbeTimeout <= 0 {
+		panic("retrievalgrpc: timeouts are required")
 	}
-	return &Server{search: search, log: log, timeout: timeout, readiness: readiness}
+	return &Server{search: search, log: log, timeout: timeout, readinessProbeTimeout: readinessProbeTimeout, readiness: readiness}
 }
 
 func (s *Server) Check(ctx context.Context, _ *retrievalv1.CheckRequest) (*retrievalv1.CheckResponse, error) {
 	if ctx.Err() != nil {
 		return nil, status.Error(codes.Canceled, "request cancelled")
 	}
-	probeContext, cancel := context.WithTimeout(ctx, 2*time.Second)
+	probeContext, cancel := context.WithTimeout(ctx, s.readinessProbeTimeout)
 	defer cancel()
 	for _, dependency := range s.readiness {
 		if dependency.CheckReady(probeContext) != nil {

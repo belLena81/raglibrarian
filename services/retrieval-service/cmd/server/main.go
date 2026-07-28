@@ -86,7 +86,7 @@ func main() {
 			DNSNames: []string{"edge-api", "answer-service"},
 		})),
 	)
-	retrievalv1.RegisterRetrievalServiceServer(server, retrievalgrpc.NewServer(searcher, serviceLogger, configuration.SearchTimeout, embedder, store, records))
+	retrievalv1.RegisterRetrievalServiceServer(server, retrievalgrpc.NewServer(searcher, serviceLogger, configuration.SearchTimeout, configuration.ReadinessProbeTimeout, embedder, store, records))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if configuration.MetricsAddress != "" {

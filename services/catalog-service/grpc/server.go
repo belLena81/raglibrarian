@@ -44,30 +44,18 @@ func NewServer(service *catalog.Service, diagnostics *diagnostic.Recorder, polic
 	if service == nil || diagnostics == nil {
 		panic("cataloggrpc: service and diagnostics are required")
 	}
+	if policy.PreviewTimeout <= 0 || policy.ReadinessProbeTimeout <= 0 || policy.UploadTimeout <= 0 || policy.LifecycleTimeout <= 0 || policy.ListTimeout <= 0 {
+		panic("cataloggrpc: policy timeouts are required")
+	}
 	server := &Server{service: service, diagnostics: diagnostics}
 	if len(readiness) == 1 {
 		server.readiness = readiness[0]
 	}
 	server.previewTimeout = policy.PreviewTimeout
-	if server.previewTimeout <= 0 {
-		server.previewTimeout = 5 * time.Second
-	}
 	server.readinessProbeTimeout = policy.ReadinessProbeTimeout
-	if server.readinessProbeTimeout <= 0 {
-		server.readinessProbeTimeout = 2 * time.Second
-	}
 	server.uploadTimeout = policy.UploadTimeout
-	if server.uploadTimeout <= 0 {
-		server.uploadTimeout = 2 * time.Minute
-	}
 	server.lifecycleTimeout = policy.LifecycleTimeout
-	if server.lifecycleTimeout <= 0 {
-		server.lifecycleTimeout = 10 * time.Second
-	}
 	server.listTimeout = policy.ListTimeout
-	if server.listTimeout <= 0 {
-		server.listTimeout = 5 * time.Second
-	}
 	return server
 }
 

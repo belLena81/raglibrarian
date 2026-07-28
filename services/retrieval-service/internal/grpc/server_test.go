@@ -19,7 +19,7 @@ func TestSearchMapsAuthorizedRequestAndEvidence(t *testing.T) {
 		Documents: []application.DocumentResult{{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB,
 			ChunkCount: 2, PageStart: 1, PageEnd: 3, Score: .7, Summary: "Evidence", Evidence: []application.Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB, Passage: "Evidence", Summary: "Evidence"}}}},
 	}}
-	server := NewServer(service, zap.NewNop(), 25*time.Second)
+	server := NewServer(service, zap.NewNop(), 25*time.Second, 2*time.Second)
 	response, err := server.Search(context.Background(), &retrievalv1.SearchRequest{Question: "replication", Limit: 2,
 		Actor: &retrievalv1.Actor{UserId: "user-1", Role: "reader", Status: "active"}})
 	if err != nil || len(response.Results) != 1 || response.Results[0].Book.BookId != "book-1" ||
@@ -30,7 +30,7 @@ func TestSearchMapsAuthorizedRequestAndEvidence(t *testing.T) {
 }
 
 func TestSearchSanitizesAuthorizationFailure(t *testing.T) {
-	server := NewServer(&stubSearchService{err: application.ErrSearchForbidden}, zap.NewNop(), 25*time.Second)
+	server := NewServer(&stubSearchService{err: application.ErrSearchForbidden}, zap.NewNop(), 25*time.Second, 2*time.Second)
 	_, err := server.Search(context.Background(), &retrievalv1.SearchRequest{Question: "secret", Actor: &retrievalv1.Actor{UserId: "user-1", Role: "reader", Status: "pending"}})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("Search() code = %v", status.Code(err))
@@ -50,7 +50,7 @@ func TestSearchAppliesConfiguredDeadline(t *testing.T) {
 		}
 		return application.SearchResult{}, nil
 	}}
-	server := NewServer(service, zap.NewNop(), timeout)
+	server := NewServer(service, zap.NewNop(), timeout, 2*time.Second)
 
 	if _, err := server.Search(context.Background(), &retrievalv1.SearchRequest{Question: "replication"}); err != nil {
 		t.Fatalf("Search() error = %v", err)

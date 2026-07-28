@@ -73,7 +73,13 @@ func TestGetBookUsesConfiguredPreviewTimeout(t *testing.T) {
 			return "", nil
 		},
 	})
-	server := NewServer(service, diagnostic.New(zap.NewNop()), Policy{PreviewTimeout: configuredPreviewTimeout})
+	server := NewServer(service, diagnostic.New(zap.NewNop()), Policy{
+		PreviewTimeout:        configuredPreviewTimeout,
+		ReadinessProbeTimeout: 2 * time.Second,
+		UploadTimeout:         2 * time.Minute,
+		LifecycleTimeout:      10 * time.Second,
+		ListTimeout:           5 * time.Second,
+	})
 	response, err := server.GetBook(context.Background(), &catalogv1.GetBookRequest{
 		BookId: "book-1",
 		Actor:  &catalogv1.Actor{UserId: "reader-1", Role: "reader", Status: "active", MaskedEmail: "reader@example.com"},

@@ -91,10 +91,12 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	bookRepository := repository.NewPostgresBookRepository(pool, wakeOutbox)
 	objects := repository.NewMinIOObjectStore(minioClient, cfg.MinIOBucket)
 	service := catalog.NewServiceWithOptions(bookRepository, objects, catalog.ServiceOptions{
-		MaxBytes:           cfg.MaxUploadBytes,
-		UploadConcurrency:  cfg.UploadConcurrency,
-		PreviewConcurrency: cfg.PreviewConcurrency,
-		PreviewTimeout:     cfg.PreviewTimeout,
+		MaxBytes:                 cfg.MaxUploadBytes,
+		UploadConcurrency:        cfg.UploadConcurrency,
+		PreviewConcurrency:       cfg.PreviewConcurrency,
+		PreviewTimeout:           cfg.PreviewTimeout,
+		PersistenceLookupTimeout: cfg.PersistenceLookupTimeout,
+		ObjectDeleteTimeout:      cfg.ObjectDeleteTimeout,
 	})
 	catalogv1.RegisterCatalogServiceServer(server, cataloggrpc.NewServer(service, diagnostics, cataloggrpc.Policy{
 		PreviewTimeout:        cfg.PreviewTimeout,

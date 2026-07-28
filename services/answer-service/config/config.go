@@ -16,20 +16,27 @@ import (
 )
 
 type Config struct {
-	GRPCAddress          string
-	MetricsAddress       string
-	RetrievalAddress     string
-	RetrievalDNSName     string
-	LLMProviderKind      string
-	LLMBaseURL           string
-	LLMModel             string
-	LLMRequestsPerMinute int
-	LogProviderErrorBody bool
-	LLMAPIKeyFile        string
-	LLMCAFile            string
-	TLS                  internaltls.Files
-	RunAs                process.Identity
-	Limits               application.Limits
+	GRPCAddress              string
+	MetricsAddress           string
+	RetrievalAddress         string
+	RetrievalDNSName         string
+	LLMProviderKind          string
+	LLMBaseURL               string
+	LLMModel                 string
+	LLMRequestsPerMinute     int
+	LogProviderErrorBody     bool
+	LLMAPIKeyFile            string
+	LLMCAFile                string
+	TLS                      internaltls.Files
+	RunAs                    process.Identity
+	Limits                   application.Limits
+	ReadinessProbeTimeout    time.Duration
+	ReadinessPollInterval    time.Duration
+	ShutdownTimeout          time.Duration
+	MetricsReadTimeout       time.Duration
+	MetricsReadHeaderTimeout time.Duration
+	MetricsWriteTimeout      time.Duration
+	MetricsIdleTimeout       time.Duration
 }
 
 func Load() (Config, error) {
@@ -47,6 +54,13 @@ func Load() (Config, error) {
 	requestTimeout, requestErr := duration("ANSWER_REQUEST_TIMEOUT", defaults.RequestTimeout, 100*time.Millisecond, 5*time.Minute)
 	retrievalTimeout, retrievalErr := duration("ANSWER_RETRIEVAL_TIMEOUT", defaults.RetrievalTimeout, 100*time.Millisecond, 5*time.Minute)
 	providerTimeout, providerErr := duration("ANSWER_PROVIDER_TIMEOUT", defaults.ProviderTimeout, 100*time.Millisecond, 5*time.Minute)
+	readinessProbeTimeout, readinessProbeErr := duration("ANSWER_READINESS_PROBE_TIMEOUT", 2*time.Second, 100*time.Millisecond, time.Minute)
+	readinessPollInterval, readinessPollErr := duration("ANSWER_READINESS_POLL_INTERVAL", 2*time.Second, 100*time.Millisecond, time.Minute)
+	shutdownTimeout, shutdownErr := duration("ANSWER_SHUTDOWN_TIMEOUT", 3*time.Second, 100*time.Millisecond, time.Minute)
+	metricsReadTimeout, metricsReadErr := duration("ANSWER_METRICS_READ_TIMEOUT", 3*time.Second, 100*time.Millisecond, time.Minute)
+	metricsReadHeaderTimeout, metricsReadHeaderErr := duration("ANSWER_METRICS_READ_HEADER_TIMEOUT", 2*time.Second, 100*time.Millisecond, time.Minute)
+	metricsWriteTimeout, metricsWriteErr := duration("ANSWER_METRICS_WRITE_TIMEOUT", 5*time.Second, 100*time.Millisecond, time.Minute)
+	metricsIdleTimeout, metricsIdleErr := duration("ANSWER_METRICS_IDLE_TIMEOUT", 30*time.Second, time.Second, 5*time.Minute)
 	configuration := Config{
 		GRPCAddress: os.Getenv("ANSWER_GRPC_ADDR"), MetricsAddress: os.Getenv("ANSWER_METRICS_ADDR"), RetrievalAddress: os.Getenv("ANSWER_RETRIEVAL_GRPC_ADDR"),
 		RetrievalDNSName: os.Getenv("ANSWER_RETRIEVAL_TLS_SERVER_NAME"), LLMProviderKind: strings.ToLower(strings.TrimSpace(optional("ANSWER_LLM_PROVIDER", "openai_compatible"))),
@@ -56,6 +70,13 @@ func Load() (Config, error) {
 		RunAs: process.Identity{UID: uid, GID: gid}, Limits: application.Limits{MaximumEvidence: maximumEvidence, MaximumContextBytes: maximumContext,
 			MaximumEvidenceBytes: maximumItem, MaximumSegments: maximumSegments, MaximumAnswerBytes: maximumAnswer, MaximumCitations: maximumCitations,
 			MaximumOutputTokens: maximumTokens, ProviderConcurrency: concurrency, RequestTimeout: requestTimeout, RetrievalTimeout: retrievalTimeout, ProviderTimeout: providerTimeout},
+		ReadinessProbeTimeout:    readinessProbeTimeout,
+		ReadinessPollInterval:    readinessPollInterval,
+		ShutdownTimeout:          shutdownTimeout,
+		MetricsReadTimeout:       metricsReadTimeout,
+		MetricsReadHeaderTimeout: metricsReadHeaderTimeout,
+		MetricsWriteTimeout:      metricsWriteTimeout,
+		MetricsIdleTimeout:       metricsIdleTimeout,
 	}
 	rpm, rpmErr := providerRequestsPerMinute("ANSWER_PROVIDER_REQUESTS_PER_MINUTE", configuration.LLMModel)
 	if rpmErr != nil {
@@ -70,7 +91,11 @@ func Load() (Config, error) {
 	if configuration.RetrievalDNSName == "" {
 		configuration.RetrievalDNSName = "retrieval-service"
 	}
-	errs := []error{uidErr, gidErr, evidenceErr, contextErr, itemErr, segmentErr, answerErr, citationErr, tokenErr, concurrencyErr, requestErr, retrievalErr, providerErr}
+	errs := []error{
+		uidErr, gidErr, evidenceErr, contextErr, itemErr, segmentErr, answerErr, citationErr, tokenErr, concurrencyErr,
+		requestErr, retrievalErr, providerErr, readinessProbeErr, readinessPollErr, shutdownErr, metricsReadErr,
+		metricsReadHeaderErr, metricsWriteErr, metricsIdleErr,
+	}
 	for _, err := range errs {
 		if err != nil {
 			return Config{}, errors.New("invalid answer configuration")
