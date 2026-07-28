@@ -133,7 +133,16 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
-	planner, err := application.NewPlanner(records, randomID, time.Now)
+	manifestPolicy := application.ManifestPolicy{
+		MaxPages:              uint32(policy.ManifestMaxPages),
+		MaxShards:             policy.ManifestMaxShards,
+		MaxShardCompressed:    policy.ManifestMaxShardCompressedBytes,
+		MaxShardExpanded:      policy.ManifestMaxShardExpandedBytes,
+		MaxShardChunks:        uint32(policy.ManifestMaxShardChunks),
+		MaxTotalChunks:        uint32(policy.ManifestMaxTotalChunks),
+		MaxExpandedTotalBytes: policy.ManifestMaxExpandedBytes,
+	}
+	planner, err := application.NewPlanner(records, randomID, time.Now, manifestPolicy)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -221,6 +230,15 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
+	manifestPolicy := application.ManifestPolicy{
+		MaxPages:              uint32(policy.ManifestMaxPages),
+		MaxShards:             policy.ManifestMaxShards,
+		MaxShardCompressed:    policy.ManifestMaxShardCompressedBytes,
+		MaxShardExpanded:      policy.ManifestMaxShardExpandedBytes,
+		MaxShardChunks:        uint32(policy.ManifestMaxShardChunks),
+		MaxTotalChunks:        uint32(policy.ManifestMaxTotalChunks),
+		MaxExpandedTotalBytes: policy.ManifestMaxExpandedBytes,
+	}
 	collectionContext, collectionCancel := context.WithTimeout(ctx, policy.CollectionEnsureTimeout)
 	err = index.EnsureCollection(collectionContext)
 	collectionCancel()
@@ -229,7 +247,7 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 		return nil, errors.New("initialize vector collection")
 	}
 	reader, _ := artifact.NewReader(objects)
-	indexer, err := application.NewIndexer(records, reader, embedder, index, time.Now)
+	indexer, err := application.NewIndexer(records, reader, embedder, index, time.Now, manifestPolicy)
 	if err != nil {
 		pool.Close()
 		return nil, err

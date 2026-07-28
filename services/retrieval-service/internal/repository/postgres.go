@@ -20,6 +20,16 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+var defaultManifestPolicy = application.ManifestPolicy{
+	MaxPages:              1000,
+	MaxShards:             2048,
+	MaxShardCompressed:    32 << 20,
+	MaxShardExpanded:      64 << 20,
+	MaxShardChunks:        256,
+	MaxTotalChunks:        50_000,
+	MaxExpandedTotalBytes: 2 << 30,
+}
+
 type Postgres struct {
 	pool   *pgxpool.Pool
 	policy Policy
@@ -87,7 +97,7 @@ func (r *Postgres) ApplyReindex(ctx context.Context, event application.Lifecycle
 		SourceSHA256: event.SourceSHA256, ManifestSHA256: event.ManifestSHA256, PayloadDigest: event.PayloadDigest,
 		OccurredAt: event.OccurredAt, Manifest: manifest,
 	}
-	if err = manifestEvent.Validate(profile); err != nil {
+	if err = manifestEvent.Validate(profile, defaultManifestPolicy); err != nil {
 		return false, err
 	}
 	_, err = tx.Exec(ctx, `UPDATE retrieval.index_jobs
@@ -1241,7 +1251,7 @@ func (r *Postgres) FailManifest(ctx context.Context, event application.ManifestE
 		if !found {
 			profile = domain.SupportedIndexProfile()
 		}
-		if err := event.Validate(profile); !errors.Is(err, application.ErrUnsupportedIndexProfile) {
+		if err := event.Validate(profile, defaultManifestPolicy); !errors.Is(err, application.ErrUnsupportedIndexProfile) {
 			if err != nil {
 				return err
 			}

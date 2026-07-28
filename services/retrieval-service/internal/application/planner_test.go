@@ -90,7 +90,7 @@ func TestPlannerRejectsArtifactSubstitutionAndResourceBombs(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			event := validManifestEvent()
 			mutate(&event)
-			if err := event.Validate(domain.SupportedIndexProfile()); !errors.Is(err, ErrInvalidEvent) {
+			if err := event.Validate(domain.SupportedIndexProfile(), testManifestPolicy()); !errors.Is(err, ErrInvalidEvent) {
 				t.Fatalf("Validate() error = %v", err)
 			}
 		})
@@ -101,7 +101,7 @@ func newTestPlanner(t *testing.T, repository PlanningRepository) *Planner {
 	t.Helper()
 	planner, err := NewPlanner(repository, func() (string, error) { return "job-1", nil }, func() time.Time {
 		return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
-	})
+	}, testManifestPolicy())
 	if err != nil {
 		t.Fatalf("NewPlanner() error = %v", err)
 	}

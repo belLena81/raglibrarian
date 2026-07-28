@@ -13,6 +13,16 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+var defaultManifestPolicy = application.ManifestPolicy{
+	MaxPages:              1000,
+	MaxShards:             2048,
+	MaxShardCompressed:    32 << 20,
+	MaxShardExpanded:      64 << 20,
+	MaxShardChunks:        256,
+	MaxTotalChunks:        50_000,
+	MaxExpandedTotalBytes: 2 << 30,
+}
+
 func ManifestReference(payload []byte) (string, error) {
 	event, err := DecodeManifestEnvelope(payload)
 	if err != nil {
@@ -106,7 +116,7 @@ func DecodeManifest(payload, manifestPayload []byte) (application.ManifestEvent,
 	if !ok {
 		return event, application.ErrUnsupportedIndexProfile
 	}
-	return event, event.Validate(profile)
+	return event, event.Validate(profile, defaultManifestPolicy)
 }
 
 func DecodeBatch(payload []byte) (application.BatchWork, error) {
@@ -129,7 +139,7 @@ func DecodeBatch(payload []byte) (application.BatchWork, error) {
 		NormalizationVersion: message.NormalizationVersion, TokenizerVersion: message.TokenizerVersion, ChunkingVersion: message.ChunkingVersion,
 		StructureVersion: message.StructureVersion, MaximumTokens: message.MaximumTokens, OverlapTokens: message.OverlapTokens, CorrelationID: message.CorrelationId,
 		CausationID: message.CausationId, Producer: message.Producer, SchemaVersion: message.SchemaVersion, IdempotencyKey: message.IdempotencyKey, OccurredAt: message.OccurredAt.AsTime(), LifecycleVersion: lifecycleVersion}
-	return work, work.Validate()
+	return work, work.Validate(defaultManifestPolicy)
 }
 
 func DecodeReindex(payload []byte) (application.LifecycleEvent, error) {

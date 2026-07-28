@@ -12,12 +12,24 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 )
 
+func testManifestPolicy() ManifestPolicy {
+	return ManifestPolicy{
+		MaxPages:              1000,
+		MaxShards:             2048,
+		MaxShardCompressed:    32 << 20,
+		MaxShardExpanded:      64 << 20,
+		MaxShardChunks:        256,
+		MaxTotalChunks:        50_000,
+		MaxExpandedTotalBytes: 2 << 30,
+	}
+}
+
 func TestIndexerReplayUsesStableEvidenceIDsAndCompletesOnce(t *testing.T) {
 	repository := &stubBatchRepository{metadata: BookProjection{BookID: "book-1", Title: "Systems", Author: "Author", Year: 2026}}
 	reader := &stubShardReader{chunks: []Chunk{validChunk("Evidence")}}
 	embedder := &stubDocumentEmbedder{vectors: [][]float32{make([]float32, 768)}}
 	index := &stubVectorIndex{}
-	indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) })
+	indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) }, testManifestPolicy())
 	if err != nil {
 		t.Fatalf("NewIndexer() error = %v", err)
 	}
@@ -54,6 +66,7 @@ func TestIndexerResumesExpiredPendingFinalizationExactlyOnce(t *testing.T) {
 		&stubDocumentEmbedder{err: errors.New("completed chunks must not be embedded")},
 		index,
 		func() time.Time { return time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC) },
+		testManifestPolicy(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -105,6 +118,7 @@ func TestIndexerFinalizesReplacementBeforeDeletingPriorGenerations(t *testing.T)
 		&stubDocumentEmbedder{},
 		index,
 		func() time.Time { return time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC) },
+		testManifestPolicy(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -157,6 +171,7 @@ func TestIndexerPersistsReplacementWhenPriorGenerationDeletionFails(t *testing.T
 		&stubDocumentEmbedder{},
 		index,
 		func() time.Time { return time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC) },
+		testManifestPolicy(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +212,7 @@ func TestBatchWorkValidateRejectsProfileTokenMismatch(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			work := validBatchWork()
 			test.mutate(&work)
-			if err := work.Validate(); !errors.Is(err, ErrInvalidEvent) {
+			if err := work.Validate(testManifestPolicy()); !errors.Is(err, ErrInvalidEvent) {
 				t.Fatalf("Validate() error = %v, want ErrInvalidEvent", err)
 			}
 		})
@@ -216,7 +231,7 @@ func TestIndexerUpsertsDocumentCentroidBeforeActivation(t *testing.T) {
 	}}
 	embedder := &stubDocumentEmbedder{vectors: [][]float32{first, second}}
 	index := &stubVectorIndex{}
-	indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) })
+	indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) }, testManifestPolicy())
 	if err != nil {
 		t.Fatalf("NewIndexer() error = %v", err)
 	}
@@ -320,7 +335,7 @@ func TestIndexerPreservesTerminalFailureCategories(t *testing.T) {
 			embedder := &stubDocumentEmbedder{vectors: [][]float32{make([]float32, domain.EmbeddingDimensions)}}
 			index := &stubVectorIndex{}
 			test.configure(repository, reader, embedder, index)
-			indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) })
+			indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) }, testManifestPolicy())
 			if err != nil {
 				t.Fatalf("NewIndexer() error = %v", err)
 			}
@@ -368,7 +383,7 @@ func TestIndexerRejectsShardOrderAndTokenSequenceViolations(t *testing.T) {
 			reader := &stubShardReader{chunks: test.chunks}
 			embedder := &stubDocumentEmbedder{vectors: [][]float32{make([]float32, domain.EmbeddingDimensions), make([]float32, domain.EmbeddingDimensions)}}
 			index := &stubVectorIndex{}
-			indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) })
+			indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) }, testManifestPolicy())
 			if err != nil {
 				t.Fatalf("NewIndexer() error = %v", err)
 			}
@@ -400,7 +415,7 @@ func TestIndexerKeepsArtifactOutagesRetryable(t *testing.T) {
 			reader := &stubShardReader{err: test.err}
 			embedder := &stubDocumentEmbedder{vectors: [][]float32{make([]float32, domain.EmbeddingDimensions)}}
 			index := &stubVectorIndex{}
-			indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) })
+			indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) }, testManifestPolicy())
 			if err != nil {
 				t.Fatalf("NewIndexer() error = %v", err)
 			}
@@ -423,7 +438,7 @@ func TestIndexerPreservesCompleteBatchTypedFailures(t *testing.T) {
 	reader := &stubShardReader{chunks: []Chunk{validChunk("Evidence")}}
 	embedder := &stubDocumentEmbedder{vectors: [][]float32{make([]float32, domain.EmbeddingDimensions)}}
 	index := &stubVectorIndex{}
-	indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) })
+	indexer, err := NewIndexer(repository, reader, embedder, index, func() time.Time { return time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC) }, testManifestPolicy())
 	if err != nil {
 		t.Fatalf("NewIndexer() error = %v", err)
 	}

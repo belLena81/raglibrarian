@@ -112,6 +112,7 @@ func TestDeletionCrossingVectorUpsertRequiresSecondCleanupBeforeAck(t *testing.T
 		&stubDocumentEmbedder{vectors: [][]float32{make([]float32, 768)}},
 		index,
 		lifecycleNow,
+		testManifestPolicy(),
 	)
 
 	err := indexer.Process(context.Background(), validBatchWork())
@@ -159,6 +160,7 @@ func TestDeletionCrossingLastBatchFinalizationRequiresSecondCleanupBeforeAck(t *
 		&stubDocumentEmbedder{vectors: [][]float32{make([]float32, 768)}},
 		index,
 		lifecycleNow,
+		testManifestPolicy(),
 	)
 
 	if err := indexer.Process(context.Background(), validBatchWork()); err == nil {

@@ -38,6 +38,13 @@ const (
 	DefaultSummaryProviderMaxInputRunes    = 4096
 	DefaultSummaryProviderMaxResponseBytes = 64 << 10
 	DefaultSummaryProviderMaxSummaryBytes  = 16 << 10
+	defaultManifestMaxPages                = 1000
+	defaultManifestMaxShards               = 2048
+	defaultManifestMaxShardCompressedBytes = 32 << 20
+	defaultManifestMaxShardExpandedBytes   = 64 << 20
+	defaultManifestMaxShardChunks          = 256
+	defaultManifestMaxTotalChunks          = 50_000
+	defaultManifestMaxExpandedBytes        = 2 << 30
 )
 
 type Config struct {
@@ -90,6 +97,13 @@ type WorkerConfig struct {
 	TEIBatchSize                                                  int
 	TEILogRawResponse                                             bool
 	TEILogRawResponseMaxBytes                                     int
+	ManifestMaxPages                                              int
+	ManifestMaxShards                                             int
+	ManifestMaxShardCompressedBytes                               int64
+	ManifestMaxShardExpandedBytes                                 int64
+	ManifestMaxShardChunks                                        int
+	ManifestMaxTotalChunks                                        int
+	ManifestMaxExpandedBytes                                      int64
 	MinimumSearchScore                                            float64
 	QdrantMaxResponseBytes                                        int
 	QdrantBatchResponseBytes                                      int
@@ -123,15 +137,22 @@ type WorkerConfig struct {
 }
 
 type LambdaRuntimePolicy struct {
-	DependencyTimeout       time.Duration
-	CollectionEnsureTimeout time.Duration
-	FinalizationLease       time.Duration
-	StaleBatchAge           time.Duration
-	CleanupBatchSize        int
-	FailureRecordTimeout    time.Duration
-	RabbitDialTimeout       time.Duration
-	RabbitHeartbeat         time.Duration
-	EndpointResolveTimeout  time.Duration
+	DependencyTimeout               time.Duration
+	CollectionEnsureTimeout         time.Duration
+	FinalizationLease               time.Duration
+	StaleBatchAge                   time.Duration
+	CleanupBatchSize                int
+	FailureRecordTimeout            time.Duration
+	RabbitDialTimeout               time.Duration
+	RabbitHeartbeat                 time.Duration
+	EndpointResolveTimeout          time.Duration
+	ManifestMaxPages                int
+	ManifestMaxShards               int
+	ManifestMaxShardCompressedBytes int64
+	ManifestMaxShardExpandedBytes   int64
+	ManifestMaxShardChunks          int
+	ManifestMaxTotalChunks          int
+	ManifestMaxExpandedBytes        int64
 }
 
 type CleanupJobPolicy struct {
@@ -312,6 +333,18 @@ func boundedPositiveInteger(key string, fallback, maximum int) (int, error) {
 	return parsed, nil
 }
 
+func boundedPositiveInt64(key string, fallback, maximum int64) (int64, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < 1 || parsed > maximum {
+		return 0, errors.New("invalid integer")
+	}
+	return parsed, nil
+}
+
 func LoadWorker() (WorkerConfig, error) {
 	indexProfile := os.Getenv("RETRIEVAL_INDEX_PROFILE")
 	if os.Getenv("RETRIEVAL_PROCESSING_MODE") != "worker" ||
@@ -374,6 +407,13 @@ func LoadWorker() (WorkerConfig, error) {
 	teiBatchSize, teiBatchSizeErr := boundedPositiveInteger("RETRIEVAL_TEI_BATCH_SIZE", defaultTEIBatchSize, 256)
 	teiLogRawResponse, teiLogRawResponseErr := optionalBool("RETRIEVAL_TEI_LOG_RAW_RESPONSE", false)
 	teiLogRawResponseMaxBytes, teiLogRawResponseMaxBytesErr := boundedNonNegativeInteger("RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", 4096, 64<<10)
+	manifestMaxPages, manifestMaxPagesErr := boundedPositiveInteger("RETRIEVAL_MANIFEST_MAX_PAGES", defaultManifestMaxPages, 10000)
+	manifestMaxShards, manifestMaxShardsErr := boundedPositiveInteger("RETRIEVAL_MANIFEST_MAX_SHARDS", defaultManifestMaxShards, 8192)
+	manifestMaxShardCompressedBytes, manifestMaxShardCompressedBytesErr := boundedPositiveInt64("RETRIEVAL_MANIFEST_MAX_SHARD_COMPRESSED_BYTES", defaultManifestMaxShardCompressedBytes, 128<<20)
+	manifestMaxShardExpandedBytes, manifestMaxShardExpandedBytesErr := boundedPositiveInt64("RETRIEVAL_MANIFEST_MAX_SHARD_EXPANDED_BYTES", defaultManifestMaxShardExpandedBytes, 256<<20)
+	manifestMaxShardChunks, manifestMaxShardChunksErr := boundedPositiveInteger("RETRIEVAL_MANIFEST_MAX_SHARD_CHUNKS", defaultManifestMaxShardChunks, 4096)
+	manifestMaxTotalChunks, manifestMaxTotalChunksErr := boundedPositiveInteger("RETRIEVAL_MANIFEST_MAX_TOTAL_CHUNKS", defaultManifestMaxTotalChunks, 200000)
+	manifestMaxExpandedBytes, manifestMaxExpandedBytesErr := boundedPositiveInt64("RETRIEVAL_MANIFEST_MAX_EXPANDED_BYTES", defaultManifestMaxExpandedBytes, 8<<30)
 	minimumSearchScore, minimumSearchScoreErr := LoadMinimumSearchScore()
 	qdrantMaxResponseBytes, qdrantMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_MAX_RESPONSE_BYTES", DefaultQdrantMaxResponseBytes, 32<<20)
 	qdrantBatchResponseBytes, qdrantBatchResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_BATCH_RESPONSE_BYTES", DefaultQdrantBatchResponseBytes, 32<<20)
@@ -381,6 +421,7 @@ func LoadWorker() (WorkerConfig, error) {
 		MinIOEndpoint: os.Getenv("RETRIEVAL_MINIO_ENDPOINT"), MinIOAccessKey: accessKey, MinIOSecretKey: secretKey, ArtifactBucket: os.Getenv("RETRIEVAL_ARTIFACT_BUCKET"), MinIOInsecure: minioInsecure,
 		TEIURL: os.Getenv("RETRIEVAL_TEI_URL"), QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: optional("RETRIEVAL_QDRANT_COLLECTION", DefaultQdrantCollection), QdrantAPIKey: qdrantAPIKey,
 		TEIRequestsPerSecond: teiRequestsPerSecond, TEIMaxResponseBytes: teiMaxResponseBytes, TEIBatchSize: teiBatchSize, TEILogRawResponse: teiLogRawResponse, TEILogRawResponseMaxBytes: teiLogRawResponseMaxBytes,
+		ManifestMaxPages: manifestMaxPages, ManifestMaxShards: manifestMaxShards, ManifestMaxShardCompressedBytes: manifestMaxShardCompressedBytes, ManifestMaxShardExpandedBytes: manifestMaxShardExpandedBytes, ManifestMaxShardChunks: manifestMaxShardChunks, ManifestMaxTotalChunks: manifestMaxTotalChunks, ManifestMaxExpandedBytes: manifestMaxExpandedBytes,
 		MinimumSearchScore: minimumSearchScore, QdrantMaxResponseBytes: qdrantMaxResponseBytes, QdrantBatchResponseBytes: qdrantBatchResponseBytes, DBPingTimeout: dbPingTimeout, DependencyTimeout: dependencyTimeout, CollectionEnsureTimeout: collectionEnsureTimeout, FinalizationLease: finalizationLease,
 		ReadinessInitialDelay: readinessInitialDelay, ReadinessMaxDelay: readinessMaxDelay, ReadinessMaxAttempts: readinessMaxAttempts, ReadinessProbeTimeout: readinessProbeTimeout,
 		ReconnectInitialBackoff: reconnectInitialBackoff, ReconnectMaxBackoff: reconnectMaxBackoff, DispatchInterval: dispatchInterval, CleanupInterval: cleanupInterval,
@@ -395,8 +436,9 @@ func LoadWorker() (WorkerConfig, error) {
 		dispatchIntervalErr != nil || cleanupIntervalErr != nil || cleanupTimeoutErr != nil || cleanupBatchSizeErr != nil || maxRetryAttemptsErr != nil || staleBatchAgeErr != nil || failureRecordTimeoutErr != nil || publishTimeoutErr != nil ||
 		rabbitDialTimeoutErr != nil || rabbitHeartbeatErr != nil ||
 		readinessReadHeaderTimeoutErr != nil || readinessIdleTimeoutErr != nil || readinessShutdownTimeoutErr != nil ||
-		teiRequestsPerSecondErr != nil || teiMaxResponseBytesErr != nil || teiBatchSizeErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || minimumSearchScoreErr != nil || qdrantMaxResponseBytesErr != nil || qdrantBatchResponseBytesErr != nil ||
+		teiRequestsPerSecondErr != nil || teiMaxResponseBytesErr != nil || teiBatchSizeErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || manifestMaxPagesErr != nil || manifestMaxShardsErr != nil || manifestMaxShardCompressedBytesErr != nil || manifestMaxShardExpandedBytesErr != nil || manifestMaxShardChunksErr != nil || manifestMaxTotalChunksErr != nil || manifestMaxExpandedBytesErr != nil || minimumSearchScoreErr != nil || qdrantMaxResponseBytesErr != nil || qdrantBatchResponseBytesErr != nil ||
 		configuration.ReadinessInitialDelay > configuration.ReadinessMaxDelay || configuration.ReconnectInitialBackoff > configuration.ReconnectMaxBackoff ||
+		configuration.ManifestMaxShardCompressedBytes > configuration.ManifestMaxShardExpandedBytes || configuration.ManifestMaxShardExpandedBytes > configuration.ManifestMaxExpandedBytes || configuration.ManifestMaxShardChunks > configuration.ManifestMaxTotalChunks ||
 		configuration.QdrantBatchResponseBytes < configuration.QdrantMaxResponseBytes || configuration.TEILogRawResponseMaxBytes > configuration.TEIMaxResponseBytes ||
 		configuration.MinIOEndpoint == "" ||
 		configuration.ArtifactBucket == "" || configuration.MetricsAddress == "" || !privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) {
@@ -415,20 +457,35 @@ func LoadLambdaRuntimePolicy() (LambdaRuntimePolicy, error) {
 	rabbitDialTimeout, rabbitDialTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_RABBITMQ_DIAL_TIMEOUT", 5*time.Second)
 	rabbitHeartbeat, rabbitHeartbeatErr := optionalDuration("RETRIEVAL_LAMBDA_RABBITMQ_HEARTBEAT", 10*time.Second)
 	endpointResolveTimeout, endpointResolveTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_ENDPOINT_RESOLVE_TIMEOUT", 3*time.Second)
+	manifestMaxPages, manifestMaxPagesErr := boundedPositiveInteger("RETRIEVAL_MANIFEST_MAX_PAGES", defaultManifestMaxPages, 10000)
+	manifestMaxShards, manifestMaxShardsErr := boundedPositiveInteger("RETRIEVAL_MANIFEST_MAX_SHARDS", defaultManifestMaxShards, 8192)
+	manifestMaxShardCompressedBytes, manifestMaxShardCompressedBytesErr := boundedPositiveInt64("RETRIEVAL_MANIFEST_MAX_SHARD_COMPRESSED_BYTES", defaultManifestMaxShardCompressedBytes, 128<<20)
+	manifestMaxShardExpandedBytes, manifestMaxShardExpandedBytesErr := boundedPositiveInt64("RETRIEVAL_MANIFEST_MAX_SHARD_EXPANDED_BYTES", defaultManifestMaxShardExpandedBytes, 256<<20)
+	manifestMaxShardChunks, manifestMaxShardChunksErr := boundedPositiveInteger("RETRIEVAL_MANIFEST_MAX_SHARD_CHUNKS", defaultManifestMaxShardChunks, 4096)
+	manifestMaxTotalChunks, manifestMaxTotalChunksErr := boundedPositiveInteger("RETRIEVAL_MANIFEST_MAX_TOTAL_CHUNKS", defaultManifestMaxTotalChunks, 200000)
+	manifestMaxExpandedBytes, manifestMaxExpandedBytesErr := boundedPositiveInt64("RETRIEVAL_MANIFEST_MAX_EXPANDED_BYTES", defaultManifestMaxExpandedBytes, 8<<30)
 	if dependencyTimeoutErr != nil || collectionEnsureTimeoutErr != nil || finalizationLeaseErr != nil || staleBatchAgeErr != nil || cleanupBatchSizeErr != nil || failureRecordTimeoutErr != nil ||
-		rabbitDialTimeoutErr != nil || rabbitHeartbeatErr != nil || endpointResolveTimeoutErr != nil {
+		rabbitDialTimeoutErr != nil || rabbitHeartbeatErr != nil || endpointResolveTimeoutErr != nil || manifestMaxPagesErr != nil || manifestMaxShardsErr != nil || manifestMaxShardCompressedBytesErr != nil || manifestMaxShardExpandedBytesErr != nil || manifestMaxShardChunksErr != nil || manifestMaxTotalChunksErr != nil || manifestMaxExpandedBytesErr != nil ||
+		manifestMaxShardCompressedBytes > manifestMaxShardExpandedBytes || manifestMaxShardExpandedBytes > manifestMaxExpandedBytes || manifestMaxShardChunks > manifestMaxTotalChunks {
 		return LambdaRuntimePolicy{}, errors.New("invalid retrieval lambda runtime policy")
 	}
 	return LambdaRuntimePolicy{
-		DependencyTimeout:       dependencyTimeout,
-		CollectionEnsureTimeout: collectionEnsureTimeout,
-		FinalizationLease:       finalizationLease,
-		StaleBatchAge:           staleBatchAge,
-		CleanupBatchSize:        cleanupBatchSize,
-		FailureRecordTimeout:    failureRecordTimeout,
-		RabbitDialTimeout:       rabbitDialTimeout,
-		RabbitHeartbeat:         rabbitHeartbeat,
-		EndpointResolveTimeout:  endpointResolveTimeout,
+		DependencyTimeout:               dependencyTimeout,
+		CollectionEnsureTimeout:         collectionEnsureTimeout,
+		FinalizationLease:               finalizationLease,
+		StaleBatchAge:                   staleBatchAge,
+		CleanupBatchSize:                cleanupBatchSize,
+		FailureRecordTimeout:            failureRecordTimeout,
+		RabbitDialTimeout:               rabbitDialTimeout,
+		RabbitHeartbeat:                 rabbitHeartbeat,
+		EndpointResolveTimeout:          endpointResolveTimeout,
+		ManifestMaxPages:                manifestMaxPages,
+		ManifestMaxShards:               manifestMaxShards,
+		ManifestMaxShardCompressedBytes: manifestMaxShardCompressedBytes,
+		ManifestMaxShardExpandedBytes:   manifestMaxShardExpandedBytes,
+		ManifestMaxShardChunks:          manifestMaxShardChunks,
+		ManifestMaxTotalChunks:          manifestMaxTotalChunks,
+		ManifestMaxExpandedBytes:        manifestMaxExpandedBytes,
 	}, nil
 }
 

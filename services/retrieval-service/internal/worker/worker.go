@@ -109,7 +109,16 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 		return nil, err
 	}
 	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: configuration.FinalizationLease})
-	planner, err := application.NewPlanner(records, randomID, time.Now)
+	manifestPolicy := application.ManifestPolicy{
+		MaxPages:              uint32(configuration.ManifestMaxPages),
+		MaxShards:             configuration.ManifestMaxShards,
+		MaxShardCompressed:    configuration.ManifestMaxShardCompressedBytes,
+		MaxShardExpanded:      configuration.ManifestMaxShardExpandedBytes,
+		MaxShardChunks:        uint32(configuration.ManifestMaxShardChunks),
+		MaxTotalChunks:        uint32(configuration.ManifestMaxTotalChunks),
+		MaxExpandedTotalBytes: configuration.ManifestMaxExpandedBytes,
+	}
+	planner, err := application.NewPlanner(records, randomID, time.Now, manifestPolicy)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -130,7 +139,7 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 		pool.Close()
 		return nil, err
 	}
-	indexer, err := application.NewIndexer(records, reader, embedder, index, time.Now)
+	indexer, err := application.NewIndexer(records, reader, embedder, index, time.Now, manifestPolicy)
 	if err != nil {
 		pool.Close()
 		return nil, err

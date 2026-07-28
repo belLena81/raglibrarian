@@ -23,17 +23,17 @@ type BatchWork struct {
 	OccurredAt                                                                                                           time.Time
 }
 
-func (w BatchWork) Validate() error {
+func (w BatchWork) Validate(policy ManifestPolicy) error {
 	profile, ok := domain.SupportedIndexProfileForExtraction(w.ExtractionVersion)
 	if !ok {
 		return ErrInvalidEvent
 	}
-	if !safeID(w.EventID) || !safeID(w.JobID) || !safeID(w.BatchID) || !safeID(w.BookID) || !validArtifactReference(w.ShardReference) ||
+	if validateManifestPolicy(policy) != nil || !safeID(w.EventID) || !safeID(w.JobID) || !safeID(w.BatchID) || !safeID(w.BookID) || !validArtifactReference(w.ShardReference) ||
 		!safeID(w.CorrelationID) || !safeID(w.CausationID) || w.Producer != "retrieval-service" || w.SchemaVersion != "v1" ||
 		w.IdempotencyKey != w.BatchID || w.ShardSHA256 == ([32]byte{}) || w.SourceSHA256 == ([32]byte{}) ||
 		w.ManifestSHA256 == ([32]byte{}) || w.ProfileDigest != profile.Digest || w.CompressedBytes < 1 ||
-		w.CompressedBytes > 32<<20 || w.UncompressedBytes < 1 || w.UncompressedBytes > 64<<20 ||
-		w.ChunkCount < 1 || w.ChunkCount > 256 || w.ManifestPageCount < 1 || w.ManifestPageCount > maxManifestPages ||
+		w.CompressedBytes > policy.MaxShardCompressed || w.UncompressedBytes < 1 || w.UncompressedBytes > policy.MaxShardExpanded ||
+		w.ChunkCount < 1 || w.ChunkCount > policy.MaxShardChunks || w.ManifestPageCount < 1 || w.ManifestPageCount > policy.MaxPages ||
 		w.MaximumTokens == 0 || int64(w.MaximumTokens) != int64(profile.MaximumTokens) || int64(w.OverlapTokens) != int64(profile.OverlapTokens) ||
 		w.ExtractionVersion != profile.ExtractionVersion || w.NormalizationVersion != profile.NormalizationVersion ||
 		w.TokenizerVersion != profile.TokenizerVersion || w.ChunkingVersion != profile.ChunkingVersion || w.StructureVersion != profile.StructureVersion ||
@@ -108,17 +108,18 @@ type Indexer struct {
 	embedder   DocumentEmbedder
 	index      VectorIndex
 	now        func() time.Time
+	policy     ManifestPolicy
 }
 
-func NewIndexer(repository BatchRepository, reader ShardReader, embedder DocumentEmbedder, index VectorIndex, now func() time.Time) (*Indexer, error) {
-	if repository == nil || reader == nil || embedder == nil || index == nil || now == nil {
+func NewIndexer(repository BatchRepository, reader ShardReader, embedder DocumentEmbedder, index VectorIndex, now func() time.Time, policy ManifestPolicy) (*Indexer, error) {
+	if repository == nil || reader == nil || embedder == nil || index == nil || now == nil || validateManifestPolicy(policy) != nil {
 		return nil, errors.New("invalid indexer configuration")
 	}
-	return &Indexer{repository: repository, reader: reader, embedder: embedder, index: index, now: now}, nil
+	return &Indexer{repository: repository, reader: reader, embedder: embedder, index: index, now: now, policy: policy}, nil
 }
 
 func (i *Indexer) Process(ctx context.Context, work BatchWork) error {
-	if err := work.Validate(); err != nil {
+	if err := work.Validate(i.policy); err != nil {
 		return err
 	}
 	metadata, accepted, err := i.repository.BeginBatch(ctx, work)

@@ -20,7 +20,15 @@ var (
 	ErrLifecycleCleanupPending = errors.New("lifecycle cleanup pending")
 )
 
-const maxManifestPages = 1000
+type ManifestPolicy struct {
+	MaxPages              uint32
+	MaxShards             int
+	MaxShardCompressed    int64
+	MaxShardExpanded      int64
+	MaxShardChunks        uint32
+	MaxTotalChunks        uint32
+	MaxExpandedTotalBytes int64
+}
 
 type MetadataEvent struct {
 	EventID, BookID, Title, Author, MediaType, CorrelationID, CausationID, Producer, SchemaVersion, IdempotencyKey string
@@ -98,8 +106,8 @@ func (e ManifestEvent) ValidateEnvelope() error {
 	return nil
 }
 
-func (e ManifestEvent) Validate(profile domain.IndexProfile) error {
-	if err := e.ValidateEnvelope(); err != nil || e.Manifest.BookID != e.BookID || e.Manifest.SourceSHA256 != e.SourceSHA256 || e.Manifest.ManifestSHA256 != e.ManifestSHA256 || len(e.Manifest.Shards) == 0 || len(e.Manifest.Shards) > 2048 {
+func (e ManifestEvent) Validate(profile domain.IndexProfile, policy ManifestPolicy) error {
+	if err := validateManifestPolicy(policy); err != nil || e.ValidateEnvelope() != nil || e.Manifest.BookID != e.BookID || e.Manifest.SourceSHA256 != e.SourceSHA256 || e.Manifest.ManifestSHA256 != e.ManifestSHA256 || len(e.Manifest.Shards) == 0 || len(e.Manifest.Shards) > policy.MaxShards {
 		return ErrInvalidEvent
 	}
 	if effectiveLifecycleVersion(e.LifecycleVersion) != effectiveLifecycleVersion(e.Manifest.LifecycleVersion) {
@@ -122,7 +130,7 @@ func (e ManifestEvent) Validate(profile domain.IndexProfile) error {
 	if !matchesProfileNumbers(e.Manifest, profile) {
 		return ErrUnsupportedIndexProfile
 	}
-	if e.Manifest.PageCount < 1 || e.Manifest.PageCount > maxManifestPages || e.Manifest.ChunkCount < 1 || e.Manifest.GeneratedAt.IsZero() || e.Manifest.GeneratedAt.After(e.OccurredAt) {
+	if e.Manifest.PageCount < 1 || e.Manifest.PageCount > policy.MaxPages || e.Manifest.ChunkCount < 1 || e.Manifest.GeneratedAt.IsZero() || e.Manifest.GeneratedAt.After(e.OccurredAt) {
 		return ErrInvalidEvent
 	}
 	var totalChunks uint32
@@ -131,7 +139,7 @@ func (e ManifestEvent) Validate(profile domain.IndexProfile) error {
 	for index, shard := range e.Manifest.Shards {
 		expectedReference := expectedDirectory + "shards/" + fmt.Sprintf("%06d.pb.zst", index)
 		if shard.Reference != expectedReference || !validArtifactReference(shard.Reference) ||
-			shard.SHA256 == ([32]byte{}) || shard.CompressedBytes < 1 || shard.CompressedBytes > 32<<20 || shard.UncompressedBytes < 1 || shard.UncompressedBytes > 64<<20 || shard.ChunkCount < 1 || shard.ChunkCount > 256 {
+			shard.SHA256 == ([32]byte{}) || shard.CompressedBytes < 1 || shard.CompressedBytes > policy.MaxShardCompressed || shard.UncompressedBytes < 1 || shard.UncompressedBytes > policy.MaxShardExpanded || shard.ChunkCount < 1 || shard.ChunkCount > policy.MaxShardChunks {
 			return ErrInvalidEvent
 		}
 		expectedLastOrder, validOrder := shardLastOrder(nextChunkOrder, shard.ChunkCount)
@@ -139,7 +147,7 @@ func (e ManifestEvent) Validate(profile domain.IndexProfile) error {
 			return ErrInvalidEvent
 		}
 		nextChunkOrder = shard.LastChunkOrder + 1
-		if totalChunks > 50_000-shard.ChunkCount || totalUncompressed > (2<<30)-shard.UncompressedBytes {
+		if totalChunks > policy.MaxTotalChunks-shard.ChunkCount || totalUncompressed > policy.MaxExpandedTotalBytes-shard.UncompressedBytes {
 			return ErrInvalidEvent
 		}
 		totalChunks += shard.ChunkCount
@@ -181,6 +189,17 @@ func shardLastOrder(first uint64, count uint32) (uint64, bool) {
 	return first + uint64(count) - 1, true
 }
 
+func validateManifestPolicy(policy ManifestPolicy) error {
+	if policy.MaxPages < 1 || policy.MaxShards < 1 || policy.MaxShardCompressed < 1 || policy.MaxShardExpanded < 1 ||
+		policy.MaxShardChunks < 1 || policy.MaxTotalChunks < 1 || policy.MaxExpandedTotalBytes < 1 {
+		return errors.New("invalid manifest policy")
+	}
+	if policy.MaxShardCompressed > policy.MaxShardExpanded || policy.MaxShardExpanded > policy.MaxExpandedTotalBytes || policy.MaxShardChunks > policy.MaxTotalChunks {
+		return errors.New("invalid manifest policy")
+	}
+	return nil
+}
+
 type PlanningSnapshot struct {
 	Metadata *MetadataEvent
 	Manifest *ManifestEvent
@@ -209,13 +228,14 @@ type Planner struct {
 	newID      func() (string, error)
 	now        func() time.Time
 	profile    domain.IndexProfile
+	policy     ManifestPolicy
 }
 
-func NewPlanner(repository PlanningRepository, newID func() (string, error), now func() time.Time) (*Planner, error) {
-	if repository == nil || newID == nil || now == nil {
+func NewPlanner(repository PlanningRepository, newID func() (string, error), now func() time.Time, policy ManifestPolicy) (*Planner, error) {
+	if repository == nil || newID == nil || now == nil || validateManifestPolicy(policy) != nil {
 		return nil, errors.New("invalid planner configuration")
 	}
-	return &Planner{repository: repository, newID: newID, now: now, profile: domain.SupportedIndexProfile()}, nil
+	return &Planner{repository: repository, newID: newID, now: now, profile: domain.SupportedIndexProfile(), policy: policy}, nil
 }
 
 func (p *Planner) HandleMetadata(ctx context.Context, event MetadataEvent) error {
@@ -234,7 +254,7 @@ func (p *Planner) HandleManifest(ctx context.Context, event ManifestEvent) error
 	if !ok {
 		return ErrUnsupportedIndexProfile
 	}
-	if err := event.Validate(profile); err != nil {
+	if err := event.Validate(profile, p.policy); err != nil {
 		return err
 	}
 	snapshot, err := p.repository.ProjectManifest(ctx, event)
