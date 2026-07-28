@@ -10,6 +10,7 @@ require (
 	github.com/belLena81/raglibrarian/pkg/process v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/pkg/proto v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/pkg/rabbitmqconn v0.0.0-00010101000000-000000000000
+	github.com/belLena81/raglibrarian/pkg/retrydelay v0.0.0-00010101000000-000000000000
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/minio/minio-go/v7 v7.0.99
 	github.com/rabbitmq/amqp091-go v1.12.0
@@ -52,4 +53,5 @@ replace (
 	github.com/belLena81/raglibrarian/pkg/process => ../../pkg/process
 	github.com/belLena81/raglibrarian/pkg/proto => ../../pkg/proto
 	github.com/belLena81/raglibrarian/pkg/rabbitmqconn => ../../pkg/rabbitmqconn
+	github.com/belLena81/raglibrarian/pkg/retrydelay => ../../pkg/retrydelay
 )

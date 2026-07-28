@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/retrydelay"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/artifact"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/chunking"
@@ -535,10 +536,7 @@ func (r *Postgres) MarkPublished(ctx context.Context, id string, now time.Time) 
 }
 
 func (r *Postgres) RetryOutbox(ctx context.Context, id string, now time.Time, attempt int) error {
-	delay := r.policy.OutboxRetryBaseDelay << min(attempt, 8)
-	if delay > r.policy.OutboxRetryMaxDelay {
-		delay = r.policy.OutboxRetryMaxDelay
-	}
+	delay := retrydelay.CappedExponential(r.policy.OutboxRetryBaseDelay, r.policy.OutboxRetryMaxDelay, attempt)
 	_, err := r.pool.Exec(ctx, `UPDATE ingestion.outbox SET attempts=attempts+1,next_attempt_at=$2,leased_until=NULL WHERE event_id=$1`, id, now.Add(delay))
 	return err
 }

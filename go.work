@@ -13,6 +13,7 @@ use (
 	./pkg/providerhttp
 	./pkg/proto
 	./pkg/rabbitmqconn
+	./pkg/retrydelay
 	./services/answer-service
 	./services/catalog-service
 	./services/edge-api
