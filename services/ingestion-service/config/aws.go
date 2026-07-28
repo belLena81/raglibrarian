@@ -166,9 +166,29 @@ func loadAWS(ctx context.Context) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	persistenceTimeout, err := boundedDuration("INGESTION_PERSISTENCE_TIMEOUT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	artifactAbortTimeout, err := boundedDuration("INGESTION_ARTIFACT_ABORT_TIMEOUT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
 	lease, err := boundedDuration("INGESTION_JOB_LEASE", timeout, 30*time.Minute, 13*time.Minute)
 	if err != nil || lease < timeout+30*time.Second {
 		return Config{}, fmt.Errorf("INGESTION_JOB_LEASE must exceed processing timeout by at least 30s")
+	}
+	firstRetryDelay, err := boundedDuration("INGESTION_FIRST_RETRY_DELAY", time.Second, 10*time.Minute, 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	secondRetryDelay, err := boundedDuration("INGESTION_SECOND_RETRY_DELAY", time.Second, 10*time.Minute, 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	subsequentRetryDelay, err := boundedDuration("INGESTION_SUBSEQUENT_RETRY_DELAY", time.Second, 10*time.Minute, 2*time.Minute)
+	if err != nil {
+		return Config{}, err
 	}
 	outboxInterval, err := boundedDuration("INGESTION_OUTBOX_INTERVAL", 100*time.Millisecond, time.Minute, time.Second)
 	if err != nil {
@@ -254,7 +274,12 @@ func loadAWS(ctx context.Context) (Config, error) {
 		MemoryLimitBytes:               memoryLimit,
 		ParserSandboxMemoryBytes:       parserMemory,
 		ProcessingTimeout:              timeout,
+		PersistenceTimeout:             persistenceTimeout,
+		ArtifactAbortTimeout:           artifactAbortTimeout,
 		JobLease:                       lease,
+		FirstRetryDelay:                firstRetryDelay,
+		SecondRetryDelay:               secondRetryDelay,
+		SubsequentRetryDelay:           subsequentRetryDelay,
 		OutboxInterval:                 outboxInterval,
 		RabbitDialTimeout:              rabbitDialTimeout,
 		RabbitHeartbeat:                rabbitHeartbeat,

@@ -21,7 +21,12 @@ import (
 )
 
 type Postgres struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	policy Policy
+}
+
+type Policy struct {
+	FinalizationLease time.Duration
 }
 
 type OutboxRecord struct {
@@ -33,8 +38,6 @@ type VectorCleanupJob struct {
 	JobID  string
 	BookID string
 }
-
-const finalizationLeaseDuration = 15 * time.Minute
 
 func (r *Postgres) ApplyReindex(ctx context.Context, event application.LifecycleEvent, jobID string, now time.Time) (bool, error) {
 	tx, err := r.pool.Begin(ctx)
@@ -400,11 +403,14 @@ func (r *Postgres) RetryDeletionCleanup(ctx context.Context, cleanup application
 	return err
 }
 
-func NewPostgres(pool *pgxpool.Pool) *Postgres {
+func NewPostgres(pool *pgxpool.Pool, policy Policy) *Postgres {
 	if pool == nil {
 		panic("retrieval repository: pool is required")
 	}
-	return &Postgres{pool: pool}
+	if policy.FinalizationLease <= 0 {
+		panic("retrieval repository: finalization lease is required")
+	}
+	return &Postgres{pool: pool, policy: policy}
 }
 
 func (r *Postgres) CheckReady(ctx context.Context) error {
@@ -727,7 +733,7 @@ func (r *Postgres) BeginBatch(ctx context.Context, work application.BatchWork) (
 		if err = tx.QueryRow(ctx, `SELECT now()`).Scan(&databaseNow); err != nil {
 			return application.BookProjection{}, false, err
 		}
-		acquired, acquireErr := acquireFinalization(ctx, tx, work.JobID, databaseNow.UTC())
+		acquired, acquireErr := acquireFinalization(ctx, tx, work.JobID, databaseNow.UTC(), r.policy.FinalizationLease)
 		if acquireErr != nil {
 			return application.BookProjection{}, false, acquireErr
 		}
@@ -840,7 +846,7 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 			return false, err
 		}
 		if remaining == 0 {
-			acquired, acquireErr := acquireFinalization(ctx, tx, work.JobID, now)
+			acquired, acquireErr := acquireFinalization(ctx, tx, work.JobID, now, r.policy.FinalizationLease)
 			if acquireErr != nil {
 				return false, acquireErr
 			}
@@ -918,7 +924,7 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 		return false, err
 	}
 	if remaining == 0 {
-		acquired, acquireErr := acquireFinalization(ctx, tx, work.JobID, now)
+		acquired, acquireErr := acquireFinalization(ctx, tx, work.JobID, now, r.policy.FinalizationLease)
 		if acquireErr != nil {
 			return false, acquireErr
 		}
@@ -932,7 +938,7 @@ func (r *Postgres) CompleteBatch(ctx context.Context, work application.BatchWork
 	return remaining == 0, nil
 }
 
-func acquireFinalization(ctx context.Context, tx queryExecer, jobID string, now time.Time) (bool, error) {
+func acquireFinalization(ctx context.Context, tx queryExecer, jobID string, now time.Time, lease time.Duration) (bool, error) {
 	command, err := tx.Exec(ctx, `UPDATE retrieval.index_jobs
 		SET finalization_inflight=true,finalization_lease_expires_at=$2,updated_at=$3
 		WHERE id=$1 AND state='pending' AND NOT finalization_inflight
@@ -942,7 +948,7 @@ func acquireFinalization(ctx context.Context, tx queryExecer, jobID string, now 
 		      AND l.lifecycle_version=retrieval.index_jobs.lifecycle_version
 		      AND l.state IN ('active','reindexing')
 		  )`,
-		jobID, now.Add(finalizationLeaseDuration), now)
+		jobID, now.Add(lease), now)
 	if err != nil {
 		return false, err
 	}

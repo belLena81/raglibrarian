@@ -24,6 +24,10 @@ func TestLoadUsesBoundedProductionDefaults(t *testing.T) {
 		value.RabbitPublishTimeout != 10*time.Second || value.OutboxLease != 30*time.Second {
 		t.Fatalf("unexpected rabbit policy defaults: %#v", value)
 	}
+	if value.PersistenceTimeout != 10*time.Second || value.ArtifactAbortTimeout != 10*time.Second ||
+		value.FirstRetryDelay != 5*time.Second || value.SecondRetryDelay != 30*time.Second || value.SubsequentRetryDelay != 2*time.Minute {
+		t.Fatalf("unexpected processor policy defaults: %#v", value)
+	}
 	if value.MemoryLimitBytes != 2<<30 || value.ParserSandboxMemoryBytes != 1536<<20 {
 		t.Fatalf("unexpected parser memory defaults: %#v", value)
 	}

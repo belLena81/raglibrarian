@@ -67,7 +67,11 @@ func run(ctx context.Context) error {
 		return errors.New("database unavailable")
 	}
 	defer pool.Close()
-	records := repository.NewPostgres(pool)
+	policy, err := retrievalconfig.LoadLambdaRuntimePolicy()
+	if err != nil {
+		return err
+	}
+	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: policy.FinalizationLease})
 	minimumSearchScore, err := retrievalconfig.LoadMinimumSearchScore()
 	if err != nil {
 		return err

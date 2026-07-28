@@ -27,8 +27,6 @@ var (
 	ErrUnsupportedProcessingProfile = errors.New("unsupported processing profile")
 )
 
-const persistenceTimeout = 10 * time.Second
-
 type operationalError struct {
 	code  string
 	cause error
@@ -214,8 +212,13 @@ type Config struct {
 	MaximumTemporaryBytes int64
 	TemporaryDirectory    string
 	ProcessingTimeout     time.Duration
+	PersistenceTimeout    time.Duration
+	ArtifactAbortTimeout  time.Duration
 	JobLease              time.Duration
 	MaximumAttempts       int
+	FirstRetryDelay       time.Duration
+	SecondRetryDelay      time.Duration
+	SubsequentRetryDelay  time.Duration
 	Observer              PhaseObserver
 	Diagnostics           ProcessorDiagnostics
 }
@@ -281,7 +284,7 @@ func stage(detail string, cause error) error {
 }
 
 func NewProcessor(repository Repository, sources SourceReader, extractors ExtractorSelector, factory Factory, events EventFactory, newID IDGenerator, now Clock, workerID string, config Config) (*Processor, error) {
-	if repository == nil || sources == nil || extractors == nil || factory == nil || events == nil || newID == nil || now == nil || !safeID(workerID) || config.MaximumSourceBytes < 1 || config.MaximumTemporaryBytes < config.MaximumSourceBytes || config.ProcessingTimeout <= 0 || config.JobLease < config.ProcessingTimeout+30*time.Second || config.MaximumAttempts < 1 || config.TemporaryDirectory == "" {
+	if repository == nil || sources == nil || extractors == nil || factory == nil || events == nil || newID == nil || now == nil || !safeID(workerID) || config.MaximumSourceBytes < 1 || config.MaximumTemporaryBytes < config.MaximumSourceBytes || config.ProcessingTimeout <= 0 || config.PersistenceTimeout <= 0 || config.ArtifactAbortTimeout <= 0 || config.JobLease < config.ProcessingTimeout+30*time.Second || config.MaximumAttempts < 1 || config.FirstRetryDelay <= 0 || config.SecondRetryDelay <= 0 || config.SubsequentRetryDelay <= 0 || config.TemporaryDirectory == "" {
 		return nil, errors.New("invalid processor configuration")
 	}
 	observer := config.Observer
@@ -342,7 +345,7 @@ func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
 	if processErr == nil {
 		ready, readyErr := p.events.Ready(event, job, result, p.now().UTC())
 		if readyErr != nil {
-			persistCtx, persistCancel := persistenceContext(parent)
+			persistCtx, persistCancel := p.persistenceContext(parent)
 			defer persistCancel()
 			return p.persistFailure(persistCtx, event, &job, claim, domain.FailureInternalProcessing, "ready_event_prepare_failed")
 		}
@@ -350,7 +353,7 @@ func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
 		if err = job.Complete(p.workerID, result.ManifestReference, result.ManifestSHA256, result.ManifestByteSize, p.now().UTC()); err != nil {
 			return err
 		}
-		persistCtx, persistCancel := persistenceContext(parent)
+		persistCtx, persistCancel := p.persistenceContext(parent)
 		defer persistCancel()
 		if err = p.repository.Complete(persistCtx, job, claim, result, ready); err != nil {
 			err = operational("complete_failed", err)
@@ -362,27 +365,27 @@ func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
 	}
 	category, permanent := classify(processErr, ctx)
 	if !permanent && job.Attempts() < p.config.MaximumAttempts {
-		retryAt := p.now().UTC().Add(retryDelay(job.Attempts()))
+		retryAt := p.now().UTC().Add(p.retryDelay(job.Attempts()))
 		if err = job.ScheduleRetry(p.workerID, retryAt, p.now().UTC()); err != nil {
 			return err
 		}
-		persistCtx, persistCancel := persistenceContext(parent)
+		persistCtx, persistCancel := p.persistenceContext(parent)
 		defer persistCancel()
 		if err = p.repository.Retry(persistCtx, job, claim); err != nil {
 			return err
 		}
 		return NewDeferredError(retryAt, processErr)
 	}
-	persistCtx, persistCancel := persistenceContext(parent)
+	persistCtx, persistCancel := p.persistenceContext(parent)
 	defer persistCancel()
 	return p.persistFailure(persistCtx, event, &job, claim, category, FailureDetail(processErr))
 }
 
-func persistenceContext(parent context.Context) (context.Context, context.CancelFunc) {
+func (p *Processor) persistenceContext(parent context.Context) (context.Context, context.CancelFunc) {
 	if parent.Err() != nil {
-		return context.WithTimeout(context.Background(), persistenceTimeout)
+		return context.WithTimeout(context.Background(), p.config.PersistenceTimeout)
 	}
-	return context.WithTimeout(parent, persistenceTimeout)
+	return context.WithTimeout(parent, p.config.PersistenceTimeout)
 }
 
 func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, adapter ExtractionAdapter, generatedAt time.Time) (artifact.Result, error) {
@@ -415,7 +418,7 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, ada
 	committed := false
 	defer func() {
 		if !committed {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), p.config.ArtifactAbortTimeout)
 			defer cancel()
 			_ = writer.Abort(cleanupCtx)
 		}
@@ -578,14 +581,14 @@ func permanentProcessingFailure(category domain.FailureCategory) bool {
 	}
 }
 
-func retryDelay(attempt int) time.Duration {
+func (p *Processor) retryDelay(attempt int) time.Duration {
 	switch attempt {
 	case 1:
-		return 5 * time.Second
+		return p.config.FirstRetryDelay
 	case 2:
-		return 30 * time.Second
+		return p.config.SecondRetryDelay
 	default:
-		return 2 * time.Minute
+		return p.config.SubsequentRetryDelay
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/rabbitmq/amqp091-go"
 )
@@ -23,7 +24,7 @@ func TestHandleDeliveryRepublishesTransientFailureWithApplicationAttempt(t *test
 		Body:         []byte("payload"),
 	}
 
-	handleDelivery(context.Background(), "catalog.book-processing.v1", failingHandler{}, noopRecorder{}, publisher, delivery, Policy{})
+	handleDelivery(context.Background(), "catalog.book-processing.v1", failingHandler{}, noopRecorder{}, publisher, delivery, Policy{ReconnectInitialBackoff: time.Second, ReconnectMaxBackoff: 30 * time.Second, DialTimeout: 5 * time.Second, HeartbeatTimeout: 10 * time.Second, HandleTimeout: 10 * time.Second, RetryLimit: 5, RetryDelayStep: 250 * time.Millisecond, RetryPublishTimeout: 5 * time.Second})
 
 	if acknowledger.acks != 1 || acknowledger.nacks != 0 {
 		t.Fatalf("acknowledgements = ack:%d nack:%d", acknowledger.acks, acknowledger.nacks)
@@ -58,7 +59,7 @@ func TestHandleDeliveryDeadLettersAfterApplicationRetryLimit(t *testing.T) {
 		Headers:      amqp091.Table{applicationDeliveryCountHeader: int64(5)},
 	}
 
-	handleDelivery(context.Background(), "catalog.retrieval-terminal.v1", failingHandler{}, noopRecorder{}, publisher, delivery, Policy{})
+	handleDelivery(context.Background(), "catalog.retrieval-terminal.v1", failingHandler{}, noopRecorder{}, publisher, delivery, Policy{ReconnectInitialBackoff: time.Second, ReconnectMaxBackoff: 30 * time.Second, DialTimeout: 5 * time.Second, HeartbeatTimeout: 10 * time.Second, HandleTimeout: 10 * time.Second, RetryLimit: 5, RetryDelayStep: 250 * time.Millisecond, RetryPublishTimeout: 5 * time.Second})
 
 	if acknowledger.acks != 0 || acknowledger.nacks != 1 || acknowledger.requeue {
 		t.Fatalf("acknowledgements = ack:%d nack:%d requeue:%t", acknowledger.acks, acknowledger.nacks, acknowledger.requeue)
@@ -78,7 +79,7 @@ func TestHandleDeliveryDeadLettersWhenRetryPublishFails(t *testing.T) {
 		Body:         []byte("payload"),
 	}
 
-	handleDelivery(context.Background(), Queue, failingHandler{}, noopRecorder{}, publisher, delivery, Policy{})
+	handleDelivery(context.Background(), Queue, failingHandler{}, noopRecorder{}, publisher, delivery, Policy{ReconnectInitialBackoff: time.Second, ReconnectMaxBackoff: 30 * time.Second, DialTimeout: 5 * time.Second, HeartbeatTimeout: 10 * time.Second, HandleTimeout: 10 * time.Second, RetryLimit: 5, RetryDelayStep: 250 * time.Millisecond, RetryPublishTimeout: 5 * time.Second})
 
 	if acknowledger.acks != 0 || acknowledger.nacks != 1 || acknowledger.requeue {
 		t.Fatalf("acknowledgements = ack:%d nack:%d requeue:%t", acknowledger.acks, acknowledger.nacks, acknowledger.requeue)
@@ -100,7 +101,7 @@ func TestHandleDeliveryLeavesCanceledDeliveryUnsettled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	handleDelivery(ctx, Queue, failingHandler{}, noopRecorder{}, publisher, delivery, Policy{})
+	handleDelivery(ctx, Queue, failingHandler{}, noopRecorder{}, publisher, delivery, Policy{ReconnectInitialBackoff: time.Second, ReconnectMaxBackoff: 30 * time.Second, DialTimeout: 5 * time.Second, HeartbeatTimeout: 10 * time.Second, HandleTimeout: 10 * time.Second, RetryLimit: 5, RetryDelayStep: 250 * time.Millisecond, RetryPublishTimeout: 5 * time.Second})
 
 	if acknowledger.acks != 0 || acknowledger.nacks != 0 {
 		t.Fatalf("canceled delivery was settled: ack:%d nack:%d", acknowledger.acks, acknowledger.nacks)

@@ -134,7 +134,7 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 	if err != nil {
 		return nil, errors.New("configure retrieval database")
 	}
-	records := repository.NewPostgres(pool)
+	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: policy.FinalizationLease})
 	objects, err := storage.NewAWS(ctx, secret.Region, secret.ArtifactBucket)
 	if err != nil {
 		pool.Close()
@@ -211,7 +211,7 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 	if err != nil {
 		return nil, errors.New("configure retrieval database")
 	}
-	records := repository.NewPostgres(pool)
+	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: policy.FinalizationLease})
 	objects, err := storage.NewAWS(ctx, secret.Region, secret.ArtifactBucket)
 	if err != nil {
 		pool.Close()
@@ -283,7 +283,7 @@ func NewCleanupRuntime(ctx context.Context) (*Runtime, error) {
 	if err != nil {
 		return nil, errors.New("configure retrieval database")
 	}
-	records := repository.NewPostgres(pool)
+	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: policy.FinalizationLease})
 	httpClient := &http.Client{Timeout: policy.DependencyTimeout, CheckRedirect: rejectRedirect}
 	index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, retrievalconfig.DefaultQdrantCollection, secret.QdrantAPIKey, httpClient, minimumSearchScore)
 	if err != nil {
@@ -319,7 +319,7 @@ func newDatabaseRuntime(ctx context.Context, publisher bool) (*Runtime, error) {
 	if err != nil {
 		return nil, errors.New("configure retrieval database")
 	}
-	records := repository.NewPostgres(pool)
+	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: policy.FinalizationLease})
 	return &Runtime{repository: records, manifestFails: records, secret: secret, policy: policy}, nil
 }
 
@@ -503,7 +503,7 @@ func (r *Runtime) Dispatch(ctx context.Context) error {
 
 func (r *Runtime) Cleanup(ctx context.Context) error {
 	now := time.Now().UTC()
-	if _, err := r.repository.RecoverStaleBatches(ctx, now.Add(-15*time.Minute), now); err != nil {
+	if _, err := r.repository.RecoverStaleBatches(ctx, now.Add(-r.policy.StaleBatchAge), now); err != nil {
 		return err
 	}
 	if err := r.retryPendingVectorCleanup(ctx, now, 64); err != nil {

@@ -511,8 +511,13 @@ func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *proc
 			MaximumTemporaryBytes: 25 << 20,
 			TemporaryDirectory:    t.TempDir(),
 			ProcessingTimeout:     10 * time.Millisecond,
+			PersistenceTimeout:    10 * time.Second,
+			ArtifactAbortTimeout:  10 * time.Second,
 			JobLease:              31 * time.Second,
 			MaximumAttempts:       maximumAttempts,
+			FirstRetryDelay:       5 * time.Second,
+			SecondRetryDelay:      30 * time.Second,
+			SubsequentRetryDelay:  2 * time.Minute,
 			Diagnostics:           diagnostics,
 		},
 	)

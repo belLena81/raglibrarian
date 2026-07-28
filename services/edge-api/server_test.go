@@ -123,7 +123,7 @@ func TestRouterRequiresSessionValidatorAndAppliesSecurityHeaders(t *testing.T) {
 		verifier,
 		identity,
 		diagnostics,
-		edgeapi.RouterConfig{},
+		testRouterConfig(),
 	)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
@@ -142,7 +142,7 @@ func TestRouterPanicsWithoutSessionValidator(t *testing.T) {
 	diagnostics := diagnostic.New(log)
 	identity := fakeIdentity{}
 	assert.Panics(t, func() {
-		edgeapi.NewRouter(handler.NewQueryHandler(fakeRetrieval{}, 0.6), handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{}), handler.NewHealthHandler(identity), handler.NewSetupHandler(identity), handler.NewAdminHandler(identity, handler.NewPendingHub(10)), verifier, nil, diagnostics, edgeapi.RouterConfig{})
+		edgeapi.NewRouter(handler.NewQueryHandler(fakeRetrieval{}, 0.6), handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{}), handler.NewHealthHandler(identity), handler.NewSetupHandler(identity), handler.NewAdminHandler(identity, handler.NewPendingHub(10)), verifier, nil, diagnostics, testRouterConfig())
 	})
 }
 
@@ -198,7 +198,12 @@ func TestQueryRouteRateLimitsTrustedPrincipalBeforeRetrieval(t *testing.T) {
 		verifier,
 		identity,
 		diagnostics,
-		edgeapi.RouterConfig{QueryRateLimit: 1, QueryRateWindow: time.Hour, QueryRateMaxKeys: 100, QueryConcurrency: 2},
+		withRouterConfig(func(cfg *edgeapi.RouterConfig) {
+			cfg.QueryRateLimit = 1
+			cfg.QueryRateWindow = time.Hour
+			cfg.QueryRateMaxKeys = 100
+			cfg.QueryConcurrency = 2
+		}),
 	)
 	token, err := signer.Issue(auth.Subject{UserID: "query-user", Email: "reader@example.test", Role: auth.RoleReader, SessionID: "session-1"})
 	require.NoError(t, err)
@@ -224,11 +229,11 @@ func TestBookUploadRateLimitUsesRouterConfiguration(t *testing.T) {
 		verifier,
 		identity,
 		diagnostics,
-		edgeapi.RouterConfig{
-			BookUploadRateLimit:   1,
-			BookUploadRateWindow:  time.Hour,
-			BookUploadRateMaxKeys: 100,
-		},
+		withRouterConfig(func(cfg *edgeapi.RouterConfig) {
+			cfg.BookUploadRateLimit = 1
+			cfg.BookUploadRateWindow = time.Hour
+			cfg.BookUploadRateMaxKeys = 100
+		}),
 		handler.NewBooksHandler(catalog, handler.BooksPolicy{
 			UploadTimeout:    2 * time.Minute,
 			ListTimeout:      6 * time.Second,
@@ -278,8 +283,51 @@ func newTestRouter(t *testing.T, identity *passwordResetIdentity) http.Handler {
 		verifier,
 		identity,
 		diagnostics,
-		edgeapi.RouterConfig{},
+		testRouterConfig(),
 	)
+}
+
+func testRouterConfig() edgeapi.RouterConfig {
+	return edgeapi.RouterConfig{
+		QueryRateLimit:                       30,
+		QueryRateWindow:                      time.Minute,
+		QueryRateMaxKeys:                     10000,
+		QueryConcurrency:                     8,
+		AuthRegisterRateLimit:                20,
+		AuthRegisterRateWindow:               time.Hour,
+		AuthRegisterRateMaxKeys:              10000,
+		AuthVerifyEmailRateLimit:             30,
+		AuthVerifyEmailRateWindow:            time.Hour,
+		AuthVerifyEmailRateMaxKeys:           10000,
+		AuthLoginRateLimit:                   30,
+		AuthLoginRateWindow:                  time.Minute,
+		AuthLoginRateMaxKeys:                 10000,
+		AuthResendVerificationRateLimit:      5,
+		AuthResendVerificationRateWindow:     time.Hour,
+		AuthResendVerificationRateMaxKeys:    10000,
+		AuthPasswordResetRequestRateLimit:    5,
+		AuthPasswordResetRequestRateWindow:   time.Hour,
+		AuthPasswordResetRequestRateMaxKeys:  10000,
+		AuthPasswordResetVerifyRateLimit:     5,
+		AuthPasswordResetVerifyRateWindow:    time.Hour,
+		AuthPasswordResetVerifyRateMaxKeys:   10000,
+		AuthPasswordResetCompleteRateLimit:   5,
+		AuthPasswordResetCompleteRateWindow:  time.Hour,
+		AuthPasswordResetCompleteRateMaxKeys: 10000,
+		SetupAdminRateLimit:                  5,
+		SetupAdminRateWindow:                 15 * time.Minute,
+		SetupAdminRateMaxKeys:                1000,
+		BookUploadRateLimit:                  20,
+		BookUploadRateWindow:                 time.Hour,
+		BookUploadRateMaxKeys:                10000,
+		BookUploadDeadline:                   2*time.Minute + 10*time.Second,
+	}
+}
+
+func withRouterConfig(mutate func(*edgeapi.RouterConfig)) edgeapi.RouterConfig {
+	cfg := testRouterConfig()
+	mutate(&cfg)
+	return cfg
 }
 
 func assertPostStatus(t *testing.T, router http.Handler, path, body string, want int) {

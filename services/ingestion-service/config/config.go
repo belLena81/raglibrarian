@@ -35,7 +35,8 @@ type Config struct {
 	MaximumManifestBytes, MaximumTemporaryBytes                                 int64
 	MemoryLimitBytes, ParserSandboxMemoryBytes                                  int64
 	MaximumPages                                                                uint32
-	ProcessingTimeout, JobLease, OutboxInterval                                 time.Duration
+	ProcessingTimeout, PersistenceTimeout, ArtifactAbortTimeout, JobLease       time.Duration
+	FirstRetryDelay, SecondRetryDelay, SubsequentRetryDelay, OutboxInterval     time.Duration
 	RabbitDialTimeout, RabbitHeartbeat, RabbitPublishTimeout, OutboxLease       time.Duration
 	CleanupInterval, OrphanGracePeriod                                          time.Duration
 	WorkerReadinessProbeTimeout, WorkerReadinessRefreshInterval                 time.Duration
@@ -292,12 +293,32 @@ func loadLocal() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	persistenceTimeout, err := boundedDuration("INGESTION_PERSISTENCE_TIMEOUT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	artifactAbortTimeout, err := boundedDuration("INGESTION_ARTIFACT_ABORT_TIMEOUT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
 	lease, err := boundedDuration("INGESTION_JOB_LEASE", timeout, 30*time.Minute, 13*time.Minute)
 	if err != nil {
 		return Config{}, err
 	}
 	if lease < timeout+30*time.Second {
 		return Config{}, fmt.Errorf("INGESTION_JOB_LEASE must exceed INGESTION_PROCESSING_TIMEOUT by at least 30s")
+	}
+	firstRetryDelay, err := boundedDuration("INGESTION_FIRST_RETRY_DELAY", time.Second, 10*time.Minute, 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	secondRetryDelay, err := boundedDuration("INGESTION_SECOND_RETRY_DELAY", time.Second, 10*time.Minute, 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	subsequentRetryDelay, err := boundedDuration("INGESTION_SUBSEQUENT_RETRY_DELAY", time.Second, 10*time.Minute, 2*time.Minute)
+	if err != nil {
+		return Config{}, err
 	}
 	outboxInterval, err := boundedDuration("INGESTION_OUTBOX_INTERVAL", 100*time.Millisecond, time.Minute, time.Second)
 	if err != nil {
@@ -396,7 +417,12 @@ func loadLocal() (Config, error) {
 		ParserSandboxMemoryBytes:       parserMemory,
 		MaximumPages:                   maximumPages,
 		ProcessingTimeout:              timeout,
+		PersistenceTimeout:             persistenceTimeout,
+		ArtifactAbortTimeout:           artifactAbortTimeout,
 		JobLease:                       lease,
+		FirstRetryDelay:                firstRetryDelay,
+		SecondRetryDelay:               secondRetryDelay,
+		SubsequentRetryDelay:           subsequentRetryDelay,
 		OutboxInterval:                 outboxInterval,
 		RabbitDialTimeout:              rabbitDialTimeout,
 		RabbitHeartbeat:                rabbitHeartbeat,

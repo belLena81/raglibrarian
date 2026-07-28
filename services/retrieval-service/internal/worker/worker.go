@@ -110,7 +110,7 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 		pool.Close()
 		return nil, err
 	}
-	records := repository.NewPostgres(pool)
+	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: configuration.FinalizationLease})
 	planner, err := application.NewPlanner(records, randomID, time.Now)
 	if err != nil {
 		pool.Close()

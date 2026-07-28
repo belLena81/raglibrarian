@@ -79,7 +79,11 @@ func run(ctx context.Context) error {
 	if err = channel.Confirm(false); err != nil {
 		return errors.New("enable publisher confirms")
 	}
-	records := repository.NewPostgres(pool)
+	policy, err := config.LoadLambdaRuntimePolicy()
+	if err != nil {
+		return err
+	}
+	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: policy.FinalizationLease})
 	publisher := rabbitmq.NewPublisher(channel)
 	pending, err := records.PendingOutbox(ctx, 100, time.Now().UTC())
 	if err != nil {

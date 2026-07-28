@@ -31,6 +31,7 @@ const (
 type Config struct {
 	GRPCAddress                 string
 	MetricsAddress              string
+	FinalizationLease           time.Duration
 	ReadinessProbeTimeout       time.Duration
 	ReadinessReadHeaderTimeout  time.Duration
 	ReadinessIdleTimeout        time.Duration
@@ -82,6 +83,7 @@ type WorkerConfig struct {
 	ReconnectInitialBackoff                                       time.Duration
 	ReconnectMaxBackoff                                           time.Duration
 	DispatchInterval                                              time.Duration
+	FinalizationLease                                             time.Duration
 	CleanupInterval                                               time.Duration
 	CleanupTimeout                                                time.Duration
 	StaleBatchAge                                                 time.Duration
@@ -100,6 +102,8 @@ type WorkerConfig struct {
 type LambdaRuntimePolicy struct {
 	DependencyTimeout       time.Duration
 	CollectionEnsureTimeout time.Duration
+	FinalizationLease       time.Duration
+	StaleBatchAge           time.Duration
 	FailureRecordTimeout    time.Duration
 	RabbitDialTimeout       time.Duration
 	RabbitHeartbeat         time.Duration
@@ -117,8 +121,9 @@ func Load() (Config, error) {
 	}
 	uid, uidErr := positiveInteger(os.Getenv("RUN_AS_UID"), 65532)
 	gid, gidErr := positiveInteger(os.Getenv("RUN_AS_GID"), 65532)
+	finalizationLease, finalizationLeaseErr := optionalDuration("RETRIEVAL_FINALIZATION_LEASE", 15*time.Minute)
 	configuration := Config{
-		GRPCAddress: grpcAddress, MetricsAddress: os.Getenv("RETRIEVAL_METRICS_ADDR"), EmbeddingProviderKind: strings.ToLower(strings.TrimSpace(optional("RETRIEVAL_EMBEDDING_PROVIDER", defaultEmbeddingProviderKind))),
+		GRPCAddress: grpcAddress, MetricsAddress: os.Getenv("RETRIEVAL_METRICS_ADDR"), FinalizationLease: finalizationLease, EmbeddingProviderKind: strings.ToLower(strings.TrimSpace(optional("RETRIEVAL_EMBEDDING_PROVIDER", defaultEmbeddingProviderKind))),
 		TEIURL: os.Getenv("RETRIEVAL_TEI_URL"), VectorProviderKind: strings.ToLower(strings.TrimSpace(optional("RETRIEVAL_VECTOR_PROVIDER", defaultVectorProviderKind))),
 		QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: collection, QdrantAPIKeyFile: os.Getenv("RETRIEVAL_QDRANT_API_KEY_FILE"),
 		PostgresDSNFile: os.Getenv("RETRIEVAL_POSTGRES_DSN_FILE"), SummaryLLMProviderKind: strings.ToLower(strings.TrimSpace(optional("RETRIEVAL_SUMMARY_LLM_PROVIDER", defaultSummaryProviderKind))), SummaryLLMBaseURL: os.Getenv("RETRIEVAL_SUMMARY_LLM_BASE_URL"),
@@ -164,7 +169,7 @@ func Load() (Config, error) {
 	if configuration.GRPCAddress == "" || !validEmbeddingProviderKind(configuration.EmbeddingProviderKind) || !validVectorProviderKind(configuration.VectorProviderKind) ||
 		!validSummaryProviderKind(configuration.SummaryLLMProviderKind) || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
 		configuration.PostgresDSNFile == "" || configuration.QdrantAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
-		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || uidErr != nil || gidErr != nil ||
+		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || uidErr != nil || gidErr != nil || finalizationLeaseErr != nil ||
 		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || summaryLLMOutputModeErr != nil || teiRequestsPerSecondErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil ||
 		readinessProbeTimeoutErr != nil || readinessReadHeaderTimeoutErr != nil || readinessIdleTimeoutErr != nil || readinessShutdownTimeoutErr != nil ||
 		configuration.SummaryLLMTimeout >= configuration.SearchTimeout ||
@@ -304,6 +309,7 @@ func LoadWorker() (WorkerConfig, error) {
 	dbPingTimeout, dbPingTimeoutErr := optionalDuration("RETRIEVAL_WORKER_DB_PING_TIMEOUT", 5*time.Second)
 	dependencyTimeout, dependencyTimeoutErr := optionalDuration("RETRIEVAL_WORKER_DEPENDENCY_TIMEOUT", 90*time.Second)
 	collectionEnsureTimeout, collectionEnsureTimeoutErr := optionalDuration("RETRIEVAL_WORKER_COLLECTION_TIMEOUT", 10*time.Second)
+	finalizationLease, finalizationLeaseErr := optionalDuration("RETRIEVAL_FINALIZATION_LEASE", 15*time.Minute)
 	readinessInitialDelay, readinessInitialDelayErr := optionalDuration("RETRIEVAL_WORKER_READINESS_INITIAL_DELAY", time.Second)
 	readinessMaxDelay, readinessMaxDelayErr := optionalDuration("RETRIEVAL_WORKER_READINESS_MAX_DELAY", 10*time.Second)
 	readinessMaxAttempts, readinessMaxAttemptsErr := positiveInteger(os.Getenv("RETRIEVAL_WORKER_READINESS_MAX_ATTEMPTS"), 90)
@@ -329,7 +335,7 @@ func LoadWorker() (WorkerConfig, error) {
 		MinIOEndpoint: os.Getenv("RETRIEVAL_MINIO_ENDPOINT"), MinIOAccessKey: accessKey, MinIOSecretKey: secretKey, ArtifactBucket: os.Getenv("RETRIEVAL_ARTIFACT_BUCKET"), MinIOInsecure: minioInsecure,
 		TEIURL: os.Getenv("RETRIEVAL_TEI_URL"), QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: optional("RETRIEVAL_QDRANT_COLLECTION", DefaultQdrantCollection), QdrantAPIKey: qdrantAPIKey,
 		TEIRequestsPerSecond: teiRequestsPerSecond, TEILogRawResponse: teiLogRawResponse, TEILogRawResponseMaxBytes: teiLogRawResponseMaxBytes,
-		MinimumSearchScore: minimumSearchScore, DBPingTimeout: dbPingTimeout, DependencyTimeout: dependencyTimeout, CollectionEnsureTimeout: collectionEnsureTimeout,
+		MinimumSearchScore: minimumSearchScore, DBPingTimeout: dbPingTimeout, DependencyTimeout: dependencyTimeout, CollectionEnsureTimeout: collectionEnsureTimeout, FinalizationLease: finalizationLease,
 		ReadinessInitialDelay: readinessInitialDelay, ReadinessMaxDelay: readinessMaxDelay, ReadinessMaxAttempts: readinessMaxAttempts, ReadinessProbeTimeout: readinessProbeTimeout,
 		ReconnectInitialBackoff: reconnectInitialBackoff, ReconnectMaxBackoff: reconnectMaxBackoff, DispatchInterval: dispatchInterval, CleanupInterval: cleanupInterval,
 		CleanupTimeout: cleanupTimeout, StaleBatchAge: staleBatchAge, FailureRecordTimeout: failureRecordTimeout, PublishTimeout: publishTimeout,
@@ -338,7 +344,7 @@ func LoadWorker() (WorkerConfig, error) {
 		MetricsAddress: optional("RETRIEVAL_WORKER_METRICS_ADDR", os.Getenv("RETRIEVAL_METRICS_ADDR")), ServerlessInvocationTimeout: serverlessInvocationTimeout, Concurrency: concurrency, RunAs: process.Identity{UID: uid, GID: gid}}
 	configuration.TEIRequestsPerSecond = teiRequestsPerSecond
 	if uidErr != nil || gidErr != nil || concurrencyErr != nil || concurrency > 16 || insecureErr != nil || timeoutErr != nil ||
-		dbPingTimeoutErr != nil || dependencyTimeoutErr != nil || collectionEnsureTimeoutErr != nil || readinessInitialDelayErr != nil || readinessMaxDelayErr != nil ||
+		dbPingTimeoutErr != nil || dependencyTimeoutErr != nil || collectionEnsureTimeoutErr != nil || finalizationLeaseErr != nil || readinessInitialDelayErr != nil || readinessMaxDelayErr != nil ||
 		readinessMaxAttemptsErr != nil || readinessProbeTimeoutErr != nil || reconnectInitialBackoffErr != nil || reconnectMaxBackoffErr != nil ||
 		dispatchIntervalErr != nil || cleanupIntervalErr != nil || cleanupTimeoutErr != nil || staleBatchAgeErr != nil || failureRecordTimeoutErr != nil || publishTimeoutErr != nil ||
 		rabbitDialTimeoutErr != nil || rabbitHeartbeatErr != nil ||
@@ -355,17 +361,21 @@ func LoadWorker() (WorkerConfig, error) {
 func LoadLambdaRuntimePolicy() (LambdaRuntimePolicy, error) {
 	dependencyTimeout, dependencyTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_DEPENDENCY_TIMEOUT", 90*time.Second)
 	collectionEnsureTimeout, collectionEnsureTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_COLLECTION_TIMEOUT", 10*time.Second)
+	finalizationLease, finalizationLeaseErr := optionalDuration("RETRIEVAL_FINALIZATION_LEASE", 15*time.Minute)
+	staleBatchAge, staleBatchAgeErr := optionalDuration("RETRIEVAL_LAMBDA_STALE_BATCH_AGE", 15*time.Minute)
 	failureRecordTimeout, failureRecordTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_FAILURE_RECORD_TIMEOUT", 10*time.Second)
 	rabbitDialTimeout, rabbitDialTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_RABBITMQ_DIAL_TIMEOUT", 5*time.Second)
 	rabbitHeartbeat, rabbitHeartbeatErr := optionalDuration("RETRIEVAL_LAMBDA_RABBITMQ_HEARTBEAT", 10*time.Second)
 	endpointResolveTimeout, endpointResolveTimeoutErr := optionalDuration("RETRIEVAL_LAMBDA_ENDPOINT_RESOLVE_TIMEOUT", 3*time.Second)
-	if dependencyTimeoutErr != nil || collectionEnsureTimeoutErr != nil || failureRecordTimeoutErr != nil ||
+	if dependencyTimeoutErr != nil || collectionEnsureTimeoutErr != nil || finalizationLeaseErr != nil || staleBatchAgeErr != nil || failureRecordTimeoutErr != nil ||
 		rabbitDialTimeoutErr != nil || rabbitHeartbeatErr != nil || endpointResolveTimeoutErr != nil {
 		return LambdaRuntimePolicy{}, errors.New("invalid retrieval lambda runtime policy")
 	}
 	return LambdaRuntimePolicy{
 		DependencyTimeout:       dependencyTimeout,
 		CollectionEnsureTimeout: collectionEnsureTimeout,
+		FinalizationLease:       finalizationLease,
+		StaleBatchAge:           staleBatchAge,
 		FailureRecordTimeout:    failureRecordTimeout,
 		RabbitDialTimeout:       rabbitDialTimeout,
 		RabbitHeartbeat:         rabbitHeartbeat,

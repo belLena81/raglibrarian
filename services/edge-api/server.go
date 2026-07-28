@@ -74,6 +74,9 @@ func NewRouter(
 	if query == nil || authHandler == nil || health == nil || setup == nil || admin == nil || verifier == nil || sessions == nil || diagnostics == nil {
 		panic("edgeapi: all router dependencies are required")
 	}
+	if err := validateRouterConfig(config); err != nil {
+		panic(err)
+	}
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID(diagnostics))
 	router.Use(middleware.RequestLogger(diagnostics))
@@ -87,13 +90,13 @@ func NewRouter(
 	router.Get("/healthz", health.Live)
 	router.Get("/readyz", health.Ready)
 	router.Route("/auth", func(router chi.Router) {
-		registrationLimit := middleware.FixedWindowRateLimit(authRegisterRateLimit(config.AuthRegisterRateLimit), authRegisterRateWindow(config.AuthRegisterRateWindow), authRegisterRateMaxKeys(config.AuthRegisterRateMaxKeys))
-		verificationLimit := middleware.FixedWindowRateLimit(authVerifyEmailRateLimit(config.AuthVerifyEmailRateLimit), authVerifyEmailRateWindow(config.AuthVerifyEmailRateWindow), authVerifyEmailRateMaxKeys(config.AuthVerifyEmailRateMaxKeys))
-		loginLimit := middleware.FixedWindowRateLimit(authLoginRateLimit(config.AuthLoginRateLimit), authLoginRateWindow(config.AuthLoginRateWindow), authLoginRateMaxKeys(config.AuthLoginRateMaxKeys))
-		resendLimit := middleware.FixedWindowRateLimit(authResendVerificationRateLimit(config.AuthResendVerificationRateLimit), authResendVerificationRateWindow(config.AuthResendVerificationRateWindow), authResendVerificationRateMaxKeys(config.AuthResendVerificationRateMaxKeys))
-		resetRequestLimit := middleware.FixedWindowRateLimit(authPasswordResetRequestRateLimit(config.AuthPasswordResetRequestRateLimit), authPasswordResetRequestRateWindow(config.AuthPasswordResetRequestRateWindow), authPasswordResetRequestRateMaxKeys(config.AuthPasswordResetRequestRateMaxKeys))
-		resetVerifyLimit := middleware.FixedWindowRateLimit(authPasswordResetVerifyRateLimit(config.AuthPasswordResetVerifyRateLimit), authPasswordResetVerifyRateWindow(config.AuthPasswordResetVerifyRateWindow), authPasswordResetVerifyRateMaxKeys(config.AuthPasswordResetVerifyRateMaxKeys))
-		resetCompleteLimit := middleware.FixedWindowRateLimit(authPasswordResetCompleteRateLimit(config.AuthPasswordResetCompleteRateLimit), authPasswordResetCompleteRateWindow(config.AuthPasswordResetCompleteRateWindow), authPasswordResetCompleteRateMaxKeys(config.AuthPasswordResetCompleteRateMaxKeys))
+		registrationLimit := middleware.FixedWindowRateLimit(config.AuthRegisterRateLimit, config.AuthRegisterRateWindow, config.AuthRegisterRateMaxKeys)
+		verificationLimit := middleware.FixedWindowRateLimit(config.AuthVerifyEmailRateLimit, config.AuthVerifyEmailRateWindow, config.AuthVerifyEmailRateMaxKeys)
+		loginLimit := middleware.FixedWindowRateLimit(config.AuthLoginRateLimit, config.AuthLoginRateWindow, config.AuthLoginRateMaxKeys)
+		resendLimit := middleware.FixedWindowRateLimit(config.AuthResendVerificationRateLimit, config.AuthResendVerificationRateWindow, config.AuthResendVerificationRateMaxKeys)
+		resetRequestLimit := middleware.FixedWindowRateLimit(config.AuthPasswordResetRequestRateLimit, config.AuthPasswordResetRequestRateWindow, config.AuthPasswordResetRequestRateMaxKeys)
+		resetVerifyLimit := middleware.FixedWindowRateLimit(config.AuthPasswordResetVerifyRateLimit, config.AuthPasswordResetVerifyRateWindow, config.AuthPasswordResetVerifyRateMaxKeys)
+		resetCompleteLimit := middleware.FixedWindowRateLimit(config.AuthPasswordResetCompleteRateLimit, config.AuthPasswordResetCompleteRateWindow, config.AuthPasswordResetCompleteRateMaxKeys)
 		router.Group(func(router chi.Router) {
 			router.Use(registrationLimit)
 			router.Post("/register", authHandler.Register)
@@ -133,9 +136,9 @@ func NewRouter(
 		router.Get("/status", setup.Status)
 		router.Group(func(router chi.Router) {
 			router.Use(middleware.FixedWindowRateLimit(
-				setupAdminRateLimit(config.SetupAdminRateLimit),
-				setupAdminRateWindow(config.SetupAdminRateWindow),
-				setupAdminRateMaxKeys(config.SetupAdminRateMaxKeys),
+				config.SetupAdminRateLimit,
+				config.SetupAdminRateWindow,
+				config.SetupAdminRateMaxKeys,
 			))
 			router.Post("/admin", setup.CreateAdmin)
 		})
@@ -150,8 +153,8 @@ func NewRouter(
 	})
 	router.Group(func(router chi.Router) {
 		router.Use(middleware.Authenticator(verifier, sessions, diagnostics))
-		router.Use(middleware.FixedWindowPrincipalRateLimit(queryRateLimit(config.QueryRateLimit), queryRateWindow(config.QueryRateWindow), queryRateMaxKeys(config.QueryRateMaxKeys)))
-		router.Use(middleware.BoundedConcurrency(queryConcurrency(config.QueryConcurrency)))
+		router.Use(middleware.FixedWindowPrincipalRateLimit(config.QueryRateLimit, config.QueryRateWindow, config.QueryRateMaxKeys))
+		router.Use(middleware.BoundedConcurrency(config.QueryConcurrency))
 		router.Post("/query", query.Query)
 		router.Route("/query", func(router chi.Router) { router.Post("/", query.Query) })
 	})
@@ -166,11 +169,11 @@ func NewRouter(
 				router.Use(middleware.RequireAnyRole(auth.RoleLibrarian, auth.RoleAdmin))
 				router.Group(func(uploadRouter chi.Router) {
 					uploadRouter.Use(middleware.FixedWindowRateLimit(
-						bookUploadRateLimit(config.BookUploadRateLimit),
-						bookUploadRateWindow(config.BookUploadRateWindow),
-						bookUploadRateMaxKeys(config.BookUploadRateMaxKeys),
+						config.BookUploadRateLimit,
+						config.BookUploadRateWindow,
+						config.BookUploadRateMaxKeys,
 					))
-					uploadRouter.Use(middleware.UploadDeadlineWithBudget(bookUploadDeadline(config.BookUploadDeadline)))
+					uploadRouter.Use(middleware.UploadDeadlineWithBudget(config.BookUploadDeadline))
 					uploadRouter.Post("/", booksHandler.Upload)
 				})
 				router.Post("/{book_id}/reindex", booksHandler.Reindex)
@@ -181,226 +184,42 @@ func NewRouter(
 	return router
 }
 
-func queryRateLimit(value int) int {
-	if value > 0 {
-		return value
+func validateRouterConfig(config RouterConfig) error {
+	switch {
+	case config.QueryRateLimit <= 0,
+		config.QueryRateWindow <= 0,
+		config.QueryRateMaxKeys <= 0,
+		config.QueryConcurrency <= 0,
+		config.AuthRegisterRateLimit <= 0,
+		config.AuthRegisterRateWindow <= 0,
+		config.AuthRegisterRateMaxKeys <= 0,
+		config.AuthVerifyEmailRateLimit <= 0,
+		config.AuthVerifyEmailRateWindow <= 0,
+		config.AuthVerifyEmailRateMaxKeys <= 0,
+		config.AuthLoginRateLimit <= 0,
+		config.AuthLoginRateWindow <= 0,
+		config.AuthLoginRateMaxKeys <= 0,
+		config.AuthResendVerificationRateLimit <= 0,
+		config.AuthResendVerificationRateWindow <= 0,
+		config.AuthResendVerificationRateMaxKeys <= 0,
+		config.AuthPasswordResetRequestRateLimit <= 0,
+		config.AuthPasswordResetRequestRateWindow <= 0,
+		config.AuthPasswordResetRequestRateMaxKeys <= 0,
+		config.AuthPasswordResetVerifyRateLimit <= 0,
+		config.AuthPasswordResetVerifyRateWindow <= 0,
+		config.AuthPasswordResetVerifyRateMaxKeys <= 0,
+		config.AuthPasswordResetCompleteRateLimit <= 0,
+		config.AuthPasswordResetCompleteRateWindow <= 0,
+		config.AuthPasswordResetCompleteRateMaxKeys <= 0,
+		config.SetupAdminRateLimit <= 0,
+		config.SetupAdminRateWindow <= 0,
+		config.SetupAdminRateMaxKeys <= 0,
+		config.BookUploadRateLimit <= 0,
+		config.BookUploadRateWindow <= 0,
+		config.BookUploadRateMaxKeys <= 0,
+		config.BookUploadDeadline <= 0:
+		return http.ErrNotSupported
+	default:
+		return nil
 	}
-	return 30
-}
-
-func queryRateWindow(value time.Duration) time.Duration {
-	if value > 0 {
-		return value
-	}
-	return time.Minute
-}
-
-func queryRateMaxKeys(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 10000
-}
-
-func queryConcurrency(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 8
-}
-
-func authRegisterRateLimit(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 20
-}
-
-func authRegisterRateWindow(value time.Duration) time.Duration {
-	if value > 0 {
-		return value
-	}
-	return time.Hour
-}
-
-func authRegisterRateMaxKeys(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 10000
-}
-
-func authVerifyEmailRateLimit(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 30
-}
-
-func authVerifyEmailRateWindow(value time.Duration) time.Duration {
-	if value > 0 {
-		return value
-	}
-	return time.Hour
-}
-
-func authVerifyEmailRateMaxKeys(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 10000
-}
-
-func authLoginRateLimit(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 30
-}
-
-func authLoginRateWindow(value time.Duration) time.Duration {
-	if value > 0 {
-		return value
-	}
-	return time.Minute
-}
-
-func authLoginRateMaxKeys(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 10000
-}
-
-func authResendVerificationRateLimit(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 5
-}
-
-func authResendVerificationRateWindow(value time.Duration) time.Duration {
-	if value > 0 {
-		return value
-	}
-	return time.Hour
-}
-
-func authResendVerificationRateMaxKeys(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 10000
-}
-
-func authPasswordResetRequestRateLimit(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 5
-}
-
-func authPasswordResetRequestRateWindow(value time.Duration) time.Duration {
-	if value > 0 {
-		return value
-	}
-	return time.Hour
-}
-
-func authPasswordResetRequestRateMaxKeys(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 10000
-}
-
-func authPasswordResetVerifyRateLimit(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 5
-}
-
-func authPasswordResetVerifyRateWindow(value time.Duration) time.Duration {
-	if value > 0 {
-		return value
-	}
-	return time.Hour
-}
-
-func authPasswordResetVerifyRateMaxKeys(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 10000
-}
-
-func authPasswordResetCompleteRateLimit(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 5
-}
-
-func authPasswordResetCompleteRateWindow(value time.Duration) time.Duration {
-	if value > 0 {
-		return value
-	}
-	return time.Hour
-}
-
-func authPasswordResetCompleteRateMaxKeys(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 10000
-}
-
-func bookUploadRateLimit(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 20
-}
-
-func bookUploadRateWindow(value time.Duration) time.Duration {
-	if value > 0 {
-		return value
-	}
-	return time.Hour
-}
-
-func bookUploadRateMaxKeys(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 10000
-}
-
-func setupAdminRateLimit(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 5
-}
-
-func setupAdminRateWindow(value time.Duration) time.Duration {
-	if value > 0 {
-		return value
-	}
-	return 15 * time.Minute
-}
-
-func setupAdminRateMaxKeys(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 1000
-}
-
-func bookUploadDeadline(value time.Duration) time.Duration {
-	if value > 0 {
-		return value
-	}
-	return 2*time.Minute + 10*time.Second
 }

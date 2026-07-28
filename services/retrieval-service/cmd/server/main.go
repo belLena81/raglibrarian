@@ -66,7 +66,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
-	records := repository.NewPostgres(pool)
+	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: configuration.FinalizationLease})
 	searcher, err := application.NewSearcher(embedder, store, records, configuration.MinimumSearchScore, configuration.SummaryLLMMaxCalls)
 	if err != nil {
 		log.Print("retrieval server could not configure search")

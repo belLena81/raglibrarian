@@ -22,7 +22,3 @@ func UploadDeadlineWithBudget(uploadBudget time.Duration) func(http.Handler) htt
 		})
 	}
 }
-
-func UploadDeadline(next http.Handler) http.Handler {
-	return UploadDeadlineWithBudget(2*time.Minute + 10*time.Second)(next)
-}

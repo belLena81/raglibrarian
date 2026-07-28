@@ -50,7 +50,9 @@ func RunWithWake(ctx context.Context, store store, publisher publisher, recorder
 	if recorder == nil {
 		panic("outbox recorder is required")
 	}
-	policy = normalizePolicy(policy)
+	if policy.PollInterval <= 0 || policy.DrainBudget <= 0 || policy.Lease <= 0 || policy.PublishTimeout <= 0 {
+		panic("outbox policy is required")
+	}
 	ticker := time.NewTicker(policy.PollInterval)
 	defer ticker.Stop()
 	for {
@@ -77,7 +79,6 @@ func drainPending(ctx context.Context, store store, publisher publisher, recorde
 
 func publishPending(ctx context.Context, store store, publisher publisher, recorder Recorder, now time.Time, policy Policy) bool {
 	now = now.UTC()
-	policy = normalizePolicy(policy)
 	events, err := store.ClaimOutbox(ctx, now, policy.Lease)
 	if err != nil {
 		recorder.OutboxClaimFailed()
@@ -113,22 +114,6 @@ func publishPending(ctx context.Context, store store, publisher publisher, recor
 		}
 	}
 	return true
-}
-
-func normalizePolicy(policy Policy) Policy {
-	if policy.PollInterval <= 0 {
-		policy.PollInterval = time.Second
-	}
-	if policy.DrainBudget <= 0 {
-		policy.DrainBudget = 250 * time.Millisecond
-	}
-	if policy.Lease <= 0 {
-		policy.Lease = 30 * time.Second
-	}
-	if policy.PublishTimeout <= 0 {
-		policy.PublishTimeout = 5 * time.Second
-	}
-	return policy
 }
 
 func publicationRoute(eventType string) (exchange, routingKey string, mandatory bool, err error) {

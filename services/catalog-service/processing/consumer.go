@@ -95,7 +95,14 @@ func RunQueue(ctx context.Context, uri, queue string, service handler, recorder 
 	if uri == "" || queue == "" || service == nil || recorder == nil {
 		panic("catalog processing consumer dependencies are required")
 	}
-	policy = normalizePolicy(policy)
+	if policy.ReconnectInitialBackoff <= 0 || policy.ReconnectMaxBackoff <= 0 || policy.DialTimeout <= 0 ||
+		policy.HeartbeatTimeout <= 0 || policy.HandleTimeout <= 0 || policy.RetryLimit <= 0 ||
+		policy.RetryDelayStep <= 0 || policy.RetryPublishTimeout <= 0 {
+		panic("catalog processing policy is required")
+	}
+	if policy.ReconnectInitialBackoff > policy.ReconnectMaxBackoff {
+		panic("catalog processing backoff policy is invalid")
+	}
 	backoff := policy.ReconnectInitialBackoff
 	for ctx.Err() == nil {
 		err := consumeConnection(ctx, uri, queue, service, recorder, policy)
@@ -167,7 +174,6 @@ func consumeConnection(ctx context.Context, uri, queue string, service handler, 
 }
 
 func handleDelivery(ctx context.Context, queue string, service handler, recorder Recorder, retry retryPublisher, delivery amqp091.Delivery, policy Policy) {
-	policy = normalizePolicy(policy)
 	if delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > 64<<10 {
 		recorder.ProcessingEventRejected()
 		_ = delivery.Nack(false, false)
@@ -211,37 +217,6 @@ func handleDelivery(ctx context.Context, queue string, service handler, recorder
 			_ = delivery.Ack(false)
 		}
 	}
-}
-
-func normalizePolicy(policy Policy) Policy {
-	if policy.ReconnectInitialBackoff <= 0 {
-		policy.ReconnectInitialBackoff = time.Second
-	}
-	if policy.ReconnectMaxBackoff <= 0 {
-		policy.ReconnectMaxBackoff = 30 * time.Second
-	}
-	if policy.DialTimeout <= 0 {
-		policy.DialTimeout = 5 * time.Second
-	}
-	if policy.HeartbeatTimeout <= 0 {
-		policy.HeartbeatTimeout = 10 * time.Second
-	}
-	if policy.HandleTimeout <= 0 {
-		policy.HandleTimeout = 10 * time.Second
-	}
-	if policy.RetryLimit <= 0 {
-		policy.RetryLimit = 5
-	}
-	if policy.RetryDelayStep <= 0 {
-		policy.RetryDelayStep = 250 * time.Millisecond
-	}
-	if policy.RetryPublishTimeout <= 0 {
-		policy.RetryPublishTimeout = 5 * time.Second
-	}
-	if policy.ReconnectInitialBackoff > policy.ReconnectMaxBackoff {
-		policy.ReconnectInitialBackoff = policy.ReconnectMaxBackoff
-	}
-	return policy
 }
 
 func deliveryAttempt(headers amqp091.Table) int64 {

@@ -117,6 +117,9 @@ func TestLoadDefaultsSummaryProviderRateLimit(t *testing.T) {
 	if configuration.SearchTimeout != 2*time.Minute {
 		t.Fatalf("SearchTimeout = %s, want 2m", configuration.SearchTimeout)
 	}
+	if configuration.FinalizationLease != 15*time.Minute {
+		t.Fatalf("FinalizationLease = %s, want 15m", configuration.FinalizationLease)
+	}
 	if configuration.DependencyTimeout != 2*time.Minute {
 		t.Fatalf("DependencyTimeout = %s, want 2m", configuration.DependencyTimeout)
 	}
@@ -536,6 +539,7 @@ func TestLoadWorkerOverridesRuntimePolicy(t *testing.T) {
 	t.Setenv("RETRIEVAL_WORKER_DISPATCH_INTERVAL", "750ms")
 	t.Setenv("RETRIEVAL_WORKER_CLEANUP_INTERVAL", "16m")
 	t.Setenv("RETRIEVAL_WORKER_CLEANUP_TIMEOUT", "31s")
+	t.Setenv("RETRIEVAL_FINALIZATION_LEASE", "18m")
 	t.Setenv("RETRIEVAL_WORKER_STALE_BATCH_AGE", "17m")
 	t.Setenv("RETRIEVAL_WORKER_FAILURE_RECORD_TIMEOUT", "11s")
 	t.Setenv("RETRIEVAL_WORKER_PUBLISH_TIMEOUT", "12s")
@@ -552,7 +556,7 @@ func TestLoadWorkerOverridesRuntimePolicy(t *testing.T) {
 	if configuration.DBPingTimeout != 7*time.Second || configuration.DependencyTimeout != 80*time.Second || configuration.CollectionEnsureTimeout != 11*time.Second ||
 		configuration.ReadinessInitialDelay != 2*time.Second || configuration.ReadinessMaxDelay != 9*time.Second || configuration.ReadinessMaxAttempts != 12 ||
 		configuration.ReadinessProbeTimeout != 3*time.Second || configuration.ReconnectInitialBackoff != 2*time.Second || configuration.ReconnectMaxBackoff != 35*time.Second ||
-		configuration.DispatchInterval != 750*time.Millisecond || configuration.CleanupInterval != 16*time.Minute || configuration.CleanupTimeout != 31*time.Second ||
+		configuration.DispatchInterval != 750*time.Millisecond || configuration.FinalizationLease != 18*time.Minute || configuration.CleanupInterval != 16*time.Minute || configuration.CleanupTimeout != 31*time.Second ||
 		configuration.StaleBatchAge != 17*time.Minute || configuration.FailureRecordTimeout != 11*time.Second || configuration.PublishTimeout != 12*time.Second ||
 		configuration.RabbitDialTimeout != 13*time.Second || configuration.RabbitHeartbeat != 14*time.Second ||
 		configuration.ReadinessReadHeaderTimeout != 4*time.Second || configuration.ReadinessIdleTimeout != 35*time.Second || configuration.ReadinessShutdownTimeout != 5*time.Second {
@@ -601,6 +605,7 @@ func TestLoadLambdaRuntimePolicyDefaultsAndOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	if configuration.DependencyTimeout != 90*time.Second || configuration.CollectionEnsureTimeout != 10*time.Second ||
+		configuration.FinalizationLease != 15*time.Minute || configuration.StaleBatchAge != 15*time.Minute ||
 		configuration.FailureRecordTimeout != 10*time.Second || configuration.RabbitDialTimeout != 5*time.Second ||
 		configuration.RabbitHeartbeat != 10*time.Second || configuration.EndpointResolveTimeout != 3*time.Second {
 		t.Fatalf("unexpected lambda policy defaults: %#v", configuration)
@@ -608,6 +613,8 @@ func TestLoadLambdaRuntimePolicyDefaultsAndOverrides(t *testing.T) {
 
 	t.Setenv("RETRIEVAL_LAMBDA_DEPENDENCY_TIMEOUT", "80s")
 	t.Setenv("RETRIEVAL_LAMBDA_COLLECTION_TIMEOUT", "11s")
+	t.Setenv("RETRIEVAL_FINALIZATION_LEASE", "19m")
+	t.Setenv("RETRIEVAL_LAMBDA_STALE_BATCH_AGE", "21m")
 	t.Setenv("RETRIEVAL_LAMBDA_FAILURE_RECORD_TIMEOUT", "12s")
 	t.Setenv("RETRIEVAL_LAMBDA_RABBITMQ_DIAL_TIMEOUT", "6s")
 	t.Setenv("RETRIEVAL_LAMBDA_RABBITMQ_HEARTBEAT", "13s")
@@ -618,6 +625,7 @@ func TestLoadLambdaRuntimePolicyDefaultsAndOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	if configuration.DependencyTimeout != 80*time.Second || configuration.CollectionEnsureTimeout != 11*time.Second ||
+		configuration.FinalizationLease != 19*time.Minute || configuration.StaleBatchAge != 21*time.Minute ||
 		configuration.FailureRecordTimeout != 12*time.Second || configuration.RabbitDialTimeout != 6*time.Second ||
 		configuration.RabbitHeartbeat != 13*time.Second || configuration.EndpointResolveTimeout != 4*time.Second {
 		t.Fatalf("unexpected lambda policy overrides: %#v", configuration)

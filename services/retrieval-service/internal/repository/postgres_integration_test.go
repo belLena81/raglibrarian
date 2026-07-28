@@ -33,7 +33,7 @@ func TestReplayRecoveryTerminalFailureAndVisibilityUseDurableState(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID, jobID, batchID := "book-"+suffix, "job-"+suffix, "batch-"+suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -132,7 +132,7 @@ func TestApplyReindexCreatesNewLifecycleGenerationWithoutHidingPriorIndex(t *tes
 	}
 	t.Cleanup(pool.Close)
 
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID := "book-reindex-" + suffix
 	oldJobID := "job-old-" + suffix
@@ -287,7 +287,7 @@ func TestBeginBatchRollsBackEarlierWritesWhenOutboxInsertFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID, jobID, batchID := "atomic-book-"+suffix, "atomic-job-"+suffix, "atomic-batch-"+suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -345,7 +345,7 @@ func TestBeginBatchRejectsTamperedManifestBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID, jobID, batchID := "book-"+suffix, "job-"+suffix, "batch-"+suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -408,7 +408,7 @@ func TestFailManifestEmitsIncompatibleProfileTerminalEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID := "book-" + suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -476,7 +476,7 @@ func TestFenceDeletionCreatesDurableTombstoneWhenMetadataProjectionIsMissing(t *
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID := "book-" + suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -619,7 +619,7 @@ func TestFailManifestIntegrityDoesNotPersistCorruptManifestPayload(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID := "book-" + suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -678,7 +678,7 @@ func TestFailManifestDefersFailedJobUntilMetadataExists(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID := "book-" + suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -731,7 +731,7 @@ func TestProjectMetadataMaterializesDeferredFailedManifestOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID := "book-" + suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -803,7 +803,7 @@ func TestProjectMetadataAndFailManifestConcurrentlyMaterializeTerminalFailure(t 
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID := "book-" + suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -935,7 +935,7 @@ func TestFailManifestReplayPreservesStoredValidManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID := "book-" + suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -1033,7 +1033,7 @@ func TestFailBatchReturnsFalseAfterJobAlreadyIndexed(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID, jobID, batchID := "book-"+suffix, "job-"+suffix, "batch-"+suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -1099,7 +1099,7 @@ func TestCompleteBatchRejectsDuplicateChunkID(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID, jobID, batchID := "book-"+suffix, "job-"+suffix, "batch-"+suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -1162,7 +1162,7 @@ func TestCompleteBatchPersistsNilTagsAsEmptyArray(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID, jobID, batchID := "book-"+suffix, "job-"+suffix, "batch-"+suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -1240,7 +1240,7 @@ func TestCompleteBatchRejectsDuplicateChunkIDAcrossBatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID, jobID := "book-"+suffix, "job-"+suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -1334,7 +1334,7 @@ func TestCompleteBatchSerializesFinalBatchCompletion(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID, jobID := "book-"+suffix, "job-"+suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -1472,7 +1472,7 @@ func TestLifecycleFinalizeReindexMarksPriorSQLGenerationForCleanup(t *testing.T)
 	}
 	t.Cleanup(pool.Close)
 
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID := "book-reindex-" + suffix
 	oldJobID := "job-old-" + suffix
@@ -1597,7 +1597,7 @@ func TestFailBatchReindexRestoresPriorIndexedGenerationVisibility(t *testing.T) 
 	}
 	t.Cleanup(pool.Close)
 
-	repository := NewPostgres(pool)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
 	suffix := randomIntegrationID(t)
 	bookID := "book-reindex-fail-" + suffix
 	oldJobID := "job-old-" + suffix
@@ -1829,10 +1829,10 @@ func exerciseCompleteDeletionRole(t *testing.T, ctx context.Context, runtimePool
 		CorrelationID:    "correlation-" + suffix,
 		LifecycleVersion: 2,
 	}
-	if err = NewPostgres(rolePool).CompleteDeletion(ctx, cleanup, now.Add(time.Second)); err != nil {
+	if err = NewPostgres(rolePool, Policy{FinalizationLease: 15 * time.Minute}).CompleteDeletion(ctx, cleanup, now.Add(time.Second)); err != nil {
 		t.Fatalf("%s-role CompleteDeletion() error = %v", roleName, err)
 	}
-	if err = NewPostgres(rolePool).CompleteDeletion(ctx, cleanup, now.Add(2*time.Second)); err != nil {
+	if err = NewPostgres(rolePool, Policy{FinalizationLease: 15 * time.Minute}).CompleteDeletion(ctx, cleanup, now.Add(2*time.Second)); err != nil {
 		t.Fatalf("%s-role replayed CompleteDeletion() error = %v", roleName, err)
 	}
 

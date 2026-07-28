@@ -20,8 +20,9 @@ func TestPublishPendingRetriesBrokerFailureWithoutChangingEvent(t *testing.T) {
 	recorder := &fakeRecorder{}
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 
-	publishPending(context.Background(), store, publisher, recorder, now, Policy{})
-	publishPending(context.Background(), store, publisher, recorder, now.Add(time.Second), Policy{})
+	policy := Policy{PollInterval: time.Second, DrainBudget: 250 * time.Millisecond, Lease: 30 * time.Second, PublishTimeout: 5 * time.Second}
+	publishPending(context.Background(), store, publisher, recorder, now, policy)
+	publishPending(context.Background(), store, publisher, recorder, now.Add(time.Second), policy)
 
 	assertStablePublications(t, publisher.publications, event)
 	if len(store.retries) != 1 || store.retries[0] != event.ID {
@@ -45,8 +46,9 @@ func TestPublishPendingReplaysStableEventAfterMarkFailure(t *testing.T) {
 	recorder := &fakeRecorder{}
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 
-	publishPending(context.Background(), store, publisher, recorder, now, Policy{})
-	publishPending(context.Background(), store, publisher, recorder, now.Add(time.Second), Policy{})
+	policy := Policy{PollInterval: time.Second, DrainBudget: 250 * time.Millisecond, Lease: 30 * time.Second, PublishTimeout: 5 * time.Second}
+	publishPending(context.Background(), store, publisher, recorder, now, policy)
+	publishPending(context.Background(), store, publisher, recorder, now.Add(time.Second), policy)
 
 	assertStablePublications(t, publisher.publications, event)
 	if len(store.marked) != 2 || store.marked[0] != event.ID || store.marked[1] != event.ID {
@@ -65,7 +67,7 @@ func TestDrainPendingClaimsUntilStoreIsEmpty(t *testing.T) {
 	store := &fakeStore{claims: [][]repository.PendingOutboxEvent{events, nil}}
 	publisher := &fakePublisher{}
 
-	drainPending(context.Background(), store, publisher, &fakeRecorder{}, time.Now(), Policy{DrainBudget: time.Second})
+	drainPending(context.Background(), store, publisher, &fakeRecorder{}, time.Now(), Policy{PollInterval: time.Second, DrainBudget: time.Second, Lease: 30 * time.Second, PublishTimeout: 5 * time.Second})
 
 	if store.claimIndex != 2 {
 		t.Fatalf("claims = %d, want 2", store.claimIndex)
