@@ -19,15 +19,10 @@ import (
 	"strings"
 )
 
-const (
-	previewPageLimit      = 3
-	epubPreviewEntryLimit = 2048
-)
-
 var previewTempDir = os.MkdirTemp
 var previewExecCommand = runCommand
 
-func defaultPreviewBook(ctx context.Context, book Book, objects OriginalObjectStore) (string, error) {
+func defaultPreviewBook(ctx context.Context, book Book, objects OriginalObjectStore, maximumPreviewBytes, maximumPreviewPages, maximumPreviewEPUBEntries int) (string, error) {
 	if objects == nil || book.ObjectReference == "" {
 		return "", errors.New("preview unavailable")
 	}
@@ -68,22 +63,25 @@ func defaultPreviewBook(ctx context.Context, book Book, objects OriginalObjectSt
 
 	switch book.MediaType {
 	case "application/pdf":
-		return previewPDFFragment(ctx, tmp.Name(), outputDir)
+		return previewPDFFragment(ctx, tmp.Name(), outputDir, maximumPreviewPages)
 	case "application/epub+zip":
-		return previewEPUBFragment(tmp.Name())
+		return previewEPUBFragment(tmp.Name(), maximumPreviewBytes, maximumPreviewPages, maximumPreviewEPUBEntries)
 	default:
 		return "", fmt.Errorf("unsupported media type %q", book.MediaType)
 	}
 }
 
-func previewPDFFragment(ctx context.Context, sourcePath, outputDir string) (string, error) {
+func previewPDFFragment(ctx context.Context, sourcePath, outputDir string, maximumPreviewPages int) (string, error) {
+	if maximumPreviewPages <= 0 {
+		maximumPreviewPages = defaultMaxPreviewPages
+	}
 	outputPattern := filepath.Join(outputDir, "catalog-preview-page-%03d.pdf")
-	if err := previewSandboxCommand(ctx, "/usr/bin/pdfseparate", "-f", "1", "-l", strconv.Itoa(previewPageLimit), sourcePath, outputPattern); err != nil {
+	if err := previewSandboxCommand(ctx, "/usr/bin/pdfseparate", "-f", "1", "-l", strconv.Itoa(maximumPreviewPages), sourcePath, outputPattern); err != nil {
 		return "", err
 	}
 
-	pagePaths := make([]string, 0, previewPageLimit)
-	for page := 1; page <= previewPageLimit; page++ {
+	pagePaths := make([]string, 0, maximumPreviewPages)
+	for page := 1; page <= maximumPreviewPages; page++ {
 		pagePath := fmt.Sprintf(outputPattern, page)
 		if _, err := os.Stat(pagePath); err == nil {
 			pagePaths = append(pagePaths, pagePath)
@@ -107,8 +105,8 @@ func previewPDFFragment(ctx context.Context, sourcePath, outputDir string) (stri
 	return "data:application/pdf;base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
-func previewEPUBFragment(sourcePath string) (string, error) {
-	pages, err := extractEPUBPreviewPages(sourcePath)
+func previewEPUBFragment(sourcePath string, maximumPreviewBytes, maximumPreviewPages, maximumPreviewEPUBEntries int) (string, error) {
+	pages, err := extractEPUBPreviewPages(sourcePath, maximumPreviewBytes, maximumPreviewPages, maximumPreviewEPUBEntries)
 	if err != nil {
 		return "", err
 	}
@@ -160,7 +158,13 @@ func epubPreviewHeadInsertOffset(content string) int {
 	}
 }
 
-func extractEPUBPreviewPages(sourcePath string) ([][]byte, error) {
+func extractEPUBPreviewPages(sourcePath string, maximumPreviewBytes, maximumPreviewPages, maximumPreviewEPUBEntries int) ([][]byte, error) {
+	if maximumPreviewPages <= 0 {
+		maximumPreviewPages = defaultMaxPreviewPages
+	}
+	if maximumPreviewEPUBEntries <= 0 {
+		maximumPreviewEPUBEntries = defaultMaxEPUBEntries
+	}
 	archive, err := zip.OpenReader(sourcePath)
 	if err != nil {
 		return nil, err
@@ -169,7 +173,7 @@ func extractEPUBPreviewPages(sourcePath string) ([][]byte, error) {
 	if len(archive.File) < 3 {
 		return nil, errors.New("invalid EPUB archive")
 	}
-	if len(archive.File) > epubPreviewEntryLimit {
+	if len(archive.File) > maximumPreviewEPUBEntries {
 		return nil, errors.New("invalid EPUB archive")
 	}
 
@@ -184,14 +188,14 @@ func extractEPUBPreviewPages(sourcePath string) ([][]byte, error) {
 		files[file.Name] = file
 	}
 
-	mimetype, err := readEPUBEntry(files["mimetype"])
+	mimetype, err := readEPUBEntry(files["mimetype"], maximumPreviewBytes)
 	if err != nil {
 		return nil, err
 	}
 	if string(mimetype) != "application/epub+zip" {
 		return nil, errors.New("invalid EPUB archive")
 	}
-	containerBytes, err := readEPUBEntry(files["META-INF/container.xml"])
+	containerBytes, err := readEPUBEntry(files["META-INF/container.xml"], maximumPreviewBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +207,7 @@ func extractEPUBPreviewPages(sourcePath string) ([][]byte, error) {
 	if rootfile.Media != "application/oebps-package+xml" || !validEPUBArchivePath(rootfile.FullPath) {
 		return nil, errors.New("invalid EPUB package reference")
 	}
-	packageBytes, err := readEPUBEntry(files[rootfile.FullPath])
+	packageBytes, err := readEPUBEntry(files[rootfile.FullPath], maximumPreviewBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +229,7 @@ func extractEPUBPreviewPages(sourcePath string) ([][]byte, error) {
 		manifest[item.ID] = reference
 	}
 
-	pages := make([][]byte, 0, previewPageLimit)
+	pages := make([][]byte, 0, maximumPreviewPages)
 	seen := make(map[string]struct{}, len(publication.Spine))
 	for _, item := range publication.Spine {
 		reference, found := manifest[item.IDRef]
@@ -236,12 +240,12 @@ func extractEPUBPreviewPages(sourcePath string) ([][]byte, error) {
 			return nil, errors.New("duplicate EPUB spine reference")
 		}
 		seen[reference] = struct{}{}
-		pageBytes, pageErr := readEPUBEntry(files[reference])
+		pageBytes, pageErr := readEPUBEntry(files[reference], maximumPreviewBytes)
 		if pageErr != nil {
 			return nil, pageErr
 		}
 		pages = append(pages, pageBytes)
-		if len(pages) == previewPageLimit {
+		if len(pages) == maximumPreviewPages {
 			break
 		}
 	}
@@ -288,7 +292,7 @@ type epubPackage struct {
 	} `xml:"spine>itemref"`
 }
 
-func readEPUBEntry(file *zip.File) ([]byte, error) {
+func readEPUBEntry(file *zip.File, maximumPreviewBytes int) ([]byte, error) {
 	if file == nil {
 		return nil, errors.New("invalid EPUB archive")
 	}
@@ -297,7 +301,10 @@ func readEPUBEntry(file *zip.File) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = reader.Close() }()
-	data, err := io.ReadAll(io.LimitReader(reader, 1<<20))
+	if maximumPreviewBytes <= 0 {
+		maximumPreviewBytes = defaultMaxPreviewBytes
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, int64(maximumPreviewBytes)))
 	if err != nil {
 		return nil, err
 	}

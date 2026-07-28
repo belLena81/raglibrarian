@@ -96,6 +96,8 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	service := catalog.NewServiceWithOptions(bookRepository, objects, catalog.ServiceOptions{
 		MaxBytes:                 cfg.MaxUploadBytes,
 		MaxPreviewBytes:          cfg.MaxPreviewBytes,
+		MaxPreviewPages:          cfg.MaxPreviewPages,
+		MaxPreviewEPUBEntries:    cfg.MaxPreviewEPUBEntries,
 		UploadConcurrency:        cfg.UploadConcurrency,
 		PreviewConcurrency:       cfg.PreviewConcurrency,
 		PreviewTimeout:           cfg.PreviewTimeout,

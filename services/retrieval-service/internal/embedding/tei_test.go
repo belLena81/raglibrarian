@@ -30,7 +30,7 @@ func TestTEIEmbedsQueryWithProviderTruncation(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if body.Inputs != bgeQueryInstruction+"replication" || !body.Truncate {
+		if body.Inputs != defaultQueryInstruction+"replication" || !body.Truncate {
 			t.Fatalf("unexpected body: %#v", body)
 		}
 		vector := make([]float32, domain.EmbeddingDimensions)

@@ -24,7 +24,10 @@ func NewLLMProvider(configuration config.Config) (application.LLMProvider, error
 	if err != nil {
 		return nil, errors.New("configure provider throttle")
 	}
-	providerAdapter, err := provider.NewOpenAI(configuration.LLMBaseURL, configuration.LLMModel, apiKey, httpClient, limit, configuration.LogProviderErrorBody)
+	providerAdapter, err := provider.NewOpenAIWithPolicy(configuration.LLMBaseURL, configuration.LLMModel, apiKey, httpClient, limit, configuration.LogProviderErrorBody, provider.Policy{
+		MaximumResponseBytes:  configuration.LLMMaxResponseBytes,
+		MaximumCandidateBytes: configuration.LLMMaxCandidateBytes,
+	})
 	if err != nil {
 		return nil, errors.New("configure openai compatible provider")
 	}

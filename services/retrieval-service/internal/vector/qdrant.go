@@ -19,11 +19,16 @@ import (
 )
 
 const (
-	maximumQdrantResponseBytes        = 4 << 20
-	maximumEvidenceBatchResponseBytes = 8 << 20
-	collectionProfileDigestKey        = "raglibrarian_index_profile_digest"
-	collectionSchemaDigestKey         = "raglibrarian_collection_schema_digest"
+	defaultMaximumQdrantResponseBytes        = 4 << 20
+	defaultMaximumEvidenceBatchResponseBytes = 8 << 20
+	collectionProfileDigestKey               = "raglibrarian_index_profile_digest"
+	collectionSchemaDigestKey                = "raglibrarian_collection_schema_digest"
 )
+
+type Policy struct {
+	MaximumResponseBytes      int
+	MaximumBatchResponseBytes int
+}
 
 var (
 	ErrVectorDependencyUnavailable  = errors.New("vector dependency unavailable")
@@ -37,18 +42,28 @@ type Qdrant struct {
 	apiKey             string
 	client             *http.Client
 	minimumSearchScore float64
+	policy             Policy
 }
 
 func NewQdrant(endpoint, collection string, client *http.Client, minimumSearchScore float64) (*Qdrant, error) {
+	return NewQdrantWithPolicy(endpoint, collection, client, minimumSearchScore, defaultPolicy())
+}
+
+func NewQdrantWithPolicy(endpoint, collection string, client *http.Client, minimumSearchScore float64, policy Policy) (*Qdrant, error) {
 	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || collection == "" || strings.ContainsAny(collection, "/?#") || client == nil {
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || collection == "" || strings.ContainsAny(collection, "/?#") || client == nil ||
+		policy.MaximumResponseBytes < 1 || policy.MaximumBatchResponseBytes < policy.MaximumResponseBytes {
 		return nil, errors.New("invalid Qdrant configuration")
 	}
-	return &Qdrant{endpoint: strings.TrimRight(endpoint, "/"), collection: collection, client: client, minimumSearchScore: minimumSearchScore}, nil
+	return &Qdrant{endpoint: strings.TrimRight(endpoint, "/"), collection: collection, client: client, minimumSearchScore: minimumSearchScore, policy: policy}, nil
 }
 
 func NewAuthenticatedQdrant(endpoint, collection, apiKey string, client *http.Client, minimumSearchScore float64) (*Qdrant, error) {
-	qdrant, err := NewQdrant(endpoint, collection, client, minimumSearchScore)
+	return NewAuthenticatedQdrantWithPolicy(endpoint, collection, apiKey, client, minimumSearchScore, defaultPolicy())
+}
+
+func NewAuthenticatedQdrantWithPolicy(endpoint, collection, apiKey string, client *http.Client, minimumSearchScore float64, policy Policy) (*Qdrant, error) {
+	qdrant, err := NewQdrantWithPolicy(endpoint, collection, client, minimumSearchScore, policy)
 	if err != nil || strings.TrimSpace(apiKey) == "" || strings.ContainsAny(apiKey, "\r\n") {
 		return nil, errors.New("invalid Qdrant configuration")
 	}
@@ -152,11 +167,11 @@ func (q *Qdrant) SearchDocuments(ctx context.Context, query domain.SearchQuery, 
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumQdrantResponseBytes))
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes)))
 		return application.DocumentPage{}, errors.New("vector dependency rejected query")
 	}
 	var decoded queryResponse
-	if err = json.NewDecoder(io.LimitReader(response.Body, maximumQdrantResponseBytes)).Decode(&decoded); err != nil {
+	if err = json.NewDecoder(io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes))).Decode(&decoded); err != nil {
 		return application.DocumentPage{}, errors.New("invalid vector response")
 	}
 	results := make([]application.DocumentResult, 0, len(decoded.Result.Points))
@@ -205,11 +220,11 @@ func (q *Qdrant) searchEvidence(ctx context.Context, query domain.SearchQuery, v
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumQdrantResponseBytes))
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes)))
 		return nil, errors.New("vector dependency rejected query")
 	}
 	var decoded queryResponse
-	if err = json.NewDecoder(io.LimitReader(response.Body, maximumQdrantResponseBytes)).Decode(&decoded); err != nil {
+	if err = json.NewDecoder(io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes))).Decode(&decoded); err != nil {
 		return nil, errors.New("invalid vector response")
 	}
 	results := make([]application.Evidence, 0, len(decoded.Result.Points))
@@ -255,11 +270,11 @@ func (q *Qdrant) searchEvidenceBatch(ctx context.Context, query domain.SearchQue
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumQdrantResponseBytes))
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes)))
 		return nil, errors.New("vector dependency rejected query")
 	}
 	var decoded queryBatchResponse
-	if err = json.NewDecoder(io.LimitReader(response.Body, maximumEvidenceBatchResponseBytes)).Decode(&decoded); err != nil || len(decoded.Result) != len(jobIDs) {
+	if err = json.NewDecoder(io.LimitReader(response.Body, int64(q.policy.MaximumBatchResponseBytes))).Decode(&decoded); err != nil || len(decoded.Result) != len(jobIDs) {
 		return nil, errors.New("invalid vector response")
 	}
 	for index, result := range decoded.Result {
@@ -314,7 +329,7 @@ func (q *Qdrant) CheckReady(ctx context.Context) error {
 			} `json:"config"`
 		} `json:"result"`
 	}
-	if err = json.NewDecoder(io.LimitReader(response.Body, maximumQdrantResponseBytes)).Decode(&description); err != nil {
+	if err = json.NewDecoder(io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes))).Decode(&description); err != nil {
 		return fmt.Errorf("%w", ErrIncompatibleVectorCollection)
 	}
 	profileDigest, hasLegacyProfile := description.Result.Config.Metadata[collectionProfileDigestKey].(string)
@@ -359,7 +374,7 @@ func (q *Qdrant) EnsureCollection(ctx context.Context) error {
 		return errors.New("vector dependency unavailable")
 	}
 	defer func() { _ = response.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumQdrantResponseBytes))
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes)))
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return errors.New("create vector collection")
 	}
@@ -390,7 +405,7 @@ func (q *Qdrant) ensureCollectionMetadata(ctx context.Context) error {
 		return errors.New("vector dependency unavailable")
 	}
 	defer func() { _ = response.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumQdrantResponseBytes))
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes)))
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return errors.New("update collection metadata")
 	}
@@ -424,7 +439,7 @@ func (q *Qdrant) ensurePayloadIndexes(ctx context.Context) error {
 		if err != nil {
 			return errors.New("vector dependency unavailable")
 		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumQdrantResponseBytes))
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes)))
 		_ = response.Body.Close()
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 			return errors.New("create vector field index")
@@ -518,7 +533,7 @@ func (q *Qdrant) upsertPoints(ctx context.Context, points []upsertPoint) error {
 		return errors.New("vector dependency unavailable")
 	}
 	defer func() { _ = response.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumQdrantResponseBytes))
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes)))
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return errors.New("vector dependency rejected upsert")
 	}
@@ -567,7 +582,7 @@ func (q *Qdrant) deleteByField(ctx context.Context, field, value string) error {
 		return errors.New("vector dependency unavailable")
 	}
 	defer func() { _ = response.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumQdrantResponseBytes))
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes)))
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return errors.New("vector dependency rejected deletion")
 	}
@@ -595,7 +610,7 @@ func (q *Qdrant) setJobVisibility(ctx context.Context, jobID, indexed string) er
 		return errors.New("vector dependency unavailable")
 	}
 	defer func() { _ = response.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumQdrantResponseBytes))
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes)))
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return errors.New("vector dependency rejected visibility")
 	}
@@ -624,4 +639,11 @@ func normalizedValues(values []string) []string {
 		result[index] = strings.ToLower(strings.Join(strings.Fields(value), " "))
 	}
 	return result
+}
+
+func defaultPolicy() Policy {
+	return Policy{
+		MaximumResponseBytes:      defaultMaximumQdrantResponseBytes,
+		MaximumBatchResponseBytes: defaultMaximumEvidenceBatchResponseBytes,
+	}
 }

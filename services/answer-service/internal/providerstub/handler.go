@@ -39,14 +39,24 @@ type Handler struct {
 	apiKey   string
 	scenario Scenario
 	delay    time.Duration
+	policy   Policy
 	calls    atomic.Uint64
 }
 
-func New(apiKey string, scenario Scenario, delay time.Duration) (*Handler, error) {
-	if apiKey == "" || !validScenario(scenario) || delay < 0 || delay > 30*time.Second {
+type Policy struct {
+	MaximumDelay       time.Duration
+	TimeoutDelay       time.Duration
+	MaximumRequestBody int64
+}
+
+func New(apiKey string, scenario Scenario, delay time.Duration, policy Policy) (*Handler, error) {
+	if policy.MaximumDelay <= 0 || policy.TimeoutDelay <= 0 || policy.MaximumRequestBody <= 0 {
 		return nil, errInvalidConfiguration{}
 	}
-	return &Handler{apiKey: apiKey, scenario: scenario, delay: delay}, nil
+	if apiKey == "" || !validScenario(scenario) || delay < 0 || delay > policy.MaximumDelay {
+		return nil, errInvalidConfiguration{}
+	}
+	return &Handler{apiKey: apiKey, scenario: scenario, delay: delay, policy: policy}, nil
 }
 
 func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -62,9 +72,9 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		response.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(request.Body, 128<<10+1))
+	body, err := io.ReadAll(io.LimitReader(request.Body, h.policy.MaximumRequestBody+1))
 	evidenceID, parseErr := firstEvidenceID(body)
-	if err != nil || len(body) > 128<<10 || parseErr != nil {
+	if err != nil || int64(len(body)) > h.policy.MaximumRequestBody || parseErr != nil {
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -72,7 +82,7 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	if h.delay > 0 || h.scenario == ScenarioTimeout {
 		delay := h.delay
 		if delay == 0 {
-			delay = 10 * time.Second
+			delay = h.policy.TimeoutDelay
 		}
 		timer := time.NewTimer(delay)
 		defer timer.Stop()

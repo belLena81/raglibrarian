@@ -21,9 +21,14 @@ import (
 )
 
 const (
-	maximumProviderResponseBytes = 128 << 10
-	maximumCandidateBytes        = 32 << 10
+	defaultMaximumProviderResponseBytes = 128 << 10
+	defaultMaximumCandidateBytes        = 32 << 10
 )
+
+type Policy struct {
+	MaximumResponseBytes  int
+	MaximumCandidateBytes int
+}
 
 type OpenAI struct {
 	endpoint     *url.URL
@@ -32,14 +37,20 @@ type OpenAI struct {
 	client       *http.Client
 	limit        *throttle.Limiter
 	logErrorBody bool
+	policy       Policy
 }
 
 func NewOpenAI(baseURL, model, apiKey string, client *http.Client, limit *throttle.Limiter, logErrorBody bool) (*OpenAI, error) {
+	return NewOpenAIWithPolicy(baseURL, model, apiKey, client, limit, logErrorBody, defaultPolicy())
+}
+
+func NewOpenAIWithPolicy(baseURL, model, apiKey string, client *http.Client, limit *throttle.Limiter, logErrorBody bool, policy Policy) (*OpenAI, error) {
 	endpoint, err := providerhttp.OpenAIChatCompletionsURL(baseURL)
-	if err != nil || strings.TrimSpace(model) == "" || len(model) > 256 || strings.ContainsAny(model, "\r\n") || strings.TrimSpace(apiKey) == "" || strings.ContainsAny(apiKey, "\r\n") || client == nil {
+	if err != nil || strings.TrimSpace(model) == "" || len(model) > 256 || strings.ContainsAny(model, "\r\n") || strings.TrimSpace(apiKey) == "" || strings.ContainsAny(apiKey, "\r\n") || client == nil ||
+		policy.MaximumResponseBytes < 1 || policy.MaximumCandidateBytes < 1 || policy.MaximumCandidateBytes > policy.MaximumResponseBytes {
 		return nil, errors.New("invalid provider configuration")
 	}
-	return &OpenAI{endpoint: endpoint, model: model, apiKey: apiKey, client: client, limit: limit, logErrorBody: logErrorBody}, nil
+	return &OpenAI{endpoint: endpoint, model: model, apiKey: apiKey, client: client, limit: limit, logErrorBody: logErrorBody, policy: policy}, nil
 }
 
 type chatRequest struct {
@@ -142,7 +153,7 @@ func (p *OpenAI) generate(ctx context.Context, input application.ProviderRequest
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		_, _ = io.ReadAll(io.LimitReader(response.Body, maximumProviderResponseBytes+1))
+		_, _ = io.ReadAll(io.LimitReader(response.Body, int64(p.policy.MaximumResponseBytes)+1))
 		detail := fmt.Sprintf("provider_http_status_%d", response.StatusCode)
 		if p.logErrorBody {
 			if preview := providerhttp.SanitizeDetail(response.Status); preview != "" {
@@ -152,11 +163,11 @@ func (p *OpenAI) generate(ctx context.Context, input application.ProviderRequest
 		retryable := responseFormat != nil && response.StatusCode == http.StatusBadRequest
 		return nil, retryable, &providerError{code: fmt.Sprintf("provider_http_status_%d", response.StatusCode), detail: detail, err: fmt.Errorf("provider returned HTTP status %d", response.StatusCode)}
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maximumProviderResponseBytes+1))
+	body, err := io.ReadAll(io.LimitReader(response.Body, int64(p.policy.MaximumResponseBytes)+1))
 	if err != nil {
 		return nil, false, &providerError{code: "invalid_provider_response", detail: "response_read_failed", err: errors.New("invalid provider response")}
 	}
-	if len(body) > maximumProviderResponseBytes {
+	if len(body) > p.policy.MaximumResponseBytes {
 		return nil, false, &providerError{code: "invalid_provider_response", detail: "response_too_large", err: errors.New("invalid provider response")}
 	}
 	if !utf8.Valid(body) {
@@ -172,7 +183,7 @@ func (p *OpenAI) generate(ctx context.Context, input application.ProviderRequest
 	if len(envelope.Choices) != 1 {
 		return nil, false, &providerError{code: "invalid_provider_response", detail: fmt.Sprintf("unexpected_choices_count_%d", len(envelope.Choices)), err: errors.New("invalid provider response")}
 	}
-	if len(envelope.Choices[0].Message.Content) > maximumCandidateBytes {
+	if len(envelope.Choices[0].Message.Content) > p.policy.MaximumCandidateBytes {
 		return nil, false, &providerError{code: "invalid_provider_response", detail: "candidate_too_large", err: errors.New("invalid provider response")}
 	}
 	if strings.ContainsRune(envelope.Choices[0].Message.Content, utf8.RuneError) {
@@ -192,6 +203,13 @@ func (p *OpenAI) generate(ctx context.Context, input application.ProviderRequest
 		return nil, true, &providerError{code: "invalid_provider_response", detail: "candidate_plain_text_response", err: errors.New("invalid provider response")}
 	}
 	return nil, false, &providerError{code: "invalid_provider_response", detail: "candidate_plain_text_response", err: errors.New("invalid provider response")}
+}
+
+func defaultPolicy() Policy {
+	return Policy{
+		MaximumResponseBytes:  defaultMaximumProviderResponseBytes,
+		MaximumCandidateBytes: defaultMaximumCandidateBytes,
+	}
 }
 
 func (p *OpenAI) wait(ctx context.Context) (time.Duration, error) {

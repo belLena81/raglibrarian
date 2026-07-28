@@ -28,6 +28,9 @@ func NewEmbedder(configuration config.Config, httpClient *http.Client, serviceLo
 	return newEmbedder(configuration.TEIURL, configuration.TEIRequestsPerSecond, embedding.RawResponseLog{
 		Enabled:      configuration.TEILogRawResponse,
 		MaximumBytes: configuration.TEILogRawResponseMaxBytes,
+	}, embedding.Policy{
+		MaximumResponseBytes: configuration.TEIMaxResponseBytes,
+		ProviderBatchSize:    configuration.TEIBatchSize,
 	}, httpClient, serviceLogger)
 }
 
@@ -35,19 +38,22 @@ func NewWorkerEmbedder(configuration config.WorkerConfig, httpClient *http.Clien
 	return newEmbedder(configuration.TEIURL, configuration.TEIRequestsPerSecond, embedding.RawResponseLog{
 		Enabled:      configuration.TEILogRawResponse,
 		MaximumBytes: configuration.TEILogRawResponseMaxBytes,
+	}, embedding.Policy{
+		MaximumResponseBytes: configuration.TEIMaxResponseBytes,
+		ProviderBatchSize:    configuration.TEIBatchSize,
 	}, httpClient, serviceLogger)
 }
 
 func NewDirectEmbedder(endpoint string, requestsPerSecond int, rawResponseLog embedding.RawResponseLog, httpClient *http.Client, serviceLogger *zap.Logger) (*embedding.TEI, error) {
-	return newEmbedder(endpoint, requestsPerSecond, rawResponseLog, httpClient, serviceLogger)
+	return newEmbedder(endpoint, requestsPerSecond, rawResponseLog, embedding.Policy{}, httpClient, serviceLogger)
 }
 
-func newEmbedder(endpoint string, requestsPerSecond int, rawResponseLog embedding.RawResponseLog, httpClient *http.Client, serviceLogger *zap.Logger) (*embedding.TEI, error) {
+func newEmbedder(endpoint string, requestsPerSecond int, rawResponseLog embedding.RawResponseLog, policy embedding.Policy, httpClient *http.Client, serviceLogger *zap.Logger) (*embedding.TEI, error) {
 	limit, err := throttle.New(requestsPerSecond)
 	if err != nil {
 		return nil, errors.New("configure embedding throttle")
 	}
-	embedder, err := embedding.NewTEIWithOptions(endpoint, httpClient, serviceLogger, limit, rawResponseLog)
+	embedder, err := embedding.NewTEIWithOptions(endpoint, httpClient, serviceLogger, limit, rawResponseLog, policy)
 	if err != nil {
 		return nil, errors.New("configure tei embedding provider")
 	}
@@ -59,19 +65,25 @@ func NewVectorStore(configuration config.Config, httpClient *http.Client) (*vect
 	if err != nil {
 		return nil, err
 	}
-	return newVectorStore(configuration.QdrantURL, configuration.QdrantCollection, apiKey, configuration.MinimumSearchScore, httpClient)
+	return newVectorStore(configuration.QdrantURL, configuration.QdrantCollection, apiKey, configuration.MinimumSearchScore, vector.Policy{
+		MaximumResponseBytes:      configuration.QdrantMaxResponseBytes,
+		MaximumBatchResponseBytes: configuration.QdrantBatchResponseBytes,
+	}, httpClient)
 }
 
 func NewWorkerVectorStore(configuration config.WorkerConfig, httpClient *http.Client) (*vector.Qdrant, error) {
-	return newVectorStore(configuration.QdrantURL, configuration.QdrantCollection, configuration.QdrantAPIKey, configuration.MinimumSearchScore, httpClient)
+	return newVectorStore(configuration.QdrantURL, configuration.QdrantCollection, configuration.QdrantAPIKey, configuration.MinimumSearchScore, vector.Policy{
+		MaximumResponseBytes:      configuration.QdrantMaxResponseBytes,
+		MaximumBatchResponseBytes: configuration.QdrantBatchResponseBytes,
+	}, httpClient)
 }
 
 func NewDirectVectorStore(endpoint, collection, apiKey string, minimumSearchScore float64, httpClient *http.Client) (*vector.Qdrant, error) {
-	return newVectorStore(endpoint, collection, apiKey, minimumSearchScore, httpClient)
+	return newVectorStore(endpoint, collection, apiKey, minimumSearchScore, vector.Policy{}, httpClient)
 }
 
-func newVectorStore(endpoint, collection, apiKey string, minimumSearchScore float64, httpClient *http.Client) (*vector.Qdrant, error) {
-	store, err := vector.NewAuthenticatedQdrant(endpoint, collection, apiKey, httpClient, minimumSearchScore)
+func newVectorStore(endpoint, collection, apiKey string, minimumSearchScore float64, policy vector.Policy, httpClient *http.Client) (*vector.Qdrant, error) {
+	store, err := vector.NewAuthenticatedQdrantWithPolicy(endpoint, collection, apiKey, httpClient, minimumSearchScore, policy)
 	if err != nil {
 		return nil, errors.New("configure qdrant vector provider")
 	}
@@ -98,7 +110,14 @@ func NewSummaryProvider(configuration config.Config, serviceLogger *zap.Logger) 
 	if err != nil {
 		return disableSummaryProvider(serviceLogger, "output_mode_invalid"), nil
 	}
-	summaryProvider, err := provider.NewOpenAI(configuration.SummaryLLMBaseURL, configuration.SummaryLLMModel, apiKey, httpClient, serviceLogger, limit, configuration.SummaryLLMMaxOutputTokens, outputMode)
+	summaryProvider, err := provider.NewOpenAIWithOptions(configuration.SummaryLLMBaseURL, configuration.SummaryLLMModel, apiKey, httpClient, serviceLogger, limit, configuration.SummaryLLMMaxOutputTokens, provider.Options{
+		OutputMode: outputMode,
+		Policy: provider.Policy{
+			MaximumResponseBytes: configuration.SummaryLLMMaxResponseBytes,
+			MaximumSummaryBytes:  configuration.SummaryLLMMaxSummaryBytes,
+			MaximumInputRunes:    configuration.SummaryLLMMaxInputRunes,
+		},
+	})
 	if err != nil {
 		return disableSummaryProvider(serviceLogger, "configuration_invalid"), nil
 	}

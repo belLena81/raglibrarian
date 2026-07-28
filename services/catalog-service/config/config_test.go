@@ -121,6 +121,9 @@ func TestLoadAppliesPreviewTimeoutDefault(t *testing.T) {
 	if cfg.MaxPreviewBytes != 1<<20 {
 		t.Fatalf("MaxPreviewBytes = %d, want %d", cfg.MaxPreviewBytes, 1<<20)
 	}
+	if cfg.MaxPreviewPages != 3 || cfg.MaxPreviewEPUBEntries != 2048 {
+		t.Fatalf("unexpected preview limits: %#v", cfg)
+	}
 	if cfg.PersistenceLookupTimeout != 5*time.Second || cfg.ObjectDeleteTimeout != 5*time.Second {
 		t.Fatalf("unexpected catalog service timeouts: %#v", cfg)
 	}
@@ -129,6 +132,8 @@ func TestLoadAppliesPreviewTimeoutDefault(t *testing.T) {
 func TestLoadParsesPreviewTimeout(t *testing.T) {
 	setRequired(t)
 	t.Setenv("CATALOG_MAX_PREVIEW_BYTES", "524288")
+	t.Setenv("CATALOG_MAX_PREVIEW_PAGES", "5")
+	t.Setenv("CATALOG_MAX_PREVIEW_EPUB_ENTRIES", "3000")
 	t.Setenv("CATALOG_PREVIEW_TIMEOUT", "9s")
 	t.Setenv("CATALOG_PERSISTENCE_LOOKUP_TIMEOUT", "6s")
 	t.Setenv("CATALOG_OBJECT_DELETE_TIMEOUT", "7s")
@@ -143,6 +148,9 @@ func TestLoadParsesPreviewTimeout(t *testing.T) {
 	}
 	if cfg.MaxPreviewBytes != 1<<19 {
 		t.Fatalf("MaxPreviewBytes = %d, want %d", cfg.MaxPreviewBytes, 1<<19)
+	}
+	if cfg.MaxPreviewPages != 5 || cfg.MaxPreviewEPUBEntries != 3000 {
+		t.Fatalf("unexpected preview limits: %#v", cfg)
 	}
 	if cfg.PersistenceLookupTimeout != 6*time.Second || cfg.ObjectDeleteTimeout != 7*time.Second {
 		t.Fatalf("unexpected catalog service timeouts: %#v", cfg)

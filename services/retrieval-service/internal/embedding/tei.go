@@ -20,10 +20,18 @@ import (
 	"go.uber.org/zap"
 )
 
-const maximumResponseBytes = 8 << 20
-const providerBatchSize = 8
-const bgeQueryInstruction = "Represent this sentence for searching relevant passages: "
-const teiFailureDetailHTTPStatus = "provider_http_status"
+const (
+	defaultMaximumResponseBytes       = 8 << 20
+	defaultProviderBatchSize          = 8
+	defaultQueryInstruction           = "Represent this sentence for searching relevant passages: "
+	defaultFailureDetailHTTPStatus    = "provider_http_status"
+	defaultMaximumRawResponseLogBytes = 64 << 10
+)
+
+type Policy struct {
+	MaximumResponseBytes int
+	ProviderBatchSize    int
+}
 
 type TEI struct {
 	endpoint       string
@@ -31,6 +39,7 @@ type TEI struct {
 	log            *zap.Logger
 	limit          *throttle.Limiter
 	rawResponseLog RawResponseLog
+	policy         Policy
 }
 
 type RawResponseLog struct {
@@ -42,19 +51,29 @@ func NewTEI(endpoint string, client *http.Client, log *zap.Logger, limit *thrott
 	return NewTEIWithOptions(endpoint, client, log, limit, RawResponseLog{})
 }
 
-func NewTEIWithOptions(endpoint string, client *http.Client, log *zap.Logger, limit *throttle.Limiter, rawResponseLog RawResponseLog) (*TEI, error) {
+func NewTEIWithOptions(endpoint string, client *http.Client, log *zap.Logger, limit *throttle.Limiter, rawResponseLog RawResponseLog, policies ...Policy) (*TEI, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || client == nil {
 		return nil, errors.New("invalid TEI configuration")
 	}
-	if rawResponseLog.MaximumBytes < 0 || rawResponseLog.MaximumBytes > 64<<10 {
+	policy := defaultPolicy()
+	if len(policies) > 1 {
+		return nil, errors.New("invalid TEI configuration")
+	}
+	if len(policies) == 1 {
+		policy = policies[0]
+	}
+	if policy.MaximumResponseBytes < 1 || policy.ProviderBatchSize < 1 {
+		return nil, errors.New("invalid TEI configuration")
+	}
+	if rawResponseLog.MaximumBytes < 0 || rawResponseLog.MaximumBytes > defaultMaximumRawResponseLogBytes || rawResponseLog.MaximumBytes > policy.MaximumResponseBytes {
 		return nil, errors.New("invalid TEI diagnostics configuration")
 	}
-	return &TEI{endpoint: strings.TrimRight(endpoint, "/"), client: client, log: log, limit: limit, rawResponseLog: rawResponseLog}, nil
+	return &TEI{endpoint: strings.TrimRight(endpoint, "/"), client: client, log: log, limit: limit, rawResponseLog: rawResponseLog, policy: policy}, nil
 }
 
 func (t *TEI) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
-	vectors, err := t.embed(ctx, bgeQueryInstruction+text, 1, "embed_query", true)
+	vectors, err := t.embed(ctx, defaultQueryInstruction+text, 1, "embed_query", true)
 	if err != nil {
 		return nil, err
 	}
@@ -66,8 +85,8 @@ func (t *TEI) EmbedDocuments(ctx context.Context, texts []string) ([][]float32, 
 		return nil, errors.New("invalid embedding batch")
 	}
 	result := make([][]float32, 0, len(texts))
-	for start := 0; start < len(texts); start += providerBatchSize {
-		end := start + providerBatchSize
+	for start := 0; start < len(texts); start += t.policy.ProviderBatchSize {
+		end := start + t.policy.ProviderBatchSize
 		if end > len(texts) {
 			end = len(texts)
 		}
@@ -133,13 +152,13 @@ func (t *TEI) embed(ctx context.Context, inputs any, expected int, operation str
 				return t.embed(ctx, inputs, expected, operation, true)
 			}
 		}
-		responseBody, _ := io.ReadAll(io.LimitReader(response.Body, maximumResponseBytes))
-		detail := teiFailureDetailHTTPStatus
+		responseBody, _ := io.ReadAll(io.LimitReader(response.Body, int64(t.policy.MaximumResponseBytes)))
+		detail := defaultFailureDetailHTTPStatus
 		t.logResponseBody(operation, response, responseBody)
 		return nil, t.failure(operation, fmt.Sprintf("provider_http_status_%d", response.StatusCode), "response", detail, response.StatusCode, requestBytes, len(responseBody), started, fmt.Errorf("embedding dependency status %d", response.StatusCode))
 	}
-	responseBody, err := io.ReadAll(io.LimitReader(response.Body, maximumResponseBytes+1))
-	if err != nil || len(responseBody) > maximumResponseBytes {
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, int64(t.policy.MaximumResponseBytes)+1))
+	if err != nil || len(responseBody) > t.policy.MaximumResponseBytes {
 		return nil, t.failure(operation, "invalid_embedding_response", "response", "read_response_failed", response.StatusCode, requestBytes, len(responseBody), started, errors.New("invalid embedding response"))
 	}
 	t.logResponseBody(operation, response, responseBody)
@@ -178,7 +197,7 @@ func (t *TEI) CheckReady(ctx context.Context) error {
 		if err != nil {
 			continue
 		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumResponseBytes))
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, int64(t.policy.MaximumResponseBytes)))
 		_ = response.Body.Close()
 		if response.StatusCode == http.StatusOK {
 			return nil
@@ -235,6 +254,13 @@ func (t *TEI) logResponseBody(operation string, response *http.Response, body []
 
 func sanitizeRawResponsePrefix(body []byte) string {
 	return hex.EncodeToString(body)
+}
+
+func defaultPolicy() Policy {
+	return Policy{
+		MaximumResponseBytes: defaultMaximumResponseBytes,
+		ProviderBatchSize:    defaultProviderBatchSize,
+	}
 }
 
 func (t *TEI) wait(ctx context.Context) (time.Duration, error) {

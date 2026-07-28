@@ -5,10 +5,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHandlerRequiresCredentialAndReturnsDeterministicResponse(t *testing.T) {
-	handler, err := New("synthetic-key", ScenarioSuccess, 0)
+	handler, err := New("synthetic-key", ScenarioSuccess, 0, Policy{MaximumDelay: 30 * time.Second, TimeoutDelay: 10 * time.Second, MaximumRequestBody: 128 << 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +33,7 @@ func TestHandlerRequiresCredentialAndReturnsDeterministicResponse(t *testing.T) 
 }
 
 func TestHandlerHealthDoesNotCountAsProviderCall(t *testing.T) {
-	handler, err := New("synthetic-key", ScenarioSuccess, 0)
+	handler, err := New("synthetic-key", ScenarioSuccess, 0, Policy{MaximumDelay: 30 * time.Second, TimeoutDelay: 10 * time.Second, MaximumRequestBody: 128 << 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +45,7 @@ func TestHandlerHealthDoesNotCountAsProviderCall(t *testing.T) {
 }
 
 func TestHandlerRejectsSuccessRequestWithoutUsableEvidence(t *testing.T) {
-	handler, err := New("synthetic-key", ScenarioSuccess, 0)
+	handler, err := New("synthetic-key", ScenarioSuccess, 0, Policy{MaximumDelay: 30 * time.Second, TimeoutDelay: 10 * time.Second, MaximumRequestBody: 128 << 10})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,6 +23,8 @@ type Config struct {
 	LLMBaseURL               string
 	LLMModel                 string
 	LLMRequestsPerMinute     int
+	LLMMaxResponseBytes      int
+	LLMMaxCandidateBytes     int
 	LogProviderErrorBody     bool
 	LLMAPIKeyFile            string
 	LLMCAFile                string
@@ -82,6 +84,10 @@ func Load() (Config, error) {
 		return Config{}, errors.New("invalid answer configuration")
 	}
 	configuration.LLMRequestsPerMinute = rpm
+	maxResponseBytes, maxResponseBytesErr := positiveInteger("ANSWER_PROVIDER_MAX_RESPONSE_BYTES", 128<<10, 1, 1<<20)
+	maxCandidateBytes, maxCandidateBytesErr := positiveInteger("ANSWER_PROVIDER_MAX_CANDIDATE_BYTES", 32<<10, 1, 256<<10)
+	configuration.LLMMaxResponseBytes = maxResponseBytes
+	configuration.LLMMaxCandidateBytes = maxCandidateBytes
 	logProviderErrorBody, logProviderErrorBodyErr := boolean("ANSWER_PROVIDER_LOG_ERROR_BODY", false)
 	if logProviderErrorBodyErr != nil {
 		return Config{}, errors.New("invalid answer configuration")
@@ -92,6 +98,7 @@ func Load() (Config, error) {
 	}
 	errs := []error{
 		uidErr, gidErr, evidenceErr, contextErr, itemErr, segmentErr, answerErr, citationErr, tokenErr, concurrencyErr,
+		maxResponseBytesErr, maxCandidateBytesErr,
 		requestErr, retrievalErr, providerErr, readinessProbeErr, readinessPollErr, shutdownErr, metricsReadErr,
 		metricsReadHeaderErr, metricsWriteErr, metricsIdleErr,
 	}
@@ -104,6 +111,7 @@ func Load() (Config, error) {
 		configuration.RetrievalDNSName != "retrieval-service" ||
 		!validProviderURL(configuration.LLMBaseURL) || strings.TrimSpace(configuration.LLMModel) == "" || len(configuration.LLMModel) > 256 || strings.ContainsAny(configuration.LLMModel, "\r\n") ||
 		configuration.LLMAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
+		configuration.LLMMaxCandidateBytes > configuration.LLMMaxResponseBytes ||
 		configuration.Limits.MaximumEvidenceBytes > configuration.Limits.MaximumContextBytes || configuration.Limits.RetrievalTimeout >= configuration.Limits.RequestTimeout ||
 		configuration.Limits.ProviderTimeout >= configuration.Limits.RequestTimeout {
 		return Config{}, errors.New("invalid answer configuration")

@@ -43,7 +43,12 @@ func main() {
 	if scenario == "" {
 		scenario = string(providerstub.ScenarioSuccess)
 	}
-	handler, err := providerstub.New(apiKey, providerstub.Scenario(scenario), delay)
+	policy := providerstub.Policy{
+		MaximumDelay:       envDuration("ANSWER_STUB_MAX_DELAY", 30*time.Second),
+		TimeoutDelay:       envDuration("ANSWER_STUB_TIMEOUT_DELAY", 10*time.Second),
+		MaximumRequestBody: envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128<<10),
+	}
+	handler, err := providerstub.New(apiKey, providerstub.Scenario(scenario), delay, policy)
 	if err != nil {
 		log.Fatal("provider stub configuration is invalid")
 	}
@@ -77,6 +82,18 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func envInt64(key string, fallback int64) int64 {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || parsed <= 0 {
 		return fallback
 	}

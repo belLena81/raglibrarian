@@ -56,3 +56,27 @@ func TestEnvDurationParsesPositiveDuration(t *testing.T) {
 		t.Fatalf("envDuration() = %v, want 7s", value)
 	}
 }
+
+func TestEnvInt64UsesFallbackForMissingAndInvalidValues(t *testing.T) {
+	t.Setenv("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", "")
+	if value := envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128); value != 128 {
+		t.Fatalf("envInt64() = %d, want fallback", value)
+	}
+
+	t.Setenv("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", "invalid")
+	if value := envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128); value != 128 {
+		t.Fatalf("envInt64() invalid = %d, want fallback", value)
+	}
+
+	t.Setenv("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", "0")
+	if value := envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128); value != 128 {
+		t.Fatalf("envInt64() zero = %d, want fallback", value)
+	}
+}
+
+func TestEnvInt64ParsesPositiveValue(t *testing.T) {
+	t.Setenv("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", "512")
+	if value := envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128); value != 512 {
+		t.Fatalf("envInt64() = %d, want 512", value)
+	}
+}

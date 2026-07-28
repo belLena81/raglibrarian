@@ -103,10 +103,10 @@ func TestQdrantSearchDocumentsKeepsFullRawPageOpenAfterHydrationDrops(t *testing
 }
 
 func TestQdrantSearchEvidenceBatchAcceptsHydrationResponseLargerThanFourMiB(t *testing.T) {
-	passage := strings.Repeat("e", maximumQdrantResponseBytes)
+	passage := strings.Repeat("e", defaultMaximumQdrantResponseBytes)
 	batchResponse := `{"result":[{"points":[{"score":0.9,"payload":{"evidence_id":"evidence-1","chunk_id":"chunk-1","job_id":"job-1","book_id":"book-1","passage":"` + passage + `"}}]}]}`
-	if len(batchResponse) <= maximumQdrantResponseBytes || len(batchResponse) >= maximumEvidenceBatchResponseBytes {
-		t.Fatalf("batch response size = %d, want between %d and %d", len(batchResponse), maximumQdrantResponseBytes, maximumEvidenceBatchResponseBytes)
+	if len(batchResponse) <= defaultMaximumQdrantResponseBytes || len(batchResponse) >= defaultMaximumEvidenceBatchResponseBytes {
+		t.Fatalf("batch response size = %d, want between %d and %d", len(batchResponse), defaultMaximumQdrantResponseBytes, defaultMaximumEvidenceBatchResponseBytes)
 	}
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
 		if request.URL.Path != "/collections/evidence/points/query/batch" {

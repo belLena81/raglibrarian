@@ -27,6 +27,8 @@ const (
 	ChunkSize              = 64 << 10
 	DefaultMaxBytes        = 25 << 20
 	defaultMaxPreviewBytes = 1 << 20
+	defaultMaxPreviewPages = 3
+	defaultMaxEPUBEntries  = 2048
 )
 
 var (
@@ -110,6 +112,8 @@ type Service struct {
 	preview                  chan struct{}
 	previewBook              func(context.Context, Book, OriginalObjectStore) (string, error)
 	maxPreviewBytes          int
+	maxPreviewPages          int
+	maxPreviewEPUBEntries    int
 	previewTimeout           time.Duration
 	persistenceLookupTimeout time.Duration
 	objectDeleteTimeout      time.Duration
@@ -122,6 +126,8 @@ type ServiceOptions struct {
 	UploadConcurrency        int
 	PreviewConcurrency       int
 	MaxPreviewBytes          int
+	MaxPreviewPages          int
+	MaxPreviewEPUBEntries    int
 	PreviewTimeout           time.Duration
 	PersistenceLookupTimeout time.Duration
 	ObjectDeleteTimeout      time.Duration
@@ -147,6 +153,12 @@ func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStor
 	if options.MaxPreviewBytes <= 0 {
 		options.MaxPreviewBytes = defaultMaxPreviewBytes
 	}
+	if options.MaxPreviewPages <= 0 {
+		options.MaxPreviewPages = defaultMaxPreviewPages
+	}
+	if options.MaxPreviewEPUBEntries <= 0 {
+		options.MaxPreviewEPUBEntries = defaultMaxEPUBEntries
+	}
 	if options.PreviewTimeout <= 0 {
 		options.PreviewTimeout = 5 * time.Second
 	}
@@ -163,7 +175,9 @@ func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStor
 		options.NewID = generatedID
 	}
 	if options.PreviewBook == nil {
-		options.PreviewBook = defaultPreviewBook
+		options.PreviewBook = func(ctx context.Context, book Book, objects OriginalObjectStore) (string, error) {
+			return defaultPreviewBook(ctx, book, objects, options.MaxPreviewBytes, options.MaxPreviewPages, options.MaxPreviewEPUBEntries)
+		}
 	}
 	return &Service{
 		repository:               repository,
@@ -175,6 +189,8 @@ func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStor
 		newID:                    options.NewID,
 		previewBook:              options.PreviewBook,
 		maxPreviewBytes:          options.MaxPreviewBytes,
+		maxPreviewPages:          options.MaxPreviewPages,
+		maxPreviewEPUBEntries:    options.MaxPreviewEPUBEntries,
 		previewTimeout:           options.PreviewTimeout,
 		persistenceLookupTimeout: options.PersistenceLookupTimeout,
 		objectDeleteTimeout:      options.ObjectDeleteTimeout,

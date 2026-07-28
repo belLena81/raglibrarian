@@ -14,6 +14,9 @@ func TestLoadUsesSecureBoundedDefaults(t *testing.T) {
 	if configuration.Limits.MaximumEvidence != 8 || configuration.Limits.MaximumContextBytes != 32<<10 || configuration.Limits.ProviderConcurrency != 4 {
 		t.Fatalf("unexpected limits: %#v", configuration.Limits)
 	}
+	if configuration.LLMMaxResponseBytes != 128<<10 || configuration.LLMMaxCandidateBytes != 32<<10 {
+		t.Fatalf("unexpected provider policy: response=%d candidate=%d", configuration.LLMMaxResponseBytes, configuration.LLMMaxCandidateBytes)
+	}
 	if configuration.ReadinessProbeTimeout != 2*time.Second || configuration.ReadinessPollInterval != 2*time.Second ||
 		configuration.ShutdownTimeout != 3*time.Second || configuration.MetricsReadTimeout != 3*time.Second ||
 		configuration.MetricsReadHeaderTimeout != 2*time.Second || configuration.MetricsWriteTimeout != 5*time.Second ||
@@ -49,6 +52,19 @@ func TestLoadEnablesProviderErrorBodyLoggingFlag(t *testing.T) {
 	}
 }
 
+func TestLoadOverridesProviderPolicy(t *testing.T) {
+	setRequiredEnvironment(t)
+	t.Setenv("ANSWER_PROVIDER_MAX_RESPONSE_BYTES", "65536")
+	t.Setenv("ANSWER_PROVIDER_MAX_CANDIDATE_BYTES", "16384")
+	configuration, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuration.LLMMaxResponseBytes != 65536 || configuration.LLMMaxCandidateBytes != 16384 {
+		t.Fatalf("unexpected provider policy: response=%d candidate=%d", configuration.LLMMaxResponseBytes, configuration.LLMMaxCandidateBytes)
+	}
+}
+
 func TestLoadRejectsInsecureProviderAndInvalidBounds(t *testing.T) {
 	setRequiredEnvironment(t)
 	t.Setenv("ANSWER_LLM_BASE_URL", "http://provider")
@@ -74,6 +90,22 @@ func TestLoadRejectsInsecureProviderAndInvalidBounds(t *testing.T) {
 	t.Setenv("ANSWER_PROVIDER_REQUESTS_PER_MINUTE", "maybe")
 	if _, err := Load(); err == nil {
 		t.Fatal("malformed provider rate limit accepted")
+	}
+	setRequiredEnvironment(t)
+	t.Setenv("ANSWER_PROVIDER_MAX_RESPONSE_BYTES", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("non-positive provider response limit accepted")
+	}
+	setRequiredEnvironment(t)
+	t.Setenv("ANSWER_PROVIDER_MAX_CANDIDATE_BYTES", "131073")
+	if _, err := Load(); err == nil {
+		t.Fatal("oversized provider candidate limit accepted")
+	}
+	setRequiredEnvironment(t)
+	t.Setenv("ANSWER_PROVIDER_MAX_RESPONSE_BYTES", "16384")
+	t.Setenv("ANSWER_PROVIDER_MAX_CANDIDATE_BYTES", "32768")
+	if _, err := Load(); err == nil {
+		t.Fatal("provider candidate limit above response limit accepted")
 	}
 }
 
