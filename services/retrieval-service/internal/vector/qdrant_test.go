@@ -70,7 +70,7 @@ func TestQdrantSearchDocumentsHydratesStoredChunkEvidence(t *testing.T) {
 				if index == 1 {
 					wantJobID = "job-2"
 				}
-				if search.Limit != 3 || search.ScoreThreshold != 0.6 || len(search.Filter.Must) < 3 || search.Filter.Must[1].Match.Value != "chunk" || search.Filter.Must[2].Key != "job_id" || search.Filter.Must[2].Match.Value != wantJobID {
+				if search.Limit != 5 || search.ScoreThreshold != 0.6 || len(search.Filter.Must) < 3 || search.Filter.Must[1].Match.Value != "chunk" || search.Filter.Must[2].Key != "job_id" || search.Filter.Must[2].Match.Value != wantJobID {
 					t.Fatalf("unexpected evidence hydration request %d: %#v", index, search)
 				}
 			}
@@ -80,7 +80,14 @@ func TestQdrantSearchDocumentsHydratesStoredChunkEvidence(t *testing.T) {
 			return response(http.StatusInternalServerError, `{}`)
 		}
 	})}
-	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
+	store, err := NewQdrantWithPolicy("http://qdrant.test", "evidence", client, 0.6, Policy{
+		MaximumResponseBytes:      retrievalconfig.DefaultQdrantMaxResponseBytes,
+		MaximumBatchResponseBytes: retrievalconfig.DefaultQdrantBatchResponseBytes,
+		DocumentEvidenceLimit:     5,
+	})
+	if err != nil {
+		t.Fatalf("NewQdrantWithPolicy() error = %v", err)
+	}
 	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 2}, testSearchRequestPolicy())
 
 	page, err := store.SearchDocuments(context.Background(), query, make([]float32, domain.EmbeddingDimensions), 4, 2)

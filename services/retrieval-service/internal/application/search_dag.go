@@ -125,22 +125,22 @@ func (r storeDocumentRetriever) Retrieve(ctx context.Context, query domain.Searc
 	return results, nil
 }
 
-type reciprocalRankFusion struct{}
+type reciprocalRankFusion struct {
+	k int
+}
 
-func (reciprocalRankFusion) Fuse(_ domain.SearchQuery, chunkCandidates []Evidence, documents []DocumentResult) []Evidence {
+func (f reciprocalRankFusion) Fuse(_ domain.SearchQuery, chunkCandidates []Evidence, documents []DocumentResult) []Evidence {
 	type scoredEvidence struct {
 		evidence Evidence
 		score    float64
 	}
-
-	const reciprocalRankK = 60
 
 	merged := make(map[string]scoredEvidence, len(chunkCandidates)+(len(documents)*2))
 	merge := func(candidate Evidence, rank int) {
 		if candidate.EvidenceID == "" {
 			return
 		}
-		score := 1.0 / float64(reciprocalRankK+rank+1)
+		score := 1.0 / float64(f.k+rank+1)
 		current, found := merged[candidate.EvidenceID]
 		if !found {
 			merged[candidate.EvidenceID] = scoredEvidence{evidence: candidate, score: score}

@@ -71,6 +71,7 @@ func NewVectorStore(configuration config.Config, httpClient *http.Client) (*vect
 	return newVectorStore(configuration.QdrantURL, configuration.QdrantCollection, apiKey, configuration.MinimumSearchScore, vector.Policy{
 		MaximumResponseBytes:      configuration.QdrantMaxResponseBytes,
 		MaximumBatchResponseBytes: configuration.QdrantBatchResponseBytes,
+		DocumentEvidenceLimit:     configuration.QdrantDocumentEvidenceLimit,
 	}, httpClient)
 }
 
@@ -78,6 +79,7 @@ func NewWorkerVectorStore(configuration config.WorkerConfig, httpClient *http.Cl
 	return newVectorStore(configuration.QdrantURL, configuration.QdrantCollection, configuration.QdrantAPIKey, configuration.MinimumSearchScore, vector.Policy{
 		MaximumResponseBytes:      configuration.QdrantMaxResponseBytes,
 		MaximumBatchResponseBytes: configuration.QdrantBatchResponseBytes,
+		DocumentEvidenceLimit:     configuration.QdrantDocumentEvidenceLimit,
 	}, httpClient)
 }
 
@@ -85,6 +87,7 @@ func NewDirectVectorStore(endpoint, collection, apiKey string, minimumSearchScor
 	return newVectorStore(endpoint, collection, apiKey, minimumSearchScore, vector.Policy{
 		MaximumResponseBytes:      config.DefaultQdrantMaxResponseBytes,
 		MaximumBatchResponseBytes: config.DefaultQdrantBatchResponseBytes,
+		DocumentEvidenceLimit:     config.DefaultQdrantDocumentEvidenceLimit,
 	}, httpClient)
 }
 

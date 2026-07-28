@@ -197,17 +197,45 @@ func filterSearchByMinimumEvidenceScore(search domain.SearchResult, minimumEvide
 }
 
 func selectEvidence(search domain.SearchResult, limits Limits) []domain.ContextEvidence {
+	type evidenceCandidate struct {
+		evidence domain.Evidence
+		group    string
+	}
+
+	candidates := make([]evidenceCandidate, 0, len(search.Results))
+	appendCandidate := func(value domain.Evidence) {
+		candidates = append(candidates, evidenceCandidate{
+			evidence: value,
+			group:    evidenceDiversityGroup(value),
+		})
+	}
+	for _, value := range search.Results {
+		appendCandidate(value)
+	}
+	for _, document := range search.Documents {
+		for _, value := range document.Evidence {
+			appendCandidate(value)
+		}
+	}
+
 	selected := make([]domain.ContextEvidence, 0, limits.MaximumEvidence)
 	seen := make(map[string]struct{})
 	seenPassages := make(map[string]struct{})
+	seenGroups := make(map[string]struct{})
 	total := 0
-	add := func(value domain.Evidence) bool {
+	add := func(candidate evidenceCandidate, requireNewGroup bool) bool {
+		value := candidate.evidence
 		if len(selected) >= limits.MaximumEvidence || value.EvidenceID == "" || !utf8.ValidString(value.Passage) || len(value.Passage) == 0 || len(value.Passage) > limits.MaximumEvidenceBytes {
 			return false
 		}
 		normalizedPassage := strings.Join(strings.Fields(value.Passage), " ")
 		if normalizedPassage == "" {
 			return false
+		}
+		if candidate.group != "" {
+			if _, found := seenGroups[candidate.group]; found && requireNewGroup {
+				return false
+			}
 		}
 		if _, found := seen[value.EvidenceID]; found || total+len(value.Passage) > limits.MaximumContextBytes {
 			return false
@@ -217,28 +245,42 @@ func selectEvidence(search domain.SearchResult, limits Limits) []domain.ContextE
 		}
 		seen[value.EvidenceID] = struct{}{}
 		seenPassages[normalizedPassage] = struct{}{}
+		if candidate.group != "" {
+			seenGroups[candidate.group] = struct{}{}
+		}
 		total += len(value.Passage)
 		selected = append(selected, contextEvidence(value))
 		return true
 	}
-	for _, value := range search.Results {
-		add(value)
+
+	for _, candidate := range candidates {
+		if len(selected) >= limits.MaximumEvidence {
+			break
+		}
+		add(candidate, true)
 	}
 	if len(selected) >= limits.MaximumEvidence {
 		return selected
 	}
-	for _, document := range search.Documents {
+	for _, candidate := range candidates {
 		if len(selected) >= limits.MaximumEvidence {
 			break
 		}
-		for _, value := range document.Evidence {
-			add(value)
-			if len(selected) >= limits.MaximumEvidence {
-				break
-			}
-		}
+		add(candidate, false)
 	}
 	return selected
+}
+
+func evidenceDiversityGroup(value domain.Evidence) string {
+	parts := []string{
+		strings.TrimSpace(value.Book.BookID),
+		strings.TrimSpace(value.Chapter),
+		strings.TrimSpace(value.Section),
+	}
+	if parts[0] == "" {
+		parts[0] = strings.TrimSpace(value.Book.Title)
+	}
+	return strings.Join(parts, "\x00")
 }
 
 func contextEvidence(value domain.Evidence) domain.ContextEvidence {

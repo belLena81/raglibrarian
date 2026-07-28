@@ -21,6 +21,8 @@ const (
 	minimumSearchScoreKey                   = "RETRIEVAL_MINIMUM_SEARCH_SCORE"
 	DefaultQdrantCollection                 = "evidence_v2"
 	defaultSearchCandidatePageMultiplier    = 2
+	defaultReciprocalRankFusionK            = 60
+	DefaultQdrantDocumentEvidenceLimit      = 3
 	DefaultLambdaMinimumProcessingTimeout   = time.Minute
 	DefaultLambdaProcessingTimeout          = 13*time.Minute + 30*time.Second
 	DefaultLambdaFailureRecordTimeout       = 10 * time.Second
@@ -71,12 +73,14 @@ type Config struct {
 	SearchTimeout                 time.Duration
 	MinimumSearchScore            float64
 	SearchCandidatePageMultiplier int
+	ReciprocalRankFusionK         int
 	SearchRequestPolicy           SearchRequestPolicy
 	QdrantURL                     string
 	QdrantCollection              string
 	QdrantAPIKeyFile              string
 	QdrantMaxResponseBytes        int
 	QdrantBatchResponseBytes      int
+	QdrantDocumentEvidenceLimit   int
 	PostgresDSNFile               string
 	EvidenceAssessor              EvidenceAssessorConfig
 	TEILogRawResponse             bool
@@ -130,6 +134,7 @@ type WorkerConfig struct {
 	MinimumSearchScore                                            float64
 	QdrantMaxResponseBytes                                        int
 	QdrantBatchResponseBytes                                      int
+	QdrantDocumentEvidenceLimit                                   int
 	MetricsAddress                                                string
 	DBPingTimeout                                                 time.Duration
 	DependencyTimeout                                             time.Duration
@@ -238,6 +243,7 @@ func Load() (Config, error) {
 	defaultResultLimit, defaultResultLimitErr := boundedPositiveInteger("RETRIEVAL_DEFAULT_RESULT_LIMIT", defaultDefaultResultLimit, 256)
 	maximumResultLimit, maximumResultLimitErr := boundedPositiveInteger("RETRIEVAL_MAX_RESULT_LIMIT", defaultMaximumResultLimit, 256)
 	searchCandidatePageMultiplier, searchCandidatePageMultiplierErr := boundedPositiveInteger("RETRIEVAL_SEARCH_CANDIDATE_PAGE_MULTIPLIER", defaultSearchCandidatePageMultiplier, 16)
+	reciprocalRankFusionK, reciprocalRankFusionKErr := boundedPositiveInteger("RETRIEVAL_RECIPROCAL_RANK_FUSION_K", defaultReciprocalRankFusionK, 1000)
 	minimumSearchScore, minimumSearchScoreErr := LoadMinimumSearchScore()
 	summaryLLMRequestsPerMinute, summaryLLMRequestsPerMinuteErr := nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_REQUESTS_PER_MINUTE", 15)
 	summaryLLMOutputMode, summaryLLMOutputModeErr := evidenceAssessorOutputMode(configuration.EvidenceAssessor.OutputMode)
@@ -248,6 +254,7 @@ func Load() (Config, error) {
 	teiLogRawResponseMaxBytes, teiLogRawResponseMaxBytesErr := boundedNonNegativeInteger("RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", 4096, 64<<10)
 	qdrantMaxResponseBytes, qdrantMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_MAX_RESPONSE_BYTES", DefaultQdrantMaxResponseBytes, 32<<20)
 	qdrantBatchResponseBytes, qdrantBatchResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_BATCH_RESPONSE_BYTES", DefaultQdrantBatchResponseBytes, 32<<20)
+	qdrantDocumentEvidenceLimit, qdrantDocumentEvidenceLimitErr := boundedPositiveInteger("RETRIEVAL_QDRANT_DOCUMENT_EVIDENCE_LIMIT", DefaultQdrantDocumentEvidenceLimit, 32)
 	summaryMaxInputRunes, summaryMaxInputRunesErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_INPUT_RUNES", DefaultEvidenceAssessorMaxInputRunes, 32768)
 	summaryMaxResponseBytes, summaryMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_RESPONSE_BYTES", DefaultEvidenceAssessorMaxResponseBytes, 1<<20)
 	summaryMaxSummaryBytes, summaryMaxSummaryBytesErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_SUMMARY_BYTES", DefaultEvidenceAssessorMaxSummaryBytes, 256<<10)
@@ -269,6 +276,7 @@ func Load() (Config, error) {
 	configuration.EvidenceAssessor.MaxOutputTokens = summaryMaxOutputTokens
 	configuration.EvidenceAssessor.MaxCalls = summaryMaxCalls
 	configuration.SearchCandidatePageMultiplier = searchCandidatePageMultiplier
+	configuration.ReciprocalRankFusionK = reciprocalRankFusionK
 	configuration.EvidenceAssessor.MaxInputRunes = summaryMaxInputRunes
 	configuration.EvidenceAssessor.MaxResponseBytes = summaryMaxResponseBytes
 	configuration.EvidenceAssessor.MaxSummaryBytes = summaryMaxSummaryBytes
@@ -282,6 +290,7 @@ func Load() (Config, error) {
 	configuration.TEILogRawResponseMaxBytes = teiLogRawResponseMaxBytes
 	configuration.QdrantMaxResponseBytes = qdrantMaxResponseBytes
 	configuration.QdrantBatchResponseBytes = qdrantBatchResponseBytes
+	configuration.QdrantDocumentEvidenceLimit = qdrantDocumentEvidenceLimit
 	configuration.ReadinessProbeTimeout = readinessProbeTimeout
 	configuration.ReadinessReadHeaderTimeout = readinessReadHeaderTimeout
 	configuration.ReadinessIdleTimeout = readinessIdleTimeout
@@ -289,7 +298,7 @@ func Load() (Config, error) {
 	if configuration.GRPCAddress == "" || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
 		configuration.PostgresDSNFile == "" || configuration.QdrantAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || runAsErr != nil || finalizationLeaseErr != nil ||
-		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || maximumQuestionCharactersErr != nil || maximumFilterTagsErr != nil || maximumTagCharactersErr != nil || maximumAuthorCharactersErr != nil || defaultResultLimitErr != nil || maximumResultLimitErr != nil || searchCandidatePageMultiplierErr != nil || summaryMaxInputRunesErr != nil || summaryMaxResponseBytesErr != nil || summaryMaxSummaryBytesErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || summaryLLMOutputModeErr != nil || teiRequestsPerSecondErr != nil || teiMaxResponseBytesErr != nil || teiBatchSizeErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || qdrantMaxResponseBytesErr != nil || qdrantBatchResponseBytesErr != nil ||
+		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || maximumQuestionCharactersErr != nil || maximumFilterTagsErr != nil || maximumTagCharactersErr != nil || maximumAuthorCharactersErr != nil || defaultResultLimitErr != nil || maximumResultLimitErr != nil || searchCandidatePageMultiplierErr != nil || reciprocalRankFusionKErr != nil || summaryMaxInputRunesErr != nil || summaryMaxResponseBytesErr != nil || summaryMaxSummaryBytesErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || summaryLLMOutputModeErr != nil || teiRequestsPerSecondErr != nil || teiMaxResponseBytesErr != nil || teiBatchSizeErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || qdrantMaxResponseBytesErr != nil || qdrantBatchResponseBytesErr != nil || qdrantDocumentEvidenceLimitErr != nil ||
 		readinessProbeTimeoutErr != nil || readinessReadHeaderTimeoutErr != nil || readinessIdleTimeoutErr != nil || readinessShutdownTimeoutErr != nil ||
 		configuration.SearchRequestPolicy.DefaultResultLimit > configuration.SearchRequestPolicy.MaximumResultLimit ||
 		configuration.EvidenceAssessor.Timeout >= configuration.SearchTimeout ||
@@ -465,13 +474,14 @@ func LoadWorker() (WorkerConfig, error) {
 	minimumSearchScore, minimumSearchScoreErr := LoadMinimumSearchScore()
 	qdrantMaxResponseBytes, qdrantMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_MAX_RESPONSE_BYTES", DefaultQdrantMaxResponseBytes, 32<<20)
 	qdrantBatchResponseBytes, qdrantBatchResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_BATCH_RESPONSE_BYTES", DefaultQdrantBatchResponseBytes, 32<<20)
+	qdrantDocumentEvidenceLimit, qdrantDocumentEvidenceLimitErr := boundedPositiveInteger("RETRIEVAL_QDRANT_DOCUMENT_EVIDENCE_LIMIT", DefaultQdrantDocumentEvidenceLimit, 32)
 	configuration := WorkerConfig{DSN: dsn, ConsumerRabbitURI: consumerURI, PublisherRabbitURI: publisherURI,
 		MinIOEndpoint: os.Getenv("RETRIEVAL_MINIO_ENDPOINT"), MinIOAccessKey: accessKey, MinIOSecretKey: secretKey, ArtifactBucket: os.Getenv("RETRIEVAL_ARTIFACT_BUCKET"), MinIOInsecure: minioInsecure,
 		TEIURL: os.Getenv("RETRIEVAL_TEI_URL"), QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: optional("RETRIEVAL_QDRANT_COLLECTION", DefaultQdrantCollection), QdrantAPIKey: qdrantAPIKey,
 		MaximumMetadataTags:  maximumMetadataTags,
 		TEIRequestsPerSecond: teiRequestsPerSecond, TEIMaxResponseBytes: teiMaxResponseBytes, TEIBatchSize: teiBatchSize, TEILogRawResponse: teiLogRawResponse, TEILogRawResponseMaxBytes: teiLogRawResponseMaxBytes,
 		ManifestMaxPages: manifestMaxPages, ManifestMaxShards: manifestMaxShards, ManifestMaxShardCompressedBytes: manifestMaxShardCompressedBytes, ManifestMaxShardExpandedBytes: manifestMaxShardExpandedBytes, ManifestMaxShardChunks: manifestMaxShardChunks, ManifestMaxTotalChunks: manifestMaxTotalChunks, ManifestMaxExpandedBytes: manifestMaxExpandedBytes,
-		MinimumSearchScore: minimumSearchScore, QdrantMaxResponseBytes: qdrantMaxResponseBytes, QdrantBatchResponseBytes: qdrantBatchResponseBytes, DBPingTimeout: dbPingTimeout, DependencyTimeout: dependencyTimeout, CollectionEnsureTimeout: collectionEnsureTimeout, FinalizationLease: finalizationLease,
+		MinimumSearchScore: minimumSearchScore, QdrantMaxResponseBytes: qdrantMaxResponseBytes, QdrantBatchResponseBytes: qdrantBatchResponseBytes, QdrantDocumentEvidenceLimit: qdrantDocumentEvidenceLimit, DBPingTimeout: dbPingTimeout, DependencyTimeout: dependencyTimeout, CollectionEnsureTimeout: collectionEnsureTimeout, FinalizationLease: finalizationLease,
 		ReadinessInitialDelay: readinessInitialDelay, ReadinessMaxDelay: readinessMaxDelay, ReadinessMaxAttempts: readinessMaxAttempts, ReadinessProbeTimeout: readinessProbeTimeout,
 		ReconnectInitialBackoff: reconnectInitialBackoff, ReconnectMaxBackoff: reconnectMaxBackoff, DispatchInterval: dispatchInterval, CleanupInterval: cleanupInterval,
 		CleanupTimeout: cleanupTimeout, CleanupBatchSize: cleanupBatchSize, MaxRetryAttempts: maxRetryAttempts, StaleBatchAge: staleBatchAge, FailureRecordTimeout: failureRecordTimeout, PublishTimeout: publishTimeout,
@@ -485,7 +495,7 @@ func LoadWorker() (WorkerConfig, error) {
 		dispatchIntervalErr != nil || cleanupIntervalErr != nil || cleanupTimeoutErr != nil || cleanupBatchSizeErr != nil || maxRetryAttemptsErr != nil || staleBatchAgeErr != nil || failureRecordTimeoutErr != nil || publishTimeoutErr != nil ||
 		rabbitDialTimeoutErr != nil || rabbitHeartbeatErr != nil ||
 		readinessReadHeaderTimeoutErr != nil || readinessIdleTimeoutErr != nil || readinessShutdownTimeoutErr != nil ||
-		teiRequestsPerSecondErr != nil || teiMaxResponseBytesErr != nil || teiBatchSizeErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || maximumMetadataTagsErr != nil || manifestMaxPagesErr != nil || manifestMaxShardsErr != nil || manifestMaxShardCompressedBytesErr != nil || manifestMaxShardExpandedBytesErr != nil || manifestMaxShardChunksErr != nil || manifestMaxTotalChunksErr != nil || manifestMaxExpandedBytesErr != nil || minimumSearchScoreErr != nil || qdrantMaxResponseBytesErr != nil || qdrantBatchResponseBytesErr != nil ||
+		teiRequestsPerSecondErr != nil || teiMaxResponseBytesErr != nil || teiBatchSizeErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || maximumMetadataTagsErr != nil || manifestMaxPagesErr != nil || manifestMaxShardsErr != nil || manifestMaxShardCompressedBytesErr != nil || manifestMaxShardExpandedBytesErr != nil || manifestMaxShardChunksErr != nil || manifestMaxTotalChunksErr != nil || manifestMaxExpandedBytesErr != nil || minimumSearchScoreErr != nil || qdrantMaxResponseBytesErr != nil || qdrantBatchResponseBytesErr != nil || qdrantDocumentEvidenceLimitErr != nil ||
 		configuration.ReadinessInitialDelay > configuration.ReadinessMaxDelay || configuration.ReconnectInitialBackoff > configuration.ReconnectMaxBackoff ||
 		configuration.ManifestMaxShardCompressedBytes > configuration.ManifestMaxShardExpandedBytes || configuration.ManifestMaxShardExpandedBytes > configuration.ManifestMaxExpandedBytes || configuration.ManifestMaxShardChunks > configuration.ManifestMaxTotalChunks ||
 		configuration.QdrantBatchResponseBytes < configuration.QdrantMaxResponseBytes || configuration.TEILogRawResponseMaxBytes > configuration.TEIMaxResponseBytes ||

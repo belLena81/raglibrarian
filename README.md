@@ -19,21 +19,35 @@ next chapter. This is a fixed versioned cross-service profile; tuning requires
 introducing and validating a new supported profile so Catalog, Ingestion, and
 Retrieval agree on the same digest and limits.
 
+Retrieval uses layered RAG rather than a single naive top-k vector pass. It
+embeds and searches stored chunks for precise recall, searches document
+centroid vectors for broader parent-context recall, hydrates each document hit
+with a bounded number of stored chunk passages, and merges chunk/document
+candidates with reciprocal-rank fusion. Metadata filters remain part of the
+Qdrant query, so author, tag, and year restrictions apply before evidence is
+returned. Fusion and document-hydration tuning are config-backed operational
+policy with current defaults of RRF K `60` and three hydrated passages per
+document.
+
 Retrieval treats vector similarity as a candidate signal, not final relevance,
-when the optional Retrieval LLM provider is configured. Each retrieved passage
+when the optional Retrieval LLM provider is configured. Each candidate passage
 must pass passage-level LLM relevance assessment before it is returned. Passages
 the model identifies as unrelated, including meta responses such as "the user is
 asking..." or "the passage does not contain...", are excluded and Retrieval
 backfills from later candidates until the requested evidence limit is filled or
 the candidate scan budget is exhausted. Book matches are grouping metadata
 derived from accepted passages only; the system does not request whole-book or
-document-level LLM summaries. Grounded answers synthesize from the top accepted
-passage only and render a deterministic book/page citation plus a short
-synopsis.
+document-level LLM summaries. Grounded answers synthesize over a bounded,
+diversity-aware evidence set and render deterministic book/page citations plus a
+short synopsis. Answer validates every generated citation against Retrieval
+evidence IDs and degrades to evidence-only results instead of fabricating
+citations.
 
-Current verification as of July 27, 2026: Ingestion, Retrieval, and Answer
-service tests pass for the chapter-aware chunking profile, Retrieval relevance
-filtering, and top-passage grounded answer synthesis.
+Current verification as of July 28, 2026: Ingestion, Retrieval, and Answer
+service tests cover the chapter-aware chunking profile, chunk/document vector
+recall, reciprocal-rank fusion, Retrieval relevance filtering, bounded
+document-evidence hydration, and grounded answer synthesis over validated
+evidence.
 
 ## Architecture decision
 
@@ -109,8 +123,8 @@ race, contract, integration, and security checks pass.
 | Abuse controls | Implemented | Bounded in-process trusted-client-aware limits protect registration, verification, setup, login, and refresh. |
 | Catalog PDF/EPUB lifecycle | Release candidate | Role-gated streaming upload, idempotent delete/reindex, minimal tombstones, private MinIO persistence, durable publication, and cleanup reconciliation; live M7 acceptance remains required. |
 | PDF/EPUB ingestion and live status | Release candidate | Event-driven worker/Lambda adapters, sandboxed bounded extraction, deterministic chunk artifacts, deletion cleanup, Catalog lifecycle projection, and authenticated SSE with polling reconciliation. |
-| Vectors and retrieval | Implemented | Retrieval owns vector indexing, Qdrant collections, evidence projection, search policy, and replay-safe indexing. |
-| LLM answer synthesis | Release candidate | Optional `answer` mode uses the additive stateless Answer service, validates citations against returned evidence, and degrades to evidence-only results; protected real-provider staging remains required. |
+| Vectors and retrieval | Implemented | Retrieval owns vector indexing, Qdrant collections, chunk/document recall, metadata filtering, RRF fusion, evidence projection, search policy, and replay-safe indexing. |
+| LLM answer synthesis | Release candidate | Optional `answer` mode uses the additive stateless Answer service, builds a bounded diversity-aware evidence context, validates citations against returned evidence, and degrades to evidence-only results; protected real-provider staging remains required. |
 
 ## Delivery roadmap
 

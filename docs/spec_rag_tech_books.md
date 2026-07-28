@@ -62,6 +62,33 @@ decision is maintained in
   application components deployed through Lambda or worker adapters.
 - A proxy Admin service that writes Identity or Catalog state.
 
+## Current RAG design patterns
+
+The implemented RAG path keeps quality improvements inside the existing
+Ingestion, Retrieval, and Answer boundaries:
+
+- **Fixed recursive/structured chunking:** Ingestion emits deterministic,
+  chapter-aware page-window chunks with a versioned embedding/chunking profile.
+- **Small-to-big parent retrieval:** Retrieval indexes precise chunk vectors and
+  document centroid vectors. Document hits are expanded to a bounded number of
+  stored chunk passages for generation context.
+- **Metadata filtering:** Retrieval applies author, tag, and publication-year
+  filters in Qdrant before candidates are returned.
+- **RAG-Fusion:** Retrieval merges chunk and document evidence candidates with
+  reciprocal-rank fusion. The fusion constant and document hydration limit are
+  runtime-tunable policy, while the index profile remains a compatibility
+  contract.
+- **Context filtering/compression:** Optional Retrieval-side provider assessment
+  accepts only passages relevant to the user question and stores a concise
+  passage summary; provider failure falls back to bounded local summaries.
+- **Grounded answer synthesis:** Answer selects a bounded, diversity-aware
+  evidence set, sends only Retrieval-owned evidence to the provider, and accepts
+  generated output only when citations match returned evidence IDs.
+
+Future candidates remain explicit product/design choices: hybrid keyword/vector
+search, reranking, query rewriting, HyDE, semantic re-chunking, and GraphRAG are
+not part of the current implementation.
+
 ## Architecture
 
 ### Services

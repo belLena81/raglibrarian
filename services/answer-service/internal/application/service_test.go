@@ -70,6 +70,83 @@ func TestAnswerSelectsBoundedPrimaryEvidenceForSynthesis(t *testing.T) {
 	}
 }
 
+func TestAnswerPrefersDiverseEvidenceBeforeFillingByScore(t *testing.T) {
+	limits := testLimits()
+	limits.MaximumEvidence = 2
+	search := domain.SearchResult{
+		Results: []domain.Evidence{
+			{
+				EvidenceID: "same-section-high",
+				Passage:    "high scoring first passage",
+				Book:       domain.BookMetadata{BookID: "book-1", Title: "Systems"},
+				Chapter:    "One",
+				Section:    "Retries",
+			},
+			{
+				EvidenceID: "same-section-second",
+				Passage:    "second passage from the same section",
+				Book:       domain.BookMetadata{BookID: "book-1", Title: "Systems"},
+				Chapter:    "One",
+				Section:    "Retries",
+			},
+			{
+				EvidenceID: "different-section",
+				Passage:    "different section passage",
+				Book:       domain.BookMetadata{BookID: "book-1", Title: "Systems"},
+				Chapter:    "Two",
+				Section:    "Queues",
+			},
+		},
+	}
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"same-section-high", "different-section"}}}}
+	service := newTestService(t, &fakeRetriever{result: search}, provider, limits)
+
+	result, err := service.Answer(context.Background(), validRequest())
+
+	if err != nil || result.Answer == nil {
+		t.Fatalf("Answer() = %#v, %v", result, err)
+	}
+	if len(provider.input.Evidence) != 2 ||
+		provider.input.Evidence[0].EvidenceID != "same-section-high" ||
+		provider.input.Evidence[1].EvidenceID != "different-section" {
+		t.Fatalf("provider evidence = %#v", provider.input.Evidence)
+	}
+}
+
+func TestAnswerFillsRemainingEvidenceAfterDiversityPass(t *testing.T) {
+	limits := testLimits()
+	limits.MaximumEvidence = 2
+	search := domain.SearchResult{
+		Results: []domain.Evidence{
+			{
+				EvidenceID: "first",
+				Passage:    "first passage",
+				Book:       domain.BookMetadata{BookID: "book-1"},
+				Section:    "Retries",
+			},
+			{
+				EvidenceID: "second",
+				Passage:    "second passage",
+				Book:       domain.BookMetadata{BookID: "book-1"},
+				Section:    "Retries",
+			},
+		},
+	}
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"first", "second"}}}}
+	service := newTestService(t, &fakeRetriever{result: search}, provider, limits)
+
+	result, err := service.Answer(context.Background(), validRequest())
+
+	if err != nil || result.Answer == nil {
+		t.Fatalf("Answer() = %#v, %v", result, err)
+	}
+	if len(provider.input.Evidence) != 2 ||
+		provider.input.Evidence[0].EvidenceID != "first" ||
+		provider.input.Evidence[1].EvidenceID != "second" {
+		t.Fatalf("provider evidence = %#v", provider.input.Evidence)
+	}
+}
+
 type fakeObserver struct {
 	lastFailureDetail string
 }

@@ -27,6 +27,7 @@ const (
 type Policy struct {
 	MaximumResponseBytes      int
 	MaximumBatchResponseBytes int
+	DocumentEvidenceLimit     int
 }
 
 var (
@@ -51,7 +52,8 @@ func NewQdrant(endpoint, collection string, client *http.Client, minimumSearchSc
 func NewQdrantWithPolicy(endpoint, collection string, client *http.Client, minimumSearchScore float64, policy Policy) (*Qdrant, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || collection == "" || strings.ContainsAny(collection, "/?#") || client == nil ||
-		policy.MaximumResponseBytes < 1 || policy.MaximumBatchResponseBytes < policy.MaximumResponseBytes {
+		policy.MaximumResponseBytes < 1 || policy.MaximumBatchResponseBytes < policy.MaximumResponseBytes ||
+		policy.DocumentEvidenceLimit < 1 {
 		return nil, errors.New("invalid Qdrant configuration")
 	}
 	return &Qdrant{endpoint: strings.TrimRight(endpoint, "/"), collection: collection, client: client, minimumSearchScore: minimumSearchScore, policy: policy}, nil
@@ -185,7 +187,7 @@ func (q *Qdrant) SearchDocuments(ctx context.Context, query domain.SearchQuery, 
 			PageStart: value.PageStart, PageEnd: value.PageEnd, Score: point.Score})
 		jobIDs = append(jobIDs, value.JobID)
 	}
-	evidence, err := q.searchEvidenceBatch(ctx, query, vector, jobIDs, 3)
+	evidence, err := q.searchEvidenceBatch(ctx, query, vector, jobIDs, q.policy.DocumentEvidenceLimit)
 	if err != nil {
 		return application.DocumentPage{}, err
 	}
@@ -644,5 +646,6 @@ func defaultPolicy() Policy {
 	return Policy{
 		MaximumResponseBytes:      retrievalconfig.DefaultQdrantMaxResponseBytes,
 		MaximumBatchResponseBytes: retrievalconfig.DefaultQdrantBatchResponseBytes,
+		DocumentEvidenceLimit:     retrievalconfig.DefaultQdrantDocumentEvidenceLimit,
 	}
 }

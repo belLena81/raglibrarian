@@ -27,6 +27,7 @@ func TestSearchQualityBenchmark(t *testing.T) {
 		MinimumVisibleScore:         0.05,
 		AssessmentCallLimit:         4,
 		CandidatePageMultiplier:     2,
+		ReciprocalRankFusionK:       60,
 		MaximumAssessmentInputRunes: 4096,
 		RequestPolicy: domain.SearchRequestPolicy{
 			MaximumQuestionCharacters: 2000,

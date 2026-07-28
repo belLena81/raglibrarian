@@ -88,13 +88,15 @@ type SearchPolicy struct {
 	AssessmentCallLimit         int
 	AssessmentTimeout           time.Duration
 	CandidatePageMultiplier     int
+	ReciprocalRankFusionK       int
 	MaximumAssessmentInputRunes int
 	RequestPolicy               domain.SearchRequestPolicy
 }
 
 func NewSearcherWithPolicy(embedder QueryEmbedder, store EvidenceStore, visibility IndexVisibility, assessor EvidenceAssessor, policy SearchPolicy) (*Searcher, error) {
 	if embedder == nil || store == nil || visibility == nil || policy.AssessmentCallLimit < 0 ||
-		policy.CandidatePageMultiplier < 1 || policy.MaximumAssessmentInputRunes < 1 ||
+		policy.CandidatePageMultiplier < 1 || policy.ReciprocalRankFusionK < 1 ||
+		policy.MaximumAssessmentInputRunes < 1 ||
 		policy.RequestPolicy.MaximumQuestionCharacters <= 0 || policy.RequestPolicy.MaximumFilterTags <= 0 ||
 		policy.RequestPolicy.MaximumTagCharacters <= 0 || policy.RequestPolicy.MaximumAuthorCharacters <= 0 ||
 		policy.RequestPolicy.DefaultResultLimit <= 0 || policy.RequestPolicy.MaximumResultLimit <= 0 ||
@@ -108,7 +110,7 @@ func NewSearcherWithPolicy(embedder QueryEmbedder, store EvidenceStore, visibili
 		analyzer:          heuristicQueryAnalyzer{policy: policy},
 		chunkRetriever:    storeChunkRetriever{store: store, visibility: visibility, policy: policy},
 		documentRetriever: storeDocumentRetriever{store: store, visibility: visibility, policy: policy},
-		fusion:            reciprocalRankFusion{},
+		fusion:            reciprocalRankFusion{k: policy.ReciprocalRankFusionK},
 	}, nil
 }
 

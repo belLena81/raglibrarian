@@ -74,6 +74,7 @@ func main() {
 		AssessmentCallLimit:         configuration.EvidenceAssessor.MaxCalls,
 		AssessmentTimeout:           configuration.EvidenceAssessor.Timeout,
 		CandidatePageMultiplier:     configuration.SearchCandidatePageMultiplier,
+		ReciprocalRankFusionK:       configuration.ReciprocalRankFusionK,
 		MaximumAssessmentInputRunes: configuration.EvidenceAssessor.MaxInputRunes,
 		RequestPolicy: domain.SearchRequestPolicy{
 			MaximumQuestionCharacters: configuration.SearchRequestPolicy.MaximumQuestionCharacters,

@@ -15,6 +15,7 @@ func testSearchPolicy(summaryCallLimit int) SearchPolicy {
 		MinimumVisibleScore:         0.6,
 		AssessmentCallLimit:         summaryCallLimit,
 		CandidatePageMultiplier:     2,
+		ReciprocalRankFusionK:       60,
 		MaximumAssessmentInputRunes: 4096,
 		RequestPolicy: domain.SearchRequestPolicy{
 			MaximumQuestionCharacters: 2000,
@@ -252,6 +253,7 @@ func TestSearcherWithPolicyUsesConfiguredCandidatePageMultiplier(t *testing.T) {
 		MinimumVisibleScore:         0.6,
 		AssessmentCallLimit:         4,
 		CandidatePageMultiplier:     3,
+		ReciprocalRankFusionK:       60,
 		MaximumAssessmentInputRunes: testSearchPolicy(4).MaximumAssessmentInputRunes,
 		RequestPolicy:               testSearchPolicy(4).RequestPolicy,
 	})
@@ -415,6 +417,47 @@ func TestSearcherBuildsDocumentGroupsOnlyFromAcceptedEvidence(t *testing.T) {
 	}
 }
 
+func TestSearcherUsesDocumentCandidatesWhenChunkCandidatesMiss(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{
+		results: nil,
+		documents: []DocumentResult{{
+			DocumentID: "book-1:job-1",
+			JobID:      "job-1",
+			BookID:     "book-1",
+			Title:      "Systems",
+			ChunkCount: 4,
+			Score:      0.87,
+			Evidence: []Evidence{{
+				EvidenceID: "document-evidence-1",
+				JobID:      "job-1",
+				BookID:     "book-1",
+				Title:      "Systems",
+				Passage:    "Document recall found the relevant chunk.",
+				Score:      0.83,
+			}},
+		}},
+	}
+	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 4)
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{
+		Question: "document recall",
+		Limit:    2,
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "document-evidence-1" {
+		t.Fatalf("document candidate was not returned as evidence: %#v", result.Evidence)
+	}
+	if len(result.Documents) != 1 || result.Documents[0].DocumentID != "book-1:job-1" || result.Documents[0].ChunkCount != 4 {
+		t.Fatalf("document metadata was not preserved: %#v", result.Documents)
+	}
+	if store.calls != 1 || store.documentCalls != 1 {
+		t.Fatalf("retrieval calls evidence/documents = %d/%d, want 1/1", store.calls, store.documentCalls)
+	}
+}
+
 func TestSearcherUsesAuthoritativeDocumentChunkCountFromSearchDocuments(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{
@@ -478,6 +521,27 @@ func TestSearcherSortsEvidenceDocumentsAndSupportingPassagesByScore(t *testing.T
 	}
 	if got := []string{result.Documents[0].DocumentID, result.Documents[1].DocumentID}; got[0] != "book-2:job-2" || got[1] != "book-3:job-3" {
 		t.Fatalf("document ordering = %#v", got)
+	}
+}
+
+func TestReciprocalRankFusionUsesConfiguredRankConstant(t *testing.T) {
+	query, err := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 5}, testSearchPolicy(4).RequestPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fusion := reciprocalRankFusion{k: 1}
+	results := fusion.Fuse(query, []Evidence{
+		{EvidenceID: "chunk-only", Passage: "chunk only", Score: 0.99},
+		{EvidenceID: "both", Passage: "chunk and document", Score: 0.50},
+	}, []DocumentResult{{
+		DocumentID: "doc-1",
+		Evidence: []Evidence{
+			{EvidenceID: "both", Passage: "document support", Score: 0.51},
+		},
+	}})
+
+	if len(results) != 2 || results[0].EvidenceID != "both" || results[0].Passage != "document support" {
+		t.Fatalf("unexpected RRF results: %#v", results)
 	}
 }
 

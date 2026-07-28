@@ -88,14 +88,23 @@ func TestLoadAcceptsOptionalEvidenceAssessorConfiguration(t *testing.T) {
 	if configuration.TEIMaxResponseBytes != 8<<20 || configuration.TEIBatchSize != 8 {
 		t.Fatalf("unexpected TEI policy: response=%d batch=%d", configuration.TEIMaxResponseBytes, configuration.TEIBatchSize)
 	}
-	if configuration.QdrantMaxResponseBytes != 4<<20 || configuration.QdrantBatchResponseBytes != 8<<20 {
-		t.Fatalf("unexpected Qdrant policy: response=%d batch=%d", configuration.QdrantMaxResponseBytes, configuration.QdrantBatchResponseBytes)
+	if configuration.QdrantMaxResponseBytes != 4<<20 ||
+		configuration.QdrantBatchResponseBytes != 8<<20 ||
+		configuration.QdrantDocumentEvidenceLimit != 3 {
+		t.Fatalf("unexpected Qdrant policy: response=%d batch=%d document_evidence=%d",
+			configuration.QdrantMaxResponseBytes,
+			configuration.QdrantBatchResponseBytes,
+			configuration.QdrantDocumentEvidenceLimit,
+		)
 	}
 	if configuration.EvidenceAssessor.MaxCalls != 100 {
 		t.Fatalf("EvidenceAssessor.MaxCalls = %d, want 100", configuration.EvidenceAssessor.MaxCalls)
 	}
 	if configuration.SearchCandidatePageMultiplier != 2 {
 		t.Fatalf("SearchCandidatePageMultiplier = %d, want 2", configuration.SearchCandidatePageMultiplier)
+	}
+	if configuration.ReciprocalRankFusionK != 60 {
+		t.Fatalf("ReciprocalRankFusionK = %d, want 60", configuration.ReciprocalRankFusionK)
 	}
 	if configuration.EvidenceAssessor.MaxOutputTokens != 64 {
 		t.Fatalf("EvidenceAssessor.MaxOutputTokens = %d, want 64", configuration.EvidenceAssessor.MaxOutputTokens)
@@ -141,6 +150,9 @@ func TestLoadDefaultsEvidenceAssessorRateLimit(t *testing.T) {
 	}
 	if configuration.SearchCandidatePageMultiplier != 2 {
 		t.Fatalf("SearchCandidatePageMultiplier = %d, want 2", configuration.SearchCandidatePageMultiplier)
+	}
+	if configuration.ReciprocalRankFusionK != 60 {
+		t.Fatalf("ReciprocalRankFusionK = %d, want 60", configuration.ReciprocalRankFusionK)
 	}
 	if configuration.SearchTimeout != 4*time.Minute {
 		t.Fatalf("SearchTimeout = %s, want 4m", configuration.SearchTimeout)
@@ -188,6 +200,9 @@ func TestLoadDefaultsSearchTimeoutAndMinimumScore(t *testing.T) {
 	}
 	if configuration.SearchCandidatePageMultiplier != 2 {
 		t.Fatalf("SearchCandidatePageMultiplier = %d, want 2", configuration.SearchCandidatePageMultiplier)
+	}
+	if configuration.ReciprocalRankFusionK != 60 {
+		t.Fatalf("ReciprocalRankFusionK = %d, want 60", configuration.ReciprocalRankFusionK)
 	}
 }
 
@@ -256,6 +271,31 @@ func TestLoadOverridesSearchCandidatePageMultiplier(t *testing.T) {
 	}
 }
 
+func TestLoadOverridesQueryFusionAndDocumentHydrationPolicy(t *testing.T) {
+	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+	t.Setenv("RETRIEVAL_RECIPROCAL_RANK_FUSION_K", "42")
+	t.Setenv("RETRIEVAL_QDRANT_DOCUMENT_EVIDENCE_LIMIT", "5")
+
+	configuration, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if configuration.ReciprocalRankFusionK != 42 {
+		t.Fatalf("ReciprocalRankFusionK = %d, want 42", configuration.ReciprocalRankFusionK)
+	}
+	if configuration.QdrantDocumentEvidenceLimit != 5 {
+		t.Fatalf("QdrantDocumentEvidenceLimit = %d, want 5", configuration.QdrantDocumentEvidenceLimit)
+	}
+}
+
 func TestLoadOverridesEvidenceAssessorMaxOutputTokens(t *testing.T) {
 	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
 	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
@@ -295,6 +335,7 @@ func TestLoadOverridesRetrievalProviderPolicies(t *testing.T) {
 	t.Setenv("RETRIEVAL_TEI_BATCH_SIZE", "4")
 	t.Setenv("RETRIEVAL_QDRANT_MAX_RESPONSE_BYTES", "2097152")
 	t.Setenv("RETRIEVAL_QDRANT_BATCH_RESPONSE_BYTES", "3145728")
+	t.Setenv("RETRIEVAL_QDRANT_DOCUMENT_EVIDENCE_LIMIT", "4")
 	t.Setenv("RETRIEVAL_SUMMARY_LLM_MAX_INPUT_RUNES", "2048")
 	t.Setenv("RETRIEVAL_SUMMARY_LLM_MAX_RESPONSE_BYTES", "32768")
 	t.Setenv("RETRIEVAL_SUMMARY_LLM_MAX_SUMMARY_BYTES", "8192")
@@ -306,7 +347,9 @@ func TestLoadOverridesRetrievalProviderPolicies(t *testing.T) {
 	if configuration.TEIMaxResponseBytes != 1048576 || configuration.TEIBatchSize != 4 {
 		t.Fatalf("unexpected TEI policy: %#v", configuration)
 	}
-	if configuration.QdrantMaxResponseBytes != 2097152 || configuration.QdrantBatchResponseBytes != 3145728 {
+	if configuration.QdrantMaxResponseBytes != 2097152 ||
+		configuration.QdrantBatchResponseBytes != 3145728 ||
+		configuration.QdrantDocumentEvidenceLimit != 4 {
 		t.Fatalf("unexpected Qdrant policy: %#v", configuration)
 	}
 	if configuration.EvidenceAssessor.MaxInputRunes != 2048 || configuration.EvidenceAssessor.MaxResponseBytes != 32768 || configuration.EvidenceAssessor.MaxSummaryBytes != 8192 {
