@@ -76,44 +76,33 @@ func configureSummaryProvider(configuration config.Config, serviceLogger *zap.Lo
 	case retrievalSummaryProviderOpenAICompatible:
 		apiKey, err := providerhttp.ReadSingleLineSecret(configuration.SummaryLLMAPIKeyFile, 4096)
 		if err != nil {
-			if serviceLogger != nil {
-				serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "api_key_unavailable"))
-			}
-			return nil, nil
+			return disableSummaryProvider(serviceLogger, "api_key_unavailable"), nil
 		}
 		httpClient, err := providerhttp.NewTLSHTTPClient(configuration.SummaryLLMCAFile, configuration.SummaryLLMTimeout)
 		if err != nil {
-			if serviceLogger != nil {
-				serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "transport_unavailable"))
-			}
-			return nil, nil
+			return disableSummaryProvider(serviceLogger, "transport_unavailable"), nil
 		}
 		limit, err := throttle.NewPerMinute(configuration.SummaryLLMRequestsPerMinute)
 		if err != nil {
-			if serviceLogger != nil {
-				serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "rate_limit_invalid"))
-			}
-			return nil, nil
+			return disableSummaryProvider(serviceLogger, "rate_limit_invalid"), nil
 		}
 		outputMode, err := provider.ParseSummaryOutputMode(configuration.SummaryLLMOutputMode)
 		if err != nil {
-			if serviceLogger != nil {
-				serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "output_mode_invalid"))
-			}
-			return nil, nil
+			return disableSummaryProvider(serviceLogger, "output_mode_invalid"), nil
 		}
 		summaryProvider, err := provider.NewOpenAI(configuration.SummaryLLMBaseURL, configuration.SummaryLLMModel, apiKey, httpClient, serviceLogger, limit, configuration.SummaryLLMMaxOutputTokens, outputMode)
 		if err != nil {
-			if serviceLogger != nil {
-				serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "configuration_invalid"))
-			}
-			return nil, nil
+			return disableSummaryProvider(serviceLogger, "configuration_invalid"), nil
 		}
 		return summaryProvider, nil
 	default:
-		if serviceLogger != nil {
-			serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "provider_unsupported"))
-		}
-		return nil, nil
+		return disableSummaryProvider(serviceLogger, "provider_unsupported"), nil
 	}
+}
+
+func disableSummaryProvider(serviceLogger *zap.Logger, reason string) application.SummaryProvider {
+	if serviceLogger != nil {
+		serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", reason))
+	}
+	return nil
 }
