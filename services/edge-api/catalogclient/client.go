@@ -20,24 +20,41 @@ import (
 )
 
 type Client struct {
-	service        catalogv1.CatalogServiceClient
-	previewTimeout time.Duration
+	service catalogv1.CatalogServiceClient
+	policy  Policy
+}
+
+// Policy defines runtime-tunable Catalog RPC timing.
+type Policy struct {
+	ReadinessTimeout time.Duration
+	UploadTimeout    time.Duration
+	ListTimeout      time.Duration
+	PreviewTimeout   time.Duration
 }
 
 // MaxPreviewDeadline bounds Edge's gRPC catalog preview request budget.
 const MaxPreviewDeadline = 30 * time.Second
 
-func New(service catalogv1.CatalogServiceClient, previewTimeout time.Duration) *Client {
+func New(service catalogv1.CatalogServiceClient, policy Policy) *Client {
 	if service == nil {
 		panic("catalogclient: service must not be nil")
 	}
-	if previewTimeout <= 0 || previewTimeout > MaxPreviewDeadline {
+	if policy.ReadinessTimeout <= 0 {
+		panic("catalogclient: readiness timeout must be positive")
+	}
+	if policy.UploadTimeout <= 0 {
+		panic("catalogclient: upload timeout must be positive")
+	}
+	if policy.ListTimeout <= 0 {
+		panic("catalogclient: list timeout must be positive")
+	}
+	if policy.PreviewTimeout <= 0 || policy.PreviewTimeout > MaxPreviewDeadline {
 		panic("catalogclient: preview timeout must be between zero and 30 seconds")
 	}
-	return &Client{service: service, previewTimeout: previewTimeout}
+	return &Client{service: service, policy: policy}
 }
 func (c *Client) CheckReady(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, c.policy.ReadinessTimeout)
 	defer cancel()
 	_, err := c.service.Check(ctx, &catalogv1.CheckRequest{})
 	return err
@@ -49,7 +66,7 @@ func (c *Client) UploadBook(ctx context.Context, metadata handler.BookMetadata, 
 	if err != nil {
 		return handler.Book{}, handler.ErrInvalidBookRequest
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, c.policy.UploadTimeout)
 	defer cancel()
 	stream, err := c.service.UploadBook(ctx)
 	if err != nil {
@@ -111,7 +128,7 @@ func (c *Client) ListBooks(ctx context.Context, size int, token string, actor ha
 	if err != nil {
 		return handler.BookPage{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, c.policy.ListTimeout)
 	defer cancel()
 	response, err := c.service.ListBooks(ctx, &catalogv1.ListBooksRequest{PageSize: int32(size), PageToken: token, Actor: actorProto(actor)}) // #nosec G115 -- handler validation limits page size to 100.
 	if err != nil {
@@ -129,7 +146,7 @@ func (c *Client) GetBook(ctx context.Context, id string, actor handler.CatalogAc
 	if err != nil {
 		return handler.Book{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, c.previewTimeout)
+	ctx, cancel := context.WithTimeout(ctx, c.policy.PreviewTimeout)
 	defer cancel()
 	response, err := c.service.GetBook(ctx, &catalogv1.GetBookRequest{BookId: id, Actor: actorProto(actor)})
 	if err != nil {

@@ -26,24 +26,33 @@ const MaxSearchDeadline = 5 * time.Minute
 
 // Client translates Edge search requests to the versioned Retrieval contract.
 type Client struct {
-	service  retrievalv1.RetrievalServiceClient
-	deadline time.Duration
+	service retrievalv1.RetrievalServiceClient
+	policy  Policy
+}
+
+// Policy defines runtime-tunable Retrieval RPC timing.
+type Policy struct {
+	ReadinessTimeout time.Duration
+	SearchDeadline   time.Duration
 }
 
 // New constructs a Retrieval client adapter.
-func New(service retrievalv1.RetrievalServiceClient, deadline time.Duration) *Client {
+func New(service retrievalv1.RetrievalServiceClient, policy Policy) *Client {
 	if service == nil {
 		panic("retrievalclient: service must not be nil")
 	}
-	if deadline <= 0 || deadline > MaxSearchDeadline {
+	if policy.ReadinessTimeout <= 0 {
+		panic("retrievalclient: readiness timeout must be positive")
+	}
+	if policy.SearchDeadline <= 0 || policy.SearchDeadline > MaxSearchDeadline {
 		panic("retrievalclient: deadline must be between zero and 5 minutes")
 	}
-	return &Client{service: service, deadline: deadline}
+	return &Client{service: service, policy: policy}
 }
 
 // CheckReady verifies the synchronous Retrieval boundary within a short deadline.
 func (c *Client) CheckReady(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, c.policy.ReadinessTimeout)
 	defer cancel()
 	_, err := c.service.Check(ctx, &retrievalv1.CheckRequest{})
 	if err != nil {
@@ -62,7 +71,7 @@ func (c *Client) Search(ctx context.Context, request handler.SearchRequest) (han
 	metadata = metadata.Copy()
 	metadata.Set("x-request-id", requestID)
 	ctx = grpcmetadata.NewOutgoingContext(ctx, metadata)
-	ctx, cancel := context.WithTimeout(ctx, c.deadline)
+	ctx, cancel := context.WithTimeout(ctx, c.policy.SearchDeadline)
 	defer cancel()
 
 	response, err := c.service.Search(ctx, searchcontract.RequestToProto(request, requestID))

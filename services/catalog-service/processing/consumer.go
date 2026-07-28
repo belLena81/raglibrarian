@@ -32,6 +32,17 @@ type retryPublisher interface {
 	PublishRetry(context.Context, string, amqp091.Publishing) error
 }
 
+type Policy struct {
+	ReconnectInitialBackoff time.Duration
+	ReconnectMaxBackoff     time.Duration
+	DialTimeout             time.Duration
+	HeartbeatTimeout        time.Duration
+	HandleTimeout           time.Duration
+	RetryLimit              int
+	RetryDelayStep          time.Duration
+	RetryPublishTimeout     time.Duration
+}
+
 // confirmedRetryPublisher makes the retry budget independent of quorum-only
 // x-delivery-count headers. That keeps retries bounded on classic test queues
 // without weakening the production quorum topology.
@@ -75,18 +86,19 @@ func (p *confirmedRetryPublisher) PublishRetry(ctx context.Context, queue string
 
 // Run reconnects until shutdown. RabbitMQ is asynchronous and therefore does
 // not participate in Catalog readiness.
-func Run(ctx context.Context, uri string, service handler, recorder Recorder) {
-	RunQueue(ctx, uri, Queue, service, recorder)
+func Run(ctx context.Context, uri string, service handler, recorder Recorder, policy Policy) {
+	RunQueue(ctx, uri, Queue, service, recorder, policy)
 }
 
 // RunQueue consumes one explicitly provisioned queue using the shared delivery policy.
-func RunQueue(ctx context.Context, uri, queue string, service handler, recorder Recorder) {
+func RunQueue(ctx context.Context, uri, queue string, service handler, recorder Recorder, policy Policy) {
 	if uri == "" || queue == "" || service == nil || recorder == nil {
 		panic("catalog processing consumer dependencies are required")
 	}
-	backoff := time.Second
+	policy = normalizePolicy(policy)
+	backoff := policy.ReconnectInitialBackoff
 	for ctx.Err() == nil {
-		err := consumeConnection(ctx, uri, queue, service, recorder)
+		err := consumeConnection(ctx, uri, queue, service, recorder, policy)
 		if ctx.Err() != nil {
 			return
 		}
@@ -100,17 +112,23 @@ func RunQueue(ctx context.Context, uri, queue string, service handler, recorder 
 			return
 		case <-timer.C:
 		}
-		if backoff < 30*time.Second {
+		if backoff < policy.ReconnectMaxBackoff {
 			backoff *= 2
+			if backoff > policy.ReconnectMaxBackoff {
+				backoff = policy.ReconnectMaxBackoff
+			}
 		}
 	}
 }
 
-func consumeConnection(ctx context.Context, uri, queue string, service handler, recorder Recorder) error {
-	dialer := net.Dialer{Timeout: 5 * time.Second}
-	connection, err := amqp091.DialConfig(uri, amqp091.Config{Heartbeat: 10 * time.Second, Dial: func(network, address string) (net.Conn, error) {
-		return dialer.DialContext(ctx, network, address)
-	}})
+func consumeConnection(ctx context.Context, uri, queue string, service handler, recorder Recorder, policy Policy) error {
+	dialer := net.Dialer{Timeout: policy.DialTimeout}
+	connection, err := amqp091.DialConfig(uri, amqp091.Config{
+		Heartbeat: policy.HeartbeatTimeout,
+		Dial: func(network, address string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, address)
+		},
+	})
 	if err != nil {
 		return err
 	}
@@ -146,18 +164,19 @@ func consumeConnection(ctx context.Context, uri, queue string, service handler, 
 			if !open {
 				return errors.New("catalog processing delivery channel closed")
 			}
-			handleDelivery(ctx, queue, service, recorder, retry, delivery)
+			handleDelivery(ctx, queue, service, recorder, retry, delivery, policy)
 		}
 	}
 }
 
-func handleDelivery(ctx context.Context, queue string, service handler, recorder Recorder, retry retryPublisher, delivery amqp091.Delivery) {
+func handleDelivery(ctx context.Context, queue string, service handler, recorder Recorder, retry retryPublisher, delivery amqp091.Delivery, policy Policy) {
+	policy = normalizePolicy(policy)
 	if delivery.ContentType != "application/x-protobuf" || len(delivery.Body) == 0 || len(delivery.Body) > 64<<10 {
 		recorder.ProcessingEventRejected()
 		_ = delivery.Nack(false, false)
 		return
 	}
-	handleCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	handleCtx, cancel := context.WithTimeout(ctx, policy.HandleTimeout)
 	_, err := service.HandleEnvelope(handleCtx, delivery.Type, delivery.MessageId, delivery.Body)
 	cancel()
 	switch {
@@ -172,18 +191,18 @@ func handleDelivery(ctx context.Context, queue string, service handler, recorder
 	default:
 		recorder.ProcessingEventApplyFailed()
 		attempt := deliveryAttempt(delivery.Headers)
-		if attempt >= 5 {
+		if attempt >= int64(policy.RetryLimit) {
 			_ = delivery.Nack(false, false)
 			return
 		}
-		timer := time.NewTimer(time.Duration(attempt+1) * 250 * time.Millisecond)
+		timer := time.NewTimer(time.Duration(attempt+1) * policy.RetryDelayStep)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			// Closing the consumer connection recovers unsettled deliveries. Do not
 			// explicitly requeue with an unchanged application retry count.
 		case <-timer.C:
-			publishCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			publishCtx, cancel := context.WithTimeout(ctx, policy.RetryPublishTimeout)
 			publishErr := retry.PublishRetry(publishCtx, queue, retryMessage(delivery, attempt+1))
 			cancel()
 			if publishErr != nil {
@@ -195,6 +214,37 @@ func handleDelivery(ctx context.Context, queue string, service handler, recorder
 			_ = delivery.Ack(false)
 		}
 	}
+}
+
+func normalizePolicy(policy Policy) Policy {
+	if policy.ReconnectInitialBackoff <= 0 {
+		policy.ReconnectInitialBackoff = time.Second
+	}
+	if policy.ReconnectMaxBackoff <= 0 {
+		policy.ReconnectMaxBackoff = 30 * time.Second
+	}
+	if policy.DialTimeout <= 0 {
+		policy.DialTimeout = 5 * time.Second
+	}
+	if policy.HeartbeatTimeout <= 0 {
+		policy.HeartbeatTimeout = 10 * time.Second
+	}
+	if policy.HandleTimeout <= 0 {
+		policy.HandleTimeout = 10 * time.Second
+	}
+	if policy.RetryLimit <= 0 {
+		policy.RetryLimit = 5
+	}
+	if policy.RetryDelayStep <= 0 {
+		policy.RetryDelayStep = 250 * time.Millisecond
+	}
+	if policy.RetryPublishTimeout <= 0 {
+		policy.RetryPublishTimeout = 5 * time.Second
+	}
+	if policy.ReconnectInitialBackoff > policy.ReconnectMaxBackoff {
+		policy.ReconnectInitialBackoff = policy.ReconnectMaxBackoff
+	}
+	return policy
 }
 
 func deliveryAttempt(headers amqp091.Table) int64 {

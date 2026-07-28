@@ -18,6 +18,7 @@ import (
 )
 
 const testRequestID = "0123456789abcdef0123456789abcdef"
+const testReadinessTimeout = 2 * time.Second
 
 type retrievalClientStub struct {
 	retrievalv1.RetrievalServiceClient
@@ -68,7 +69,7 @@ func TestSearchMapsRequestResponseMetadataAndDeadline(t *testing.T) {
 			}},
 		}, nil
 	}
-	client := New(stub, 2*time.Minute)
+	client := New(stub, Policy{ReadinessTimeout: testReadinessTimeout, SearchDeadline: 2 * time.Minute})
 	ctx := context.WithValue(context.Background(), chimiddleware.RequestIDKey, testRequestID)
 
 	result, err := client.Search(ctx, handler.SearchRequest{
@@ -104,7 +105,7 @@ func TestSearchMapsStableRetrievalFailures(t *testing.T) {
 		t.Run(test.code.String(), func(t *testing.T) {
 			client := New(&retrievalClientStub{search: func(context.Context, *retrievalv1.SearchRequest, ...grpc.CallOption) (*retrievalv1.SearchResponse, error) {
 				return nil, status.Error(test.code, "private retrieval detail")
-			}}, 2*time.Minute)
+			}}, Policy{ReadinessTimeout: testReadinessTimeout, SearchDeadline: 2 * time.Minute})
 			ctx := context.WithValue(context.Background(), chimiddleware.RequestIDKey, testRequestID)
 
 			_, err := client.Search(ctx, handler.SearchRequest{Question: "q"})
@@ -120,7 +121,7 @@ func TestSearchRejectsInvalidRequestIDBeforeRPC(t *testing.T) {
 	client := New(&retrievalClientStub{search: func(context.Context, *retrievalv1.SearchRequest, ...grpc.CallOption) (*retrievalv1.SearchResponse, error) {
 		called = true
 		return &retrievalv1.SearchResponse{}, nil
-	}}, 2*time.Minute)
+	}}, Policy{ReadinessTimeout: testReadinessTimeout, SearchDeadline: 2 * time.Minute})
 
 	_, err := client.Search(context.Background(), handler.SearchRequest{Question: "q"})
 
@@ -151,7 +152,7 @@ func TestSearchNormalizesNilBookTagsToEmptySlice(t *testing.T) {
 				}},
 			}},
 		}, nil
-	}}, 2*time.Minute)
+	}}, Policy{ReadinessTimeout: testReadinessTimeout, SearchDeadline: 2 * time.Minute})
 	ctx := context.WithValue(context.Background(), chimiddleware.RequestIDKey, testRequestID)
 
 	result, err := client.Search(ctx, handler.SearchRequest{Question: "q"})

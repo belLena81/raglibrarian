@@ -54,14 +54,10 @@ var (
 	ErrHTTPShutdown = errors.New("HTTP shutdown failed")
 )
 
-func httpWriteTimeout(answerDeadline, retrievalDeadline time.Duration) time.Duration {
-	const (
-		minimumWriteTimeout  = 30 * time.Second
-		writeTimeoutHeadroom = 5 * time.Second
-	)
-	timeout := answerDeadline + retrievalDeadline + writeTimeoutHeadroom
-	if timeout < minimumWriteTimeout {
-		return minimumWriteTimeout
+func httpWriteTimeout(answerDeadline, retrievalDeadline, headroom, minimum time.Duration) time.Duration {
+	timeout := answerDeadline + retrievalDeadline + headroom
+	if timeout < minimum {
+		return minimum
 	}
 	return timeout
 }
@@ -114,9 +110,19 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		return appFailure(ErrAnswerClientInitialization, err)
 	}
 	defer func() { _ = answerConnection.Close() }()
-	identity := identityclient.New(identityv1.NewIdentityServiceClient(connection), grpc_health_v1.NewHealthClient(connection))
-	catalog := catalogclient.New(catalogv1.NewCatalogServiceClient(catalogConnection), cfg.CatalogPreviewDeadline)
-	retrieval := retrievalclient.New(retrievalv1.NewRetrievalServiceClient(retrievalConnection), cfg.RetrievalSearchDeadline)
+	identity := identityclient.New(identityv1.NewIdentityServiceClient(connection), grpc_health_v1.NewHealthClient(connection), identityclient.Policy{
+		RPCDeadline: cfg.IdentityRPCDeadline,
+	})
+	catalog := catalogclient.New(catalogv1.NewCatalogServiceClient(catalogConnection), catalogclient.Policy{
+		ReadinessTimeout: cfg.CatalogReadinessTimeout,
+		UploadTimeout:    cfg.CatalogUploadTimeout,
+		ListTimeout:      cfg.CatalogListTimeout,
+		PreviewTimeout:   cfg.CatalogPreviewDeadline,
+	})
+	retrieval := retrievalclient.New(retrievalv1.NewRetrievalServiceClient(retrievalConnection), retrievalclient.Policy{
+		ReadinessTimeout: cfg.RetrievalReadinessTimeout,
+		SearchDeadline:   cfg.RetrievalSearchDeadline,
+	})
 	answer := answerclient.New(answerv1.NewAnswerServiceClient(answerConnection), cfg.AnswerDeadline, cfg.MinimumEvidenceScore)
 	authHandler := handler.NewAuthHandler(identity, diagnostics, handler.CookieConfig{Secure: cfg.SecureCookie})
 	answerAdmission := middleware.NewPrincipalRateLimiter(cfg.AnswerRateLimit, cfg.AnswerRateWindow, cfg.QueryRateMaxKeys)
@@ -127,30 +133,61 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		retrieval:                  retrieval,
 		retrievalReadinessRequired: cfg.RetrievalReadinessRequired,
 	})
-	booksHandler := handler.NewBooksHandler(catalog, cfg.CatalogPreviewDeadline)
+	booksHandler := handler.NewBooksHandler(catalog, handler.BooksPolicy{
+		UploadTimeout:    cfg.BookUploadDeadline,
+		ListTimeout:      cfg.BooksListTimeout,
+		PreviewTimeout:   cfg.CatalogPreviewDeadline,
+		LifecycleTimeout: cfg.BooksLifecycleTimeout,
+	})
 	bookStatusHub := handler.NewBookStatusHub(200)
 	booksHandler.EnableEvents(handler.BookEventsConfig{
 		Sessions: identity, Hub: bookStatusHub, PublicOrigin: cfg.PublicOrigin, EnforceOrigin: cfg.EnforceBrowserOrigin,
+		Timing: handler.SSEPolicy{
+			HeartbeatInterval:  cfg.SSEHeartbeatInterval,
+			RevalidateInterval: cfg.SSERevalidateInterval,
+			MaximumDuration:    cfg.SSEMaximumDuration,
+			WriteTimeout:       cfg.SSEWriteTimeout,
+		},
 	})
-	go bookstatus.Run(ctx, cfg.StatusRabbitURI, cfg.StatusQueue, bookStatusHub)
+	go bookstatus.Run(ctx, cfg.StatusRabbitURI, cfg.StatusQueue, bookStatusHub, bookstatus.Policy{
+		ReconnectInitialBackoff: cfg.BookStatusReconnectInitialBackoff,
+		ReconnectMaxBackoff:     cfg.BookStatusReconnectMaxBackoff,
+		DialTimeout:             cfg.BookStatusDialTimeout,
+		HeartbeatTimeout:        cfg.BookStatusHeartbeatTimeout,
+		Prefetch:                cfg.BookStatusPrefetch,
+		QueueMaxLengthBytes:     int64(cfg.BookStatusQueueMaxLengthBytes),
+	})
 	setupHandler := handler.NewSetupHandler(identity)
 	hub := handler.NewPendingHub(200)
 	adminHandler := handler.NewAdminHandler(identity, hub)
-	go watchPendingChanges(ctx, identity, hub)
+	adminHandler.SetSSETiming(handler.SSEPolicy{
+		HeartbeatInterval:  cfg.SSEHeartbeatInterval,
+		RevalidateInterval: cfg.SSERevalidateInterval,
+		MaximumDuration:    cfg.SSEMaximumDuration,
+		WriteTimeout:       cfg.SSEWriteTimeout,
+	})
+	go watchPendingChanges(ctx, identity, hub, cfg.PendingWatchReconnectInitialBackoff, cfg.PendingWatchReconnectMaxBackoff)
 	server := &http.Server{
 		Addr: cfg.Addr,
 		Handler: edgeapi.NewRouter(queryHandler, authHandler, healthHandler, setupHandler, adminHandler, verifier, identity, diagnostics, edgeapi.RouterConfig{
 			TrustedProxyCIDRs: cfg.TrustedProxyCIDRs, PublicOrigin: cfg.PublicOrigin, EnforceBrowserOrigin: cfg.EnforceBrowserOrigin,
 			QueryRateLimit: cfg.QueryRateLimit, QueryRateWindow: cfg.QueryRateWindow, QueryRateMaxKeys: cfg.QueryRateMaxKeys, QueryConcurrency: cfg.QueryConcurrency,
+			AuthRegisterRateLimit: cfg.AuthRegisterRateLimit, AuthRegisterRateWindow: cfg.AuthRegisterRateWindow, AuthRegisterRateMaxKeys: cfg.AuthRegisterRateMaxKeys,
+			AuthVerifyEmailRateLimit: cfg.AuthVerifyEmailRateLimit, AuthVerifyEmailRateWindow: cfg.AuthVerifyEmailRateWindow, AuthVerifyEmailRateMaxKeys: cfg.AuthVerifyEmailRateMaxKeys,
+			AuthLoginRateLimit: cfg.AuthLoginRateLimit, AuthLoginRateWindow: cfg.AuthLoginRateWindow, AuthLoginRateMaxKeys: cfg.AuthLoginRateMaxKeys,
+			AuthResendVerificationRateLimit: cfg.AuthResendVerificationRateLimit, AuthResendVerificationRateWindow: cfg.AuthResendVerificationRateWindow, AuthResendVerificationRateMaxKeys: cfg.AuthResendVerificationRateMaxKeys,
+			AuthPasswordResetRequestRateLimit: cfg.AuthPasswordResetRequestRateLimit, AuthPasswordResetRequestRateWindow: cfg.AuthPasswordResetRequestRateWindow, AuthPasswordResetRequestRateMaxKeys: cfg.AuthPasswordResetRequestRateMaxKeys,
+			AuthPasswordResetVerifyRateLimit: cfg.AuthPasswordResetVerifyRateLimit, AuthPasswordResetVerifyRateWindow: cfg.AuthPasswordResetVerifyRateWindow, AuthPasswordResetVerifyRateMaxKeys: cfg.AuthPasswordResetVerifyRateMaxKeys,
+			AuthPasswordResetCompleteRateLimit: cfg.AuthPasswordResetCompleteRateLimit, AuthPasswordResetCompleteRateWindow: cfg.AuthPasswordResetCompleteRateWindow, AuthPasswordResetCompleteRateMaxKeys: cfg.AuthPasswordResetCompleteRateMaxKeys,
 			SetupAdminRateLimit: cfg.SetupAdminRateLimit, SetupAdminRateWindow: cfg.SetupAdminRateWindow, SetupAdminRateMaxKeys: cfg.SetupAdminRateMaxKeys,
 			BookUploadRateLimit: cfg.BookUploadRateLimit, BookUploadRateWindow: cfg.BookUploadRateWindow,
 			BookUploadRateMaxKeys: cfg.BookUploadRateMaxKeys, BookUploadDeadline: cfg.BookUploadDeadline,
 		}, booksHandler),
-		ReadTimeout:       10 * time.Second,
-		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      httpWriteTimeout(cfg.AnswerDeadline, cfg.RetrievalSearchDeadline),
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
+		ReadTimeout:       cfg.HTTPReadTimeout,
+		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+		WriteTimeout:      httpWriteTimeout(cfg.AnswerDeadline, cfg.RetrievalSearchDeadline, cfg.HTTPWriteTimeoutHeadroom, cfg.HTTPMinimumWriteTimeout),
+		IdleTimeout:       cfg.HTTPIdleTimeout,
+		MaxHeaderBytes:    cfg.HTTPMaxHeaderBytes,
 	}
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.ListenAndServe() }()
@@ -161,7 +198,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		}
 		return httpServerFailure(err)
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.HTTPShutdownTimeout)
 		defer cancel()
 		if err = server.Shutdown(shutdownCtx); err != nil {
 			return appFailure(ErrHTTPShutdown, err)
@@ -216,8 +253,8 @@ type pendingWatcher interface {
 
 type pendingPublisher interface{ Publish() }
 
-func watchPendingChanges(ctx context.Context, watcher pendingWatcher, publisher pendingPublisher) {
-	backoff := time.Second
+func watchPendingChanges(ctx context.Context, watcher pendingWatcher, publisher pendingPublisher, initialBackoff, maximumBackoff time.Duration) {
+	backoff := initialBackoff
 	for ctx.Err() == nil {
 		changes := make(chan struct{}, 1)
 		done := make(chan error, 1)
@@ -240,8 +277,11 @@ func watchPendingChanges(ctx context.Context, watcher pendingWatcher, publisher 
 			return
 		case <-timer.C:
 		}
-		if backoff < 30*time.Second {
+		if backoff < maximumBackoff {
 			backoff *= 2
+			if backoff > maximumBackoff {
+				backoff = maximumBackoff
+			}
 		}
 	}
 }

@@ -17,26 +17,53 @@ import (
 
 // Config is validated Catalog runtime configuration.
 type Config struct {
-	Address            string
-	DSN                string
-	MinIOEndpoint      string
-	MinIOAccessKey     string
-	MinIOSecretKey     string
-	MinIOBucket        string
-	MinIOInsecure      bool
-	MinIOCAFile        string
-	RabbitURI          string
-	IngestionRabbitURI string
-	RetrievalRabbitURI string
-	MaxUploadBytes     int64
-	UploadConcurrency  int
-	PreviewConcurrency int
-	PreviewTimeout     time.Duration
-	MetricsAddress     string
-	ReconcileInterval  time.Duration
-	OrphanGracePeriod  time.Duration
-	TLS                internaltls.Files
-	RunAs              process.Identity
+	Address                           string
+	DSN                               string
+	MinIOEndpoint                     string
+	MinIOAccessKey                    string
+	MinIOSecretKey                    string
+	MinIOBucket                       string
+	MinIOInsecure                     bool
+	MinIOCAFile                       string
+	RabbitURI                         string
+	IngestionRabbitURI                string
+	RetrievalRabbitURI                string
+	MaxUploadBytes                    int64
+	UploadConcurrency                 int
+	PreviewConcurrency                int
+	PreviewTimeout                    time.Duration
+	OutboxPollInterval                time.Duration
+	OutboxDrainBudget                 time.Duration
+	OutboxLease                       time.Duration
+	OutboxPublishTimeout              time.Duration
+	DBPingTimeout                     time.Duration
+	HealthProbeTimeout                time.Duration
+	HealthUpdateInterval              time.Duration
+	BacklogPollInterval               time.Duration
+	BacklogProbeTimeout               time.Duration
+	MetricsReadHeaderTimeout          time.Duration
+	MetricsReadTimeout                time.Duration
+	MetricsWriteTimeout               time.Duration
+	MetricsIdleTimeout                time.Duration
+	GRPCGracefulStopTimeout           time.Duration
+	MetricsShutdownTimeout            time.Duration
+	GRPCReadinessProbeTimeout         time.Duration
+	GRPCUploadTimeout                 time.Duration
+	GRPCLifecycleTimeout              time.Duration
+	GRPCListTimeout                   time.Duration
+	ProcessingReconnectInitialBackoff time.Duration
+	ProcessingReconnectMaxBackoff     time.Duration
+	ProcessingDialTimeout             time.Duration
+	ProcessingHeartbeatTimeout        time.Duration
+	ProcessingHandleTimeout           time.Duration
+	ProcessingRetryLimit              int
+	ProcessingRetryDelayStep          time.Duration
+	ProcessingRetryPublishTimeout     time.Duration
+	MetricsAddress                    string
+	ReconcileInterval                 time.Duration
+	OrphanGracePeriod                 time.Duration
+	TLS                               internaltls.Files
+	RunAs                             process.Identity
 }
 
 // Load reads Catalog configuration from the environment.
@@ -123,6 +150,114 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	outboxPollInterval, err := boundedDuration("CATALOG_OUTBOX_POLL_INTERVAL", 100*time.Millisecond, time.Minute, time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	outboxDrainBudget, err := boundedDuration("CATALOG_OUTBOX_DRAIN_BUDGET", 50*time.Millisecond, 5*time.Second, 250*time.Millisecond)
+	if err != nil {
+		return Config{}, err
+	}
+	outboxLease, err := boundedDuration("CATALOG_OUTBOX_LEASE", time.Second, 10*time.Minute, 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	outboxPublishTimeout, err := boundedDuration("CATALOG_OUTBOX_PUBLISH_TIMEOUT", time.Second, time.Minute, 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	dbPingTimeout, err := boundedDuration("CATALOG_DB_PING_TIMEOUT", time.Second, time.Minute, 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	healthProbeTimeout, err := boundedDuration("CATALOG_HEALTH_PROBE_TIMEOUT", 100*time.Millisecond, time.Minute, 2*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	healthUpdateInterval, err := boundedDuration("CATALOG_HEALTH_UPDATE_INTERVAL", 100*time.Millisecond, time.Minute, time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	backlogPollInterval, err := boundedDuration("CATALOG_OUTBOX_BACKLOG_POLL_INTERVAL", time.Second, time.Hour, time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	backlogProbeTimeout, err := boundedDuration("CATALOG_OUTBOX_BACKLOG_PROBE_TIMEOUT", 100*time.Millisecond, time.Minute, 2*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	metricsReadHeaderTimeout, err := boundedDuration("CATALOG_METRICS_READ_HEADER_TIMEOUT", time.Second, time.Minute, 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	metricsReadTimeout, err := boundedDuration("CATALOG_METRICS_READ_TIMEOUT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	metricsWriteTimeout, err := boundedDuration("CATALOG_METRICS_WRITE_TIMEOUT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	metricsIdleTimeout, err := boundedDuration("CATALOG_METRICS_IDLE_TIMEOUT", time.Second, 5*time.Minute, 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	grpcGracefulStopTimeout, err := boundedDuration("CATALOG_GRPC_GRACEFUL_STOP_TIMEOUT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	metricsShutdownTimeout, err := boundedDuration("CATALOG_METRICS_SHUTDOWN_TIMEOUT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	grpcReadinessProbeTimeout, err := boundedDuration("CATALOG_GRPC_READINESS_PROBE_TIMEOUT", 100*time.Millisecond, time.Minute, 2*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	grpcUploadTimeout, err := boundedDuration("CATALOG_GRPC_UPLOAD_TIMEOUT", time.Second, 10*time.Minute, 2*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	grpcLifecycleTimeout, err := boundedDuration("CATALOG_GRPC_LIFECYCLE_TIMEOUT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	grpcListTimeout, err := boundedDuration("CATALOG_GRPC_LIST_TIMEOUT", 100*time.Millisecond, time.Minute, 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	processingReconnectInitialBackoff, err := boundedDuration("CATALOG_PROCESSING_RECONNECT_INITIAL_BACKOFF", 100*time.Millisecond, time.Minute, time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	processingReconnectMaxBackoff, err := boundedDuration("CATALOG_PROCESSING_RECONNECT_MAX_BACKOFF", time.Second, 10*time.Minute, 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	processingDialTimeout, err := boundedDuration("CATALOG_PROCESSING_DIAL_TIMEOUT", 100*time.Millisecond, time.Minute, 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	processingHeartbeatTimeout, err := boundedDuration("CATALOG_PROCESSING_HEARTBEAT_TIMEOUT", time.Second, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	processingHandleTimeout, err := boundedDuration("CATALOG_PROCESSING_HANDLE_TIMEOUT", 100*time.Millisecond, time.Minute, 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	processingRetryLimit, err := boundedInt("CATALOG_PROCESSING_RETRY_LIMIT", 5, 32)
+	if err != nil {
+		return Config{}, err
+	}
+	processingRetryDelayStep, err := boundedDuration("CATALOG_PROCESSING_RETRY_DELAY_STEP", 10*time.Millisecond, 10*time.Second, 250*time.Millisecond)
+	if err != nil {
+		return Config{}, err
+	}
+	processingRetryPublishTimeout, err := boundedDuration("CATALOG_PROCESSING_RETRY_PUBLISH_TIMEOUT", 100*time.Millisecond, time.Minute, 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
 	metricsAddress, err := privateMetricsAddress(optional("CATALOG_METRICS_ADDR", "127.0.0.1:9092"))
 	if err != nil {
 		return Config{}, err
@@ -135,7 +270,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{Address: optional("CATALOG_GRPC_ADDR", ":50052"), DSN: dsn, MinIOEndpoint: endpoint, MinIOAccessKey: minioAccessKey, MinIOSecretKey: minioSecretKey, MinIOBucket: bucket, MinIOInsecure: minioInsecure, MinIOCAFile: minioCAFile, RabbitURI: rabbitURI, IngestionRabbitURI: ingestionRabbitURI, RetrievalRabbitURI: retrievalRabbitURI, MaxUploadBytes: maxUploadBytes, UploadConcurrency: uploadConcurrency, PreviewConcurrency: previewConcurrency, PreviewTimeout: previewTimeout, MetricsAddress: metricsAddress, ReconcileInterval: reconcileInterval, OrphanGracePeriod: orphanGracePeriod, TLS: internaltls.Files{CA: ca, Certificate: cert, Key: key}, RunAs: process.Identity{UID: uid, GID: gid}}, nil
+	return Config{Address: optional("CATALOG_GRPC_ADDR", ":50052"), DSN: dsn, MinIOEndpoint: endpoint, MinIOAccessKey: minioAccessKey, MinIOSecretKey: minioSecretKey, MinIOBucket: bucket, MinIOInsecure: minioInsecure, MinIOCAFile: minioCAFile, RabbitURI: rabbitURI, IngestionRabbitURI: ingestionRabbitURI, RetrievalRabbitURI: retrievalRabbitURI, MaxUploadBytes: maxUploadBytes, UploadConcurrency: uploadConcurrency, PreviewConcurrency: previewConcurrency, PreviewTimeout: previewTimeout, OutboxPollInterval: outboxPollInterval, OutboxDrainBudget: outboxDrainBudget, OutboxLease: outboxLease, OutboxPublishTimeout: outboxPublishTimeout, DBPingTimeout: dbPingTimeout, HealthProbeTimeout: healthProbeTimeout, HealthUpdateInterval: healthUpdateInterval, BacklogPollInterval: backlogPollInterval, BacklogProbeTimeout: backlogProbeTimeout, MetricsReadHeaderTimeout: metricsReadHeaderTimeout, MetricsReadTimeout: metricsReadTimeout, MetricsWriteTimeout: metricsWriteTimeout, MetricsIdleTimeout: metricsIdleTimeout, GRPCGracefulStopTimeout: grpcGracefulStopTimeout, MetricsShutdownTimeout: metricsShutdownTimeout, GRPCReadinessProbeTimeout: grpcReadinessProbeTimeout, GRPCUploadTimeout: grpcUploadTimeout, GRPCLifecycleTimeout: grpcLifecycleTimeout, GRPCListTimeout: grpcListTimeout, ProcessingReconnectInitialBackoff: processingReconnectInitialBackoff, ProcessingReconnectMaxBackoff: processingReconnectMaxBackoff, ProcessingDialTimeout: processingDialTimeout, ProcessingHeartbeatTimeout: processingHeartbeatTimeout, ProcessingHandleTimeout: processingHandleTimeout, ProcessingRetryLimit: processingRetryLimit, ProcessingRetryDelayStep: processingRetryDelayStep, ProcessingRetryPublishTimeout: processingRetryPublishTimeout, MetricsAddress: metricsAddress, ReconcileInterval: reconcileInterval, OrphanGracePeriod: orphanGracePeriod, TLS: internaltls.Files{CA: ca, Certificate: cert, Key: key}, RunAs: process.Identity{UID: uid, GID: gid}}, nil
 }
 
 func strictBool(key string, fallback bool) (bool, error) {

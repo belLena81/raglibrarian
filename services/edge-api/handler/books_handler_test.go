@@ -22,6 +22,13 @@ import (
 	"github.com/belLena81/raglibrarian/services/edge-api/middleware"
 )
 
+var testBooksPolicy = handler.BooksPolicy{
+	UploadTimeout:    2 * time.Minute,
+	ListTimeout:      6 * time.Second,
+	PreviewTimeout:   5 * time.Second,
+	LifecycleTimeout: 5 * time.Second,
+}
+
 type uploadCatalog struct {
 	uploadCalls int
 	metadata    handler.BookMetadata
@@ -62,7 +69,7 @@ func TestUploadRejectsInvalidPublicationYearsBeforeCallingCatalog(t *testing.T) 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			catalog := &uploadCatalog{}
-			h := handler.NewBooksHandler(catalog, 5*time.Second)
+			h := handler.NewBooksHandler(catalog, testBooksPolicy)
 			req := newUploadRequest(t, testCase.year)
 			recorder := httptest.NewRecorder()
 
@@ -84,7 +91,7 @@ func TestUploadRejectsInvalidPublicationYearsBeforeCallingCatalog(t *testing.T) 
 func TestUploadAcceptsMaximumPublicationYearUnchanged(t *testing.T) {
 	maximumYear := time.Now().UTC().Year() + 1
 	catalog := &uploadCatalog{}
-	h := handler.NewBooksHandler(catalog, 5*time.Second)
+	h := handler.NewBooksHandler(catalog, testBooksPolicy)
 	req := newUploadRequest(t, fmt.Sprintf("%d", maximumYear))
 	recorder := httptest.NewRecorder()
 
@@ -103,7 +110,7 @@ func TestUploadAcceptsMaximumPublicationYearUnchanged(t *testing.T) {
 
 func TestUploadAcceptsEPUBAndForwardsMediaType(t *testing.T) {
 	catalog := &uploadCatalog{}
-	h := handler.NewBooksHandler(catalog, 5*time.Second)
+	h := handler.NewBooksHandler(catalog, testBooksPolicy)
 	req := newUploadRequestWithMedia(t, "2025", "book.epub", "application/epub+zip", []byte("PK\x03\x04"))
 	recorder := httptest.NewRecorder()
 
@@ -121,7 +128,7 @@ func TestUploadAcceptsEPUBWithoutRegisteredBrowserMediaType(t *testing.T) {
 	for _, mediaType := range []string{"application/octet-stream", ""} {
 		t.Run(mediaType, func(t *testing.T) {
 			catalog := &uploadCatalog{}
-			h := handler.NewBooksHandler(catalog, 5*time.Second)
+			h := handler.NewBooksHandler(catalog, testBooksPolicy)
 			req := newUploadRequestWithMedia(t, "2025", "book.epub", mediaType, []byte("PK\x03\x04"))
 			recorder := httptest.NewRecorder()
 
@@ -202,7 +209,7 @@ func (*commandCatalog) CheckReady(context.Context) error { return nil }
 
 func TestReindexRequiresIdempotencyKeyBeforeCallingCatalog(t *testing.T) {
 	catalog := &commandCatalog{}
-	h := handler.NewBooksHandler(catalog, 5*time.Second)
+	h := handler.NewBooksHandler(catalog, testBooksPolicy)
 	request := bookCommandRequest(http.MethodPost, "AAAAAAAAAAAAAAAAAAAAAA", "")
 	recorder := httptest.NewRecorder()
 
@@ -215,7 +222,7 @@ func TestReindexRequiresIdempotencyKeyBeforeCallingCatalog(t *testing.T) {
 
 func TestDeleteForwardsIdempotencyKeyAndReturnsAcceptedProjection(t *testing.T) {
 	catalog := &commandCatalog{}
-	h := handler.NewBooksHandler(catalog, 5*time.Second)
+	h := handler.NewBooksHandler(catalog, testBooksPolicy)
 	request := bookCommandRequest(http.MethodDelete, "AAAAAAAAAAAAAAAAAAAAAA", "command-123")
 	recorder := httptest.NewRecorder()
 
@@ -257,7 +264,7 @@ func (*previewCatalog) CheckReady(context.Context) error { return nil }
 
 func TestGetAllowsGeneratedPreviewTimeBudget(t *testing.T) {
 	catalog := &previewCatalog{}
-	h := handler.NewBooksHandler(catalog, 5*time.Second)
+	h := handler.NewBooksHandler(catalog, testBooksPolicy)
 	request := bookLookupRequest("AAAAAAAAAAAAAAAAAAAAAA")
 	recorder := httptest.NewRecorder()
 
@@ -309,7 +316,7 @@ func (paginationCatalog) DeleteBook(context.Context, string, handler.CatalogActo
 func (paginationCatalog) CheckReady(context.Context) error { return nil }
 
 func TestListMapsCatalogPaginationErrorToBadRequest(t *testing.T) {
-	h := handler.NewBooksHandler(paginationCatalog{}, 5*time.Second)
+	h := handler.NewBooksHandler(paginationCatalog{}, testBooksPolicy)
 	req := httptest.NewRequest(http.MethodGet, "/books?page_token=short", nil)
 	req = req.WithContext(middleware.WithClaims(req.Context(), auth.Claims{UserID: "reader", Role: auth.RoleReader}))
 	recorder := httptest.NewRecorder()
@@ -366,7 +373,7 @@ func TestGetRejectsInvalidBookIDBeforeCallingCatalog(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			catalog := &bookLookupCatalog{}
-			h := handler.NewBooksHandler(catalog, 5*time.Second)
+			h := handler.NewBooksHandler(catalog, testBooksPolicy)
 			request := bookGetRequest(test.bookID)
 			recorder := httptest.NewRecorder()
 
@@ -391,7 +398,7 @@ func TestGetRejectsInvalidBookIDBeforeCallingCatalog(t *testing.T) {
 func TestGetForwardsCanonicalBookID(t *testing.T) {
 	const bookID = "AAAAAAAAAAAAAAAAAAAAAA"
 	catalog := &bookLookupCatalog{}
-	h := handler.NewBooksHandler(catalog, 5*time.Second)
+	h := handler.NewBooksHandler(catalog, testBooksPolicy)
 	recorder := httptest.NewRecorder()
 
 	h.Get(recorder, bookGetRequest(bookID))

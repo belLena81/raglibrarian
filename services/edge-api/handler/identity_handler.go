@@ -152,6 +152,11 @@ func NewAdminHandler(identity AdminUseCase, hub *PendingHub) *AdminHandler {
 	return &AdminHandler{identity: identity, hub: hub}
 }
 
+// SetSSETiming updates admin event stream timing policy.
+func (h *AdminHandler) SetSSETiming(policy SSEPolicy) {
+	h.timing = policy.timing()
+}
+
 // ListPending returns one bounded page of librarians awaiting review.
 func (h *AdminHandler) ListPending(w http.ResponseWriter, r *http.Request) {
 	principal, ok := edgemiddleware.PrincipalFromContext(r.Context())

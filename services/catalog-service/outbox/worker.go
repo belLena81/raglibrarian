@@ -12,8 +12,6 @@ import (
 	"github.com/belLena81/raglibrarian/services/catalog-service/repository"
 )
 
-const drainBudget = 250 * time.Millisecond
-
 type store interface {
 	ClaimOutbox(context.Context, time.Time, time.Duration) ([]repository.PendingOutboxEvent, error)
 	MarkPublished(context.Context, string, time.Time) error
@@ -33,45 +31,54 @@ type Recorder interface {
 	OutboxMarkFailed()
 }
 
+type Policy struct {
+	PollInterval   time.Duration
+	DrainBudget    time.Duration
+	Lease          time.Duration
+	PublishTimeout time.Duration
+}
+
 // Run keeps uploads durable during broker loss: failed publication only retries
 // the existing outbox record and never changes its event ID or payload.
 func Run(ctx context.Context, store store, publisher publisher, recorder Recorder) {
-	RunWithWake(ctx, store, publisher, recorder, nil)
+	RunWithWake(ctx, store, publisher, recorder, nil, Policy{})
 }
 
 // RunWithWake publishes immediately after a committed write, while retaining
 // a periodic poll so a lost in-memory notification cannot strand durable work.
-func RunWithWake(ctx context.Context, store store, publisher publisher, recorder Recorder, wake <-chan struct{}) {
+func RunWithWake(ctx context.Context, store store, publisher publisher, recorder Recorder, wake <-chan struct{}, policy Policy) {
 	if recorder == nil {
 		panic("outbox recorder is required")
 	}
-	ticker := time.NewTicker(time.Second)
+	policy = normalizePolicy(policy)
+	ticker := time.NewTicker(policy.PollInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-wake:
-			drainPending(ctx, store, publisher, recorder, time.Now().UTC())
+			drainPending(ctx, store, publisher, recorder, time.Now().UTC(), policy)
 		case now := <-ticker.C:
-			drainPending(ctx, store, publisher, recorder, now)
+			drainPending(ctx, store, publisher, recorder, now, policy)
 		}
 	}
 }
 
-func drainPending(ctx context.Context, store store, publisher publisher, recorder Recorder, now time.Time) {
-	deadline := time.Now().Add(drainBudget)
+func drainPending(ctx context.Context, store store, publisher publisher, recorder Recorder, now time.Time, policy Policy) {
+	deadline := time.Now().Add(policy.DrainBudget)
 	for {
-		if !publishPending(ctx, store, publisher, recorder, now) || time.Now().After(deadline) {
+		if !publishPending(ctx, store, publisher, recorder, now, policy) || time.Now().After(deadline) {
 			return
 		}
 		now = time.Now().UTC()
 	}
 }
 
-func publishPending(ctx context.Context, store store, publisher publisher, recorder Recorder, now time.Time) bool {
+func publishPending(ctx context.Context, store store, publisher publisher, recorder Recorder, now time.Time, policy Policy) bool {
 	now = now.UTC()
-	events, err := store.ClaimOutbox(ctx, now, 30*time.Second)
+	policy = normalizePolicy(policy)
+	events, err := store.ClaimOutbox(ctx, now, policy.Lease)
 	if err != nil {
 		recorder.OutboxClaimFailed()
 		return false
@@ -88,7 +95,7 @@ func publishPending(ctx context.Context, store store, publisher publisher, recor
 			}
 			continue
 		}
-		publishCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		publishCtx, cancel := context.WithTimeout(ctx, policy.PublishTimeout)
 		err = publisher.PublishWithContext(publishCtx, exchange, routingKey, mandatory, false, amqp091.Publishing{
 			ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent,
 			MessageId: event.ID, Type: event.Type, Body: event.Payload,
@@ -106,6 +113,22 @@ func publishPending(ctx context.Context, store store, publisher publisher, recor
 		}
 	}
 	return true
+}
+
+func normalizePolicy(policy Policy) Policy {
+	if policy.PollInterval <= 0 {
+		policy.PollInterval = time.Second
+	}
+	if policy.DrainBudget <= 0 {
+		policy.DrainBudget = 250 * time.Millisecond
+	}
+	if policy.Lease <= 0 {
+		policy.Lease = 30 * time.Second
+	}
+	if policy.PublishTimeout <= 0 {
+		policy.PublishTimeout = 5 * time.Second
+	}
+	return policy
 }
 
 func publicationRoute(eventType string) (exchange, routingKey string, mandatory bool, err error) {

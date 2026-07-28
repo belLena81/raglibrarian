@@ -20,8 +20,8 @@ func TestPublishPendingRetriesBrokerFailureWithoutChangingEvent(t *testing.T) {
 	recorder := &fakeRecorder{}
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 
-	publishPending(context.Background(), store, publisher, recorder, now)
-	publishPending(context.Background(), store, publisher, recorder, now.Add(time.Second))
+	publishPending(context.Background(), store, publisher, recorder, now, Policy{})
+	publishPending(context.Background(), store, publisher, recorder, now.Add(time.Second), Policy{})
 
 	assertStablePublications(t, publisher.publications, event)
 	if len(store.retries) != 1 || store.retries[0] != event.ID {
@@ -45,8 +45,8 @@ func TestPublishPendingReplaysStableEventAfterMarkFailure(t *testing.T) {
 	recorder := &fakeRecorder{}
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 
-	publishPending(context.Background(), store, publisher, recorder, now)
-	publishPending(context.Background(), store, publisher, recorder, now.Add(time.Second))
+	publishPending(context.Background(), store, publisher, recorder, now, Policy{})
+	publishPending(context.Background(), store, publisher, recorder, now.Add(time.Second), Policy{})
 
 	assertStablePublications(t, publisher.publications, event)
 	if len(store.marked) != 2 || store.marked[0] != event.ID || store.marked[1] != event.ID {
@@ -65,7 +65,7 @@ func TestDrainPendingClaimsUntilStoreIsEmpty(t *testing.T) {
 	store := &fakeStore{claims: [][]repository.PendingOutboxEvent{events, nil}}
 	publisher := &fakePublisher{}
 
-	drainPending(context.Background(), store, publisher, &fakeRecorder{}, time.Now())
+	drainPending(context.Background(), store, publisher, &fakeRecorder{}, time.Now(), Policy{DrainBudget: time.Second})
 
 	if store.claimIndex != 2 {
 		t.Fatalf("claims = %d, want 2", store.claimIndex)
@@ -98,6 +98,19 @@ func TestPublicationRouteSeparatesDurableWorkFromDisposableStatus(t *testing.T) 
 	}
 }
 
+func TestPublishPendingUsesConfiguredLease(t *testing.T) {
+	event := repository.PendingOutboxEvent{ID: "event-1", Type: "catalog.book.uploaded.v1", Payload: []byte("payload")}
+	store := &fakeStore{claims: [][]repository.PendingOutboxEvent{{event}}}
+	publisher := &fakePublisher{}
+	policy := Policy{Lease: 45 * time.Second}
+
+	publishPending(context.Background(), store, publisher, &fakeRecorder{}, time.Now(), policy)
+
+	if len(store.leases) != 1 || store.leases[0] != 45*time.Second {
+		t.Fatalf("leases = %#v", store.leases)
+	}
+}
+
 func assertStablePublications(t *testing.T, publications []amqp091.Publishing, event repository.PendingOutboxEvent) {
 	t.Helper()
 	if len(publications) != 2 {
@@ -113,13 +126,15 @@ func assertStablePublications(t *testing.T, publications []amqp091.Publishing, e
 type fakeStore struct {
 	claims     [][]repository.PendingOutboxEvent
 	claimIndex int
+	leases     []time.Duration
 	retries    []string
 	markErrors []error
 	markIndex  int
 	marked     []string
 }
 
-func (s *fakeStore) ClaimOutbox(context.Context, time.Time, time.Duration) ([]repository.PendingOutboxEvent, error) {
+func (s *fakeStore) ClaimOutbox(_ context.Context, _ time.Time, lease time.Duration) ([]repository.PendingOutboxEvent, error) {
+	s.leases = append(s.leases, lease)
 	if s.claimIndex >= len(s.claims) {
 		return nil, nil
 	}

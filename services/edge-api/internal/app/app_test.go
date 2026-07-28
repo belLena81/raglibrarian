@@ -104,7 +104,7 @@ func TestHTTPWriteTimeoutProvidesHeadroomForAnswerAndRetrievalDeadlines(t *testi
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := httpWriteTimeout(test.answerDeadline, test.retrievalDeadline); got != test.want {
+			if got := httpWriteTimeout(test.answerDeadline, test.retrievalDeadline, 5*time.Second, 30*time.Second); got != test.want {
 				t.Fatalf("httpWriteTimeout(%s) = %s, want %s", test.answerDeadline, got, test.want)
 			}
 		})

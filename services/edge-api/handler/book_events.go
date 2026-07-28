@@ -185,6 +185,7 @@ type BookEventsConfig struct {
 	Hub           *BookStatusHub
 	PublicOrigin  string
 	EnforceOrigin bool
+	Timing        SSEPolicy
 }
 
 // EnableEvents adds the optional RabbitMQ-backed status stream to this handler.
@@ -192,7 +193,13 @@ func (h *BooksHandler) EnableEvents(config BookEventsConfig) {
 	if config.Sessions == nil || config.Hub == nil {
 		panic("handler: book event dependencies are required")
 	}
-	h.events = &bookEvents{sessions: config.Sessions, hub: config.Hub, publicOrigin: config.PublicOrigin, enforceOrigin: config.EnforceOrigin}
+	h.events = &bookEvents{
+		sessions:      config.Sessions,
+		hub:           config.Hub,
+		publicOrigin:  config.PublicOrigin,
+		enforceOrigin: config.EnforceOrigin,
+		timing:        config.Timing.timing(),
+	}
 }
 
 type bookEvents struct {

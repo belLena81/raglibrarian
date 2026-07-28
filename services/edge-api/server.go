@@ -21,20 +21,41 @@ type TokenVerifier interface {
 
 // RouterConfig controls optional perimeter proxy trust.
 type RouterConfig struct {
-	TrustedProxyCIDRs     []netip.Prefix
-	PublicOrigin          string
-	EnforceBrowserOrigin  bool
-	QueryRateLimit        int
-	QueryRateWindow       time.Duration
-	QueryRateMaxKeys      int
-	QueryConcurrency      int
-	SetupAdminRateLimit   int
-	SetupAdminRateWindow  time.Duration
-	SetupAdminRateMaxKeys int
-	BookUploadRateLimit   int
-	BookUploadRateWindow  time.Duration
-	BookUploadRateMaxKeys int
-	BookUploadDeadline    time.Duration
+	TrustedProxyCIDRs                    []netip.Prefix
+	PublicOrigin                         string
+	EnforceBrowserOrigin                 bool
+	QueryRateLimit                       int
+	QueryRateWindow                      time.Duration
+	QueryRateMaxKeys                     int
+	QueryConcurrency                     int
+	AuthRegisterRateLimit                int
+	AuthRegisterRateWindow               time.Duration
+	AuthRegisterRateMaxKeys              int
+	AuthVerifyEmailRateLimit             int
+	AuthVerifyEmailRateWindow            time.Duration
+	AuthVerifyEmailRateMaxKeys           int
+	AuthLoginRateLimit                   int
+	AuthLoginRateWindow                  time.Duration
+	AuthLoginRateMaxKeys                 int
+	AuthResendVerificationRateLimit      int
+	AuthResendVerificationRateWindow     time.Duration
+	AuthResendVerificationRateMaxKeys    int
+	AuthPasswordResetRequestRateLimit    int
+	AuthPasswordResetRequestRateWindow   time.Duration
+	AuthPasswordResetRequestRateMaxKeys  int
+	AuthPasswordResetVerifyRateLimit     int
+	AuthPasswordResetVerifyRateWindow    time.Duration
+	AuthPasswordResetVerifyRateMaxKeys   int
+	AuthPasswordResetCompleteRateLimit   int
+	AuthPasswordResetCompleteRateWindow  time.Duration
+	AuthPasswordResetCompleteRateMaxKeys int
+	SetupAdminRateLimit                  int
+	SetupAdminRateWindow                 time.Duration
+	SetupAdminRateMaxKeys                int
+	BookUploadRateLimit                  int
+	BookUploadRateWindow                 time.Duration
+	BookUploadRateMaxKeys                int
+	BookUploadDeadline                   time.Duration
 }
 
 // NewRouter wires all public routes and mandatory authentication dependencies.
@@ -66,13 +87,13 @@ func NewRouter(
 	router.Get("/healthz", health.Live)
 	router.Get("/readyz", health.Ready)
 	router.Route("/auth", func(router chi.Router) {
-		registrationLimit := middleware.FixedWindowRateLimit(20, time.Hour, 10000)
-		verificationLimit := middleware.FixedWindowRateLimit(30, time.Hour, 10000)
-		loginLimit := middleware.FixedWindowRateLimit(30, time.Minute, 10000)
-		resendLimit := middleware.FixedWindowRateLimit(5, time.Hour, 10000)
-		resetRequestLimit := middleware.FixedWindowRateLimit(5, time.Hour, 10000)
-		resetVerifyLimit := middleware.FixedWindowRateLimit(5, time.Hour, 10000)
-		resetCompleteLimit := middleware.FixedWindowRateLimit(5, time.Hour, 10000)
+		registrationLimit := middleware.FixedWindowRateLimit(authRegisterRateLimit(config.AuthRegisterRateLimit), authRegisterRateWindow(config.AuthRegisterRateWindow), authRegisterRateMaxKeys(config.AuthRegisterRateMaxKeys))
+		verificationLimit := middleware.FixedWindowRateLimit(authVerifyEmailRateLimit(config.AuthVerifyEmailRateLimit), authVerifyEmailRateWindow(config.AuthVerifyEmailRateWindow), authVerifyEmailRateMaxKeys(config.AuthVerifyEmailRateMaxKeys))
+		loginLimit := middleware.FixedWindowRateLimit(authLoginRateLimit(config.AuthLoginRateLimit), authLoginRateWindow(config.AuthLoginRateWindow), authLoginRateMaxKeys(config.AuthLoginRateMaxKeys))
+		resendLimit := middleware.FixedWindowRateLimit(authResendVerificationRateLimit(config.AuthResendVerificationRateLimit), authResendVerificationRateWindow(config.AuthResendVerificationRateWindow), authResendVerificationRateMaxKeys(config.AuthResendVerificationRateMaxKeys))
+		resetRequestLimit := middleware.FixedWindowRateLimit(authPasswordResetRequestRateLimit(config.AuthPasswordResetRequestRateLimit), authPasswordResetRequestRateWindow(config.AuthPasswordResetRequestRateWindow), authPasswordResetRequestRateMaxKeys(config.AuthPasswordResetRequestRateMaxKeys))
+		resetVerifyLimit := middleware.FixedWindowRateLimit(authPasswordResetVerifyRateLimit(config.AuthPasswordResetVerifyRateLimit), authPasswordResetVerifyRateWindow(config.AuthPasswordResetVerifyRateWindow), authPasswordResetVerifyRateMaxKeys(config.AuthPasswordResetVerifyRateMaxKeys))
+		resetCompleteLimit := middleware.FixedWindowRateLimit(authPasswordResetCompleteRateLimit(config.AuthPasswordResetCompleteRateLimit), authPasswordResetCompleteRateWindow(config.AuthPasswordResetCompleteRateWindow), authPasswordResetCompleteRateMaxKeys(config.AuthPasswordResetCompleteRateMaxKeys))
 		router.Group(func(router chi.Router) {
 			router.Use(registrationLimit)
 			router.Post("/register", authHandler.Register)
@@ -186,6 +207,153 @@ func queryConcurrency(value int) int {
 		return value
 	}
 	return 8
+}
+
+func authRegisterRateLimit(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 20
+}
+
+func authRegisterRateWindow(value time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return time.Hour
+}
+
+func authRegisterRateMaxKeys(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 10000
+}
+
+func authVerifyEmailRateLimit(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 30
+}
+
+func authVerifyEmailRateWindow(value time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return time.Hour
+}
+
+func authVerifyEmailRateMaxKeys(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 10000
+}
+
+func authLoginRateLimit(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 30
+}
+
+func authLoginRateWindow(value time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return time.Minute
+}
+
+func authLoginRateMaxKeys(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 10000
+}
+
+func authResendVerificationRateLimit(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 5
+}
+
+func authResendVerificationRateWindow(value time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return time.Hour
+}
+
+func authResendVerificationRateMaxKeys(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 10000
+}
+
+func authPasswordResetRequestRateLimit(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 5
+}
+
+func authPasswordResetRequestRateWindow(value time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return time.Hour
+}
+
+func authPasswordResetRequestRateMaxKeys(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 10000
+}
+
+func authPasswordResetVerifyRateLimit(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 5
+}
+
+func authPasswordResetVerifyRateWindow(value time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return time.Hour
+}
+
+func authPasswordResetVerifyRateMaxKeys(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 10000
+}
+
+func authPasswordResetCompleteRateLimit(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 5
+}
+
+func authPasswordResetCompleteRateWindow(value time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return time.Hour
+}
+
+func authPasswordResetCompleteRateMaxKeys(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 10000
 }
 
 func bookUploadRateLimit(value int) int {

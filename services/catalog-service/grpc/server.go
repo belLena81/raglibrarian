@@ -22,13 +22,25 @@ import (
 
 type Server struct {
 	catalogv1.UnimplementedCatalogServiceServer
-	service        *catalog.Service
-	diagnostics    *diagnostic.Recorder
-	readiness      interface{ CheckReady(context.Context) error }
-	previewTimeout time.Duration
+	service               *catalog.Service
+	diagnostics           *diagnostic.Recorder
+	readiness             interface{ CheckReady(context.Context) error }
+	previewTimeout        time.Duration
+	readinessProbeTimeout time.Duration
+	uploadTimeout         time.Duration
+	lifecycleTimeout      time.Duration
+	listTimeout           time.Duration
 }
 
-func NewServer(service *catalog.Service, diagnostics *diagnostic.Recorder, previewTimeout time.Duration, readiness ...interface{ CheckReady(context.Context) error }) *Server {
+type Policy struct {
+	PreviewTimeout        time.Duration
+	ReadinessProbeTimeout time.Duration
+	UploadTimeout         time.Duration
+	LifecycleTimeout      time.Duration
+	ListTimeout           time.Duration
+}
+
+func NewServer(service *catalog.Service, diagnostics *diagnostic.Recorder, policy Policy, readiness ...interface{ CheckReady(context.Context) error }) *Server {
 	if service == nil || diagnostics == nil {
 		panic("cataloggrpc: service and diagnostics are required")
 	}
@@ -36,10 +48,25 @@ func NewServer(service *catalog.Service, diagnostics *diagnostic.Recorder, previ
 	if len(readiness) == 1 {
 		server.readiness = readiness[0]
 	}
-	if previewTimeout <= 0 {
+	server.previewTimeout = policy.PreviewTimeout
+	if server.previewTimeout <= 0 {
 		server.previewTimeout = 5 * time.Second
-	} else {
-		server.previewTimeout = previewTimeout
+	}
+	server.readinessProbeTimeout = policy.ReadinessProbeTimeout
+	if server.readinessProbeTimeout <= 0 {
+		server.readinessProbeTimeout = 2 * time.Second
+	}
+	server.uploadTimeout = policy.UploadTimeout
+	if server.uploadTimeout <= 0 {
+		server.uploadTimeout = 2 * time.Minute
+	}
+	server.lifecycleTimeout = policy.LifecycleTimeout
+	if server.lifecycleTimeout <= 0 {
+		server.lifecycleTimeout = 10 * time.Second
+	}
+	server.listTimeout = policy.ListTimeout
+	if server.listTimeout <= 0 {
+		server.listTimeout = 5 * time.Second
 	}
 	return server
 }
@@ -49,7 +76,7 @@ func (s *Server) Check(ctx context.Context, _ *catalogv1.CheckRequest) (*catalog
 		return nil, status.Error(codes.Canceled, "request cancelled")
 	}
 	if s.readiness != nil {
-		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		probeCtx, cancel := context.WithTimeout(ctx, s.readinessProbeTimeout)
 		defer cancel()
 		if err := s.readiness.CheckReady(probeCtx); err != nil {
 			return nil, status.Error(codes.Unavailable, "catalog unavailable")
@@ -59,7 +86,7 @@ func (s *Server) Check(ctx context.Context, _ *catalogv1.CheckRequest) (*catalog
 }
 
 func (s *Server) UploadBook(stream catalogv1.CatalogService_UploadBookServer) error {
-	ctx, cancel := context.WithTimeout(stream.Context(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(stream.Context(), s.uploadTimeout)
 	defer cancel()
 	first, err := stream.Recv()
 	if err != nil {
@@ -92,7 +119,7 @@ func (s *Server) UploadBook(stream catalogv1.CatalogService_UploadBookServer) er
 func (s *Server) ReindexBook(ctx context.Context, request *catalogv1.ReindexBookRequest) (*catalogv1.ReindexBookResponse, error) {
 	actor := actorFromProto(request.GetActor())
 	requestID := requestIDFromMetadata(ctx)
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, s.lifecycleTimeout)
 	defer cancel()
 	book, err := s.service.ReindexBook(ctx, request.GetBookId(), request.GetCommandId(), actor, requestID)
 	if err != nil {
@@ -105,7 +132,7 @@ func (s *Server) ReindexBook(ctx context.Context, request *catalogv1.ReindexBook
 func (s *Server) DeleteBook(ctx context.Context, request *catalogv1.DeleteBookRequest) (*catalogv1.DeleteBookResponse, error) {
 	actor := actorFromProto(request.GetActor())
 	requestID := requestIDFromMetadata(ctx)
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, s.lifecycleTimeout)
 	defer cancel()
 	book, err := s.service.DeleteBook(ctx, request.GetBookId(), request.GetCommandId(), actor, requestID)
 	if err != nil {
@@ -138,7 +165,7 @@ func (s *Server) ListBooks(ctx context.Context, request *catalogv1.ListBooksRequ
 		s.diagnostics.OperationRejected("list_books", requestID, actor, "unauthorized_actor")
 		return nil, status.Error(codes.PermissionDenied, "actor is not authorized")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, s.listTimeout)
 	defer cancel()
 	books, token, err := s.service.ListBooks(ctx, int(request.PageSize), request.PageToken)
 	if err != nil {

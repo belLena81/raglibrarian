@@ -12,25 +12,26 @@ type sseTiming struct {
 	writeTimeout       time.Duration
 }
 
-var defaultSSETiming = sseTiming{
-	heartbeatInterval:  15 * time.Second,
-	revalidateInterval: 15 * time.Second,
-	maximumDuration:    5 * time.Minute,
-	writeTimeout:       5 * time.Second,
+// SSEPolicy defines runtime-tunable Server-Sent Events timing.
+type SSEPolicy struct {
+	HeartbeatInterval  time.Duration
+	RevalidateInterval time.Duration
+	MaximumDuration    time.Duration
+	WriteTimeout       time.Duration
+}
+
+func (p SSEPolicy) timing() sseTiming {
+	return sseTiming{
+		heartbeatInterval:  p.HeartbeatInterval,
+		revalidateInterval: p.RevalidateInterval,
+		maximumDuration:    p.MaximumDuration,
+		writeTimeout:       p.WriteTimeout,
+	}
 }
 
 func (t sseTiming) withDefaults() sseTiming {
-	if t.heartbeatInterval <= 0 {
-		t.heartbeatInterval = defaultSSETiming.heartbeatInterval
-	}
-	if t.revalidateInterval <= 0 {
-		t.revalidateInterval = defaultSSETiming.revalidateInterval
-	}
-	if t.maximumDuration <= 0 {
-		t.maximumDuration = defaultSSETiming.maximumDuration
-	}
-	if t.writeTimeout <= 0 {
-		t.writeTimeout = defaultSSETiming.writeTimeout
+	if t.heartbeatInterval <= 0 || t.revalidateInterval <= 0 || t.maximumDuration <= 0 || t.writeTimeout <= 0 {
+		panic("handler: SSE timing must be fully configured")
 	}
 	return t
 }

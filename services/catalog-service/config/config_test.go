@@ -134,6 +134,125 @@ func TestLoadParsesPreviewTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadAppliesOutboxPolicyDefaults(t *testing.T) {
+	setRequired(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OutboxPollInterval != time.Second || cfg.OutboxDrainBudget != 250*time.Millisecond ||
+		cfg.OutboxLease != 30*time.Second || cfg.OutboxPublishTimeout != 5*time.Second {
+		t.Fatalf("unexpected outbox policy: %#v", cfg)
+	}
+}
+
+func TestLoadParsesOutboxPolicy(t *testing.T) {
+	setRequired(t)
+	t.Setenv("CATALOG_OUTBOX_POLL_INTERVAL", "2s")
+	t.Setenv("CATALOG_OUTBOX_DRAIN_BUDGET", "500ms")
+	t.Setenv("CATALOG_OUTBOX_LEASE", "45s")
+	t.Setenv("CATALOG_OUTBOX_PUBLISH_TIMEOUT", "8s")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OutboxPollInterval != 2*time.Second || cfg.OutboxDrainBudget != 500*time.Millisecond ||
+		cfg.OutboxLease != 45*time.Second || cfg.OutboxPublishTimeout != 8*time.Second {
+		t.Fatalf("unexpected outbox policy: %#v", cfg)
+	}
+}
+
+func TestLoadAppliesAppPolicyDefaults(t *testing.T) {
+	setRequired(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DBPingTimeout != 5*time.Second || cfg.HealthProbeTimeout != 2*time.Second || cfg.HealthUpdateInterval != time.Second ||
+		cfg.BacklogPollInterval != time.Minute || cfg.BacklogProbeTimeout != 2*time.Second ||
+		cfg.MetricsReadHeaderTimeout != 5*time.Second || cfg.MetricsReadTimeout != 10*time.Second ||
+		cfg.MetricsWriteTimeout != 10*time.Second || cfg.MetricsIdleTimeout != 30*time.Second ||
+		cfg.GRPCGracefulStopTimeout != 10*time.Second || cfg.MetricsShutdownTimeout != 10*time.Second {
+		t.Fatalf("unexpected app policy defaults: %#v", cfg)
+	}
+}
+
+func TestLoadParsesAppPolicy(t *testing.T) {
+	setRequired(t)
+	t.Setenv("CATALOG_DB_PING_TIMEOUT", "7s")
+	t.Setenv("CATALOG_HEALTH_PROBE_TIMEOUT", "3s")
+	t.Setenv("CATALOG_HEALTH_UPDATE_INTERVAL", "2s")
+	t.Setenv("CATALOG_OUTBOX_BACKLOG_POLL_INTERVAL", "2m")
+	t.Setenv("CATALOG_OUTBOX_BACKLOG_PROBE_TIMEOUT", "4s")
+	t.Setenv("CATALOG_METRICS_READ_HEADER_TIMEOUT", "6s")
+	t.Setenv("CATALOG_METRICS_READ_TIMEOUT", "11s")
+	t.Setenv("CATALOG_METRICS_WRITE_TIMEOUT", "12s")
+	t.Setenv("CATALOG_METRICS_IDLE_TIMEOUT", "31s")
+	t.Setenv("CATALOG_GRPC_GRACEFUL_STOP_TIMEOUT", "9s")
+	t.Setenv("CATALOG_METRICS_SHUTDOWN_TIMEOUT", "8s")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DBPingTimeout != 7*time.Second || cfg.HealthProbeTimeout != 3*time.Second || cfg.HealthUpdateInterval != 2*time.Second ||
+		cfg.BacklogPollInterval != 2*time.Minute || cfg.BacklogProbeTimeout != 4*time.Second ||
+		cfg.MetricsReadHeaderTimeout != 6*time.Second || cfg.MetricsReadTimeout != 11*time.Second ||
+		cfg.MetricsWriteTimeout != 12*time.Second || cfg.MetricsIdleTimeout != 31*time.Second ||
+		cfg.GRPCGracefulStopTimeout != 9*time.Second || cfg.MetricsShutdownTimeout != 8*time.Second {
+		t.Fatalf("unexpected app policy: %#v", cfg)
+	}
+}
+
+func TestLoadAppliesGRPCAndProcessingPolicyDefaults(t *testing.T) {
+	setRequired(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GRPCReadinessProbeTimeout != 2*time.Second || cfg.GRPCUploadTimeout != 2*time.Minute ||
+		cfg.GRPCLifecycleTimeout != 10*time.Second || cfg.GRPCListTimeout != 5*time.Second ||
+		cfg.ProcessingReconnectInitialBackoff != time.Second || cfg.ProcessingReconnectMaxBackoff != 30*time.Second ||
+		cfg.ProcessingDialTimeout != 5*time.Second || cfg.ProcessingHeartbeatTimeout != 10*time.Second ||
+		cfg.ProcessingHandleTimeout != 10*time.Second || cfg.ProcessingRetryLimit != 5 ||
+		cfg.ProcessingRetryDelayStep != 250*time.Millisecond || cfg.ProcessingRetryPublishTimeout != 5*time.Second {
+		t.Fatalf("unexpected grpc/processing policy defaults: %#v", cfg)
+	}
+}
+
+func TestLoadParsesGRPCAndProcessingPolicy(t *testing.T) {
+	setRequired(t)
+	t.Setenv("CATALOG_GRPC_READINESS_PROBE_TIMEOUT", "3s")
+	t.Setenv("CATALOG_GRPC_UPLOAD_TIMEOUT", "3m")
+	t.Setenv("CATALOG_GRPC_LIFECYCLE_TIMEOUT", "12s")
+	t.Setenv("CATALOG_GRPC_LIST_TIMEOUT", "6s")
+	t.Setenv("CATALOG_PROCESSING_RECONNECT_INITIAL_BACKOFF", "2s")
+	t.Setenv("CATALOG_PROCESSING_RECONNECT_MAX_BACKOFF", "40s")
+	t.Setenv("CATALOG_PROCESSING_DIAL_TIMEOUT", "6s")
+	t.Setenv("CATALOG_PROCESSING_HEARTBEAT_TIMEOUT", "12s")
+	t.Setenv("CATALOG_PROCESSING_HANDLE_TIMEOUT", "11s")
+	t.Setenv("CATALOG_PROCESSING_RETRY_LIMIT", "6")
+	t.Setenv("CATALOG_PROCESSING_RETRY_DELAY_STEP", "300ms")
+	t.Setenv("CATALOG_PROCESSING_RETRY_PUBLISH_TIMEOUT", "7s")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GRPCReadinessProbeTimeout != 3*time.Second || cfg.GRPCUploadTimeout != 3*time.Minute ||
+		cfg.GRPCLifecycleTimeout != 12*time.Second || cfg.GRPCListTimeout != 6*time.Second ||
+		cfg.ProcessingReconnectInitialBackoff != 2*time.Second || cfg.ProcessingReconnectMaxBackoff != 40*time.Second ||
+		cfg.ProcessingDialTimeout != 6*time.Second || cfg.ProcessingHeartbeatTimeout != 12*time.Second ||
+		cfg.ProcessingHandleTimeout != 11*time.Second || cfg.ProcessingRetryLimit != 6 ||
+		cfg.ProcessingRetryDelayStep != 300*time.Millisecond || cfg.ProcessingRetryPublishTimeout != 7*time.Second {
+		t.Fatalf("unexpected grpc/processing policy: %#v", cfg)
+	}
+}
+
 func TestLoadRejectsInvalidPreviewTimeout(t *testing.T) {
 	setRequired(t)
 	t.Setenv("CATALOG_PREVIEW_TIMEOUT", "500ms")

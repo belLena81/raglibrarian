@@ -23,15 +23,25 @@ type Hub interface {
 	Publish(handler.BookStatusEvent)
 }
 
+type Policy struct {
+	ReconnectInitialBackoff time.Duration
+	ReconnectMaxBackoff     time.Duration
+	DialTimeout             time.Duration
+	HeartbeatTimeout        time.Duration
+	Prefetch                int
+	QueueMaxLengthBytes     int64
+}
+
 // Run consumes only the configured, lifecycle-managed instance queue and
 // reconnects with bounded backoff until shutdown.
-func Run(ctx context.Context, uri, queue string, hub Hub) {
+func Run(ctx context.Context, uri, queue string, hub Hub, policy Policy) {
 	if uri == "" || queue == "" || hub == nil {
 		panic("bookstatus: consumer dependencies are required")
 	}
-	backoff := time.Second
+	policy = normalizePolicy(policy)
+	backoff := policy.ReconnectInitialBackoff
 	for ctx.Err() == nil {
-		_ = consume(ctx, uri, queue, hub)
+		_ = consume(ctx, uri, queue, hub, policy)
 		hub.SetAvailable(false)
 		if ctx.Err() != nil {
 			return
@@ -43,16 +53,19 @@ func Run(ctx context.Context, uri, queue string, hub Hub) {
 			return
 		case <-timer.C:
 		}
-		if backoff < 30*time.Second {
+		if backoff < policy.ReconnectMaxBackoff {
 			backoff *= 2
+			if backoff > policy.ReconnectMaxBackoff {
+				backoff = policy.ReconnectMaxBackoff
+			}
 		}
 	}
 }
 
-func consume(ctx context.Context, uri, queue string, hub Hub) error {
-	dialer := net.Dialer{Timeout: 5 * time.Second}
+func consume(ctx context.Context, uri, queue string, hub Hub, policy Policy) error {
+	dialer := net.Dialer{Timeout: policy.DialTimeout}
 	connection, err := amqp091.DialConfig(uri, amqp091.Config{
-		Heartbeat: 10 * time.Second,
+		Heartbeat: policy.HeartbeatTimeout,
 		Dial: func(network, address string) (net.Conn, error) {
 			return dialer.DialContext(ctx, network, address)
 		},
@@ -66,11 +79,11 @@ func consume(ctx context.Context, uri, queue string, hub Hub) error {
 		return err
 	}
 	defer func() { _ = channel.Close() }()
-	if err = channel.Qos(20, 0, false); err != nil {
+	if err = channel.Qos(policy.Prefetch, 0, false); err != nil {
 		return err
 	}
 	declared, err := channel.QueueDeclare(queue, false, true, true, false, amqp091.Table{
-		"x-max-length-bytes": int64(64 << 20),
+		"x-max-length-bytes": policy.QueueMaxLengthBytes,
 		"x-overflow":         "drop-head",
 	})
 	if err != nil {
@@ -106,6 +119,31 @@ func consume(ctx context.Context, uri, queue string, hub Hub) error {
 			_ = delivery.Nack(false, false)
 		}
 	}
+}
+
+func normalizePolicy(policy Policy) Policy {
+	if policy.ReconnectInitialBackoff <= 0 {
+		policy.ReconnectInitialBackoff = time.Second
+	}
+	if policy.ReconnectMaxBackoff <= 0 {
+		policy.ReconnectMaxBackoff = 30 * time.Second
+	}
+	if policy.DialTimeout <= 0 {
+		policy.DialTimeout = 5 * time.Second
+	}
+	if policy.HeartbeatTimeout <= 0 {
+		policy.HeartbeatTimeout = 10 * time.Second
+	}
+	if policy.Prefetch <= 0 {
+		policy.Prefetch = 20
+	}
+	if policy.QueueMaxLengthBytes <= 0 {
+		policy.QueueMaxLengthBytes = 64 << 20
+	}
+	if policy.ReconnectInitialBackoff > policy.ReconnectMaxBackoff {
+		policy.ReconnectInitialBackoff = policy.ReconnectMaxBackoff
+	}
+	return policy
 }
 
 func decode(delivery amqp091.Delivery) (handler.BookStatusEvent, bool) {

@@ -15,25 +15,32 @@ import (
 	"github.com/belLena81/raglibrarian/services/edge-api/authflow"
 )
 
-const rpcTimeout = 3 * time.Second
-
 // Client is Edge's adapter for the versioned Identity gRPC contract.
 type Client struct {
-	rpc    identityv1.IdentityServiceClient
-	health grpc_health_v1.HealthClient
+	rpc         identityv1.IdentityServiceClient
+	health      grpc_health_v1.HealthClient
+	rpcDeadline time.Duration
+}
+
+// Policy defines runtime-tunable Identity RPC timing.
+type Policy struct {
+	RPCDeadline time.Duration
 }
 
 // New constructs a client with mandatory RPC and health dependencies.
-func New(rpc identityv1.IdentityServiceClient, health grpc_health_v1.HealthClient) *Client {
+func New(rpc identityv1.IdentityServiceClient, health grpc_health_v1.HealthClient, policy Policy) *Client {
 	if rpc == nil || health == nil {
 		panic("identityclient: rpc and health clients are required")
 	}
-	return &Client{rpc: rpc, health: health}
+	if policy.RPCDeadline <= 0 {
+		panic("identityclient: rpc deadline must be positive")
+	}
+	return &Client{rpc: rpc, health: health, rpcDeadline: policy.RPCDeadline}
 }
 
 // CheckReady verifies Identity's standard health service with a bounded deadline.
 func (c *Client) CheckReady(ctx context.Context) error {
-	ctx, cancel := rpcContext(ctx)
+	ctx, cancel := c.rpcContext(ctx)
 	defer cancel()
 	response, err := c.health.Check(ctx, &grpc_health_v1.HealthCheckRequest{})
 	if err != nil || response.GetStatus() != grpc_health_v1.HealthCheckResponse_SERVING {
@@ -44,7 +51,7 @@ func (c *Client) CheckReady(ctx context.Context) error {
 
 // Register requests a private, verification-required registration.
 func (c *Client) Register(ctx context.Context, name, email, password, role string) error {
-	ctx, cancel := rpcContext(ctx)
+	ctx, cancel := c.rpcContext(ctx)
 	defer cancel()
 	_, err := c.rpc.Register(ctx, &identityv1.RegisterRequest{Name: name, Email: email, Password: password, Role: role})
 	if err != nil {
@@ -55,7 +62,7 @@ func (c *Client) Register(ctx context.Context, name, email, password, role strin
 
 // VerifyEmail consumes a single-use email-verification token.
 func (c *Client) VerifyEmail(ctx context.Context, token string) error {
-	ctx, cancel := rpcContext(ctx)
+	ctx, cancel := c.rpcContext(ctx)
 	defer cancel()
 	_, err := c.rpc.VerifyEmail(ctx, &identityv1.VerifyEmailRequest{Token: token})
 	if status.Code(err) == codes.InvalidArgument {
@@ -66,7 +73,7 @@ func (c *Client) VerifyEmail(ctx context.Context, token string) error {
 
 // ResendVerification requests a new token without revealing account existence.
 func (c *Client) ResendVerification(ctx context.Context, email string) error {
-	ctx, cancel := rpcContext(ctx)
+	ctx, cancel := c.rpcContext(ctx)
 	defer cancel()
 	_, err := c.rpc.ResendVerification(ctx, &identityv1.ResendVerificationRequest{Email: email})
 	return mapDependencyError(err)
@@ -74,7 +81,7 @@ func (c *Client) ResendVerification(ctx context.Context, email string) error {
 
 // Login delegates credential verification.
 func (c *Client) Login(ctx context.Context, email, password, role string) (authflow.Session, error) {
-	ctx, cancel := rpcContext(ctx)
+	ctx, cancel := c.rpcContext(ctx)
 	defer cancel()
 	response, err := c.rpc.Login(ctx, &identityv1.LoginRequest{Email: email, Password: password, Role: role})
 	if err != nil {
@@ -89,13 +96,13 @@ func (c *Client) Login(ctx context.Context, email, password, role string) (authf
 	}, nil
 }
 func (c *Client) RequestPasswordReset(ctx context.Context, email string) error {
-	ctx, cancel := rpcContext(ctx)
+	ctx, cancel := c.rpcContext(ctx)
 	defer cancel()
 	_, err := c.rpc.RequestPasswordReset(ctx, &identityv1.RequestPasswordResetRequest{Email: email})
 	return mapDependencyError(err)
 }
 func (c *Client) VerifyPasswordReset(ctx context.Context, email, code string) (string, []string, error) {
-	ctx, cancel := rpcContext(ctx)
+	ctx, cancel := c.rpcContext(ctx)
 	defer cancel()
 	response, err := c.rpc.VerifyPasswordReset(ctx, &identityv1.VerifyPasswordResetRequest{Email: email, Code: code})
 	if err != nil {
@@ -104,7 +111,7 @@ func (c *Client) VerifyPasswordReset(ctx context.Context, email, code string) (s
 	return response.ResetGrant, response.AvailableRoles, nil
 }
 func (c *Client) CompletePasswordReset(ctx context.Context, grant, role, password string) error {
-	ctx, cancel := rpcContext(ctx)
+	ctx, cancel := c.rpcContext(ctx)
 	defer cancel()
 	_, err := c.rpc.CompletePasswordReset(ctx, &identityv1.CompletePasswordResetRequest{ResetGrant: grant, Role: role, Password: password})
 	return mapPasswordResetError(err)
@@ -112,7 +119,7 @@ func (c *Client) CompletePasswordReset(ctx context.Context, grant, role, passwor
 
 // Refresh rotates an opaque refresh token.
 func (c *Client) Refresh(ctx context.Context, refreshToken string) (authflow.Session, error) {
-	ctx, cancel := rpcContext(ctx)
+	ctx, cancel := c.rpcContext(ctx)
 	defer cancel()
 	response, err := c.rpc.Refresh(ctx, &identityv1.RefreshRequest{RefreshToken: refreshToken})
 	if err != nil {
@@ -128,7 +135,7 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (authflow.Ses
 
 // ValidateSession checks authoritative revocation state.
 func (c *Client) ValidateSession(ctx context.Context, userID, sessionID string) (authflow.Principal, error) {
-	ctx, cancel := rpcContext(ctx)
+	ctx, cancel := c.rpcContext(ctx)
 	defer cancel()
 	response, err := c.rpc.ValidateSession(ctx, &identityv1.ValidateSessionRequest{UserId: userID, SessionId: sessionID})
 	if err != nil {
@@ -146,7 +153,7 @@ func (c *Client) ValidateSession(ctx context.Context, userID, sessionID string) 
 
 // Logout revokes a verified session.
 func (c *Client) Logout(ctx context.Context, sessionID string) error {
-	ctx, cancel := rpcContext(ctx)
+	ctx, cancel := c.rpcContext(ctx)
 	defer cancel()
 	_, err := c.rpc.Logout(ctx, &identityv1.LogoutRequest{SessionId: sessionID})
 	return mapCredentialError(err)
@@ -154,7 +161,7 @@ func (c *Client) Logout(ctx context.Context, sessionID string) error {
 
 // SetupStatus reports whether initial administrator bootstrap is required.
 func (c *Client) SetupStatus(ctx context.Context) (bool, error) {
-	ctx, cancel := rpcContext(ctx)
+	ctx, cancel := c.rpcContext(ctx)
 	defer cancel()
 	response, err := c.rpc.GetSetupStatus(ctx, &identityv1.GetSetupStatusRequest{})
 	if err != nil {
@@ -165,7 +172,7 @@ func (c *Client) SetupStatus(ctx context.Context) (bool, error) {
 
 // BootstrapAdmin submits the one-time administrator bootstrap request.
 func (c *Client) BootstrapAdmin(ctx context.Context, name, email, password, code string) error {
-	ctx, cancel := rpcContext(ctx)
+	ctx, cancel := c.rpcContext(ctx)
 	defer cancel()
 	_, err := c.rpc.BootstrapAdmin(ctx, &identityv1.BootstrapAdminRequest{Name: name, Email: email, Password: password, BootstrapCode: code})
 	return mapStateError(err)
@@ -176,7 +183,7 @@ func (c *Client) ListPending(ctx context.Context, actor authflow.Principal, page
 	if pageSize < 1 || pageSize > 100 {
 		return authflow.PendingPage{}, authflow.ErrInvalidRegistration
 	}
-	ctx, cancel := rpcContext(ctx)
+	ctx, cancel := c.rpcContext(ctx)
 	defer cancel()
 	response, err := c.rpc.ListPendingLibrarians(ctx, &identityv1.ListPendingLibrariansRequest{
 		Actor: &identityv1.Actor{UserId: actor.UserID, SessionId: actor.SessionID}, PageSize: int32(pageSize), PageToken: pageToken,
@@ -202,7 +209,7 @@ func (c *Client) Reject(ctx context.Context, actor authflow.Principal, userID st
 }
 
 func (c *Client) decide(ctx context.Context, actor authflow.Principal, userID string, approve bool) error {
-	ctx, cancel := rpcContext(ctx)
+	ctx, cancel := c.rpcContext(ctx)
 	defer cancel()
 	var err error
 	if approve {
@@ -293,10 +300,10 @@ func mapCredentialError(err error) error {
 	}
 }
 
-func rpcContext(parent context.Context) (context.Context, context.CancelFunc) {
+func (c *Client) rpcContext(parent context.Context) (context.Context, context.CancelFunc) {
 	requestID := chimiddleware.GetReqID(parent)
 	if requestID != "" {
 		parent = metadata.AppendToOutgoingContext(parent, "x-request-id", requestID)
 	}
-	return context.WithTimeout(parent, rpcTimeout)
+	return context.WithTimeout(parent, c.rpcDeadline)
 }

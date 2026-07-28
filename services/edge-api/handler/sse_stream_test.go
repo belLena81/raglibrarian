@@ -213,6 +213,7 @@ func TestAdminEventsRejectsMissingOrExpiredClaims(t *testing.T) {
 			handler := NewAdminHandler(adminSSEUseCaseStub{
 				sseSessionStub: sseSessionStub{principal: principal},
 			}, NewPendingHub(1))
+			handler.timing = testSSETiming()
 			request := httptest.NewRequest(http.MethodGet, "/admin/events", nil)
 			request = request.WithContext(test.context(request.Context()))
 			response := httptest.NewRecorder()
@@ -241,6 +242,7 @@ func TestBookEventsSanitizesUnsupportedDeadlineFailure(t *testing.T) {
 	handler := &BooksHandler{events: &bookEvents{
 		sessions: sseSessionStub{principal: principal},
 		hub:      hub,
+		timing:   testSSETiming(),
 	}}
 	request := httptest.NewRequest(http.MethodGet, "/books/events", nil)
 	request = request.WithContext(edgemiddleware.WithClaims(request.Context(), auth.Claims{

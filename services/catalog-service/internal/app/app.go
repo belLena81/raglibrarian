@@ -40,7 +40,7 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		return fmt.Errorf("database connection: %w", err)
 	}
 	defer pool.Close()
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	pingCtx, cancel := context.WithTimeout(ctx, cfg.DBPingTimeout)
 	defer cancel()
 	if err = pool.Ping(pingCtx); err != nil {
 		return fmt.Errorf("database unavailable: %w", err)
@@ -96,11 +96,17 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		PreviewConcurrency: cfg.PreviewConcurrency,
 		PreviewTimeout:     cfg.PreviewTimeout,
 	})
-	catalogv1.RegisterCatalogServiceServer(server, cataloggrpc.NewServer(service, diagnostics, cfg.PreviewTimeout, readiness))
+	catalogv1.RegisterCatalogServiceServer(server, cataloggrpc.NewServer(service, diagnostics, cataloggrpc.Policy{
+		PreviewTimeout:        cfg.PreviewTimeout,
+		ReadinessProbeTimeout: cfg.GRPCReadinessProbeTimeout,
+		UploadTimeout:         cfg.GRPCUploadTimeout,
+		LifecycleTimeout:      cfg.GRPCLifecycleTimeout,
+		ListTimeout:           cfg.GRPCListTimeout,
+	}, readiness))
 	healthServer := health.NewServer()
 	recorder := metrics.New(diagnostics)
 	updateHealth := func() {
-		probeCtx, probeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), cfg.HealthProbeTimeout)
 		defer probeCancel()
 		postgresReady := pool.Ping(probeCtx) == nil
 		_, minioErr := minioClient.StatObject(probeCtx, cfg.MinIOBucket, "originals/.readiness", minio.StatObjectOptions{})
@@ -118,27 +124,50 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	defer func() { _ = publisher.Close() }()
 	metricsServer := &http.Server{
 		Handler:           recorder.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       30 * time.Second,
+		ReadHeaderTimeout: cfg.MetricsReadHeaderTimeout,
+		ReadTimeout:       cfg.MetricsReadTimeout,
+		WriteTimeout:      cfg.MetricsWriteTimeout,
+		IdleTimeout:       cfg.MetricsIdleTimeout,
 	}
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
 	var workers sync.WaitGroup
 	workers.Add(6)
 	go func() {
 		defer workers.Done()
-		outbox.RunWithWake(workerCtx, bookRepository, publisher, recorder, outboxWake)
+		outbox.RunWithWake(workerCtx, bookRepository, publisher, recorder, outboxWake, outbox.Policy{
+			PollInterval:   cfg.OutboxPollInterval,
+			DrainBudget:    cfg.OutboxDrainBudget,
+			Lease:          cfg.OutboxLease,
+			PublishTimeout: cfg.OutboxPublishTimeout,
+		})
 	}()
 	go func() {
 		defer workers.Done()
 		processingService := catalog.NewProcessingService(bookRepository, nil, nil)
-		catalogprocessing.Run(workerCtx, cfg.IngestionRabbitURI, processingService, diagnostics)
+		catalogprocessing.Run(workerCtx, cfg.IngestionRabbitURI, processingService, diagnostics, catalogprocessing.Policy{
+			ReconnectInitialBackoff: cfg.ProcessingReconnectInitialBackoff,
+			ReconnectMaxBackoff:     cfg.ProcessingReconnectMaxBackoff,
+			DialTimeout:             cfg.ProcessingDialTimeout,
+			HeartbeatTimeout:        cfg.ProcessingHeartbeatTimeout,
+			HandleTimeout:           cfg.ProcessingHandleTimeout,
+			RetryLimit:              cfg.ProcessingRetryLimit,
+			RetryDelayStep:          cfg.ProcessingRetryDelayStep,
+			RetryPublishTimeout:     cfg.ProcessingRetryPublishTimeout,
+		})
 	}()
 	go func() {
 		defer workers.Done()
 		processingService := catalog.NewProcessingService(bookRepository, nil, nil)
-		catalogprocessing.RunQueue(workerCtx, cfg.RetrievalRabbitURI, catalogprocessing.RetrievalQueue, processingService, diagnostics)
+		catalogprocessing.RunQueue(workerCtx, cfg.RetrievalRabbitURI, catalogprocessing.RetrievalQueue, processingService, diagnostics, catalogprocessing.Policy{
+			ReconnectInitialBackoff: cfg.ProcessingReconnectInitialBackoff,
+			ReconnectMaxBackoff:     cfg.ProcessingReconnectMaxBackoff,
+			DialTimeout:             cfg.ProcessingDialTimeout,
+			HeartbeatTimeout:        cfg.ProcessingHeartbeatTimeout,
+			HandleTimeout:           cfg.ProcessingHandleTimeout,
+			RetryLimit:              cfg.ProcessingRetryLimit,
+			RetryDelayStep:          cfg.ProcessingRetryDelayStep,
+			RetryPublishTimeout:     cfg.ProcessingRetryPublishTimeout,
+		})
 	}()
 	go func() {
 		defer workers.Done()
@@ -147,14 +176,14 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	}()
 	go func() {
 		defer workers.Done()
-		runHealthUpdates(workerCtx, time.Second, updateHealth)
+		runHealthUpdates(workerCtx, cfg.HealthUpdateInterval, updateHealth)
 	}()
 	go func() {
 		defer workers.Done()
-		ticker := time.NewTicker(time.Minute)
+		ticker := time.NewTicker(cfg.BacklogPollInterval)
 		defer ticker.Stop()
 		for {
-			probeCtx, probeCancel := context.WithTimeout(workerCtx, 2*time.Second)
+			probeCtx, probeCancel := context.WithTimeout(workerCtx, cfg.BacklogProbeTimeout)
 			backlog, backlogErr := bookRepository.OutboxBacklog(probeCtx, time.Now().UTC())
 			probeCancel()
 			if backlogErr == nil {
@@ -174,8 +203,8 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	defer func() {
 		healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 		cancelWorkers()
-		gracefulStop(server, 10*time.Second)
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		gracefulStop(server, cfg.GRPCGracefulStopTimeout)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.MetricsShutdownTimeout)
 		defer shutdownCancel()
 		_ = metricsServer.Shutdown(shutdownCtx)
 		workers.Wait()

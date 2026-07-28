@@ -50,12 +50,35 @@ type Config struct {
 	RetrievalReadinessRequired                                                        bool
 	QueryRateLimit, QueryRateMaxKeys, QueryConcurrency                                int
 	QueryRateWindow                                                                   time.Duration
+	AuthRegisterRateLimit, AuthRegisterRateMaxKeys                                    int
+	AuthVerifyEmailRateLimit, AuthVerifyEmailRateMaxKeys                              int
+	AuthLoginRateLimit, AuthLoginRateMaxKeys                                          int
+	AuthResendVerificationRateLimit, AuthResendVerificationRateMaxKeys                int
+	AuthPasswordResetRequestRateLimit, AuthPasswordResetRequestRateMaxKeys            int
+	AuthPasswordResetVerifyRateLimit, AuthPasswordResetVerifyRateMaxKeys              int
+	AuthPasswordResetCompleteRateLimit, AuthPasswordResetCompleteRateMaxKeys          int
+	AuthRegisterRateWindow, AuthVerifyEmailRateWindow, AuthLoginRateWindow            time.Duration
+	AuthResendVerificationRateWindow                                                  time.Duration
+	AuthPasswordResetRequestRateWindow, AuthPasswordResetVerifyRateWindow             time.Duration
+	AuthPasswordResetCompleteRateWindow                                               time.Duration
 	SetupAdminRateLimit, SetupAdminRateMaxKeys                                        int
 	SetupAdminRateWindow, BookUploadDeadline                                          time.Duration
 	BookUploadRateLimit, BookUploadRateMaxKeys                                        int
 	BookUploadRateWindow                                                              time.Duration
 	AnswerRateLimit                                                                   int
 	AnswerRateWindow, AnswerDeadline, RetrievalSearchDeadline, CatalogPreviewDeadline time.Duration
+	HTTPReadTimeout, HTTPReadHeaderTimeout, HTTPWriteTimeoutHeadroom                  time.Duration
+	HTTPMinimumWriteTimeout, HTTPIdleTimeout, HTTPShutdownTimeout                     time.Duration
+	HTTPMaxHeaderBytes                                                                int
+	IdentityRPCDeadline, CatalogReadinessTimeout, CatalogUploadTimeout                time.Duration
+	CatalogListTimeout, RetrievalReadinessTimeout                                     time.Duration
+	BooksListTimeout, BooksLifecycleTimeout                                           time.Duration
+	SSEHeartbeatInterval, SSERevalidateInterval, SSEMaximumDuration                   time.Duration
+	SSEWriteTimeout                                                                   time.Duration
+	PendingWatchReconnectInitialBackoff, PendingWatchReconnectMaxBackoff              time.Duration
+	BookStatusReconnectInitialBackoff, BookStatusReconnectMaxBackoff                  time.Duration
+	BookStatusDialTimeout, BookStatusHeartbeatTimeout                                 time.Duration
+	BookStatusPrefetch, BookStatusQueueMaxLengthBytes                                 int
 	MinimumEvidenceScore                                                              float64
 	RunAs                                                                             process.Identity
 }
@@ -113,6 +136,90 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	authRegisterRateLimit, err := positiveInt("EDGE_AUTH_REGISTER_RATE_LIMIT", 20)
+	if err != nil {
+		return Config{}, err
+	}
+	authRegisterRateWindow, err := positiveDuration("EDGE_AUTH_REGISTER_RATE_WINDOW", time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	authRegisterRateMaxKeys, err := positiveInt("EDGE_AUTH_REGISTER_RATE_MAX_KEYS", 10000)
+	if err != nil {
+		return Config{}, err
+	}
+	authVerifyEmailRateLimit, err := positiveInt("EDGE_AUTH_VERIFY_EMAIL_RATE_LIMIT", 30)
+	if err != nil {
+		return Config{}, err
+	}
+	authVerifyEmailRateWindow, err := positiveDuration("EDGE_AUTH_VERIFY_EMAIL_RATE_WINDOW", time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	authVerifyEmailRateMaxKeys, err := positiveInt("EDGE_AUTH_VERIFY_EMAIL_RATE_MAX_KEYS", 10000)
+	if err != nil {
+		return Config{}, err
+	}
+	authLoginRateLimit, err := positiveInt("EDGE_AUTH_LOGIN_RATE_LIMIT", 30)
+	if err != nil {
+		return Config{}, err
+	}
+	authLoginRateWindow, err := positiveDuration("EDGE_AUTH_LOGIN_RATE_WINDOW", time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	authLoginRateMaxKeys, err := positiveInt("EDGE_AUTH_LOGIN_RATE_MAX_KEYS", 10000)
+	if err != nil {
+		return Config{}, err
+	}
+	authResendVerificationRateLimit, err := positiveInt("EDGE_AUTH_RESEND_VERIFICATION_RATE_LIMIT", 5)
+	if err != nil {
+		return Config{}, err
+	}
+	authResendVerificationRateWindow, err := positiveDuration("EDGE_AUTH_RESEND_VERIFICATION_RATE_WINDOW", time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	authResendVerificationRateMaxKeys, err := positiveInt("EDGE_AUTH_RESEND_VERIFICATION_RATE_MAX_KEYS", 10000)
+	if err != nil {
+		return Config{}, err
+	}
+	authPasswordResetRequestRateLimit, err := positiveInt("EDGE_AUTH_PASSWORD_RESET_REQUEST_RATE_LIMIT", 5)
+	if err != nil {
+		return Config{}, err
+	}
+	authPasswordResetRequestRateWindow, err := positiveDuration("EDGE_AUTH_PASSWORD_RESET_REQUEST_RATE_WINDOW", time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	authPasswordResetRequestRateMaxKeys, err := positiveInt("EDGE_AUTH_PASSWORD_RESET_REQUEST_RATE_MAX_KEYS", 10000)
+	if err != nil {
+		return Config{}, err
+	}
+	authPasswordResetVerifyRateLimit, err := positiveInt("EDGE_AUTH_PASSWORD_RESET_VERIFY_RATE_LIMIT", 5)
+	if err != nil {
+		return Config{}, err
+	}
+	authPasswordResetVerifyRateWindow, err := positiveDuration("EDGE_AUTH_PASSWORD_RESET_VERIFY_RATE_WINDOW", time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	authPasswordResetVerifyRateMaxKeys, err := positiveInt("EDGE_AUTH_PASSWORD_RESET_VERIFY_RATE_MAX_KEYS", 10000)
+	if err != nil {
+		return Config{}, err
+	}
+	authPasswordResetCompleteRateLimit, err := positiveInt("EDGE_AUTH_PASSWORD_RESET_COMPLETE_RATE_LIMIT", 5)
+	if err != nil {
+		return Config{}, err
+	}
+	authPasswordResetCompleteRateWindow, err := positiveDuration("EDGE_AUTH_PASSWORD_RESET_COMPLETE_RATE_WINDOW", time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	authPasswordResetCompleteRateMaxKeys, err := positiveInt("EDGE_AUTH_PASSWORD_RESET_COMPLETE_RATE_MAX_KEYS", 10000)
+	if err != nil {
+		return Config{}, err
+	}
 	setupAdminRateLimit, err := positiveInt("EDGE_SETUP_ADMIN_RATE_LIMIT", 5)
 	if err != nil {
 		return Config{}, err
@@ -146,6 +253,110 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	answerRateWindow, err := positiveDuration("EDGE_ANSWER_RATE_WINDOW", 3*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	httpReadTimeout, err := positiveDuration("EDGE_HTTP_READ_TIMEOUT", 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	httpReadHeaderTimeout, err := positiveDuration("EDGE_HTTP_READ_HEADER_TIMEOUT", 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	httpWriteTimeoutHeadroom, err := positiveDuration("EDGE_HTTP_WRITE_TIMEOUT_HEADROOM", 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	httpMinimumWriteTimeout, err := positiveDuration("EDGE_HTTP_MINIMUM_WRITE_TIMEOUT", 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	httpIdleTimeout, err := positiveDuration("EDGE_HTTP_IDLE_TIMEOUT", time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	httpShutdownTimeout, err := positiveDuration("EDGE_HTTP_SHUTDOWN_TIMEOUT", 15*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	httpMaxHeaderBytes, err := positiveInt("EDGE_HTTP_MAX_HEADER_BYTES", 1<<20)
+	if err != nil {
+		return Config{}, err
+	}
+	identityRPCDeadline, err := positiveDuration("EDGE_IDENTITY_RPC_DEADLINE", 3*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	catalogReadinessTimeout, err := positiveDuration("EDGE_CATALOG_READINESS_TIMEOUT", 2*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	catalogUploadTimeout, err := positiveDuration("EDGE_CATALOG_UPLOAD_TIMEOUT", 2*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	catalogListTimeout, err := positiveDuration("EDGE_CATALOG_LIST_TIMEOUT", 3*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	retrievalReadinessTimeout, err := positiveDuration("EDGE_RETRIEVAL_READINESS_TIMEOUT", 2*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	booksListTimeout, err := positiveDuration("EDGE_BOOKS_LIST_TIMEOUT", 6*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	booksLifecycleTimeout, err := positiveDuration("EDGE_BOOKS_LIFECYCLE_TIMEOUT", 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	sseHeartbeatInterval, err := positiveDuration("EDGE_SSE_HEARTBEAT_INTERVAL", 15*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	sseRevalidateInterval, err := positiveDuration("EDGE_SSE_REVALIDATE_INTERVAL", 15*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	sseMaximumDuration, err := positiveDuration("EDGE_SSE_MAXIMUM_DURATION", 5*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	sseWriteTimeout, err := positiveDuration("EDGE_SSE_WRITE_TIMEOUT", 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	pendingWatchReconnectInitialBackoff, err := positiveDuration("EDGE_PENDING_WATCH_RECONNECT_INITIAL_BACKOFF", time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	pendingWatchReconnectMaxBackoff, err := positiveDuration("EDGE_PENDING_WATCH_RECONNECT_MAX_BACKOFF", 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	bookStatusReconnectInitialBackoff, err := positiveDuration("EDGE_BOOK_STATUS_RECONNECT_INITIAL_BACKOFF", time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	bookStatusReconnectMaxBackoff, err := positiveDuration("EDGE_BOOK_STATUS_RECONNECT_MAX_BACKOFF", 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	bookStatusDialTimeout, err := positiveDuration("EDGE_BOOK_STATUS_DIAL_TIMEOUT", 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	bookStatusHeartbeatTimeout, err := positiveDuration("EDGE_BOOK_STATUS_HEARTBEAT_TIMEOUT", 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	bookStatusPrefetch, err := positiveInt("EDGE_BOOK_STATUS_PREFETCH", 20)
+	if err != nil {
+		return Config{}, err
+	}
+	bookStatusQueueMaxLengthBytes, err := positiveInt("EDGE_BOOK_STATUS_QUEUE_MAX_LENGTH_BYTES", 64<<20)
 	if err != nil {
 		return Config{}, err
 	}
@@ -198,39 +409,86 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return Config{
-		Addr:                       optional("QUERY_ADDR", ":8080"),
-		IdentityAddress:            optional("IDENTITY_GRPC_ADDR", "identity-service:50051"),
-		CatalogAddress:             optional("CATALOG_GRPC_ADDR", "catalog-service:50052"),
-		RetrievalAddress:           optional("RETRIEVAL_GRPC_ADDR", "retrieval-service:50054"),
-		AnswerAddress:              optional("ANSWER_GRPC_ADDR", "answer-service:50055"),
-		StatusRabbitURI:            statusRabbitURI,
-		StatusQueue:                optional("EDGE_STATUS_QUEUE", "edge.book-status.local.1"),
-		VerifyKey:                  key,
-		PreviousVerifyKey:          previousKey,
-		TrustedProxyCIDRs:          prefixes,
-		TLS:                        internaltls.Files{CA: ca, Certificate: cert, Key: keyFile},
-		SecureCookie:               !insecureCookie,
-		PublicOrigin:               publicOrigin,
-		EnforceBrowserOrigin:       enforceOrigin,
-		RetrievalReadinessRequired: retrievalReadinessRequired,
-		QueryRateLimit:             queryRateLimit,
-		QueryRateWindow:            queryRateWindow,
-		QueryRateMaxKeys:           queryRateMaxKeys,
-		QueryConcurrency:           queryConcurrency,
-		SetupAdminRateLimit:        setupAdminRateLimit,
-		SetupAdminRateWindow:       setupAdminRateWindow,
-		SetupAdminRateMaxKeys:      setupAdminRateMaxKeys,
-		BookUploadRateLimit:        bookUploadRateLimit,
-		BookUploadRateWindow:       bookUploadRateWindow,
-		BookUploadRateMaxKeys:      bookUploadRateMaxKeys,
-		BookUploadDeadline:         bookUploadDeadline,
-		AnswerRateLimit:            answerRateLimit,
-		AnswerRateWindow:           answerRateWindow,
-		AnswerDeadline:             answerDeadline,
-		RetrievalSearchDeadline:    retrievalSearchDeadline,
-		CatalogPreviewDeadline:     catalogPreviewDeadline,
-		MinimumEvidenceScore:       minimumEvidenceScore,
-		RunAs:                      runAs,
+		Addr:                                 optional("QUERY_ADDR", ":8080"),
+		IdentityAddress:                      optional("IDENTITY_GRPC_ADDR", "identity-service:50051"),
+		CatalogAddress:                       optional("CATALOG_GRPC_ADDR", "catalog-service:50052"),
+		RetrievalAddress:                     optional("RETRIEVAL_GRPC_ADDR", "retrieval-service:50054"),
+		AnswerAddress:                        optional("ANSWER_GRPC_ADDR", "answer-service:50055"),
+		StatusRabbitURI:                      statusRabbitURI,
+		StatusQueue:                          optional("EDGE_STATUS_QUEUE", "edge.book-status.local.1"),
+		VerifyKey:                            key,
+		PreviousVerifyKey:                    previousKey,
+		TrustedProxyCIDRs:                    prefixes,
+		TLS:                                  internaltls.Files{CA: ca, Certificate: cert, Key: keyFile},
+		SecureCookie:                         !insecureCookie,
+		PublicOrigin:                         publicOrigin,
+		EnforceBrowserOrigin:                 enforceOrigin,
+		RetrievalReadinessRequired:           retrievalReadinessRequired,
+		QueryRateLimit:                       queryRateLimit,
+		QueryRateWindow:                      queryRateWindow,
+		QueryRateMaxKeys:                     queryRateMaxKeys,
+		QueryConcurrency:                     queryConcurrency,
+		AuthRegisterRateLimit:                authRegisterRateLimit,
+		AuthRegisterRateWindow:               authRegisterRateWindow,
+		AuthRegisterRateMaxKeys:              authRegisterRateMaxKeys,
+		AuthVerifyEmailRateLimit:             authVerifyEmailRateLimit,
+		AuthVerifyEmailRateWindow:            authVerifyEmailRateWindow,
+		AuthVerifyEmailRateMaxKeys:           authVerifyEmailRateMaxKeys,
+		AuthLoginRateLimit:                   authLoginRateLimit,
+		AuthLoginRateWindow:                  authLoginRateWindow,
+		AuthLoginRateMaxKeys:                 authLoginRateMaxKeys,
+		AuthResendVerificationRateLimit:      authResendVerificationRateLimit,
+		AuthResendVerificationRateWindow:     authResendVerificationRateWindow,
+		AuthResendVerificationRateMaxKeys:    authResendVerificationRateMaxKeys,
+		AuthPasswordResetRequestRateLimit:    authPasswordResetRequestRateLimit,
+		AuthPasswordResetRequestRateWindow:   authPasswordResetRequestRateWindow,
+		AuthPasswordResetRequestRateMaxKeys:  authPasswordResetRequestRateMaxKeys,
+		AuthPasswordResetVerifyRateLimit:     authPasswordResetVerifyRateLimit,
+		AuthPasswordResetVerifyRateWindow:    authPasswordResetVerifyRateWindow,
+		AuthPasswordResetVerifyRateMaxKeys:   authPasswordResetVerifyRateMaxKeys,
+		AuthPasswordResetCompleteRateLimit:   authPasswordResetCompleteRateLimit,
+		AuthPasswordResetCompleteRateWindow:  authPasswordResetCompleteRateWindow,
+		AuthPasswordResetCompleteRateMaxKeys: authPasswordResetCompleteRateMaxKeys,
+		SetupAdminRateLimit:                  setupAdminRateLimit,
+		SetupAdminRateWindow:                 setupAdminRateWindow,
+		SetupAdminRateMaxKeys:                setupAdminRateMaxKeys,
+		BookUploadRateLimit:                  bookUploadRateLimit,
+		BookUploadRateWindow:                 bookUploadRateWindow,
+		BookUploadRateMaxKeys:                bookUploadRateMaxKeys,
+		BookUploadDeadline:                   bookUploadDeadline,
+		AnswerRateLimit:                      answerRateLimit,
+		AnswerRateWindow:                     answerRateWindow,
+		AnswerDeadline:                       answerDeadline,
+		RetrievalSearchDeadline:              retrievalSearchDeadline,
+		CatalogPreviewDeadline:               catalogPreviewDeadline,
+		HTTPReadTimeout:                      httpReadTimeout,
+		HTTPReadHeaderTimeout:                httpReadHeaderTimeout,
+		HTTPWriteTimeoutHeadroom:             httpWriteTimeoutHeadroom,
+		HTTPMinimumWriteTimeout:              httpMinimumWriteTimeout,
+		HTTPIdleTimeout:                      httpIdleTimeout,
+		HTTPShutdownTimeout:                  httpShutdownTimeout,
+		HTTPMaxHeaderBytes:                   httpMaxHeaderBytes,
+		IdentityRPCDeadline:                  identityRPCDeadline,
+		CatalogReadinessTimeout:              catalogReadinessTimeout,
+		CatalogUploadTimeout:                 catalogUploadTimeout,
+		CatalogListTimeout:                   catalogListTimeout,
+		RetrievalReadinessTimeout:            retrievalReadinessTimeout,
+		BooksListTimeout:                     booksListTimeout,
+		BooksLifecycleTimeout:                booksLifecycleTimeout,
+		SSEHeartbeatInterval:                 sseHeartbeatInterval,
+		SSERevalidateInterval:                sseRevalidateInterval,
+		SSEMaximumDuration:                   sseMaximumDuration,
+		SSEWriteTimeout:                      sseWriteTimeout,
+		PendingWatchReconnectInitialBackoff:  pendingWatchReconnectInitialBackoff,
+		PendingWatchReconnectMaxBackoff:      pendingWatchReconnectMaxBackoff,
+		BookStatusReconnectInitialBackoff:    bookStatusReconnectInitialBackoff,
+		BookStatusReconnectMaxBackoff:        bookStatusReconnectMaxBackoff,
+		BookStatusDialTimeout:                bookStatusDialTimeout,
+		BookStatusHeartbeatTimeout:           bookStatusHeartbeatTimeout,
+		BookStatusPrefetch:                   bookStatusPrefetch,
+		BookStatusQueueMaxLengthBytes:        bookStatusQueueMaxLengthBytes,
+		MinimumEvidenceScore:                 minimumEvidenceScore,
+		RunAs:                                runAs,
 	}, nil
 }
 

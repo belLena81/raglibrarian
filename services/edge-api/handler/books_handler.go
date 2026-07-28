@@ -72,16 +72,28 @@ type BookCatalog interface {
 	CheckReady(context.Context) error
 }
 type BooksHandler struct {
-	catalog        BookCatalog
-	previewTimeout time.Duration
-	events         *bookEvents
+	catalog BookCatalog
+	policy  BooksPolicy
+	events  *bookEvents
 }
 
-func NewBooksHandler(catalog BookCatalog, previewTimeout time.Duration) *BooksHandler {
-	if dependencyMissing(catalog) || previewTimeout <= 0 {
+// BooksPolicy defines runtime-tunable HTTP-to-Catalog request timing.
+type BooksPolicy struct {
+	UploadTimeout    time.Duration
+	ListTimeout      time.Duration
+	PreviewTimeout   time.Duration
+	LifecycleTimeout time.Duration
+}
+
+func NewBooksHandler(catalog BookCatalog, policy BooksPolicy) *BooksHandler {
+	if dependencyMissing(catalog) ||
+		policy.UploadTimeout <= 0 ||
+		policy.ListTimeout <= 0 ||
+		policy.PreviewTimeout <= 0 ||
+		policy.LifecycleTimeout <= 0 {
 		panic("handler: book catalog is required")
 	}
-	return &BooksHandler{catalog: catalog, previewTimeout: previewTimeout}
+	return &BooksHandler{catalog: catalog, policy: policy}
 }
 
 func (h *BooksHandler) Upload(w http.ResponseWriter, r *http.Request) {
@@ -117,7 +129,7 @@ func (h *BooksHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	}
 	metadata.MediaType = fileMediaType
 	principal, _ := middleware.PrincipalFromContext(r.Context())
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(r.Context(), h.policy.UploadTimeout)
 	defer cancel()
 	actor := catalogActor(principal)
 	book, err := h.catalog.UploadBook(ctx, metadata, actor, chimiddleware.GetReqID(r.Context()), &singleFileReader{part: filePart, reader: reader})
@@ -145,7 +157,7 @@ func (h *BooksHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal, _ := middleware.PrincipalFromContext(r.Context())
-	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), h.policy.ListTimeout)
 	defer cancel()
 	page, err := h.catalog.ListBooks(ctx, size, r.URL.Query().Get("page_token"), catalogActor(principal))
 	if err != nil {
@@ -166,7 +178,7 @@ func (h *BooksHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal, _ := middleware.PrincipalFromContext(r.Context())
-	ctx, cancel := context.WithTimeout(r.Context(), h.previewTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), h.policy.PreviewTimeout)
 	defer cancel()
 	book, err := h.catalog.GetBook(ctx, bookID, catalogActor(principal))
 	if err != nil {
@@ -203,7 +215,7 @@ func (h *BooksHandler) lifecycleCommand(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	principal, _ := middleware.PrincipalFromContext(r.Context())
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), h.policy.LifecycleTimeout)
 	defer cancel()
 	book, err := command(ctx, bookID, catalogActor(principal), chimiddleware.GetReqID(r.Context()), commandID)
 	if err != nil {
