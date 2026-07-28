@@ -143,6 +143,7 @@ jobs:
             chmod 600 "$temporary"
             sed "s/127\\.0\\.0\\.1:${port}/${host}:${port}/g" "$file" > "$temporary"
             mv "$temporary" "$file"
+            chmod 400 "$file"
             grep -q "${host}:${port}" "$file"
           }
 
