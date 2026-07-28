@@ -30,6 +30,7 @@ const (
 	MaximumEPUBMaximumExpandedBytes = int64(2 << 30)
 	DefaultEPUBMaximumTextBytes     = int64(128 << 20)
 	MaximumEPUBMaximumTextBytes     = int64(1 << 30)
+	DefaultCommandStderrBytes       = 8 << 10
 )
 
 type Config struct {

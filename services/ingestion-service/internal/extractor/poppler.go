@@ -17,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 
+	ingestionconfig "github.com/belLena81/raglibrarian/services/ingestion-service/config"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/domain"
 )
 
@@ -566,7 +567,7 @@ func (ExecRunner) StreamPages(ctx context.Context, path string, args []string, l
 		return err
 	}
 	var stderr boundedBuffer
-	stderr.maximum = 8 << 10
+	stderr.maximum = ingestionconfig.DefaultCommandStderrBytes
 	command.Stderr = &stderr
 	command.Cancel = func() error {
 		if command.Process == nil {
@@ -650,7 +651,7 @@ func (ExecRunner) Run(ctx context.Context, path string, args []string, maximumOu
 	stdout.maximum = maximumOutput
 	command.Stdout = &stdout
 	var stderr boundedBuffer
-	stderr.maximum = 8 << 10
+	stderr.maximum = ingestionconfig.DefaultCommandStderrBytes
 	command.Stderr = &stderr
 	command.Cancel = func() error {
 		if command.Process == nil {

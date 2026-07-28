@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strings"
 
+	ingestionconfig "github.com/belLena81/raglibrarian/services/ingestion-service/config"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/domain"
 )
 
@@ -52,11 +53,11 @@ type EPUBArchiveLimits struct {
 
 func DefaultEPUBArchiveLimits() EPUBArchiveLimits {
 	return EPUBArchiveLimits{
-		MaximumEntries:       2048,
-		MaximumSpineItems:    500,
-		MaximumEntryBytes:    32 << 20,
-		MaximumExpandedBytes: 256 << 20,
-		MaximumTextBytes:     128 << 20,
+		MaximumEntries:       ingestionconfig.DefaultEPUBMaximumEntries,
+		MaximumSpineItems:    uint32(ingestionconfig.DefaultEPUBMaximumSpineItems),
+		MaximumEntryBytes:    ingestionconfig.DefaultEPUBMaximumEntryBytes,
+		MaximumExpandedBytes: ingestionconfig.DefaultEPUBMaximumExpandedBytes,
+		MaximumTextBytes:     ingestionconfig.DefaultEPUBMaximumTextBytes,
 	}
 }
 
