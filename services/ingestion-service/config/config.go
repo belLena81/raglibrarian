@@ -18,6 +18,15 @@ import (
 const (
 	DefaultChunkTargetPages         = 2
 	DefaultChunkMaximumPages        = 3
+	DefaultQueue                    = "ingestion.book-uploaded.v1"
+	DefaultResultExchange           = "raglibrarian.ingestion.events.v1"
+	DefaultRetryExchange            = "raglibrarian.ingestion.retry.v1"
+	DefaultUploadFirstRetryRoute    = "ingestion.retry.5s"
+	DefaultUploadSecondRetryRoute   = "ingestion.retry.30s"
+	DefaultUploadThirdRetryRoute    = "ingestion.retry.2m"
+	DefaultDeleteFirstRetryRoute    = "ingestion.deletion.retry.5s"
+	DefaultDeleteSecondRetryRoute   = "ingestion.deletion.retry.30s"
+	DefaultDeleteThirdRetryRoute    = "ingestion.deletion.retry.2m"
 	DefaultParserSandboxMemoryBytes = int64(1536 << 20)
 	MaximumParserSandboxMemoryBytes = int64(8 << 30)
 	DefaultEPUBMaximumEntries       = 2048
@@ -40,7 +49,11 @@ type Config struct {
 	AWSRegion, KMSKeyARN                                                        string
 	TokenizerFile, PDFInfoPath, PDFTextPath, EPUBParserPath, TemporaryDirectory string
 	DebugDumpPDFTextDirectory                                                   string
-	Queue, ResultExchange                                                       string
+	Queue, ResultExchange, RetryExchange                                        string
+	UploadFirstRetryRoute, UploadSecondRetryRoute                               string
+	UploadSubsequentRetryRoute                                                  string
+	DeletionFirstRetryRoute, DeletionSecondRetryRoute                           string
+	DeletionSubsequentRetryRoute                                                string
 	MinIOInsecure                                                               bool
 	WorkConcurrency, MaximumAttempts, MaximumChunks                             int
 	ChunkMaximumTokens, ChunkOverlapTokens, ChunkTargetPages, ChunkMaximumPages int
@@ -89,7 +102,11 @@ type DispatcherConfig struct {
 	DSN            string
 	RabbitURI      string
 	ResultExchange string
+	RetryExchange  string
 	OutboxInterval time.Duration
+	UploadFirstRetryRoute,
+	UploadSecondRetryRoute,
+	UploadSubsequentRetryRoute string
 	ChunkMaximumTokens,
 	ChunkOverlapTokens,
 	ChunkTargetPages,
@@ -98,6 +115,8 @@ type DispatcherConfig struct {
 	RabbitHeartbeat,
 	RabbitPublishTimeout,
 	OutboxLease,
+	FirstRetryDelay,
+	SecondRetryDelay,
 	RetryDispatchDelay,
 	OutboxRetryBaseDelay,
 	OutboxRetryMaxDelay time.Duration
@@ -133,6 +152,14 @@ func loadLocalDispatcher() (DispatcherConfig, error) {
 	if err != nil {
 		return DispatcherConfig{}, err
 	}
+	firstRetryDelay, err := boundedDuration("INGESTION_FIRST_RETRY_DELAY", time.Second, 10*time.Minute, 5*time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	secondRetryDelay, err := boundedDuration("INGESTION_SECOND_RETRY_DELAY", time.Second, 10*time.Minute, 30*time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
 	retryDispatchDelay, err := boundedDuration("INGESTION_RETRY_DISPATCH_DELAY", time.Second, time.Minute, time.Second)
 	if err != nil {
 		return DispatcherConfig{}, err
@@ -158,24 +185,40 @@ func loadLocalDispatcher() (DispatcherConfig, error) {
 		return DispatcherConfig{}, err
 	}
 	return DispatcherConfig{
-		RuntimeBackend:       "local",
-		DSN:                  dsn,
-		RabbitURI:            rabbitURI,
-		ResultExchange:       optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
-		OutboxInterval:       outboxInterval,
-		ChunkMaximumTokens:   chunkMaximumTokens,
-		ChunkOverlapTokens:   chunkOverlapTokens,
-		ChunkTargetPages:     chunkTargetPages,
-		ChunkMaximumPages:    chunkMaximumPages,
-		RabbitDialTimeout:    rabbitDialTimeout,
-		RabbitHeartbeat:      rabbitHeartbeat,
-		RabbitPublishTimeout: rabbitPublishTimeout,
-		OutboxLease:          outboxLease,
-		RetryDispatchDelay:   retryDispatchDelay,
-		OutboxRetryBaseDelay: outboxRetryBaseDelay,
-		OutboxRetryMaxDelay:  outboxRetryMaxDelay,
-		RunAs:                process.Identity{UID: uid, GID: gid},
+		RuntimeBackend:             "local",
+		DSN:                        dsn,
+		RabbitURI:                  rabbitURI,
+		ResultExchange:             optional("INGESTION_RESULT_EXCHANGE", DefaultResultExchange),
+		RetryExchange:              optional("INGESTION_RETRY_EXCHANGE", DefaultRetryExchange),
+		OutboxInterval:             outboxInterval,
+		UploadFirstRetryRoute:      optional("INGESTION_UPLOAD_FIRST_RETRY_ROUTE", DefaultUploadFirstRetryRoute),
+		UploadSecondRetryRoute:     optional("INGESTION_UPLOAD_SECOND_RETRY_ROUTE", DefaultUploadSecondRetryRoute),
+		UploadSubsequentRetryRoute: optional("INGESTION_UPLOAD_SUBSEQUENT_RETRY_ROUTE", DefaultUploadThirdRetryRoute),
+		ChunkMaximumTokens:         chunkMaximumTokens,
+		ChunkOverlapTokens:         chunkOverlapTokens,
+		ChunkTargetPages:           chunkTargetPages,
+		ChunkMaximumPages:          chunkMaximumPages,
+		RabbitDialTimeout:          rabbitDialTimeout,
+		RabbitHeartbeat:            rabbitHeartbeat,
+		RabbitPublishTimeout:       rabbitPublishTimeout,
+		OutboxLease:                outboxLease,
+		FirstRetryDelay:            firstRetryDelay,
+		SecondRetryDelay:           secondRetryDelay,
+		RetryDispatchDelay:         retryDispatchDelay,
+		OutboxRetryBaseDelay:       outboxRetryBaseDelay,
+		OutboxRetryMaxDelay:        outboxRetryMaxDelay,
+		RunAs:                      process.Identity{UID: uid, GID: gid},
 	}, nil
+}
+
+func retryRoutingValues() (string, string, string, string, string, string, string) {
+	return optional("INGESTION_RETRY_EXCHANGE", DefaultRetryExchange),
+		optional("INGESTION_UPLOAD_FIRST_RETRY_ROUTE", DefaultUploadFirstRetryRoute),
+		optional("INGESTION_UPLOAD_SECOND_RETRY_ROUTE", DefaultUploadSecondRetryRoute),
+		optional("INGESTION_UPLOAD_SUBSEQUENT_RETRY_ROUTE", DefaultUploadThirdRetryRoute),
+		optional("INGESTION_DELETION_FIRST_RETRY_ROUTE", DefaultDeleteFirstRetryRoute),
+		optional("INGESTION_DELETION_SECOND_RETRY_ROUTE", DefaultDeleteSecondRetryRoute),
+		optional("INGESTION_DELETION_SUBSEQUENT_RETRY_ROUTE", DefaultDeleteThirdRetryRoute)
 }
 
 func loadLocalCleanup() (CleanupConfig, error) {
@@ -514,6 +557,8 @@ func loadLocal() (Config, error) {
 	if debugDumpPDFTextDirectory != "" && (!strings.HasPrefix(debugDumpPDFTextDirectory, "/") || debugDumpPDFTextDirectory == "/" || containsASCIIControl(debugDumpPDFTextDirectory)) {
 		return Config{}, fmt.Errorf("INGESTION_DEBUG_DUMP_PDFTEXT_DIR must be an absolute debug directory")
 	}
+	retryExchange, uploadFirstRetryRoute, uploadSecondRetryRoute, uploadSubsequentRetryRoute,
+		deletionFirstRetryRoute, deletionSecondRetryRoute, deletionSubsequentRetryRoute := retryRoutingValues()
 	return Config{
 		RuntimeBackend:                 "local",
 		DSN:                            dsn,
@@ -531,8 +576,15 @@ func loadLocal() (Config, error) {
 		EPUBParserPath:                 optional("INGESTION_EPUB_PARSER_PATH", "/usr/local/bin/epub-parser"),
 		TemporaryDirectory:             temporaryDirectory,
 		DebugDumpPDFTextDirectory:      debugDumpPDFTextDirectory,
-		Queue:                          optional("INGESTION_QUEUE", "ingestion.book-uploaded.v1"),
-		ResultExchange:                 optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
+		Queue:                          optional("INGESTION_QUEUE", DefaultQueue),
+		ResultExchange:                 optional("INGESTION_RESULT_EXCHANGE", DefaultResultExchange),
+		RetryExchange:                  retryExchange,
+		UploadFirstRetryRoute:          uploadFirstRetryRoute,
+		UploadSecondRetryRoute:         uploadSecondRetryRoute,
+		UploadSubsequentRetryRoute:     uploadSubsequentRetryRoute,
+		DeletionFirstRetryRoute:        deletionFirstRetryRoute,
+		DeletionSecondRetryRoute:       deletionSecondRetryRoute,
+		DeletionSubsequentRetryRoute:   deletionSubsequentRetryRoute,
 		MinIOInsecure:                  insecure,
 		WorkConcurrency:                workConcurrency,
 		MaximumAttempts:                maximumAttempts,

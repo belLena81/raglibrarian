@@ -16,7 +16,6 @@ import (
 
 const UploadRoute = contracts.EventCatalogBookUploaded
 const DeletionRoute = contracts.EventCatalogBookDeletionRequested
-const RetryExchange = "raglibrarian.ingestion.retry.v1"
 
 const (
 	applicationDeliveryCountHeader = "x-raglibrarian-delivery-count"
@@ -37,7 +36,14 @@ type Consumer struct {
 }
 
 type BrokerPolicy struct {
-	MaximumAttempts      int
+	MaximumAttempts int
+	RetryExchange   string
+	UploadFirstRetryRoute,
+	UploadSecondRetryRoute,
+	UploadSubsequentRetryRoute,
+	DeletionFirstRetryRoute,
+	DeletionSecondRetryRoute,
+	DeletionSubsequentRetryRoute string
 	DialTimeout          time.Duration
 	Heartbeat            time.Duration
 	PublishTimeout       time.Duration
@@ -47,8 +53,14 @@ type BrokerPolicy struct {
 }
 
 type OutboxPolicy struct {
-	Lease          time.Duration
-	PublishTimeout time.Duration
+	Lease                      time.Duration
+	PublishTimeout             time.Duration
+	RetryExchange              string
+	UploadFirstRetryRoute      string
+	UploadSecondRetryRoute     string
+	UploadSubsequentRetryRoute string
+	FirstRetryDelay            time.Duration
+	SecondRetryDelay           time.Duration
 }
 
 // ProcessOneDelivery applies the worker's bounded retry and DLQ policy to one
@@ -59,7 +71,10 @@ func ProcessOneDelivery(ctx context.Context, delivery amqp091.Delivery, processo
 }
 
 func NewConsumer(channel *amqp091.Channel, queue string, concurrency int, processor EventProcessor, publisher Publisher, policy BrokerPolicy) (*Consumer, error) {
-	if channel == nil || queue == "" || concurrency < 1 || processor == nil || publisher == nil || policy.MaximumAttempts < 1 || policy.DialTimeout <= 0 || policy.Heartbeat <= 0 || policy.PublishTimeout <= 0 ||
+	if channel == nil || queue == "" || concurrency < 1 || processor == nil || publisher == nil || policy.MaximumAttempts < 1 || policy.RetryExchange == "" ||
+		policy.UploadFirstRetryRoute == "" || policy.UploadSecondRetryRoute == "" || policy.UploadSubsequentRetryRoute == "" ||
+		policy.DeletionFirstRetryRoute == "" || policy.DeletionSecondRetryRoute == "" || policy.DeletionSubsequentRetryRoute == "" ||
+		policy.DialTimeout <= 0 || policy.Heartbeat <= 0 || policy.PublishTimeout <= 0 ||
 		policy.FirstRetryDelay <= 0 || policy.SecondRetryDelay <= 0 || policy.SubsequentRetryDelay <= 0 {
 		return nil, errors.New("invalid RabbitMQ consumer")
 	}
@@ -144,8 +159,8 @@ func (c *Consumer) retry(ctx context.Context, delivery amqp091.Delivery) {
 	publishCtx, cancel := context.WithTimeout(ctx, c.policy.PublishTimeout)
 	err := c.publisher.PublishWithContext(
 		publishCtx,
-		RetryExchange,
-		deliveryRetryRoute(delivery.Type, c.retryDelay(nextAttempt)),
+		c.policy.RetryExchange,
+		c.policy.retryRouteForAttempt(delivery.Type, nextAttempt),
 		true,
 		false,
 		amqp091.Publishing{
@@ -226,22 +241,49 @@ func (c *Consumer) retryDelay(attempt int) time.Duration {
 	}
 }
 
-func deliveryRetryRoute(eventType string, delay time.Duration) string {
-	prefix := "ingestion.retry"
-	if eventType == DeletionRoute {
-		prefix = "ingestion.deletion.retry"
+func (p BrokerPolicy) retryRouteForAttempt(eventType string, attempt int) string {
+	switch eventType {
+	case DeletionRoute:
+		switch {
+		case attempt <= 1:
+			return p.DeletionFirstRetryRoute
+		case attempt <= 3:
+			return p.DeletionSecondRetryRoute
+		default:
+			return p.DeletionSubsequentRetryRoute
+		}
+	default:
+		switch {
+		case attempt <= 1:
+			return p.UploadFirstRetryRoute
+		case attempt <= 3:
+			return p.UploadSecondRetryRoute
+		default:
+			return p.UploadSubsequentRetryRoute
+		}
 	}
-	if delay <= 5*time.Second {
-		return prefix + ".5s"
-	}
-	if delay <= 30*time.Second {
-		return prefix + ".30s"
-	}
-	return prefix + ".2m"
 }
 
-func retryRoute(delay time.Duration) string {
-	return deliveryRetryRoute(UploadRoute, delay)
+func (p BrokerPolicy) uploadRetryRouteForDelay(delay time.Duration) string {
+	switch {
+	case delay <= p.FirstRetryDelay:
+		return p.UploadFirstRetryRoute
+	case delay <= p.SecondRetryDelay:
+		return p.UploadSecondRetryRoute
+	default:
+		return p.UploadSubsequentRetryRoute
+	}
+}
+
+func (p OutboxPolicy) uploadRetryRouteForDelay(delay time.Duration) string {
+	switch {
+	case delay <= p.FirstRetryDelay:
+		return p.UploadFirstRetryRoute
+	case delay <= p.SecondRetryDelay:
+		return p.UploadSecondRetryRoute
+	default:
+		return p.UploadSubsequentRetryRoute
+	}
 }
 
 type Publisher interface {
@@ -259,7 +301,9 @@ type OutboxWorker struct {
 }
 
 func NewOutboxWorker(repo *repository.Postgres, publisher Publisher, exchange string, interval time.Duration, policy OutboxPolicy, logger *diagnostic.Logger) (*OutboxWorker, error) {
-	if repo == nil || publisher == nil || exchange == "" || interval <= 0 || policy.Lease <= 0 || policy.PublishTimeout <= 0 {
+	if repo == nil || publisher == nil || exchange == "" || interval <= 0 || policy.Lease <= 0 || policy.PublishTimeout <= 0 ||
+		policy.RetryExchange == "" || policy.UploadFirstRetryRoute == "" || policy.UploadSecondRetryRoute == "" || policy.UploadSubsequentRetryRoute == "" ||
+		policy.FirstRetryDelay <= 0 || policy.SecondRetryDelay <= 0 {
 		return nil, errors.New("invalid outbox worker")
 	}
 	return &OutboxWorker{repository: repo, publisher: publisher, exchange: exchange, interval: interval, policy: policy, now: time.Now, logger: logger}, nil
@@ -333,7 +377,7 @@ func (w *OutboxWorker) publishBatch(ctx context.Context) (bool, error) {
 	for _, retry := range retries {
 		delay := retry.DispatchAfter.Sub(now)
 		publishCtx, cancel := context.WithTimeout(ctx, w.policy.PublishTimeout)
-		err = w.publisher.PublishWithContext(publishCtx, RetryExchange, retryRoute(delay), true, false, amqp091.Publishing{ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent, MessageId: retry.EventID, Type: UploadRoute, Timestamp: now, Body: retry.Payload})
+		err = w.publisher.PublishWithContext(publishCtx, w.policy.RetryExchange, w.policy.uploadRetryRouteForDelay(delay), true, false, amqp091.Publishing{ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent, MessageId: retry.EventID, Type: UploadRoute, Timestamp: now, Body: retry.Payload})
 		cancel()
 		if err != nil {
 			_ = w.repository.RetryRetryDispatch(ctx, retry.JobID, retry.Attempt, now)

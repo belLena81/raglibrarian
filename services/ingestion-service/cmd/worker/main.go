@@ -45,13 +45,20 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 	defer runtime.Close()
 	brokerPolicy := transport.BrokerPolicy{
-		MaximumAttempts:      cfg.MaximumAttempts,
-		DialTimeout:          cfg.RabbitDialTimeout,
-		Heartbeat:            cfg.RabbitHeartbeat,
-		PublishTimeout:       cfg.RabbitPublishTimeout,
-		FirstRetryDelay:      cfg.FirstRetryDelay,
-		SecondRetryDelay:     cfg.SecondRetryDelay,
-		SubsequentRetryDelay: cfg.SubsequentRetryDelay,
+		MaximumAttempts:              cfg.MaximumAttempts,
+		RetryExchange:                cfg.RetryExchange,
+		UploadFirstRetryRoute:        cfg.UploadFirstRetryRoute,
+		UploadSecondRetryRoute:       cfg.UploadSecondRetryRoute,
+		UploadSubsequentRetryRoute:   cfg.UploadSubsequentRetryRoute,
+		DeletionFirstRetryRoute:      cfg.DeletionFirstRetryRoute,
+		DeletionSecondRetryRoute:     cfg.DeletionSecondRetryRoute,
+		DeletionSubsequentRetryRoute: cfg.DeletionSubsequentRetryRoute,
+		DialTimeout:                  cfg.RabbitDialTimeout,
+		Heartbeat:                    cfg.RabbitHeartbeat,
+		PublishTimeout:               cfg.RabbitPublishTimeout,
+		FirstRetryDelay:              cfg.FirstRetryDelay,
+		SecondRetryDelay:             cfg.SecondRetryDelay,
+		SubsequentRetryDelay:         cfg.SubsequentRetryDelay,
 	}
 	connection, err := transport.DialConsumer(ctx, cfg.RabbitURI, brokerPolicy)
 	if err != nil {

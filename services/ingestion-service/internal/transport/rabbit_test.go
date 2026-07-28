@@ -74,13 +74,20 @@ func (p *countingProcessor) ProcessDeletion(context.Context, application.Deletio
 
 func testBrokerPolicy() BrokerPolicy {
 	return BrokerPolicy{
-		MaximumAttempts:      5,
-		DialTimeout:          5 * time.Second,
-		Heartbeat:            10 * time.Second,
-		PublishTimeout:       10 * time.Second,
-		FirstRetryDelay:      5 * time.Second,
-		SecondRetryDelay:     30 * time.Second,
-		SubsequentRetryDelay: 2 * time.Minute,
+		MaximumAttempts:              5,
+		RetryExchange:                "raglibrarian.ingestion.retry.v1",
+		UploadFirstRetryRoute:        "ingestion.retry.5s",
+		UploadSecondRetryRoute:       "ingestion.retry.30s",
+		UploadSubsequentRetryRoute:   "ingestion.retry.2m",
+		DeletionFirstRetryRoute:      "ingestion.deletion.retry.5s",
+		DeletionSecondRetryRoute:     "ingestion.deletion.retry.30s",
+		DeletionSubsequentRetryRoute: "ingestion.deletion.retry.2m",
+		DialTimeout:                  5 * time.Second,
+		Heartbeat:                    10 * time.Second,
+		PublishTimeout:               10 * time.Second,
+		FirstRetryDelay:              5 * time.Second,
+		SecondRetryDelay:             30 * time.Second,
+		SubsequentRetryDelay:         2 * time.Minute,
 	}
 }
 
@@ -229,7 +236,7 @@ func TestConsumerRepublishesTransientDeliveryWithBoundedSanitizedRetry(t *testin
 				Expiration:   "1",
 				Body:         test.payload,
 			})
-			if !acknowledger.acked || acknowledger.nacked || publisher.exchange != RetryExchange || publisher.key != test.wantKey || !publisher.mandatory || publisher.immediate {
+			if !acknowledger.acked || acknowledger.nacked || publisher.exchange != testBrokerPolicy().RetryExchange || publisher.key != test.wantKey || !publisher.mandatory || publisher.immediate {
 				t.Fatalf("retry result ack=%#v publish=%#v", acknowledger, publisher)
 			}
 			if publisher.message.DeliveryMode != amqp091.Persistent || publisher.message.ContentType != "application/x-protobuf" || publisher.message.MessageId != test.messageID || publisher.message.Type != test.eventType || !publisher.message.Timestamp.Equal(now.UTC()) {

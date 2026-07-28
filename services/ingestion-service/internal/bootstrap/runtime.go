@@ -86,7 +86,16 @@ func NewDispatcher(ctx context.Context, cfg config.DispatcherConfig) (*Dispatche
 		RetryDispatchDelay:   cfg.RetryDispatchDelay,
 		OutboxRetryBaseDelay: cfg.OutboxRetryBaseDelay,
 		OutboxRetryMaxDelay:  cfg.OutboxRetryMaxDelay,
-	}), publisher, cfg.ResultExchange, cfg.OutboxInterval, transport.OutboxPolicy{Lease: cfg.OutboxLease, PublishTimeout: cfg.RabbitPublishTimeout}, diagnostic.New(nil))
+	}), publisher, cfg.ResultExchange, cfg.OutboxInterval, transport.OutboxPolicy{
+		Lease:                      cfg.OutboxLease,
+		PublishTimeout:             cfg.RabbitPublishTimeout,
+		RetryExchange:              cfg.RetryExchange,
+		UploadFirstRetryRoute:      cfg.UploadFirstRetryRoute,
+		UploadSecondRetryRoute:     cfg.UploadSecondRetryRoute,
+		UploadSubsequentRetryRoute: cfg.UploadSubsequentRetryRoute,
+		FirstRetryDelay:            cfg.FirstRetryDelay,
+		SecondRetryDelay:           cfg.SecondRetryDelay,
+	}, diagnostic.New(nil))
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -320,16 +329,32 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		return nil, err
 	}
 	brokerPolicy := transport.BrokerPolicy{
-		MaximumAttempts:      cfg.MaximumAttempts,
-		DialTimeout:          cfg.RabbitDialTimeout,
-		Heartbeat:            cfg.RabbitHeartbeat,
-		PublishTimeout:       cfg.RabbitPublishTimeout,
-		FirstRetryDelay:      cfg.FirstRetryDelay,
-		SecondRetryDelay:     cfg.SecondRetryDelay,
-		SubsequentRetryDelay: cfg.SubsequentRetryDelay,
+		MaximumAttempts:              cfg.MaximumAttempts,
+		RetryExchange:                cfg.RetryExchange,
+		UploadFirstRetryRoute:        cfg.UploadFirstRetryRoute,
+		UploadSecondRetryRoute:       cfg.UploadSecondRetryRoute,
+		UploadSubsequentRetryRoute:   cfg.UploadSubsequentRetryRoute,
+		DeletionFirstRetryRoute:      cfg.DeletionFirstRetryRoute,
+		DeletionSecondRetryRoute:     cfg.DeletionSecondRetryRoute,
+		DeletionSubsequentRetryRoute: cfg.DeletionSubsequentRetryRoute,
+		DialTimeout:                  cfg.RabbitDialTimeout,
+		Heartbeat:                    cfg.RabbitHeartbeat,
+		PublishTimeout:               cfg.RabbitPublishTimeout,
+		FirstRetryDelay:              cfg.FirstRetryDelay,
+		SecondRetryDelay:             cfg.SecondRetryDelay,
+		SubsequentRetryDelay:         cfg.SubsequentRetryDelay,
 	}
 	publisher := transport.NewReconnectingPublisher(cfg.RabbitURI, brokerPolicy)
-	outbox, err := transport.NewOutboxWorker(repo, publisher, cfg.ResultExchange, cfg.OutboxInterval, transport.OutboxPolicy{Lease: cfg.OutboxLease, PublishTimeout: cfg.RabbitPublishTimeout}, diagnosticsLogger)
+	outbox, err := transport.NewOutboxWorker(repo, publisher, cfg.ResultExchange, cfg.OutboxInterval, transport.OutboxPolicy{
+		Lease:                      cfg.OutboxLease,
+		PublishTimeout:             cfg.RabbitPublishTimeout,
+		RetryExchange:              cfg.RetryExchange,
+		UploadFirstRetryRoute:      cfg.UploadFirstRetryRoute,
+		UploadSecondRetryRoute:     cfg.UploadSecondRetryRoute,
+		UploadSubsequentRetryRoute: cfg.UploadSubsequentRetryRoute,
+		FirstRetryDelay:            cfg.FirstRetryDelay,
+		SecondRetryDelay:           cfg.SecondRetryDelay,
+	}, diagnosticsLogger)
 	if err != nil {
 		cleanup()
 		return nil, err

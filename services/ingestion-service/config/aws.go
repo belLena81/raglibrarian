@@ -307,8 +307,15 @@ func loadAWS(ctx context.Context) (Config, error) {
 		PDFTextPath:                    optional("INGESTION_PDFTOTEXT_PATH", "/usr/bin/pdftotext"),
 		EPUBParserPath:                 optional("INGESTION_EPUB_PARSER_PATH", "/usr/local/bin/epub-parser"),
 		TemporaryDirectory:             "/tmp",
-		Queue:                          optional("INGESTION_QUEUE", "ingestion.book-uploaded.v1"),
-		ResultExchange:                 optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
+		Queue:                          optional("INGESTION_QUEUE", DefaultQueue),
+		ResultExchange:                 optional("INGESTION_RESULT_EXCHANGE", DefaultResultExchange),
+		RetryExchange:                  optional("INGESTION_RETRY_EXCHANGE", DefaultRetryExchange),
+		UploadFirstRetryRoute:          optional("INGESTION_UPLOAD_FIRST_RETRY_ROUTE", DefaultUploadFirstRetryRoute),
+		UploadSecondRetryRoute:         optional("INGESTION_UPLOAD_SECOND_RETRY_ROUTE", DefaultUploadSecondRetryRoute),
+		UploadSubsequentRetryRoute:     optional("INGESTION_UPLOAD_SUBSEQUENT_RETRY_ROUTE", DefaultUploadThirdRetryRoute),
+		DeletionFirstRetryRoute:        optional("INGESTION_DELETION_FIRST_RETRY_ROUTE", DefaultDeleteFirstRetryRoute),
+		DeletionSecondRetryRoute:       optional("INGESTION_DELETION_SECOND_RETRY_ROUTE", DefaultDeleteSecondRetryRoute),
+		DeletionSubsequentRetryRoute:   optional("INGESTION_DELETION_SUBSEQUENT_RETRY_ROUTE", DefaultDeleteThirdRetryRoute),
 		WorkConcurrency:                workConcurrency,
 		MaximumAttempts:                maximumAttempts,
 		MaximumChunks:                  maximumChunks,
@@ -394,6 +401,14 @@ func loadAWSDispatcher(ctx context.Context) (DispatcherConfig, error) {
 	if err != nil {
 		return DispatcherConfig{}, err
 	}
+	firstRetryDelay, err := boundedDuration("INGESTION_FIRST_RETRY_DELAY", time.Second, 10*time.Minute, 5*time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
+	secondRetryDelay, err := boundedDuration("INGESTION_SECOND_RETRY_DELAY", time.Second, 10*time.Minute, 30*time.Second)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
 	retryDispatchDelay, err := boundedDuration("INGESTION_RETRY_DISPATCH_DELAY", time.Second, time.Minute, time.Second)
 	if err != nil {
 		return DispatcherConfig{}, err
@@ -419,23 +434,29 @@ func loadAWSDispatcher(ctx context.Context) (DispatcherConfig, error) {
 		return DispatcherConfig{}, err
 	}
 	return DispatcherConfig{
-		RuntimeBackend:       "aws",
-		DSN:                  dsn,
-		RabbitURI:            rabbitURI,
-		ResultExchange:       optional("INGESTION_RESULT_EXCHANGE", "raglibrarian.ingestion.events.v1"),
-		OutboxInterval:       outboxInterval,
-		ChunkMaximumTokens:   chunkMaximumTokens,
-		ChunkOverlapTokens:   chunkOverlapTokens,
-		ChunkTargetPages:     chunkTargetPages,
-		ChunkMaximumPages:    chunkMaximumPages,
-		RabbitDialTimeout:    rabbitDialTimeout,
-		RabbitHeartbeat:      rabbitHeartbeat,
-		RabbitPublishTimeout: rabbitPublishTimeout,
-		OutboxLease:          outboxLease,
-		RetryDispatchDelay:   retryDispatchDelay,
-		OutboxRetryBaseDelay: outboxRetryBaseDelay,
-		OutboxRetryMaxDelay:  outboxRetryMaxDelay,
-		RunAs:                process.Identity{UID: uid, GID: gid},
+		RuntimeBackend:             "aws",
+		DSN:                        dsn,
+		RabbitURI:                  rabbitURI,
+		ResultExchange:             optional("INGESTION_RESULT_EXCHANGE", DefaultResultExchange),
+		RetryExchange:              optional("INGESTION_RETRY_EXCHANGE", DefaultRetryExchange),
+		OutboxInterval:             outboxInterval,
+		UploadFirstRetryRoute:      optional("INGESTION_UPLOAD_FIRST_RETRY_ROUTE", DefaultUploadFirstRetryRoute),
+		UploadSecondRetryRoute:     optional("INGESTION_UPLOAD_SECOND_RETRY_ROUTE", DefaultUploadSecondRetryRoute),
+		UploadSubsequentRetryRoute: optional("INGESTION_UPLOAD_SUBSEQUENT_RETRY_ROUTE", DefaultUploadThirdRetryRoute),
+		ChunkMaximumTokens:         chunkMaximumTokens,
+		ChunkOverlapTokens:         chunkOverlapTokens,
+		ChunkTargetPages:           chunkTargetPages,
+		ChunkMaximumPages:          chunkMaximumPages,
+		RabbitDialTimeout:          rabbitDialTimeout,
+		RabbitHeartbeat:            rabbitHeartbeat,
+		RabbitPublishTimeout:       rabbitPublishTimeout,
+		OutboxLease:                outboxLease,
+		FirstRetryDelay:            firstRetryDelay,
+		SecondRetryDelay:           secondRetryDelay,
+		RetryDispatchDelay:         retryDispatchDelay,
+		OutboxRetryBaseDelay:       outboxRetryBaseDelay,
+		OutboxRetryMaxDelay:        outboxRetryMaxDelay,
+		RunAs:                      process.Identity{UID: uid, GID: gid},
 	}, nil
 }
 
