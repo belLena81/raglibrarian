@@ -422,7 +422,7 @@ func (r *Postgres) ProjectMetadata(ctx context.Context, event application.Metada
 	}
 	command, err := tx.Exec(ctx, `INSERT INTO retrieval.metadata_facts
 		(book_id,event_id,payload_digest,source_sha256,title,author,publication_year,tags,correlation_id,causation_id,occurred_at,media_type)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING`, event.BookID, event.EventID, event.PayloadDigest[:], event.SourceSHA256[:], event.Title, event.Author, event.Year, event.Tags, event.CorrelationID, event.CausationID, event.OccurredAt, event.EffectiveMediaType())
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING`, event.BookID, event.EventID, event.PayloadDigest[:], event.SourceSHA256[:], event.Title, event.Author, event.Year, postgresTextArray(event.Tags), event.CorrelationID, event.CausationID, event.OccurredAt, event.EffectiveMediaType())
 	if err != nil {
 		return application.PlanningSnapshot{}, fmt.Errorf("retrieval: project metadata: %w", err)
 	}
