@@ -16,13 +16,13 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
 )
 
-var ensureRetryDelay = time.Second
-
 const (
-	defaultInitTimeout = 20 * time.Second
-	defaultHTTPTimeout = 8 * time.Second
-	maximumInitTimeout = 2 * time.Minute
-	maximumHTTPTimeout = time.Minute
+	defaultEnsureRetryDelay = time.Second
+	defaultInitTimeout      = 20 * time.Second
+	defaultHTTPTimeout      = 8 * time.Second
+	maximumEnsureRetryDelay = time.Minute
+	maximumInitTimeout      = 2 * time.Minute
+	maximumHTTPTimeout      = time.Minute
 )
 
 type initConfig struct {
@@ -30,6 +30,7 @@ type initConfig struct {
 	Collection  string
 	APIKeyFile  string
 	RunAs       process.Identity
+	RetryDelay  time.Duration
 	InitTimeout time.Duration
 	HTTPTimeout time.Duration
 }
@@ -72,14 +73,14 @@ func run(ctx context.Context, configuration initConfig, readFile func(string) ([
 	if err != nil {
 		return err
 	}
-	return ensureCollection(ctx, store)
+	return ensureCollection(ctx, store, configuration.RetryDelay)
 }
 
 type collectionEnsurer interface {
 	EnsureCollection(context.Context) error
 }
 
-func ensureCollection(ctx context.Context, store collectionEnsurer) error {
+func ensureCollection(ctx context.Context, store collectionEnsurer, retryDelay time.Duration) error {
 	var lastErr error
 	for {
 		if err := store.EnsureCollection(ctx); err != nil {
@@ -90,7 +91,7 @@ func ensureCollection(ctx context.Context, store collectionEnsurer) error {
 		} else {
 			return nil
 		}
-		timer := time.NewTimer(ensureRetryDelay)
+		timer := time.NewTimer(retryDelay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -113,11 +114,12 @@ func loadConfig(getenv func(string) string) (initConfig, error) {
 			UID: positiveInteger(strings.TrimSpace(getenv("RUN_AS_UID")), 65532),
 			GID: positiveInteger(strings.TrimSpace(getenv("RUN_AS_GID")), 65532),
 		},
+		RetryDelay:  positiveDuration(strings.TrimSpace(getenv("RETRIEVAL_QDRANT_RETRY_DELAY")), defaultEnsureRetryDelay, maximumEnsureRetryDelay),
 		InitTimeout: positiveDuration(strings.TrimSpace(getenv("RETRIEVAL_QDRANT_INIT_TIMEOUT")), defaultInitTimeout, maximumInitTimeout),
 		HTTPTimeout: positiveDuration(strings.TrimSpace(getenv("RETRIEVAL_QDRANT_HTTP_TIMEOUT")), defaultHTTPTimeout, maximumHTTPTimeout),
 	}
 	if configuration.URL == "" || configuration.APIKeyFile == "" || configuration.RunAs.UID < 1 || configuration.RunAs.GID < 1 ||
-		configuration.InitTimeout <= 0 || configuration.HTTPTimeout <= 0 {
+		configuration.RetryDelay <= 0 || configuration.InitTimeout <= 0 || configuration.HTTPTimeout <= 0 {
 		return initConfig{}, errors.New("invalid qdrant initializer configuration")
 	}
 	return configuration, nil

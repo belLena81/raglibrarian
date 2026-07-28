@@ -18,7 +18,6 @@ import (
 )
 
 func TestRunCreatesMissingQdrantCollection(t *testing.T) {
-	withoutRetryDelay(t)
 	requests := 0
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
 		requests++
@@ -63,6 +62,7 @@ func TestRunCreatesMissingQdrantCollection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	withoutRetryDelay(&configuration)
 	err = run(context.Background(), configuration, secret(map[string]string{
 		"/run/secrets/retrieval_qdrant_api_key": "writer-key\n",
 	}), client)
@@ -73,7 +73,6 @@ func TestRunCreatesMissingQdrantCollection(t *testing.T) {
 }
 
 func TestRunAcceptsExistingQdrantCollection(t *testing.T) {
-	withoutRetryDelay(t)
 	requests := 0
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
 		requests++
@@ -102,6 +101,7 @@ func TestRunAcceptsExistingQdrantCollection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	withoutRetryDelay(&configuration)
 	err = run(context.Background(), configuration, secret(map[string]string{
 		"/run/secrets/retrieval_qdrant_api_key": "writer-key\n",
 	}), client)
@@ -112,7 +112,6 @@ func TestRunAcceptsExistingQdrantCollection(t *testing.T) {
 }
 
 func TestRunRetriesTransientQdrantReadinessFailure(t *testing.T) {
-	withoutRetryDelay(t)
 	requests := 0
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
 		requests++
@@ -142,6 +141,7 @@ func TestRunRetriesTransientQdrantReadinessFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	withoutRetryDelay(&configuration)
 	err = run(context.Background(), configuration, secret(map[string]string{
 		"/run/secrets/retrieval_qdrant_api_key": "writer-key\n",
 	}), client)
@@ -152,7 +152,6 @@ func TestRunRetriesTransientQdrantReadinessFailure(t *testing.T) {
 }
 
 func TestRunDropsPrivilegesBeforeCreatingQdrantClient(t *testing.T) {
-	withoutRetryDelay(t)
 	steps := make([]string, 0, 8)
 	previousDrop := dropPrivileges
 	dropPrivileges = func(identity process.Identity) error {
@@ -191,6 +190,7 @@ func TestRunDropsPrivilegesBeforeCreatingQdrantClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	withoutRetryDelay(&configuration)
 	err = run(context.Background(), configuration, secret(map[string]string{
 		"/run/secrets/retrieval_qdrant_api_key": "writer-key\n",
 	}), client)
@@ -207,7 +207,7 @@ func TestRunDropsPrivilegesBeforeCreatingQdrantClient(t *testing.T) {
 func TestEnsureCollectionStopsOnNonRetryableError(t *testing.T) {
 	store := &stubCollectionEnsurer{err: vector.ErrIncompatibleVectorCollection}
 
-	err := ensureCollection(context.Background(), store)
+	err := ensureCollection(context.Background(), store, time.Nanosecond)
 	if !errors.Is(err, vector.ErrIncompatibleVectorCollection) {
 		t.Fatalf("ensureCollection() error = %v", err)
 	}
@@ -249,6 +249,11 @@ func TestLoadConfigRejectsInvalidTimeouts(t *testing.T) {
 			"RETRIEVAL_QDRANT_API_KEY_FILE": "/secret",
 			"RETRIEVAL_QDRANT_HTTP_TIMEOUT": "-1s",
 		},
+		"invalid retry delay": {
+			"RETRIEVAL_QDRANT_URL":          "http://qdrant.test",
+			"RETRIEVAL_QDRANT_API_KEY_FILE": "/secret",
+			"RETRIEVAL_QDRANT_RETRY_DELAY":  "0s",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := loadConfig(env(environment)); err == nil {
@@ -288,13 +293,8 @@ func secret(values map[string]string) func(string) ([]byte, error) {
 	}
 }
 
-func withoutRetryDelay(t *testing.T) {
-	t.Helper()
-	previousDelay := ensureRetryDelay
-	ensureRetryDelay = time.Nanosecond
-	t.Cleanup(func() {
-		ensureRetryDelay = previousDelay
-	})
+func withoutRetryDelay(configuration *initConfig) {
+	configuration.RetryDelay = time.Nanosecond
 }
 
 type roundTripFunc func(*http.Request) *http.Response
