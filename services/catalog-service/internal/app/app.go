@@ -20,6 +20,7 @@ import (
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/process"
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
+	"github.com/belLena81/raglibrarian/pkg/rabbitmqconn"
 	"github.com/belLena81/raglibrarian/services/catalog-service/config"
 	"github.com/belLena81/raglibrarian/services/catalog-service/diagnostic"
 	cataloggrpc "github.com/belLena81/raglibrarian/services/catalog-service/grpc"
@@ -128,7 +129,10 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	}
 	updateHealth()
 	grpc_health_v1.RegisterHealthServer(server, healthServer)
-	publisher := outbox.NewReconnectingPublisher(cfg.RabbitURI)
+	publisher := outbox.NewReconnectingPublisher(cfg.RabbitURI, rabbitmqconn.DialPolicy{
+		Timeout:   cfg.OutboxDialTimeout,
+		Heartbeat: cfg.OutboxHeartbeatTimeout,
+	})
 	defer func() { _ = publisher.Close() }()
 	metricsServer := &http.Server{
 		Handler:           recorder.Handler(),

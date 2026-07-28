@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/belLena81/raglibrarian/pkg/rabbitmqconn"
 	"github.com/belLena81/raglibrarian/services/catalog-service/internal/catalog"
 	"github.com/belLena81/raglibrarian/services/catalog-service/repository"
 )
@@ -68,12 +69,18 @@ func TestOutboxPublishesAcceptedUploadAfterBrokerRecovery(t *testing.T) {
 		_, _ = pool.Exec(cleanupCtx, "DELETE FROM catalog.books WHERE id=$1", book.ID)
 	})
 
-	unavailable := NewReconnectingPublisher("amqp://127.0.0.1:1/")
+	unavailable := NewReconnectingPublisher("amqp://127.0.0.1:1/", rabbitmqconn.DialPolicy{
+		Timeout:   5 * time.Second,
+		Heartbeat: 10 * time.Second,
+	})
 	publishPending(ctx, store, unavailable, &fakeRecorder{}, now)
 	_ = unavailable.Close()
 	assertOutboxState(t, ctx, pool, event, 1, false)
 
-	recovered := NewReconnectingPublisher(rabbitURI)
+	recovered := NewReconnectingPublisher(rabbitURI, rabbitmqconn.DialPolicy{
+		Timeout:   5 * time.Second,
+		Heartbeat: 10 * time.Second,
+	})
 	t.Cleanup(func() { _ = recovered.Close() })
 	publishPending(ctx, store, recovered, &fakeRecorder{}, now.Add(2*time.Second))
 	assertOutboxState(t, ctx, pool, event, 1, true)

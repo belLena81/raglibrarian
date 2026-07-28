@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/rabbitmqconn"
 	"github.com/rabbitmq/amqp091-go"
@@ -102,20 +101,21 @@ func (p *RabbitPublisher) drainReturn(messageID string) (returned bool, open boo
 // down. Connections are created lazily and discarded after every failure.
 type ReconnectingPublisher struct {
 	uri        string
+	policy     rabbitmqconn.DialPolicy
 	mu         sync.Mutex
 	connection *amqp091.Connection
 	publisher  *RabbitPublisher
 }
 
-func NewReconnectingPublisher(uri string) *ReconnectingPublisher {
-	return &ReconnectingPublisher{uri: uri}
+func NewReconnectingPublisher(uri string, policy rabbitmqconn.DialPolicy) *ReconnectingPublisher {
+	return &ReconnectingPublisher{uri: uri, policy: policy}
 }
 
 func (p *ReconnectingPublisher) PublishWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, message amqp091.Publishing) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.publisher == nil {
-		connection, err := rabbitmqconn.Dial(ctx, p.uri, rabbitmqconn.DialPolicy{Timeout: 5 * time.Second, Heartbeat: 10 * time.Second})
+		connection, err := rabbitmqconn.Dial(ctx, p.uri, p.policy)
 		if err != nil {
 			return errors.New("broker unavailable")
 		}
