@@ -45,6 +45,7 @@ func run(ctx context.Context) error {
 	}
 	defer runtime.Close()
 	brokerPolicy := transport.BrokerPolicy{
+		MaximumAttempts:      cfg.MaximumAttempts,
 		DialTimeout:          cfg.RabbitDialTimeout,
 		Heartbeat:            cfg.RabbitHeartbeat,
 		PublishTimeout:       cfg.RabbitPublishTimeout,

@@ -74,6 +74,7 @@ func (p *countingProcessor) ProcessDeletion(context.Context, application.Deletio
 
 func testBrokerPolicy() BrokerPolicy {
 	return BrokerPolicy{
+		MaximumAttempts:      5,
 		DialTimeout:          5 * time.Second,
 		Heartbeat:            10 * time.Second,
 		PublishTimeout:       10 * time.Second,
@@ -288,12 +289,22 @@ func TestConsumerDeadLettersExhaustedOrInvalidRetryCounts(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			acknowledger := &recordingAcknowledger{}
 			publisher := &recordingPublisher{}
-			consumer := &Consumer{processor: &countingProcessor{err: errors.New("temporary")}, publisher: publisher, now: time.Now}
+			consumer := &Consumer{processor: &countingProcessor{err: errors.New("temporary")}, publisher: publisher, policy: testBrokerPolicy(), now: time.Now}
 			consumer.handle(context.Background(), amqp091.Delivery{Acknowledger: acknowledger, Headers: test.headers, ContentType: "application/x-protobuf", Type: UploadRoute, MessageId: validUploadMessage().EventId, Body: payload})
 			if !acknowledger.nacked || acknowledger.requeued || acknowledger.acked || publisher.exchange != "" {
 				t.Fatalf("unsafe count must dead-letter without publishing: ack=%#v publisher=%#v", acknowledger, publisher)
 			}
 		})
+	}
+}
+
+func TestNewConsumerRejectsMissingMaximumAttempts(t *testing.T) {
+	policy := testBrokerPolicy()
+	policy.MaximumAttempts = 0
+
+	consumer, err := NewConsumer(&amqp091.Channel{}, "ingestion", 1, &countingProcessor{}, &recordingPublisher{}, policy)
+	if err == nil || consumer != nil {
+		t.Fatal("missing maximum attempts must be rejected before channel setup")
 	}
 }
 

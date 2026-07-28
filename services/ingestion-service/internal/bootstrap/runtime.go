@@ -320,6 +320,7 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		return nil, err
 	}
 	brokerPolicy := transport.BrokerPolicy{
+		MaximumAttempts:      cfg.MaximumAttempts,
 		DialTimeout:          cfg.RabbitDialTimeout,
 		Heartbeat:            cfg.RabbitHeartbeat,
 		PublishTimeout:       cfg.RabbitPublishTimeout,

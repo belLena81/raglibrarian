@@ -20,7 +20,6 @@ const RetryExchange = "raglibrarian.ingestion.retry.v1"
 
 const (
 	applicationDeliveryCountHeader = "x-raglibrarian-delivery-count"
-	maximumDeliveryAttempts        = 5
 )
 
 type EventProcessor interface {
@@ -38,6 +37,7 @@ type Consumer struct {
 }
 
 type BrokerPolicy struct {
+	MaximumAttempts      int
 	DialTimeout          time.Duration
 	Heartbeat            time.Duration
 	PublishTimeout       time.Duration
@@ -59,7 +59,7 @@ func ProcessOneDelivery(ctx context.Context, delivery amqp091.Delivery, processo
 }
 
 func NewConsumer(channel *amqp091.Channel, queue string, concurrency int, processor EventProcessor, publisher Publisher, policy BrokerPolicy) (*Consumer, error) {
-	if channel == nil || queue == "" || concurrency < 1 || processor == nil || publisher == nil || policy.DialTimeout <= 0 || policy.Heartbeat <= 0 || policy.PublishTimeout <= 0 ||
+	if channel == nil || queue == "" || concurrency < 1 || processor == nil || publisher == nil || policy.MaximumAttempts < 1 || policy.DialTimeout <= 0 || policy.Heartbeat <= 0 || policy.PublishTimeout <= 0 ||
 		policy.FirstRetryDelay <= 0 || policy.SecondRetryDelay <= 0 || policy.SubsequentRetryDelay <= 0 {
 		return nil, errors.New("invalid RabbitMQ consumer")
 	}
@@ -135,8 +135,8 @@ func (c *Consumer) retry(ctx context.Context, delivery amqp091.Delivery) {
 	if ctx.Err() != nil {
 		return
 	}
-	attempt, valid := deliveryAttempt(delivery.Headers)
-	if !valid || attempt >= maximumDeliveryAttempts {
+	attempt, valid := deliveryAttempt(delivery.Headers, c.policy.MaximumAttempts)
+	if !valid || attempt >= c.policy.MaximumAttempts {
 		settleNack(ctx, delivery, false)
 		return
 	}
@@ -186,7 +186,10 @@ func settleNack(ctx context.Context, delivery amqp091.Delivery, requeue bool) {
 	}
 }
 
-func deliveryAttempt(headers amqp091.Table) (int, bool) {
+func deliveryAttempt(headers amqp091.Table, maximumAttempts int) (int, bool) {
+	if maximumAttempts < 1 {
+		return 0, false
+	}
 	if headers == nil {
 		return 0, true
 	}
@@ -206,7 +209,7 @@ func deliveryAttempt(headers amqp091.Table) (int, bool) {
 	default:
 		return 0, false
 	}
-	if attempt < 0 || attempt > maximumDeliveryAttempts {
+	if attempt < 0 || attempt > int64(maximumAttempts) {
 		return 0, false
 	}
 	return int(attempt), true
