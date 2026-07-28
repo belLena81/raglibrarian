@@ -5,8 +5,10 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/process"
+	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/rabbitmq"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rabbitmq/amqp091-go"
 )
@@ -34,7 +36,10 @@ func TestRunDropsPrivilegesBeforeRuntimeDependencies(t *testing.T) {
 		steps = append(steps, "pool")
 		return nil, nil
 	}
-	dialPublisher = func(_ string) (*amqp091.Connection, error) {
+	dialPublisher = func(_ context.Context, _ string, policy rabbitmq.DialPolicy) (*amqp091.Connection, error) {
+		if policy.Timeout != 5*time.Second || policy.Heartbeat != 10*time.Second {
+			t.Fatalf("dial policy = %#v", policy)
+		}
 		steps = append(steps, "dial")
 		return nil, nil
 	}

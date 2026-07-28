@@ -25,7 +25,7 @@ const defaultRunAs = 65532
 var (
 	dropPrivileges = process.DropPrivileges
 	newPool        = pgxpool.New
-	dialPublisher  = amqp091.Dial
+	dialPublisher  = rabbitmq.Dial
 )
 
 func main() {
@@ -63,7 +63,14 @@ func run(ctx context.Context) error {
 		return errors.New("database unavailable")
 	}
 	defer pool.Close()
-	connection, err := dialPublisher(uri)
+	policy, err := config.LoadLambdaRuntimePolicy()
+	if err != nil {
+		return err
+	}
+	connection, err := dialPublisher(ctx, uri, rabbitmq.DialPolicy{
+		Timeout:   policy.RabbitDialTimeout,
+		Heartbeat: policy.RabbitHeartbeat,
+	})
 	if err != nil {
 		return errors.New("publisher unavailable")
 	}
@@ -78,10 +85,6 @@ func run(ctx context.Context) error {
 	defer func() { _ = channel.Close() }()
 	if err = channel.Confirm(false); err != nil {
 		return errors.New("enable publisher confirms")
-	}
-	policy, err := config.LoadLambdaRuntimePolicy()
-	if err != nil {
-		return err
 	}
 	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: policy.FinalizationLease})
 	publisher := rabbitmq.NewPublisher(channel)
