@@ -31,6 +31,8 @@ const (
 	defaultSummaryLLMMaxCalls               = 100
 	defaultSummaryLLMOutputMode             = "json_or_plain"
 	summaryLLMOutputModeStrictJSON          = "strict_json"
+	defaultSearchTimeout                    = 4 * time.Minute
+	defaultSummaryLLMTimeout                = 3 * time.Minute
 	defaultCleanupJobTimeout                = 90 * time.Second
 	defaultCleanupJobBatchSize              = 64
 	defaultTEIBatchSize                     = 8
@@ -217,9 +219,12 @@ func Load() (Config, error) {
 		TLS:   internaltls.Files{CA: os.Getenv("RETRIEVAL_TLS_CA_FILE"), Certificate: os.Getenv("RETRIEVAL_TLS_CERT_FILE"), Key: os.Getenv("RETRIEVAL_TLS_KEY_FILE")},
 		RunAs: runAs,
 	}
-	searchTimeout, searchTimeoutErr := optionalDuration("RETRIEVAL_SEARCH_TIMEOUT", 2*time.Minute)
+	searchTimeout, searchTimeoutErr := optionalDuration("RETRIEVAL_SEARCH_TIMEOUT", defaultSearchTimeout)
 	dependencyTimeout, dependencyTimeoutErr := optionalDuration("RETRIEVAL_DEPENDENCY_TIMEOUT", searchTimeout)
-	summaryTimeoutDefault := searchTimeout / 2
+	summaryTimeoutDefault := defaultSummaryLLMTimeout
+	if summaryTimeoutDefault >= searchTimeout {
+		summaryTimeoutDefault = searchTimeout - time.Second
+	}
 	if summaryTimeoutDefault <= 0 {
 		summaryTimeoutDefault = time.Nanosecond
 	}

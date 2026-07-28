@@ -43,6 +43,7 @@ const (
 	maximumAnswerDeadline                    = 5 * time.Minute
 	maximumRetrievalSearchDeadline           = 5 * time.Minute
 	maximumCatalogPreviewDeadline            = 30 * time.Second
+	defaultRetrievalSearchDeadline           = 4 * time.Minute
 )
 
 // Config is validated Edge runtime configuration.
@@ -466,7 +467,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	retrievalSearchDeadline, err := boundedDuration("EDGE_RETRIEVAL_SEARCH_DEADLINE", 2*time.Minute, maximumRetrievalSearchDeadline)
+	retrievalSearchDeadline, err := boundedDuration("EDGE_RETRIEVAL_SEARCH_DEADLINE", defaultRetrievalSearchDeadline, maximumRetrievalSearchDeadline)
 	if err != nil {
 		return Config{}, err
 	}

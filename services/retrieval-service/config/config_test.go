@@ -128,7 +128,7 @@ func TestLoadDefaultsEvidenceAssessorRateLimit(t *testing.T) {
 	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
 	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
 	t.Setenv("RETRIEVAL_SUMMARY_LLM_MODEL", "openrouter/model:free")
-	t.Setenv("RETRIEVAL_SEARCH_TIMEOUT", "2m")
+	t.Setenv("RETRIEVAL_SEARCH_TIMEOUT", "4m")
 	configuration, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -142,14 +142,14 @@ func TestLoadDefaultsEvidenceAssessorRateLimit(t *testing.T) {
 	if configuration.SearchCandidatePageMultiplier != 2 {
 		t.Fatalf("SearchCandidatePageMultiplier = %d, want 2", configuration.SearchCandidatePageMultiplier)
 	}
-	if configuration.SearchTimeout != 2*time.Minute {
-		t.Fatalf("SearchTimeout = %s, want 2m", configuration.SearchTimeout)
+	if configuration.SearchTimeout != 4*time.Minute {
+		t.Fatalf("SearchTimeout = %s, want 4m", configuration.SearchTimeout)
 	}
 	if configuration.FinalizationLease != 15*time.Minute {
 		t.Fatalf("FinalizationLease = %s, want 15m", configuration.FinalizationLease)
 	}
-	if configuration.DependencyTimeout != 2*time.Minute {
-		t.Fatalf("DependencyTimeout = %s, want 2m", configuration.DependencyTimeout)
+	if configuration.DependencyTimeout != 4*time.Minute {
+		t.Fatalf("DependencyTimeout = %s, want 4m", configuration.DependencyTimeout)
 	}
 	if configuration.EvidenceAssessor.Timeout <= 0 || configuration.EvidenceAssessor.Timeout >= configuration.SearchTimeout {
 		t.Fatalf("EvidenceAssessor.Timeout = %s, want a positive timeout below SearchTimeout", configuration.EvidenceAssessor.Timeout)
@@ -171,11 +171,11 @@ func TestLoadDefaultsSearchTimeoutAndMinimumScore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if configuration.SearchTimeout != 2*time.Minute {
-		t.Fatalf("SearchTimeout = %s, want 2m", configuration.SearchTimeout)
+	if configuration.SearchTimeout != 4*time.Minute {
+		t.Fatalf("SearchTimeout = %s, want 4m", configuration.SearchTimeout)
 	}
-	if configuration.DependencyTimeout != 2*time.Minute {
-		t.Fatalf("DependencyTimeout = %s, want 2m", configuration.DependencyTimeout)
+	if configuration.DependencyTimeout != 4*time.Minute {
+		t.Fatalf("DependencyTimeout = %s, want 4m", configuration.DependencyTimeout)
 	}
 	if configuration.EvidenceAssessor.Timeout <= 0 || configuration.EvidenceAssessor.Timeout >= configuration.SearchTimeout {
 		t.Fatalf("EvidenceAssessor.Timeout = %s, want a positive timeout below SearchTimeout", configuration.EvidenceAssessor.Timeout)
