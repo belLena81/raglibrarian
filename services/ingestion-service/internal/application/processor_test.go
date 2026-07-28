@@ -208,7 +208,7 @@ func (e *processorEvents) Ready(UploadedEvent, domain.ProcessingJob, artifact.Re
 	return OutboxEvent{ID: "ready-1"}, e.readyErr
 }
 
-func (e *processorEvents) Failed(UploadedEvent, domain.ProcessingJob, domain.FailureCategory, time.Time) (OutboxEvent, error) {
+func (e *processorEvents) Failed(UploadedEvent, domain.ProcessingJob, domain.FailureCategory, string, time.Time) (OutboxEvent, error) {
 	e.failed++
 	return OutboxEvent{ID: "failed-1"}, nil
 }

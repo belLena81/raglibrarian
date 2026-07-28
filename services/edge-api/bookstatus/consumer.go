@@ -148,6 +148,7 @@ func decode(delivery amqp091.Delivery) (handler.BookStatusEvent, bool) {
 		ProcessingStatus:          message.ProcessingStatus,
 		ProcessingStage:           message.ProcessingStage,
 		ProcessingFailureCategory: message.ProcessingFailureCategory,
+		ProcessingFailureDetail:   message.ProcessingFailureDetail,
 		ProcessingVersion:         message.ProcessingVersion,
 		LifecycleVersion:          lifecycleVersion,
 		CanReindex:                message.CanReindex,
@@ -172,29 +173,32 @@ func validIdentifier(value string) bool {
 func validState(message *catalogv1.BookProcessingStatusChangedV1) bool {
 	switch message.ProcessingStatus {
 	case "pending":
-		return message.ProcessingStage == "queued" && message.ProcessingFailureCategory == ""
+		return message.ProcessingStage == "queued" && message.ProcessingFailureCategory == "" && message.ProcessingFailureDetail == ""
 	case "processing":
-		return (message.ProcessingStage == "extracting" || message.ProcessingStage == "chunks_ready") && message.ProcessingFailureCategory == ""
+		return (message.ProcessingStage == "extracting" || message.ProcessingStage == "chunks_ready") &&
+			message.ProcessingFailureCategory == "" && message.ProcessingFailureDetail == ""
 	case "indexed":
-		return message.ProcessingStage == "indexed" && message.ProcessingFailureCategory == ""
+		return message.ProcessingStage == "indexed" && message.ProcessingFailureCategory == "" && message.ProcessingFailureDetail == ""
 	case "reindexing":
-		return message.ProcessingStage == "chunks_ready" && message.ProcessingFailureCategory == ""
+		return message.ProcessingStage == "chunks_ready" && message.ProcessingFailureCategory == "" && message.ProcessingFailureDetail == ""
 	case "deleting":
-		return validLifecycleStage(message.ProcessingStage, message.ProcessingFailureCategory)
+		return validLifecycleStage(message.ProcessingStage, message.ProcessingFailureCategory, message.ProcessingFailureDetail)
 	case "deleted":
-		return message.ProcessingStage == "" && message.ProcessingFailureCategory == ""
+		return message.ProcessingStage == "" && message.ProcessingFailureCategory == "" && message.ProcessingFailureDetail == ""
 	case "failed":
-		return message.ProcessingStage == "failed" && validFailure(message.ProcessingFailureCategory)
+		return message.ProcessingStage == "failed" &&
+			validFailure(message.ProcessingFailureCategory) &&
+			validFailureDetail(message.ProcessingFailureDetail)
 	default:
 		return false
 	}
 }
 
-func validLifecycleStage(stage, failure string) bool {
+func validLifecycleStage(stage, failure, detail string) bool {
 	if stage == "failed" {
-		return validFailure(failure)
+		return validFailure(failure) && validFailureDetail(detail)
 	}
-	return failure == "" && (stage == "queued" || stage == "extracting" || stage == "chunks_ready" || stage == "indexed")
+	return failure == "" && detail == "" && (stage == "queued" || stage == "extracting" || stage == "chunks_ready" || stage == "indexed")
 }
 
 func validFailure(category string) bool {
@@ -206,4 +210,20 @@ func validFailure(category string) bool {
 	default:
 		return false
 	}
+}
+
+func validFailureDetail(value string) bool {
+	if value == "" {
+		return true
+	}
+	if len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }

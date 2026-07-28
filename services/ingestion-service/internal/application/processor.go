@@ -201,7 +201,7 @@ type Factory interface {
 type EventFactory interface {
 	Started(UploadedEvent, domain.ProcessingJob, time.Time) (OutboxEvent, error)
 	Ready(UploadedEvent, domain.ProcessingJob, artifact.Result, time.Time) (OutboxEvent, error)
-	Failed(UploadedEvent, domain.ProcessingJob, domain.FailureCategory, time.Time) (OutboxEvent, error)
+	Failed(UploadedEvent, domain.ProcessingJob, domain.FailureCategory, string, time.Time) (OutboxEvent, error)
 	ArtifactsDeleted(DeletionEvent, time.Time) (OutboxEvent, error)
 }
 
@@ -527,7 +527,7 @@ func (p *Processor) download(ctx context.Context, event UploadedEvent, path stri
 
 func (p *Processor) persistFailure(ctx context.Context, event UploadedEvent, job *domain.ProcessingJob, claim ClaimToken, category domain.FailureCategory, detail string) error {
 	now := p.now().UTC()
-	failed, err := p.events.Failed(event, *job, category, now)
+	failed, err := p.events.Failed(event, *job, category, detail, now)
 	if err != nil {
 		return err
 	}

@@ -119,7 +119,7 @@ func (f *ProtoEventFactory) Ready(source application.UploadedEvent, job domain.P
 	return marshalOutbox(id, ReadyRoute, now, message)
 }
 
-func (f *ProtoEventFactory) Failed(source application.UploadedEvent, job domain.ProcessingJob, category domain.FailureCategory, now time.Time) (application.OutboxEvent, error) {
+func (f *ProtoEventFactory) Failed(source application.UploadedEvent, job domain.ProcessingJob, category domain.FailureCategory, detail string, now time.Time) (application.OutboxEvent, error) {
 	id, err := f.newID()
 	if err != nil {
 		return application.OutboxEvent{}, errors.New("generate event ID")
@@ -128,7 +128,7 @@ func (f *ProtoEventFactory) Failed(source application.UploadedEvent, job domain.
 	if !ok {
 		return application.OutboxEvent{}, errors.New("invalid failure category")
 	}
-	message := &ingestionv1.BookProcessingFailedV1{EventId: id, BookId: source.BookID, SourceSha256: source.SourceSHA256[:], ExtractionVersion: source.ExtractionVersion, NormalizationVersion: chunking.NormalizationVersion, TokenizerVersion: chunking.TokenizerVersion, ChunkingVersion: chunking.ChunkingVersion, FailureCategory: protoCategory, CorrelationId: source.CorrelationID, OccurredAt: timestamppb.New(now), CausationId: source.EventID, Producer: "ingestion-service", SchemaVersion: "v1", IdempotencyKey: fmt.Sprintf("%s:%s:failed", source.BookID, job.ConfigDigest()), LifecycleVersion: source.LifecycleVersion}
+	message := &ingestionv1.BookProcessingFailedV1{EventId: id, BookId: source.BookID, SourceSha256: source.SourceSHA256[:], ExtractionVersion: source.ExtractionVersion, NormalizationVersion: chunking.NormalizationVersion, TokenizerVersion: chunking.TokenizerVersion, ChunkingVersion: chunking.ChunkingVersion, FailureCategory: protoCategory, CorrelationId: source.CorrelationID, OccurredAt: timestamppb.New(now), CausationId: source.EventID, Producer: "ingestion-service", SchemaVersion: "v1", IdempotencyKey: fmt.Sprintf("%s:%s:failed", source.BookID, job.ConfigDigest()), LifecycleVersion: source.LifecycleVersion, FailureDetail: detail}
 	return marshalOutbox(id, FailedRoute, now, message)
 }
 

@@ -41,6 +41,7 @@ type Book struct {
 	ProcessingStatus          string    `json:"processing_status"`
 	ProcessingStage           string    `json:"processing_stage"`
 	ProcessingFailureCategory string    `json:"processing_failure_category,omitempty"`
+	ProcessingFailureDetail   string    `json:"processing_failure_detail,omitempty"`
 	ProcessingUpdatedAt       time.Time `json:"processing_updated_at"`
 	ProcessingVersion         int64     `json:"processing_version"`
 	MediaType                 string    `json:"media_type"`

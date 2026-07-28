@@ -289,7 +289,8 @@ func decodeProcessingEvent(eventType string, payload []byte) (ProcessingEvent, e
 		}
 		event.Fact.Kind = ProcessingFailed
 		event.Fact.FailureCategory = failureCategory(message.GetFailureCategory())
-		if !validFailureCategory(event.Fact.FailureCategory) {
+		event.Fact.FailureDetail = message.GetFailureDetail()
+		if !validFailureCategory(event.Fact.FailureCategory) || !validFailureDetail(event.Fact.FailureDetail) {
 			return ProcessingEvent{}, ErrInvalidProcessingEvent
 		}
 	case "retrieval.book.indexed.v1":

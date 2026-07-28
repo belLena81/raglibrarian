@@ -36,6 +36,9 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	if err = validateRuntimeMemoryBudget(cfg); err != nil {
+		return err
+	}
 	if err = process.DropPrivileges(cfg.RunAs); err != nil {
 		return err
 	}

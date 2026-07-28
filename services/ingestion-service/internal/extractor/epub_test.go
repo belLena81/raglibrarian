@@ -463,6 +463,17 @@ func TestEPUBParserFailureDetailMapsExitTwoToInvalidArgs(t *testing.T) {
 	}
 }
 
+func TestEPUBParserFailureDetailMapsThreadCreationFailureToRuntimeResourceExhaustion(t *testing.T) {
+	err := exec.Command("sh", "-c", "exit 2").Run() // #nosec G204 -- fixed synthetic test input.
+	detail, ok := EPUBParserFailureDetail(epubFailure(domain.FailureInternalProcessing, &commandError{
+		cause:  err,
+		stderr: []byte("runtime/cgo: pthread_create failed: Resource temporarily unavailable\n"),
+	}))
+	if !ok || detail != "epub_parser_runtime_resource_exhausted" {
+		t.Fatalf("EPUBParserFailureDetail() = %q, %t", detail, ok)
+	}
+}
+
 func TestEPUBParserFailureDetailMapsMissingCommandToExecNotFound(t *testing.T) {
 	detail, ok := EPUBParserFailureDetail(epubFailure(domain.FailureInternalProcessing, &commandError{cause: exec.ErrNotFound}))
 	if !ok || detail != "epub_parser_exec_not_found" {

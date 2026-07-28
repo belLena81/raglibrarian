@@ -255,6 +255,7 @@ func bookProto(book catalog.Book) *catalogv1.Book {
 		Tags: append([]string(nil), book.Metadata.Tags...), ProcessingStatus: string(book.ProcessingStatus),
 		CreatedAt: timestamppb.New(book.CreatedAt), ProcessingStage: string(book.ProcessingStage),
 		ProcessingFailureCategory: string(book.ProcessingFailureCategory),
+		ProcessingFailureDetail:   book.ProcessingFailureDetail,
 		ProcessingUpdatedAt:       timestamppb.New(book.ProcessingUpdatedAt), ProcessingVersion: book.ProcessingVersion,
 		MediaType: book.MediaType, LifecycleVersion: book.LifecycleVersion, CanReindex: book.CanReindex(), Preview: book.Preview,
 	}

@@ -83,6 +83,7 @@ const (
 type ProcessingFact struct {
 	Kind            ProcessingFactKind
 	FailureCategory ProcessingFailureCategory
+	FailureDetail   string
 	OccurredAt      time.Time
 }
 
@@ -131,6 +132,7 @@ type Book struct {
 	ActorID                   string
 	ProcessingStage           BookProcessingStage
 	ProcessingFailureCategory ProcessingFailureCategory
+	ProcessingFailureDetail   string
 	ProcessingUpdatedAt       time.Time
 	ProcessingVersion         int64
 	LifecycleVersion          int64
@@ -189,15 +191,17 @@ func (b *Book) ApplyProcessingFact(fact ProcessingFact) (bool, error) {
 		}
 		b.ProcessingStage = BookStageChunksReady
 		b.ProcessingFailureCategory = ""
+		b.ProcessingFailureDetail = ""
 	case ProcessingFailed:
-		if !validFailureCategory(fact.FailureCategory) {
+		if !validFailureCategory(fact.FailureCategory) || !validFailureDetail(fact.FailureDetail) {
 			return false, ErrConflictingProcessingFact
 		}
 		if b.ProcessingStage == BookStageIndexed ||
 			(b.ProcessingStage == BookStageFailed && validIndexingFailureCategory(b.ProcessingFailureCategory)) {
 			return false, nil
 		}
-		if b.ProcessingStage == BookStageFailed && b.ProcessingFailureCategory == fact.FailureCategory {
+		if b.ProcessingStage == BookStageFailed && b.ProcessingFailureCategory == fact.FailureCategory &&
+			b.ProcessingFailureDetail == fact.FailureDetail {
 			return false, nil
 		}
 		if b.ProcessingStage == BookStageChunksReady || b.ProcessingStatus == BookStatusFailed {
@@ -213,6 +217,7 @@ func (b *Book) ApplyProcessingFact(fact ProcessingFact) (bool, error) {
 		}
 		b.ProcessingStage = BookStageFailed
 		b.ProcessingFailureCategory = fact.FailureCategory
+		b.ProcessingFailureDetail = fact.FailureDetail
 	case ProcessingIndexed:
 		if b.ProcessingStage == BookStageIndexed && b.ProcessingStatus == BookStatusIndexed {
 			return false, nil
@@ -223,6 +228,7 @@ func (b *Book) ApplyProcessingFact(fact ProcessingFact) (bool, error) {
 			}
 			b.ProcessingStage = BookStageIndexed
 			b.ProcessingFailureCategory = ""
+			b.ProcessingFailureDetail = ""
 			break
 		}
 		if b.ProcessingStatus == BookStatusPending && b.ProcessingStage == BookStageQueued {
@@ -238,12 +244,13 @@ func (b *Book) ApplyProcessingFact(fact ProcessingFact) (bool, error) {
 		}
 		b.ProcessingStage = BookStageIndexed
 		b.ProcessingFailureCategory = ""
+		b.ProcessingFailureDetail = ""
 	case ProcessingIndexingFailed:
-		if !validIndexingFailureCategory(fact.FailureCategory) {
+		if !validIndexingFailureCategory(fact.FailureCategory) || !validFailureDetail(fact.FailureDetail) {
 			return false, ErrConflictingProcessingFact
 		}
 		if b.ProcessingStage == BookStageFailed && b.ProcessingStatus == BookStatusFailed &&
-			b.ProcessingFailureCategory == fact.FailureCategory {
+			b.ProcessingFailureCategory == fact.FailureCategory && b.ProcessingFailureDetail == fact.FailureDetail {
 			return false, nil
 		}
 		if b.ProcessingStatus == BookStatusReindexing && b.ProcessingStage == BookStageChunksReady {
@@ -252,6 +259,7 @@ func (b *Book) ApplyProcessingFact(fact ProcessingFact) (bool, error) {
 			}
 			b.ProcessingStage = BookStageFailed
 			b.ProcessingFailureCategory = fact.FailureCategory
+			b.ProcessingFailureDetail = fact.FailureDetail
 			break
 		}
 		if b.ProcessingStatus == BookStatusPending && b.ProcessingStage == BookStageQueued {
@@ -267,6 +275,7 @@ func (b *Book) ApplyProcessingFact(fact ProcessingFact) (bool, error) {
 		}
 		b.ProcessingStage = BookStageFailed
 		b.ProcessingFailureCategory = fact.FailureCategory
+		b.ProcessingFailureDetail = fact.FailureDetail
 	default:
 		return false, ErrConflictingProcessingFact
 	}
@@ -307,6 +316,22 @@ func validFailureCategory(category ProcessingFailureCategory) bool {
 	default:
 		return false
 	}
+}
+
+func validFailureDetail(detail string) bool {
+	if detail == "" {
+		return true
+	}
+	if len(detail) > 128 {
+		return false
+	}
+	for _, character := range detail {
+		if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // TransitionTo validates and applies a Catalog-owned lifecycle transition.

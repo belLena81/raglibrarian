@@ -78,6 +78,7 @@ message BookProcessingFailedV1 {
   string schema_version = 13;
   string idempotency_key = 14;
   int64 lifecycle_version = 15;
+  string failure_detail = 16;
 }
 
 message ChunkV1 {

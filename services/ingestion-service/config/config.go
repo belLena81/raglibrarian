@@ -13,6 +13,7 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/process"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/chunking"
+	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/defaults"
 )
 
 const (
@@ -27,19 +28,19 @@ const (
 	DefaultDeleteFirstRetryRoute    = "ingestion.deletion.retry.5s"
 	DefaultDeleteSecondRetryRoute   = "ingestion.deletion.retry.30s"
 	DefaultDeleteThirdRetryRoute    = "ingestion.deletion.retry.2m"
-	DefaultParserSandboxMemoryBytes = int64(1536 << 20)
-	MaximumParserSandboxMemoryBytes = int64(8 << 30)
-	DefaultEPUBMaximumEntries       = 2048
+	DefaultParserSandboxMemoryBytes = defaults.ParserSandboxMemoryBytesMin
+	MaximumParserSandboxMemoryBytes = defaults.ParserSandboxMemoryBytesMax
+	DefaultEPUBMaximumEntries       = defaults.EPUBMaximumEntries
 	MaximumEPUBMaximumEntries       = 8192
-	DefaultEPUBMaximumSpineItems    = int64(500)
+	DefaultEPUBMaximumSpineItems    = int64(defaults.EPUBMaximumSpineItems)
 	MaximumEPUBMaximumSpineItems    = int64(5000)
-	DefaultEPUBMaximumEntryBytes    = int64(32 << 20)
+	DefaultEPUBMaximumEntryBytes    = defaults.EPUBMaximumEntryBytes
 	MaximumEPUBMaximumEntryBytes    = int64(256 << 20)
-	DefaultEPUBMaximumExpandedBytes = int64(256 << 20)
+	DefaultEPUBMaximumExpandedBytes = defaults.EPUBMaximumExpandedBytes
 	MaximumEPUBMaximumExpandedBytes = int64(2 << 30)
-	DefaultEPUBMaximumTextBytes     = int64(128 << 20)
+	DefaultEPUBMaximumTextBytes     = defaults.EPUBMaximumTextBytes
 	MaximumEPUBMaximumTextBytes     = int64(1 << 30)
-	DefaultCommandStderrBytes       = 8 << 10
+	DefaultCommandStderrBytes       = defaults.CommandStderrBytes
 )
 
 type Config struct {

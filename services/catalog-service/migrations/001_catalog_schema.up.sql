@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS catalog.books (
         'dependency_unavailable', 'internal_processing_error', 'manifest_integrity',
         'incompatible_profile', 'embedding_unavailable', 'vector_store_unavailable',
         'indexing_timeout', 'internal_indexing_error')),
+    processing_failure_detail   TEXT      NOT NULL DEFAULT '' CHECK (
+        processing_failure_detail ~ '^[a-z0-9_-]{0,128}$'
+    ),
     processing_updated_at      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     processing_version         BIGINT      NOT NULL DEFAULT 1 CHECK (processing_version > 0),
     lifecycle_version          BIGINT      NOT NULL DEFAULT 1 CHECK (lifecycle_version >= 1),
@@ -39,14 +42,14 @@ CREATE TABLE IF NOT EXISTS catalog.books (
             AND title IS NULL AND author IS NULL AND year IS NULL AND tags IS NULL
             AND object_reference IS NULL AND checksum IS NULL AND byte_size IS NULL
             AND media_type IS NULL AND actor_id IS NULL AND processing_stage IS NULL
-            AND processing_failure_category IS NULL AND manifest_reference IS NULL
+            AND processing_failure_category IS NULL AND processing_failure_detail = '' AND manifest_reference IS NULL
             AND manifest_sha256 IS NULL)
         OR
         (processing_status <> 'deleted'
             AND title IS NOT NULL AND author IS NOT NULL AND year IS NOT NULL AND tags IS NOT NULL
             AND object_reference IS NOT NULL AND checksum IS NOT NULL AND byte_size IS NOT NULL
             AND media_type IS NOT NULL AND actor_id IS NOT NULL AND processing_stage IS NOT NULL
-            AND processing_failure_category IS NOT NULL)
+            AND processing_failure_category IS NOT NULL AND processing_failure_detail IS NOT NULL)
     )
 );
 

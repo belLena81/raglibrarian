@@ -75,12 +75,12 @@ func (r *PostgresBookRepository) Create(ctx context.Context, book catalog.Book, 
 
 	_, err = tx.Exec(ctx, `INSERT INTO catalog.books
 		(id,title,author,year,tags,processing_status,created_at,object_reference,checksum,byte_size,media_type,actor_id,
-		 processing_stage,processing_failure_category,processing_updated_at,processing_version,lifecycle_version)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+		 processing_stage,processing_failure_category,processing_failure_detail,processing_updated_at,processing_version,lifecycle_version)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
 		book.ID, book.Metadata.Title, book.Metadata.Author, book.Metadata.Year, book.Metadata.Tags,
 		string(book.ProcessingStatus), book.CreatedAt, book.ObjectReference, book.Checksum[:], book.ByteSize, book.MediaType, book.ActorID,
-		string(book.ProcessingStage), string(book.ProcessingFailureCategory), book.ProcessingUpdatedAt, book.ProcessingVersion,
-		book.LifecycleVersion)
+		string(book.ProcessingStage), string(book.ProcessingFailureCategory), book.ProcessingFailureDetail,
+		book.ProcessingUpdatedAt, book.ProcessingVersion, book.LifecycleVersion)
 	if err != nil {
 		return fmt.Errorf("catalog: insert book: %w", err)
 	}
@@ -102,7 +102,7 @@ func (r *PostgresBookRepository) Create(ctx context.Context, book catalog.Book, 
 func (r *PostgresBookRepository) List(ctx context.Context, size int, token string) ([]catalog.Book, string, error) {
 	args := []any{}
 	query := `SELECT id,title,author,year,tags,processing_status,created_at,object_reference,checksum,byte_size,
-		media_type,processing_stage,processing_failure_category,processing_updated_at,processing_version,lifecycle_version,
+		media_type,processing_stage,processing_failure_category,processing_failure_detail,processing_updated_at,processing_version,lifecycle_version,
 		manifest_reference,manifest_sha256,lifecycle_command_id,original_deleted,artifacts_deleted,index_deleted
         FROM catalog.books WHERE processing_status <> 'deleted'`
 	if token != "" {
@@ -142,7 +142,7 @@ func (r *PostgresBookRepository) List(ctx context.Context, size int, token strin
 
 func (r *PostgresBookRepository) Get(ctx context.Context, id string) (catalog.Book, error) {
 	book, err := scanBook(r.pool.QueryRow(ctx, `SELECT id,title,author,year,tags,processing_status,created_at,object_reference,checksum,byte_size,
-		media_type,processing_stage,processing_failure_category,processing_updated_at,processing_version,lifecycle_version,
+		media_type,processing_stage,processing_failure_category,processing_failure_detail,processing_updated_at,processing_version,lifecycle_version,
 		manifest_reference,manifest_sha256,lifecycle_command_id,original_deleted,artifacts_deleted,index_deleted
         FROM catalog.books WHERE id=$1 AND processing_status <> 'deleted'`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -185,7 +185,7 @@ func (r *PostgresBookRepository) ApplyProcessingEvent(ctx context.Context, event
 	}
 
 	book, err := scanBook(tx.QueryRow(ctx, `SELECT id,title,author,year,tags,processing_status,created_at,object_reference,checksum,byte_size,
-		media_type,processing_stage,processing_failure_category,processing_updated_at,processing_version,lifecycle_version,
+		media_type,processing_stage,processing_failure_category,processing_failure_detail,processing_updated_at,processing_version,lifecycle_version,
 		manifest_reference,manifest_sha256,lifecycle_command_id,original_deleted,artifacts_deleted,index_deleted
 		FROM catalog.books WHERE id=$1 AND processing_status <> 'deleted' FOR UPDATE`, event.BookID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -218,7 +218,8 @@ func (r *PostgresBookRepository) ApplyProcessingEvent(ctx context.Context, event
 		payload, marshalErr := proto.Marshal(&catalogv1.BookProcessingStatusChangedV1{
 			EventId: statusEventID, BookId: book.ID, ProcessingStatus: string(book.ProcessingStatus),
 			ProcessingStage: string(book.ProcessingStage), ProcessingFailureCategory: string(book.ProcessingFailureCategory),
-			ProcessingVersion: book.ProcessingVersion, UpdatedAt: timestamppb.New(book.ProcessingUpdatedAt),
+			ProcessingFailureDetail: book.ProcessingFailureDetail,
+			ProcessingVersion:       book.ProcessingVersion, UpdatedAt: timestamppb.New(book.ProcessingUpdatedAt),
 			CorrelationId: event.CorrelationID, OccurredAt: timestamppb.New(appliedAt), CausationId: event.EventID,
 			Producer: "catalog-service", SchemaVersion: "v1",
 			IdempotencyKey:   fmt.Sprintf("%s:processing:%d", book.ID, book.ProcessingVersion),
@@ -228,10 +229,10 @@ func (r *PostgresBookRepository) ApplyProcessingEvent(ctx context.Context, event
 			return catalog.Book{}, false, errors.New("catalog: status event unavailable")
 		}
 		if _, err = tx.Exec(ctx, `UPDATE catalog.books SET processing_status=$2,processing_stage=$3,
-			processing_failure_category=$4,processing_updated_at=$5,processing_version=$6,
-			manifest_reference=$7,manifest_sha256=$8 WHERE id=$1`,
+			processing_failure_category=$4,processing_failure_detail=$5,processing_updated_at=$6,processing_version=$7,
+			manifest_reference=$8,manifest_sha256=$9 WHERE id=$1`,
 			book.ID, string(book.ProcessingStatus), string(book.ProcessingStage), string(book.ProcessingFailureCategory),
-			book.ProcessingUpdatedAt, book.ProcessingVersion, manifestReference, manifestChecksum); err != nil {
+			book.ProcessingFailureDetail, book.ProcessingUpdatedAt, book.ProcessingVersion, manifestReference, manifestChecksum); err != nil {
 			return catalog.Book{}, false, fmt.Errorf("catalog: update processing book: %w", err)
 		}
 		var sequence int64
@@ -324,10 +325,10 @@ func (r *PostgresBookRepository) ApplyLifecycleCommand(
 	book.DeleteCommandID = command.CommandID
 
 	if _, err = tx.Exec(ctx, `UPDATE catalog.books SET processing_status=$2,processing_stage=$3,
-		processing_failure_category=$4,processing_updated_at=$5,processing_version=$6,lifecycle_version=$7,
-		lifecycle_command_id=$8,original_deleted=$9,artifacts_deleted=$10,index_deleted=$11 WHERE id=$1`,
+			processing_failure_category=$4,processing_failure_detail=$5,processing_updated_at=$6,processing_version=$7,lifecycle_version=$8,
+			lifecycle_command_id=$9,original_deleted=$10,artifacts_deleted=$11,index_deleted=$12 WHERE id=$1`,
 		book.ID, string(book.ProcessingStatus), string(book.ProcessingStage), string(book.ProcessingFailureCategory),
-		book.ProcessingUpdatedAt, book.ProcessingVersion, book.LifecycleVersion, book.DeleteCommandID,
+		book.ProcessingFailureDetail, book.ProcessingUpdatedAt, book.ProcessingVersion, book.LifecycleVersion, book.DeleteCommandID,
 		book.OriginalDeleted, book.ArtifactsDeleted, book.IndexDeleted); err != nil {
 		return catalog.Book{}, false, fmt.Errorf("catalog: update lifecycle book: %w", err)
 	}
@@ -340,7 +341,8 @@ func (r *PostgresBookRepository) ApplyLifecycleCommand(
 	statusPayload, err := proto.Marshal(&catalogv1.BookProcessingStatusChangedV1{
 		EventId: command.StatusEventID, BookId: book.ID, ProcessingStatus: string(book.ProcessingStatus),
 		ProcessingStage: string(book.ProcessingStage), ProcessingFailureCategory: string(book.ProcessingFailureCategory),
-		ProcessingVersion: book.ProcessingVersion, UpdatedAt: timestamppb.New(book.ProcessingUpdatedAt),
+		ProcessingFailureDetail: book.ProcessingFailureDetail,
+		ProcessingVersion:       book.ProcessingVersion, UpdatedAt: timestamppb.New(book.ProcessingUpdatedAt),
 		CorrelationId: command.CorrelationID, OccurredAt: timestamppb.New(command.OccurredAt),
 		CausationId: command.CommandID, Producer: "catalog-service", SchemaVersion: "v1",
 		IdempotencyKey:   fmt.Sprintf("%s:processing:%d", book.ID, book.ProcessingVersion),
@@ -395,7 +397,7 @@ func (r *PostgresBookRepository) ApplyLifecycleCommand(
 }
 
 const lifecycleBookSelect = `SELECT id,title,author,year,tags,processing_status,created_at,
-	object_reference,checksum,byte_size,media_type,processing_stage,processing_failure_category,
+	object_reference,checksum,byte_size,media_type,processing_stage,processing_failure_category,processing_failure_detail,
 	processing_updated_at,processing_version,lifecycle_version,manifest_reference,manifest_sha256,
 	lifecycle_command_id,original_deleted,artifacts_deleted,index_deleted FROM catalog.books`
 
@@ -576,7 +578,7 @@ func (r *PostgresBookRepository) finalizeDeletion(
 	if _, err := tx.Exec(ctx, `UPDATE catalog.books SET
 		title=NULL,author=NULL,year=NULL,tags=NULL,object_reference=NULL,checksum=NULL,
 		byte_size=NULL,media_type=NULL,actor_id=NULL,manifest_reference=NULL,manifest_sha256=NULL,
-		processing_status='deleted',processing_stage=NULL,processing_failure_category=NULL,
+		processing_status='deleted',processing_stage=NULL,processing_failure_category=NULL,processing_failure_detail='',
 		processing_version=$2,processing_updated_at=$3,original_deleted=$4,
 		artifacts_deleted=$5,index_deleted=$6 WHERE id=$1`,
 		book.ID, book.ProcessingVersion, book.ProcessingUpdatedAt, book.OriginalDeleted,
@@ -705,11 +707,11 @@ func scanBook(row rowScanner) (catalog.Book, error) {
 	var checksum []byte
 	var manifestChecksum []byte
 	var title, author, objectReference, mediaType sql.NullString
-	var processingStage, processingFailureCategory, manifestReference sql.NullString
+	var processingStage, processingFailureCategory, processingFailureDetail, manifestReference sql.NullString
 	var year, byteSize sql.NullInt64
 	err := row.Scan(&book.ID, &title, &author, &year, &book.Metadata.Tags,
 		&book.ProcessingStatus, &book.CreatedAt, &objectReference, &checksum, &byteSize,
-		&mediaType, &processingStage, &processingFailureCategory, &book.ProcessingUpdatedAt,
+		&mediaType, &processingStage, &processingFailureCategory, &processingFailureDetail, &book.ProcessingUpdatedAt,
 		&book.ProcessingVersion, &book.LifecycleVersion, &manifestReference, &manifestChecksum,
 		&book.DeleteCommandID, &book.OriginalDeleted, &book.ArtifactsDeleted, &book.IndexDeleted)
 	if err != nil {
@@ -723,6 +725,7 @@ func scanBook(row rowScanner) (catalog.Book, error) {
 	book.MediaType = mediaType.String
 	book.ProcessingStage = catalog.BookProcessingStage(processingStage.String)
 	book.ProcessingFailureCategory = catalog.ProcessingFailureCategory(processingFailureCategory.String)
+	book.ProcessingFailureDetail = processingFailureDetail.String
 	book.ManifestReference = manifestReference.String
 	if book.ProcessingStatus != catalog.BookStatusDeleted && len(checksum) != len(book.Checksum) {
 		return catalog.Book{}, errors.New("catalog: invalid checksum in database")

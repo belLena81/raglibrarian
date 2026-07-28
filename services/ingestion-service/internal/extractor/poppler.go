@@ -17,7 +17,7 @@ import (
 	"strings"
 	"syscall"
 
-	ingestionconfig "github.com/belLena81/raglibrarian/services/ingestion-service/config"
+	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/defaults"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/domain"
 )
 
@@ -355,6 +355,9 @@ func classifyCommandError(ctx context.Context, err error) error {
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
+		if hasRuntimeResourceExhaustionDiagnostic(err) {
+			return &categorizedError{category: domain.FailureInternalProcessing, cause: err}
+		}
 		switch exitErr.ExitCode() {
 		case 1:
 			if hasIncorrectPasswordDiagnostic(err) {
@@ -381,6 +384,9 @@ func commandFailureDetail(err error) (string, bool) {
 	}
 	var commandErr *commandError
 	if errors.As(err, &commandErr) {
+		if hasRuntimeResourceExhaustionStderr(commandErr.stderr) {
+			return "epub_parser_runtime_resource_exhausted", true
+		}
 		if detail, ok := commandStderrFailureDetail(commandErr.stderr); ok {
 			return detail, true
 		}
@@ -412,6 +418,8 @@ func commandFailureDetail(err error) (string, bool) {
 
 func commandStderrFailureDetail(stderr []byte) (string, bool) {
 	switch {
+	case hasRuntimeResourceExhaustionStderr(stderr):
+		return "epub_parser_runtime_resource_exhausted", true
 	case bytes.Contains(stderr, []byte("epub_parser_panic")):
 		return "epub_parser_panic", true
 	case bytes.Contains(stderr, []byte("epub_parser_invalid_args")):
@@ -520,6 +528,17 @@ func hasIncorrectPasswordDiagnostic(err error) bool {
 	return errors.As(err, &commandErr) && bytes.Contains(commandErr.stderr, []byte("Incorrect password"))
 }
 
+func hasRuntimeResourceExhaustionDiagnostic(err error) bool {
+	var commandErr *commandError
+	return errors.As(err, &commandErr) && hasRuntimeResourceExhaustionStderr(commandErr.stderr)
+}
+
+func hasRuntimeResourceExhaustionStderr(stderr []byte) bool {
+	return bytes.Contains(stderr, []byte("pthread_create failed")) &&
+		bytes.Contains(stderr, []byte("Resource temporarily unavailable")) ||
+		bytes.Contains(stderr, []byte("failed to create new OS thread"))
+}
+
 type ExecRunner struct{}
 
 func VerifySandbox(ctx context.Context) error {
@@ -567,7 +586,7 @@ func (ExecRunner) StreamPages(ctx context.Context, path string, args []string, l
 		return err
 	}
 	var stderr boundedBuffer
-	stderr.maximum = ingestionconfig.DefaultCommandStderrBytes
+	stderr.maximum = defaults.CommandStderrBytes
 	command.Stderr = &stderr
 	command.Cancel = func() error {
 		if command.Process == nil {
@@ -651,7 +670,7 @@ func (ExecRunner) Run(ctx context.Context, path string, args []string, maximumOu
 	stdout.maximum = maximumOutput
 	command.Stdout = &stdout
 	var stderr boundedBuffer
-	stderr.maximum = ingestionconfig.DefaultCommandStderrBytes
+	stderr.maximum = defaults.CommandStderrBytes
 	command.Stderr = &stderr
 	command.Cancel = func() error {
 		if command.Process == nil {

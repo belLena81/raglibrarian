@@ -204,8 +204,9 @@ func fromProto(book *catalogv1.Book) handler.Book {
 	return handler.Book{
 		ID: book.Id, Title: book.Title, Author: book.Author, Year: int(book.Year), Tags: append([]string(nil), book.Tags...),
 		ProcessingStatus: book.ProcessingStatus, ProcessingStage: book.ProcessingStage,
-		ProcessingFailureCategory: book.ProcessingFailureCategory, ProcessingUpdatedAt: processingUpdatedAt,
-		ProcessingVersion: book.ProcessingVersion, MediaType: book.MediaType,
+		ProcessingFailureCategory: book.ProcessingFailureCategory, ProcessingFailureDetail: book.ProcessingFailureDetail,
+		ProcessingUpdatedAt: processingUpdatedAt,
+		ProcessingVersion:   book.ProcessingVersion, MediaType: book.MediaType,
 		LifecycleVersion: book.LifecycleVersion, CanReindex: book.CanReindex, Preview: book.Preview, CreatedAt: createdAt,
 	}
 }

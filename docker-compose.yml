@@ -390,7 +390,7 @@ services:
       - catalog-broker
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=1g
-    mem_limit: "${INGESTION_MEMORY_LIMIT:-1g}"
+    mem_limit: "${INGESTION_MEMORY_LIMIT:-2g}"
     cpus: "${INGESTION_CPU_LIMIT:-2.0}"
     pids_limit: 128
     ulimits:

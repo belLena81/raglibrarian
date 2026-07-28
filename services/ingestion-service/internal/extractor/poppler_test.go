@@ -144,6 +144,18 @@ func TestFailureDetailMapsEPUBParserExitTwoToInvalidArgs(t *testing.T) {
 	}
 }
 
+func TestFailureDetailMapsEPUBParserThreadCreationFailureToRuntimeResourceExhaustion(t *testing.T) {
+	exitErr := exec.Command("sh", "-c", "exit 2").Run() // #nosec G204 -- fixed synthetic test input.
+	err := detailedFailure("epub_parser_failed", epubFailure(domain.FailureInternalProcessing, &commandError{
+		cause:  exitErr,
+		stderr: []byte("runtime/cgo: pthread_create failed: Resource temporarily unavailable\n"),
+	}))
+	detail, ok := FailureDetail(err)
+	if !ok || detail != "epub_parser_runtime_resource_exhausted" {
+		t.Fatalf("FailureDetail(epub parser thread creation failure) = %q, %t", detail, ok)
+	}
+}
+
 func TestClassifyCommandErrorRecognizesIncorrectPasswordDiagnostic(t *testing.T) {
 	_, err := (ExecRunner{}).Run(
 		context.Background(),
@@ -178,6 +190,18 @@ func TestClassifyCommandErrorKeepsOtherExitOneFailuresMalformed(t *testing.T) {
 	category, ok := FailureCategory(classified)
 	if !ok || category != domain.FailureMalformedDocument {
 		t.Fatalf("expected malformed document, got %q", category)
+	}
+}
+
+func TestClassifyCommandErrorTreatsRuntimeThreadCreationFailureAsInternalProcessing(t *testing.T) {
+	exitErr := exec.Command("sh", "-c", "exit 2").Run() // #nosec G204 -- fixed synthetic test input.
+	classified := classifyCommandError(context.Background(), &commandError{
+		cause:  exitErr,
+		stderr: []byte("runtime/cgo: pthread_create failed: Resource temporarily unavailable\n"),
+	})
+	category, ok := FailureCategory(classified)
+	if !ok || category != domain.FailureInternalProcessing {
+		t.Fatalf("expected internal processing error, got %q", category)
 	}
 }
 

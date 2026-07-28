@@ -17,7 +17,7 @@ import (
 	"regexp"
 	"strings"
 
-	ingestionconfig "github.com/belLena81/raglibrarian/services/ingestion-service/config"
+	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/defaults"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/domain"
 )
 
@@ -53,11 +53,11 @@ type EPUBArchiveLimits struct {
 
 func DefaultEPUBArchiveLimits() EPUBArchiveLimits {
 	return EPUBArchiveLimits{
-		MaximumEntries:       ingestionconfig.DefaultEPUBMaximumEntries,
-		MaximumSpineItems:    uint32(ingestionconfig.DefaultEPUBMaximumSpineItems),
-		MaximumEntryBytes:    ingestionconfig.DefaultEPUBMaximumEntryBytes,
-		MaximumExpandedBytes: ingestionconfig.DefaultEPUBMaximumExpandedBytes,
-		MaximumTextBytes:     ingestionconfig.DefaultEPUBMaximumTextBytes,
+		MaximumEntries:       defaults.EPUBMaximumEntries,
+		MaximumSpineItems:    defaults.EPUBMaximumSpineItems,
+		MaximumEntryBytes:    defaults.EPUBMaximumEntryBytes,
+		MaximumExpandedBytes: defaults.EPUBMaximumExpandedBytes,
+		MaximumTextBytes:     defaults.EPUBMaximumTextBytes,
 	}
 }
 
@@ -519,7 +519,8 @@ func EPUBParserFailureDetail(err error) (string, bool) {
 				"epub_parser_invalid_limits", "epub_parser_invalid_entry_limits", "epub_parser_invalid_configuration",
 				"epub_parser_invalid_output", "epub_parser_trailing_output", "epub_parser_invalid_location",
 				"epub_parser_xml_nesting", "epub_parser_xhtml_invalid", "epub_parser_xhtml_unsafe",
-				"epub_parser_text_limit", "epub_parser_exit_125", "epub_parser_exit_126", "epub_parser_exit_127":
+				"epub_parser_text_limit", "epub_parser_runtime_resource_exhausted",
+				"epub_parser_exit_125", "epub_parser_exit_126", "epub_parser_exit_127":
 				return detail, true
 			}
 		}
@@ -562,6 +563,9 @@ func internalEPUBFailureDetail(err error) string {
 	}
 	var commandErr *commandError
 	if errors.As(err, &commandErr) {
+		if hasRuntimeResourceExhaustionStderr(commandErr.stderr) {
+			return "epub_parser_runtime_resource_exhausted"
+		}
 		if errors.Is(commandErr.cause, exec.ErrNotFound) {
 			return "epub_parser_exec_not_found"
 		}

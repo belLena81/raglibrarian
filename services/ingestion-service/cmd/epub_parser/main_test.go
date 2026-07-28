@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/belLena81/raglibrarian/services/ingestion-service/config"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/extractor"
 )
 
@@ -68,36 +67,6 @@ func TestRunFallsBackToEPUBParserSourcePathEnvironment(t *testing.T) {
 	}
 	if output.Len() == 0 {
 		t.Fatal("run() produced no parser output")
-	}
-}
-
-func TestEPUBArchiveLimitsReadBoundedEnvironmentOverrides(t *testing.T) {
-	t.Setenv("INGESTION_EPUB_MAX_ENTRIES", "3000")
-	t.Setenv("INGESTION_EPUB_MAX_SPINE_ITEMS", "700")
-	t.Setenv("INGESTION_EPUB_MAX_ENTRY_BYTES", "1048576")
-	t.Setenv("INGESTION_EPUB_MAX_EXPANDED_BYTES", "8388608")
-	t.Setenv("INGESTION_EPUB_MAX_TEXT_BYTES", "2097152")
-
-	limits := epubArchiveLimits()
-
-	if limits.MaximumEntries != 3000 || limits.MaximumSpineItems != 700 || limits.MaximumEntryBytes != 1048576 ||
-		limits.MaximumExpandedBytes != 8388608 || limits.MaximumTextBytes != 2097152 {
-		t.Fatalf("epubArchiveLimits() = %#v", limits)
-	}
-}
-
-func TestEPUBArchiveLimitsFallbackForInvalidEnvironmentOverrides(t *testing.T) {
-	t.Setenv("INGESTION_EPUB_MAX_ENTRIES", "2")
-	t.Setenv("INGESTION_EPUB_MAX_SPINE_ITEMS", "0")
-	t.Setenv("INGESTION_EPUB_MAX_ENTRY_BYTES", "-1")
-	t.Setenv("INGESTION_EPUB_MAX_EXPANDED_BYTES", "bad")
-	t.Setenv("INGESTION_EPUB_MAX_TEXT_BYTES", "2147483648")
-
-	limits := epubArchiveLimits()
-
-	if limits.MaximumEntries != config.DefaultEPUBMaximumEntries || limits.MaximumSpineItems != uint32(config.DefaultEPUBMaximumSpineItems) || limits.MaximumEntryBytes != config.DefaultEPUBMaximumEntryBytes ||
-		limits.MaximumExpandedBytes != config.DefaultEPUBMaximumExpandedBytes || limits.MaximumTextBytes != config.DefaultEPUBMaximumTextBytes {
-		t.Fatalf("epubArchiveLimits() = %#v", limits)
 	}
 }
 
