@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"errors"
-	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/providerhttp"
 	"github.com/belLena81/raglibrarian/services/answer-service/config"
@@ -16,7 +15,7 @@ func NewLLMProvider(configuration config.Config) (application.LLMProvider, error
 	if err != nil {
 		return nil, errors.New("load provider credentials")
 	}
-	httpClient, err := providerhttp.NewTLSHTTPClient(configuration.LLMCAFile, 0*time.Second)
+	httpClient, err := providerhttp.NewTLSHTTPClient(configuration.LLMCAFile, configuration.LLMHTTPClientTimeout)
 	if err != nil {
 		return nil, errors.New("configure provider transport")
 	}

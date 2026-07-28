@@ -17,6 +17,9 @@ func TestLoadUsesSecureBoundedDefaults(t *testing.T) {
 	if configuration.LLMMaxResponseBytes != 128<<10 || configuration.LLMMaxCandidateBytes != 32<<10 {
 		t.Fatalf("unexpected provider policy: response=%d candidate=%d", configuration.LLMMaxResponseBytes, configuration.LLMMaxCandidateBytes)
 	}
+	if configuration.LLMHTTPClientTimeout != 0 {
+		t.Fatalf("LLMHTTPClientTimeout = %s, want 0", configuration.LLMHTTPClientTimeout)
+	}
 	if configuration.MetricsMaxHeaderBytes != 16<<10 {
 		t.Fatalf("MetricsMaxHeaderBytes = %d, want %d", configuration.MetricsMaxHeaderBytes, 16<<10)
 	}
@@ -59,6 +62,7 @@ func TestLoadOverridesProviderPolicy(t *testing.T) {
 	setRequiredEnvironment(t)
 	t.Setenv("ANSWER_PROVIDER_MAX_RESPONSE_BYTES", "65536")
 	t.Setenv("ANSWER_PROVIDER_MAX_CANDIDATE_BYTES", "16384")
+	t.Setenv("ANSWER_PROVIDER_HTTP_TIMEOUT", "15s")
 	t.Setenv("ANSWER_METRICS_MAX_HEADER_BYTES", "65535")
 	configuration, err := Load()
 	if err != nil {
@@ -69,6 +73,9 @@ func TestLoadOverridesProviderPolicy(t *testing.T) {
 	}
 	if configuration.MetricsMaxHeaderBytes != 65535 {
 		t.Fatalf("MetricsMaxHeaderBytes = %d, want %d", configuration.MetricsMaxHeaderBytes, 65535)
+	}
+	if configuration.LLMHTTPClientTimeout != 15*time.Second {
+		t.Fatalf("LLMHTTPClientTimeout = %s, want 15s", configuration.LLMHTTPClientTimeout)
 	}
 }
 
@@ -113,6 +120,16 @@ func TestLoadRejectsInsecureProviderAndInvalidBounds(t *testing.T) {
 	t.Setenv("ANSWER_PROVIDER_MAX_CANDIDATE_BYTES", "32768")
 	if _, err := Load(); err == nil {
 		t.Fatal("provider candidate limit above response limit accepted")
+	}
+	setRequiredEnvironment(t)
+	t.Setenv("ANSWER_PROVIDER_HTTP_TIMEOUT", "-1s")
+	if _, err := Load(); err == nil {
+		t.Fatal("negative provider HTTP timeout accepted")
+	}
+	setRequiredEnvironment(t)
+	t.Setenv("ANSWER_PROVIDER_HTTP_TIMEOUT", "4m31s")
+	if _, err := Load(); err == nil {
+		t.Fatal("provider HTTP timeout above provider timeout accepted")
 	}
 	setRequiredEnvironment(t)
 	t.Setenv("ANSWER_METRICS_MAX_HEADER_BYTES", "0")

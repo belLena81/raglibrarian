@@ -41,6 +41,7 @@ type Config struct {
 	LLMRequestsPerMinute     int
 	LLMMaxResponseBytes      int
 	LLMMaxCandidateBytes     int
+	LLMHTTPClientTimeout     time.Duration
 	LogProviderErrorBody     bool
 	LLMAPIKeyFile            string
 	LLMCAFile                string
@@ -71,6 +72,7 @@ func Load() (Config, error) {
 	requestTimeout, requestErr := duration("ANSWER_REQUEST_TIMEOUT", defaultRequestTimeout, 100*time.Millisecond, 5*time.Minute)
 	retrievalTimeout, retrievalErr := duration("ANSWER_RETRIEVAL_TIMEOUT", defaultRetrievalTimeout, 100*time.Millisecond, 5*time.Minute)
 	providerTimeout, providerErr := duration("ANSWER_PROVIDER_TIMEOUT", defaultProviderTimeout, 100*time.Millisecond, 5*time.Minute)
+	providerHTTPTimeout, providerHTTPTimeoutErr := nonNegativeDuration("ANSWER_PROVIDER_HTTP_TIMEOUT", 0, 5*time.Minute)
 	readinessProbeTimeout, readinessProbeErr := duration("ANSWER_READINESS_PROBE_TIMEOUT", 2*time.Second, 100*time.Millisecond, time.Minute)
 	readinessPollInterval, readinessPollErr := duration("ANSWER_READINESS_POLL_INTERVAL", 2*time.Second, 100*time.Millisecond, time.Minute)
 	shutdownTimeout, shutdownErr := duration("ANSWER_SHUTDOWN_TIMEOUT", 3*time.Second, 100*time.Millisecond, time.Minute)
@@ -84,8 +86,9 @@ func Load() (Config, error) {
 		RetrievalDNSName: os.Getenv("ANSWER_RETRIEVAL_TLS_SERVER_NAME"),
 		LLMBaseURL:       os.Getenv("ANSWER_LLM_BASE_URL"), LLMModel: os.Getenv("ANSWER_LLM_MODEL"),
 		LLMAPIKeyFile: os.Getenv("ANSWER_LLM_API_KEY_FILE"), LLMCAFile: os.Getenv("ANSWER_LLM_CA_FILE"),
-		TLS:   internaltls.Files{CA: os.Getenv("ANSWER_TLS_CA_FILE"), Certificate: os.Getenv("ANSWER_TLS_CERT_FILE"), Key: os.Getenv("ANSWER_TLS_KEY_FILE")},
-		RunAs: process.Identity{UID: uid, GID: gid}, Limits: application.Limits{MaximumEvidence: maximumEvidence, MaximumContextBytes: maximumContext,
+		LLMHTTPClientTimeout: providerHTTPTimeout,
+		TLS:                  internaltls.Files{CA: os.Getenv("ANSWER_TLS_CA_FILE"), Certificate: os.Getenv("ANSWER_TLS_CERT_FILE"), Key: os.Getenv("ANSWER_TLS_KEY_FILE")},
+		RunAs:                process.Identity{UID: uid, GID: gid}, Limits: application.Limits{MaximumEvidence: maximumEvidence, MaximumContextBytes: maximumContext,
 			MaximumEvidenceBytes: maximumItem, MaximumSegments: maximumSegments, MaximumAnswerBytes: maximumAnswer, MaximumCitations: maximumCitations,
 			MaximumOutputTokens: maximumTokens, ProviderConcurrency: concurrency, RequestTimeout: requestTimeout, RetrievalTimeout: retrievalTimeout, ProviderTimeout: providerTimeout},
 		ReadinessProbeTimeout:    readinessProbeTimeout,
@@ -118,6 +121,7 @@ func Load() (Config, error) {
 		uidErr, gidErr, evidenceErr, contextErr, itemErr, segmentErr, answerErr, citationErr, tokenErr, concurrencyErr,
 		maxResponseBytesErr, maxCandidateBytesErr,
 		requestErr, retrievalErr, providerErr, readinessProbeErr, readinessPollErr, shutdownErr, metricsReadErr,
+		providerHTTPTimeoutErr,
 		metricsReadHeaderErr, metricsMaxHeaderBytesErr, metricsWriteErr, metricsIdleErr,
 	}
 	for _, err := range errs {
@@ -130,6 +134,7 @@ func Load() (Config, error) {
 		!validProviderURL(configuration.LLMBaseURL) || strings.TrimSpace(configuration.LLMModel) == "" || len(configuration.LLMModel) > 256 || strings.ContainsAny(configuration.LLMModel, "\r\n") ||
 		configuration.LLMAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		configuration.LLMMaxCandidateBytes > configuration.LLMMaxResponseBytes ||
+		(configuration.LLMHTTPClientTimeout > 0 && configuration.LLMHTTPClientTimeout > configuration.Limits.ProviderTimeout) ||
 		configuration.Limits.MaximumEvidenceBytes > configuration.Limits.MaximumContextBytes || configuration.Limits.RetrievalTimeout >= configuration.Limits.RequestTimeout ||
 		configuration.Limits.ProviderTimeout >= configuration.Limits.RequestTimeout {
 		return Config{}, errors.New("invalid answer configuration")
@@ -156,6 +161,18 @@ func duration(key string, fallback, minimum, maximum time.Duration) (time.Durati
 	}
 	parsed, err := time.ParseDuration(value)
 	if err != nil || parsed < minimum || parsed > maximum {
+		return 0, errors.New("invalid duration")
+	}
+	return parsed, nil
+}
+
+func nonNegativeDuration(key string, fallback, maximum time.Duration) (time.Duration, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed < 0 || parsed > maximum {
 		return 0, errors.New("invalid duration")
 	}
 	return parsed, nil
