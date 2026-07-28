@@ -16,6 +16,7 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/process"
+	"github.com/belLena81/raglibrarian/services/edge-api/internal/bookstatuspolicy"
 	"github.com/belLena81/raglibrarian/services/edge-api/internal/rpcpolicy"
 )
 
@@ -334,27 +335,27 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	bookStatusReconnectInitialBackoff, err := positiveDuration("EDGE_BOOK_STATUS_RECONNECT_INITIAL_BACKOFF", time.Second)
+	bookStatusReconnectInitialBackoff, err := positiveDuration("EDGE_BOOK_STATUS_RECONNECT_INITIAL_BACKOFF", bookstatuspolicy.DefaultReconnectInitialBackoff)
 	if err != nil {
 		return Config{}, err
 	}
-	bookStatusReconnectMaxBackoff, err := positiveDuration("EDGE_BOOK_STATUS_RECONNECT_MAX_BACKOFF", 30*time.Second)
+	bookStatusReconnectMaxBackoff, err := positiveDuration("EDGE_BOOK_STATUS_RECONNECT_MAX_BACKOFF", bookstatuspolicy.DefaultReconnectMaxBackoff)
 	if err != nil {
 		return Config{}, err
 	}
-	bookStatusDialTimeout, err := positiveDuration("EDGE_BOOK_STATUS_DIAL_TIMEOUT", 5*time.Second)
+	bookStatusDialTimeout, err := positiveDuration("EDGE_BOOK_STATUS_DIAL_TIMEOUT", bookstatuspolicy.DefaultDialTimeout)
 	if err != nil {
 		return Config{}, err
 	}
-	bookStatusHeartbeatTimeout, err := positiveDuration("EDGE_BOOK_STATUS_HEARTBEAT_TIMEOUT", 10*time.Second)
+	bookStatusHeartbeatTimeout, err := positiveDuration("EDGE_BOOK_STATUS_HEARTBEAT_TIMEOUT", bookstatuspolicy.DefaultHeartbeatTimeout)
 	if err != nil {
 		return Config{}, err
 	}
-	bookStatusPrefetch, err := positiveInt("EDGE_BOOK_STATUS_PREFETCH", 20)
+	bookStatusPrefetch, err := positiveInt("EDGE_BOOK_STATUS_PREFETCH", bookstatuspolicy.DefaultPrefetch)
 	if err != nil {
 		return Config{}, err
 	}
-	bookStatusQueueMaxLengthBytes, err := positiveInt("EDGE_BOOK_STATUS_QUEUE_MAX_LENGTH_BYTES", 64<<20)
+	bookStatusQueueMaxLengthBytes, err := positiveInt("EDGE_BOOK_STATUS_QUEUE_MAX_LENGTH_BYTES", bookstatuspolicy.DefaultQueueMaxLengthBytes)
 	if err != nil {
 		return Config{}, err
 	}

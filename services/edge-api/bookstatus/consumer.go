@@ -9,6 +9,7 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/contracts"
 	"github.com/belLena81/raglibrarian/pkg/rabbitmqconn"
+	"github.com/belLena81/raglibrarian/services/edge-api/internal/bookstatuspolicy"
 	"github.com/rabbitmq/amqp091-go"
 	"google.golang.org/protobuf/proto"
 
@@ -120,22 +121,22 @@ func consume(ctx context.Context, uri, queue string, hub Hub, policy Policy) err
 
 func normalizePolicy(policy Policy) Policy {
 	if policy.ReconnectInitialBackoff <= 0 {
-		policy.ReconnectInitialBackoff = time.Second
+		policy.ReconnectInitialBackoff = bookstatuspolicy.DefaultReconnectInitialBackoff
 	}
 	if policy.ReconnectMaxBackoff <= 0 {
-		policy.ReconnectMaxBackoff = 30 * time.Second
+		policy.ReconnectMaxBackoff = bookstatuspolicy.DefaultReconnectMaxBackoff
 	}
 	if policy.DialTimeout <= 0 {
-		policy.DialTimeout = 5 * time.Second
+		policy.DialTimeout = bookstatuspolicy.DefaultDialTimeout
 	}
 	if policy.HeartbeatTimeout <= 0 {
-		policy.HeartbeatTimeout = 10 * time.Second
+		policy.HeartbeatTimeout = bookstatuspolicy.DefaultHeartbeatTimeout
 	}
 	if policy.Prefetch <= 0 {
-		policy.Prefetch = 20
+		policy.Prefetch = bookstatuspolicy.DefaultPrefetch
 	}
 	if policy.QueueMaxLengthBytes <= 0 {
-		policy.QueueMaxLengthBytes = 64 << 20
+		policy.QueueMaxLengthBytes = bookstatuspolicy.DefaultQueueMaxLengthBytes
 	}
 	if policy.ReconnectInitialBackoff > policy.ReconnectMaxBackoff {
 		policy.ReconnectInitialBackoff = policy.ReconnectMaxBackoff
