@@ -56,10 +56,14 @@ func TestRunCreatesMissingQdrantCollection(t *testing.T) {
 		return response(http.StatusInternalServerError, `{}`)
 	})}
 
-	err := run(context.Background(), env(map[string]string{
+	configuration, err := loadConfig(env(map[string]string{
 		"RETRIEVAL_QDRANT_URL":          "http://qdrant.test",
 		"RETRIEVAL_QDRANT_API_KEY_FILE": "/run/secrets/retrieval_qdrant_api_key",
-	}), secret(map[string]string{
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = run(context.Background(), configuration, secret(map[string]string{
 		"/run/secrets/retrieval_qdrant_api_key": "writer-key\n",
 	}), client)
 
@@ -91,10 +95,14 @@ func TestRunAcceptsExistingQdrantCollection(t *testing.T) {
 		}
 	})}
 
-	err := run(context.Background(), env(map[string]string{
+	configuration, err := loadConfig(env(map[string]string{
 		"RETRIEVAL_QDRANT_URL":          "http://qdrant.test",
 		"RETRIEVAL_QDRANT_API_KEY_FILE": "/run/secrets/retrieval_qdrant_api_key",
-	}), secret(map[string]string{
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = run(context.Background(), configuration, secret(map[string]string{
 		"/run/secrets/retrieval_qdrant_api_key": "writer-key\n",
 	}), client)
 
@@ -127,10 +135,14 @@ func TestRunRetriesTransientQdrantReadinessFailure(t *testing.T) {
 		}
 	})}
 
-	err := run(context.Background(), env(map[string]string{
+	configuration, err := loadConfig(env(map[string]string{
 		"RETRIEVAL_QDRANT_URL":          "http://qdrant.test",
 		"RETRIEVAL_QDRANT_API_KEY_FILE": "/run/secrets/retrieval_qdrant_api_key",
-	}), secret(map[string]string{
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = run(context.Background(), configuration, secret(map[string]string{
 		"/run/secrets/retrieval_qdrant_api_key": "writer-key\n",
 	}), client)
 
@@ -170,12 +182,16 @@ func TestRunDropsPrivilegesBeforeCreatingQdrantClient(t *testing.T) {
 		}
 	})}
 
-	err := run(context.Background(), env(map[string]string{
+	configuration, err := loadConfig(env(map[string]string{
 		"RETRIEVAL_QDRANT_URL":          "http://qdrant.test",
 		"RETRIEVAL_QDRANT_API_KEY_FILE": "/run/secrets/retrieval_qdrant_api_key",
 		"RUN_AS_UID":                    "123",
 		"RUN_AS_GID":                    "456",
-	}), secret(map[string]string{
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = run(context.Background(), configuration, secret(map[string]string{
 		"/run/secrets/retrieval_qdrant_api_key": "writer-key\n",
 	}), client)
 
@@ -213,6 +229,32 @@ func TestLoadConfigRejectsInvalidRuntimeIdentity(t *testing.T) {
 		"RUN_AS_UID":                    "0",
 	})); err == nil {
 		t.Fatal("loadConfig() accepted invalid UID")
+	}
+}
+
+func TestLoadConfigRejectsInvalidTimeouts(t *testing.T) {
+	for name, environment := range map[string]map[string]string{
+		"zero init timeout": {
+			"RETRIEVAL_QDRANT_URL":          "http://qdrant.test",
+			"RETRIEVAL_QDRANT_API_KEY_FILE": "/secret",
+			"RETRIEVAL_QDRANT_INIT_TIMEOUT": "0s",
+		},
+		"oversized init timeout": {
+			"RETRIEVAL_QDRANT_URL":          "http://qdrant.test",
+			"RETRIEVAL_QDRANT_API_KEY_FILE": "/secret",
+			"RETRIEVAL_QDRANT_INIT_TIMEOUT": "121s",
+		},
+		"invalid http timeout": {
+			"RETRIEVAL_QDRANT_URL":          "http://qdrant.test",
+			"RETRIEVAL_QDRANT_API_KEY_FILE": "/secret",
+			"RETRIEVAL_QDRANT_HTTP_TIMEOUT": "-1s",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := loadConfig(env(environment)); err == nil {
+				t.Fatal("loadConfig() accepted invalid timeout")
+			}
+		})
 	}
 }
 

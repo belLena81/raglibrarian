@@ -18,35 +18,45 @@ import (
 
 var ensureRetryDelay = time.Second
 
+const (
+	defaultInitTimeout = 20 * time.Second
+	defaultHTTPTimeout = 8 * time.Second
+	maximumInitTimeout = 2 * time.Minute
+	maximumHTTPTimeout = time.Minute
+)
+
 type initConfig struct {
-	URL        string
-	Collection string
-	APIKeyFile string
-	RunAs      process.Identity
+	URL         string
+	Collection  string
+	APIKeyFile  string
+	RunAs       process.Identity
+	InitTimeout time.Duration
+	HTTPTimeout time.Duration
 }
 
 var dropPrivileges = process.DropPrivileges
 
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	configuration, err := loadConfig(os.Getenv)
+	if err != nil {
+		log.Printf("retrieval qdrant initializer failed: %v", err)
+		os.Exit(1)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), configuration.InitTimeout)
 	defer cancel()
 	client := &http.Client{
-		Timeout: 8 * time.Second,
+		Timeout: configuration.HTTPTimeout,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
-	if err := run(ctx, os.Getenv, os.ReadFile, client); err != nil {
+	if err = run(ctx, configuration, os.ReadFile, client); err != nil {
 		log.Printf("retrieval qdrant initializer failed: %v", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, getenv func(string) string, readFile func(string) ([]byte, error), client *http.Client) error {
-	configuration, err := loadConfig(getenv)
-	if err != nil {
-		return err
-	}
+func run(ctx context.Context, configuration initConfig, readFile func(string) ([]byte, error), client *http.Client) error {
 	apiKey, err := readSecret(configuration.APIKeyFile, readFile)
 	if err != nil {
 		return err
@@ -103,8 +113,11 @@ func loadConfig(getenv func(string) string) (initConfig, error) {
 			UID: positiveInteger(strings.TrimSpace(getenv("RUN_AS_UID")), 65532),
 			GID: positiveInteger(strings.TrimSpace(getenv("RUN_AS_GID")), 65532),
 		},
+		InitTimeout: positiveDuration(strings.TrimSpace(getenv("RETRIEVAL_QDRANT_INIT_TIMEOUT")), defaultInitTimeout, maximumInitTimeout),
+		HTTPTimeout: positiveDuration(strings.TrimSpace(getenv("RETRIEVAL_QDRANT_HTTP_TIMEOUT")), defaultHTTPTimeout, maximumHTTPTimeout),
 	}
-	if configuration.URL == "" || configuration.APIKeyFile == "" || configuration.RunAs.UID < 1 || configuration.RunAs.GID < 1 {
+	if configuration.URL == "" || configuration.APIKeyFile == "" || configuration.RunAs.UID < 1 || configuration.RunAs.GID < 1 ||
+		configuration.InitTimeout <= 0 || configuration.HTTPTimeout <= 0 {
 		return initConfig{}, errors.New("invalid qdrant initializer configuration")
 	}
 	return configuration, nil
@@ -116,6 +129,17 @@ func positiveInteger(value string, fallback int) int {
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed < 1 {
+		return 0
+	}
+	return parsed
+}
+
+func positiveDuration(value string, fallback, maximum time.Duration) time.Duration {
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 || parsed > maximum {
 		return 0
 	}
 	return parsed
