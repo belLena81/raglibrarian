@@ -101,7 +101,8 @@ func TestReconcilerContinuesAfterPendingOriginalDeleteFailure(t *testing.T) {
 }
 
 func TestReconcilerBoundsOnePass(t *testing.T) {
-	objects := make([]StoredObject, maximumReconcileObjects+100)
+	const maxObjects = 1000
+	objects := make([]StoredObject, maxObjects+100)
 	for index := range objects {
 		objects[index] = StoredObject{
 			Reference:    fmt.Sprintf("originals/%022d.pdf", index),
@@ -109,17 +110,50 @@ func TestReconcilerBoundsOnePass(t *testing.T) {
 		}
 	}
 	store := &reconcileStoreFake{objects: objects}
-	reconciler := NewReconciler(&reconcileRepositoryFake{}, store, time.Hour, &reconcileRecorderFake{})
+	reconciler := NewReconciler(&reconcileRepositoryFake{}, store, time.Hour, &reconcileRecorderFake{}, ReconcilerOptions{
+		BatchSize:  100,
+		MaxObjects: maxObjects,
+	})
 
 	result, err := reconciler.RunPass(context.Background(), "")
 	if err != nil {
 		t.Fatalf("RunPass(): %v", err)
 	}
-	if result.Scanned != maximumReconcileObjects || len(store.deleted) != maximumReconcileObjects {
+	if result.Scanned != maxObjects || len(store.deleted) != maxObjects {
 		t.Fatalf("scanned=%d deleted=%d", result.Scanned, len(store.deleted))
 	}
 	if result.NextCursor == "" {
 		t.Fatal("expected continuation cursor")
+	}
+}
+
+func TestReconcilerUsesConfiguredBounds(t *testing.T) {
+	now := time.Date(2026, time.July, 28, 12, 0, 0, 0, time.UTC)
+	objects := []StoredObject{
+		{Reference: "originals/0000000000000000000000.pdf", LastModified: now.Add(-2 * time.Hour)},
+		{Reference: "originals/0000000000000000000001.pdf", LastModified: now.Add(-2 * time.Hour)},
+		{Reference: "originals/0000000000000000000002.pdf", LastModified: now.Add(-2 * time.Hour)},
+		{Reference: "originals/0000000000000000000003.pdf", LastModified: now.Add(-2 * time.Hour)},
+	}
+	store := &reconcileStoreFake{objects: objects}
+	reconciler := NewReconciler(&reconcileRepositoryFake{}, store, time.Hour, &reconcileRecorderFake{}, ReconcilerOptions{
+		BatchSize:  2,
+		MaxObjects: 3,
+	})
+	reconciler.now = func() time.Time { return now }
+
+	result, err := reconciler.RunPass(context.Background(), "")
+	if err != nil {
+		t.Fatalf("RunPass(): %v", err)
+	}
+	if result.Scanned != 3 {
+		t.Fatalf("scanned = %d, want 3", result.Scanned)
+	}
+	if len(store.deleted) != 3 {
+		t.Fatalf("deleted = %d, want 3", len(store.deleted))
+	}
+	if result.NextCursor != objects[2].Reference {
+		t.Fatalf("next cursor = %q, want %q", result.NextCursor, objects[2].Reference)
 	}
 }
 

@@ -252,6 +252,8 @@ func TestLoadAppliesGRPCAndProcessingPolicyDefaults(t *testing.T) {
 	}
 	if cfg.GRPCReadinessProbeTimeout != 2*time.Second || cfg.GRPCUploadTimeout != 2*time.Minute ||
 		cfg.GRPCLifecycleTimeout != 10*time.Second || cfg.GRPCListTimeout != 5*time.Second ||
+		cfg.ListPageDefaultSize != 25 || cfg.ListPageMaxSize != 100 || cfg.ListPageTokenMaxSize != 512 ||
+		cfg.ReconcileBatchSize != 100 || cfg.ReconcileMaxObjects != 1000 ||
 		cfg.ProcessingReconnectInitialBackoff != time.Second || cfg.ProcessingReconnectMaxBackoff != 30*time.Second ||
 		cfg.ProcessingDialTimeout != 5*time.Second || cfg.ProcessingHeartbeatTimeout != 10*time.Second ||
 		cfg.ProcessingHandleTimeout != 10*time.Second || cfg.ProcessingRetryLimit != 5 ||
@@ -266,6 +268,11 @@ func TestLoadParsesGRPCAndProcessingPolicy(t *testing.T) {
 	t.Setenv("CATALOG_GRPC_UPLOAD_TIMEOUT", "3m")
 	t.Setenv("CATALOG_GRPC_LIFECYCLE_TIMEOUT", "12s")
 	t.Setenv("CATALOG_GRPC_LIST_TIMEOUT", "6s")
+	t.Setenv("CATALOG_LIST_PAGE_DEFAULT_SIZE", "30")
+	t.Setenv("CATALOG_LIST_PAGE_MAX_SIZE", "120")
+	t.Setenv("CATALOG_LIST_PAGE_TOKEN_MAX_SIZE", "768")
+	t.Setenv("CATALOG_RECONCILE_BATCH_SIZE", "150")
+	t.Setenv("CATALOG_RECONCILE_MAX_OBJECTS", "1200")
 	t.Setenv("CATALOG_PROCESSING_RECONNECT_INITIAL_BACKOFF", "2s")
 	t.Setenv("CATALOG_PROCESSING_RECONNECT_MAX_BACKOFF", "40s")
 	t.Setenv("CATALOG_PROCESSING_DIAL_TIMEOUT", "6s")
@@ -281,6 +288,8 @@ func TestLoadParsesGRPCAndProcessingPolicy(t *testing.T) {
 	}
 	if cfg.GRPCReadinessProbeTimeout != 3*time.Second || cfg.GRPCUploadTimeout != 3*time.Minute ||
 		cfg.GRPCLifecycleTimeout != 12*time.Second || cfg.GRPCListTimeout != 6*time.Second ||
+		cfg.ListPageDefaultSize != 30 || cfg.ListPageMaxSize != 120 || cfg.ListPageTokenMaxSize != 768 ||
+		cfg.ReconcileBatchSize != 150 || cfg.ReconcileMaxObjects != 1200 ||
 		cfg.ProcessingReconnectInitialBackoff != 2*time.Second || cfg.ProcessingReconnectMaxBackoff != 40*time.Second ||
 		cfg.ProcessingDialTimeout != 6*time.Second || cfg.ProcessingHeartbeatTimeout != 12*time.Second ||
 		cfg.ProcessingHandleTimeout != 11*time.Second || cfg.ProcessingRetryLimit != 6 ||

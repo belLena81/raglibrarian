@@ -750,3 +750,39 @@ func TestListBooksRejectsMalformedCursorAsPagination(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestListBooksUsesConfiguredDefaultAndPaginationLimits(t *testing.T) {
+	repository := NewMemoryRepository()
+	service := NewServiceWithOptions(repository, NewMemoryObjectStore(), ServiceOptions{
+		MaxBytes:             1024,
+		ListPageDefaultSize:  2,
+		ListPageMaxSize:      3,
+		ListPageTokenMaxSize: 8,
+	})
+	for _, id := range []string{"a", "b", "c"} {
+		if err := repository.Create(context.Background(), Book{
+			ID:        id,
+			Metadata:  BookMetadata{Title: id, Author: "author"},
+			Checksum:  [32]byte{1},
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	books, _, err := service.ListBooks(context.Background(), 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(books) != 2 {
+		t.Fatalf("default page length = %d, want 2", len(books))
+	}
+	_, _, err = service.ListBooks(context.Background(), 4, "")
+	if !errors.Is(err, ErrInvalidPagination) {
+		t.Fatalf("oversized page error = %v", err)
+	}
+	_, _, err = service.ListBooks(context.Background(), 1, strings.Repeat("a", 9))
+	if !errors.Is(err, ErrInvalidPagination) {
+		t.Fatalf("oversized token error = %v", err)
+	}
+}

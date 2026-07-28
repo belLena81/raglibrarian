@@ -8,9 +8,7 @@ import (
 )
 
 const (
-	reconcilePrefix         = "originals/"
-	reconcileBatchSize      = 100
-	maximumReconcileObjects = 1000
+	reconcilePrefix = "originals/"
 )
 
 var generatedObjectReference = regexp.MustCompile(`^originals/[A-Za-z0-9_-]{22}\.(pdf|epub)$`)
@@ -59,23 +57,60 @@ type Reconciler struct {
 	gracePeriod time.Duration
 	recorder    ReconciliationRecorder
 	now         func() time.Time
+	batchSize   int
+	maxObjects  int
 }
 
-func NewReconciler(repository ReconciliationRepository, objects ReconciliationObjectStore, gracePeriod time.Duration, recorder ReconciliationRecorder) *Reconciler {
+type ReconcilerOptions struct {
+	BatchSize  int
+	MaxObjects int
+}
+
+func NewReconciler(
+	repository ReconciliationRepository,
+	objects ReconciliationObjectStore,
+	gracePeriod time.Duration,
+	recorder ReconciliationRecorder,
+	options ...ReconcilerOptions,
+) *Reconciler {
 	if repository == nil || objects == nil || recorder == nil {
 		panic("catalog reconciler dependencies are required")
 	}
 	if gracePeriod <= 0 {
 		panic("catalog reconciler grace period is required")
 	}
-	return &Reconciler{repository: repository, objects: objects, gracePeriod: gracePeriod, recorder: recorder, now: func() time.Time { return time.Now().UTC() }}
+	configuration := ReconcilerOptions{
+		BatchSize:  100,
+		MaxObjects: 1000,
+	}
+	if len(options) > 0 {
+		configuration = options[0]
+	}
+	if configuration.BatchSize <= 0 {
+		configuration.BatchSize = 100
+	}
+	if configuration.MaxObjects <= 0 {
+		configuration.MaxObjects = 1000
+	}
+	if configuration.BatchSize > configuration.MaxObjects {
+		panic("catalog reconciler batch size must not exceed max objects")
+	}
+	return &Reconciler{
+		repository:  repository,
+		objects:     objects,
+		gracePeriod: gracePeriod,
+		recorder:    recorder,
+		now:         func() time.Time { return time.Now().UTC() },
+		batchSize:   configuration.BatchSize,
+		maxObjects:  configuration.MaxObjects,
+	}
 }
 
 func (r *Reconciler) RunPass(ctx context.Context, cursor string) (ReconciliationResult, error) {
 	result := ReconciliationResult{NextCursor: cursor}
 	var deletionErr error
 	if repository, ok := r.repository.(DeletionReconciliationRepository); ok {
-		pending, err := repository.PendingOriginalDeletions(ctx, reconcileBatchSize)
+		pending, err := repository.PendingOriginalDeletions(ctx, r.batchSize)
 		if err != nil {
 			r.recorder.ReconciliationFailed()
 			return result, errors.New("catalog deletion reconciliation lookup failed")
@@ -101,10 +136,10 @@ func (r *Reconciler) RunPass(ctx context.Context, cursor string) (Reconciliation
 			result.Deleted++
 		}
 	}
-	candidates := make([]string, 0, maximumReconcileObjects)
+	candidates := make([]string, 0, r.maxObjects)
 	cutoff := r.now().Add(-r.gracePeriod)
-	for result.Scanned < maximumReconcileObjects {
-		limit := min(reconcileBatchSize, maximumReconcileObjects-result.Scanned)
+	for result.Scanned < r.maxObjects {
+		limit := min(r.batchSize, r.maxObjects-result.Scanned)
 		objects, next, err := r.objects.ListCompleted(ctx, reconcilePrefix, result.NextCursor, limit)
 		if err != nil {
 			r.recorder.ReconciliationFailed()
@@ -123,8 +158,8 @@ func (r *Reconciler) RunPass(ctx context.Context, cursor string) (Reconciliation
 	}
 
 	orphans := make([]string, 0, len(candidates))
-	for start := 0; start < len(candidates); start += reconcileBatchSize {
-		end := min(start+reconcileBatchSize, len(candidates))
+	for start := 0; start < len(candidates); start += r.batchSize {
+		end := min(start+r.batchSize, len(candidates))
 		exists, err := r.repository.ReferencesExist(ctx, candidates[start:end])
 		if err != nil {
 			r.recorder.ReconciliationFailed()

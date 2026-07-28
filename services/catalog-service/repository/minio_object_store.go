@@ -95,7 +95,7 @@ func (s *MinIOObjectStore) Get(ctx context.Context, key string) (io.ReadCloser, 
 }
 
 func (s *MinIOObjectStore) ListCompleted(ctx context.Context, prefix, cursor string, limit int) ([]catalog.StoredObject, string, error) {
-	if prefix != "originals/" || limit < 1 || limit > 100 {
+	if prefix != "originals/" || limit < 1 {
 		return nil, "", errors.New("invalid reconciliation listing boundary")
 	}
 	listingCtx, cancel := context.WithCancel(ctx)

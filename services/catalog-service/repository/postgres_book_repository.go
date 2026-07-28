@@ -450,7 +450,7 @@ func (r *PostgresBookRepository) PendingOriginalDeletions(
 	ctx context.Context,
 	limit int,
 ) ([]catalog.PendingOriginalDeletion, error) {
-	if limit < 1 || limit > 100 {
+	if limit < 1 {
 		return nil, catalog.ErrInvalidPagination
 	}
 	rows, err := r.pool.Query(ctx, `SELECT id,lifecycle_command_id,lifecycle_version,object_reference

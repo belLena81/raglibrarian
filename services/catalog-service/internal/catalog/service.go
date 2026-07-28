@@ -113,6 +113,9 @@ type Service struct {
 	previewTimeout           time.Duration
 	persistenceLookupTimeout time.Duration
 	objectDeleteTimeout      time.Duration
+	listPageDefaultSize      int
+	listPageMaxSize          int
+	listPageTokenMaxSize     int
 }
 
 // ServiceOptions supplies bounded runtime dependencies without exposing
@@ -127,6 +130,9 @@ type ServiceOptions struct {
 	PreviewTimeout           time.Duration
 	PersistenceLookupTimeout time.Duration
 	ObjectDeleteTimeout      time.Duration
+	ListPageDefaultSize      int
+	ListPageMaxSize          int
+	ListPageTokenMaxSize     int
 	Clock                    func() time.Time
 	NewID                    func() (string, error)
 	PreviewBook              func(context.Context, Book, OriginalObjectStore) (string, error)
@@ -145,6 +151,18 @@ func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStor
 	}
 	if options.PreviewConcurrency <= 0 {
 		options.PreviewConcurrency = 2
+	}
+	if options.ListPageDefaultSize <= 0 {
+		options.ListPageDefaultSize = 25
+	}
+	if options.ListPageMaxSize <= 0 {
+		options.ListPageMaxSize = 100
+	}
+	if options.ListPageDefaultSize > options.ListPageMaxSize {
+		panic("catalog service: list page default size must not exceed max size")
+	}
+	if options.ListPageTokenMaxSize <= 0 {
+		options.ListPageTokenMaxSize = 512
 	}
 	if options.Clock == nil {
 		options.Clock = func() time.Time { return time.Now().UTC() }
@@ -175,6 +193,9 @@ func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStor
 		previewTimeout:           options.PreviewTimeout,
 		persistenceLookupTimeout: options.PersistenceLookupTimeout,
 		objectDeleteTimeout:      options.ObjectDeleteTimeout,
+		listPageDefaultSize:      options.ListPageDefaultSize,
+		listPageMaxSize:          options.ListPageMaxSize,
+		listPageTokenMaxSize:     options.ListPageTokenMaxSize,
 	}
 }
 
@@ -390,16 +411,16 @@ func (s *Service) deleteObject(reference string) {
 
 func (s *Service) ListBooks(ctx context.Context, size int, token string) ([]Book, string, error) {
 	if size == 0 {
-		size = 25
+		size = s.listPageDefaultSize
 	}
-	if size < 1 || size > 100 || (token != "" && !validCursor(token)) {
+	if size < 1 || size > s.listPageMaxSize || (token != "" && !validCursor(token, s.listPageTokenMaxSize)) {
 		return nil, "", ErrInvalidPagination
 	}
 	return s.repository.List(ctx, size, token)
 }
 
-func validCursor(token string) bool {
-	if len(token) > 512 {
+func validCursor(token string, maximumTokenBytes int) bool {
+	if len(token) > maximumTokenBytes {
 		return false
 	}
 	_, err := decodeCursor(token)

@@ -104,6 +104,9 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		PreviewTimeout:           cfg.PreviewTimeout,
 		PersistenceLookupTimeout: cfg.PersistenceLookupTimeout,
 		ObjectDeleteTimeout:      cfg.ObjectDeleteTimeout,
+		ListPageDefaultSize:      cfg.ListPageDefaultSize,
+		ListPageMaxSize:          cfg.ListPageMaxSize,
+		ListPageTokenMaxSize:     cfg.ListPageTokenMaxSize,
 	})
 	catalogv1.RegisterCatalogServiceServer(server, cataloggrpc.NewServer(service, diagnostics, cataloggrpc.Policy{
 		PreviewTimeout:        cfg.PreviewTimeout,
@@ -183,7 +186,10 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 	}()
 	go func() {
 		defer workers.Done()
-		reconciler := catalog.NewReconciler(bookRepository, objects, cfg.OrphanGracePeriod, recorder)
+		reconciler := catalog.NewReconciler(bookRepository, objects, cfg.OrphanGracePeriod, recorder, catalog.ReconcilerOptions{
+			BatchSize:  cfg.ReconcileBatchSize,
+			MaxObjects: cfg.ReconcileMaxObjects,
+		})
 		catalog.RunReconciliation(workerCtx, reconciler, cfg.ReconcileInterval)
 	}()
 	go func() {
