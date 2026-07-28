@@ -197,30 +197,44 @@ func filterSearchByMinimumEvidenceScore(search domain.SearchResult, minimumEvide
 }
 
 func selectEvidence(search domain.SearchResult, limits Limits) []domain.ContextEvidence {
-	selected := make([]domain.ContextEvidence, 0, 1)
+	selected := make([]domain.ContextEvidence, 0, limits.MaximumEvidence)
 	seen := make(map[string]struct{})
+	seenPassages := make(map[string]struct{})
 	total := 0
 	add := func(value domain.Evidence) bool {
-		if len(selected) >= 1 || value.EvidenceID == "" || !utf8.ValidString(value.Passage) || len(value.Passage) == 0 || len(value.Passage) > limits.MaximumEvidenceBytes {
+		if len(selected) >= limits.MaximumEvidence || value.EvidenceID == "" || !utf8.ValidString(value.Passage) || len(value.Passage) == 0 || len(value.Passage) > limits.MaximumEvidenceBytes {
+			return false
+		}
+		normalizedPassage := strings.Join(strings.Fields(value.Passage), " ")
+		if normalizedPassage == "" {
 			return false
 		}
 		if _, found := seen[value.EvidenceID]; found || total+len(value.Passage) > limits.MaximumContextBytes {
 			return false
 		}
+		if _, found := seenPassages[normalizedPassage]; found {
+			return false
+		}
 		seen[value.EvidenceID] = struct{}{}
+		seenPassages[normalizedPassage] = struct{}{}
 		total += len(value.Passage)
 		selected = append(selected, contextEvidence(value))
 		return true
 	}
 	for _, value := range search.Results {
-		if add(value) {
-			return selected
-		}
+		add(value)
+	}
+	if len(selected) >= limits.MaximumEvidence {
+		return selected
 	}
 	for _, document := range search.Documents {
+		if len(selected) >= limits.MaximumEvidence {
+			break
+		}
 		for _, value := range document.Evidence {
-			if add(value) {
-				return selected
+			add(value)
+			if len(selected) >= limits.MaximumEvidence {
+				break
 			}
 		}
 	}

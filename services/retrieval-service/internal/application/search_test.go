@@ -266,7 +266,7 @@ func TestSearcherWithPolicyUsesConfiguredCandidatePageMultiplier(t *testing.T) {
 	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "relevant-1" {
 		t.Fatalf("unexpected result = %#v", result.Evidence)
 	}
-	if len(store.requests) != 2 || store.requests[0].limit != 3 || store.requests[0].offset != 0 {
+	if len(store.requests) != 3 || store.requests[0].limit != 1 || store.requests[0].offset != 0 || store.requests[1].limit != 3 || store.requests[1].offset != 0 || store.requests[2].limit != 3 || store.requests[2].offset != 3 {
 		t.Fatalf("unexpected paging requests: %#v", store.requests)
 	}
 }
@@ -300,8 +300,17 @@ func TestSearcherExcludesIrrelevantProviderAssessmentsAndBackfills(t *testing.T)
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
-	if got := []string{result.Evidence[0].EvidenceID, result.Evidence[1].EvidenceID, result.Evidence[2].EvidenceID}; got[0] != "evidence-b" || got[1] != "evidence-d" || got[2] != "evidence-e" {
-		t.Fatalf("accepted evidence = %#v", got)
+	if len(result.Evidence) != 3 {
+		t.Fatalf("accepted evidence count = %d, want 3", len(result.Evidence))
+	}
+	got := map[string]struct{}{}
+	for _, value := range result.Evidence {
+		got[value.EvidenceID] = struct{}{}
+	}
+	for _, expected := range []string{"evidence-b", "evidence-d", "evidence-e"} {
+		if _, found := got[expected]; !found {
+			t.Fatalf("accepted evidence missing %q: %#v", expected, result.Evidence)
+		}
 	}
 	if len(result.Evidence) != 3 || len(result.Documents) != 3 {
 		t.Fatalf("irrelevant evidence should be excluded from results and document groups: %#v", result)
@@ -341,8 +350,8 @@ func TestSearcherBackfillsAfterProviderExclusions(t *testing.T) {
 	if len(result.Evidence) != 1 || result.Evidence[0].EvidenceID != "relevant-1" {
 		t.Fatalf("unexpected backfilled evidence: %#v", result.Evidence)
 	}
-	if store.calls != 2 {
-		t.Fatalf("evidence pages = %d, want 2", store.calls)
+	if store.calls != 2 || store.documentCalls != 1 {
+		t.Fatalf("evidence/doc pages = %d/%d, want 2/1", store.calls, store.documentCalls)
 	}
 }
 
@@ -458,10 +467,16 @@ func TestSearcherSortsEvidenceDocumentsAndSupportingPassagesByScore(t *testing.T
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
-	if got := []string{result.Evidence[0].EvidenceID, result.Evidence[1].EvidenceID, result.Evidence[2].EvidenceID}; got[0] != "evidence-high" || got[1] != "evidence-mid" || got[2] != "evidence-low" {
+	if len(result.Evidence) < 3 {
+		t.Fatalf("evidence ordering = %#v", result.Evidence)
+	}
+	if got := []string{result.Evidence[0].EvidenceID, result.Evidence[1].EvidenceID, result.Evidence[2].EvidenceID}; got[0] != "support-high" || got[1] != "evidence-high" || got[2] != "support-mid" {
 		t.Fatalf("evidence ordering = %#v", got)
 	}
-	if got := []string{result.Documents[0].DocumentID, result.Documents[1].DocumentID, result.Documents[2].DocumentID}; got[0] != "book-2:job-2" || got[1] != "book-3:job-3" || got[2] != "book-1:job-1" {
+	if len(result.Documents) != 2 {
+		t.Fatalf("document ordering = %#v", result.Documents)
+	}
+	if got := []string{result.Documents[0].DocumentID, result.Documents[1].DocumentID}; got[0] != "book-2:job-2" || got[1] != "book-3:job-3" {
 		t.Fatalf("document ordering = %#v", got)
 	}
 }
@@ -529,7 +544,7 @@ func TestSearcherBackfillsAfterVisibilityFiltering(t *testing.T) {
 	if store.calls != 2 || store.documentCalls != 1 {
 		t.Fatalf("search pages evidence/documents = %d/%d, want 2/1", store.calls, store.documentCalls)
 	}
-	if len(store.requests) != 3 || store.requests[0].limit != 2 || store.requests[0].offset != 0 || store.requests[1].limit != 2 || store.requests[1].offset != 2 || store.requests[2].limit != 1 || store.requests[2].offset != 0 {
+	if len(store.requests) != 3 || store.requests[0].limit != 1 || store.requests[0].offset != 0 || store.requests[1].limit != 2 || store.requests[1].offset != 0 || store.requests[2].limit != 2 || store.requests[2].offset != 2 {
 		t.Fatalf("unexpected paging requests: %#v", store.requests)
 	}
 }

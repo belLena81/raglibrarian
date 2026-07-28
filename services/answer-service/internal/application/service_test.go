@@ -44,7 +44,7 @@ func (f *fakeProvider) Generate(ctx context.Context, input GeneratorRequest) ([]
 	return f.segments, f.err
 }
 
-func TestAnswerSelectsOnlyTopPrimaryEvidenceForSynthesis(t *testing.T) {
+func TestAnswerSelectsBoundedPrimaryEvidenceForSynthesis(t *testing.T) {
 	limits := testLimits()
 	limits.MaximumEvidence = 2
 	limits.MaximumEvidenceBytes = 8
@@ -61,8 +61,8 @@ func TestAnswerSelectsOnlyTopPrimaryEvidenceForSynthesis(t *testing.T) {
 	}
 	service := newTestService(t, &fakeRetriever{result: search}, provider, limits)
 	result, err := service.Answer(context.Background(), validRequest())
-	if err != nil || result.Answer == nil || len(provider.input.Evidence) != 1 || provider.input.Evidence[0].EvidenceID != "e-1" ||
-		provider.input.Evidence[0].Title != "Book" || provider.input.Evidence[0].PageStart != 10 {
+	if err != nil || result.Answer == nil || len(provider.input.Evidence) != 2 || provider.input.Evidence[0].EvidenceID != "e-1" ||
+		provider.input.Evidence[0].Title != "Book" || provider.input.Evidence[0].PageStart != 10 || provider.input.Evidence[1].EvidenceID != "e-2" {
 		t.Fatalf("Answer() = %#v, %v; context=%#v", result, err, provider.input.Evidence)
 	}
 	if result.Answer.Segments[0].Text != "This is described in Book by Author, pages 10-12: answer" {

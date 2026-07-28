@@ -64,11 +64,13 @@ type IndexVisibility interface {
 }
 
 type Searcher struct {
-	embedder         QueryEmbedder
-	store            EvidenceStore
-	visibility       IndexVisibility
-	evidenceAssessor EvidenceAssessor
-	policy           SearchPolicy
+	embedder          QueryEmbedder
+	evidenceAssessor  EvidenceAssessor
+	policy            SearchPolicy
+	analyzer          QueryAnalyzer
+	chunkRetriever    ChunkRetriever
+	documentRetriever DocumentRetriever
+	fusion            CandidateFusion
 }
 
 type SummaryRequest struct {
@@ -100,11 +102,13 @@ func NewSearcherWithPolicy(embedder QueryEmbedder, store EvidenceStore, visibili
 		return nil, errors.New("invalid searcher configuration")
 	}
 	return &Searcher{
-		embedder:         embedder,
-		store:            store,
-		visibility:       visibility,
-		evidenceAssessor: assessor,
-		policy:           policy,
+		embedder:          embedder,
+		evidenceAssessor:  assessor,
+		policy:            policy,
+		analyzer:          heuristicQueryAnalyzer{policy: policy},
+		chunkRetriever:    storeChunkRetriever{store: store, visibility: visibility, policy: policy},
+		documentRetriever: storeDocumentRetriever{store: store, visibility: visibility, policy: policy},
+		fusion:            reciprocalRankFusion{},
 	}, nil
 }
 
@@ -132,77 +136,35 @@ func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.
 	if len(vector) != domain.EmbeddingDimensions {
 		return SearchResult{}, errors.New("invalid embedding dimensions")
 	}
-	results, err := s.searchVisibleEvidence(ctx, query, vector, assessmentCache)
-	if err != nil {
-		return SearchResult{}, err
+	plan := s.analyzer.Analyze(query)
+	var (
+		chunkCandidates    []Evidence
+		documentCandidates []DocumentResult
+		chunkErr           error
+		documentErr        error
+	)
+	var work sync.WaitGroup
+	work.Add(2)
+	go func() {
+		defer work.Done()
+		chunkCandidates, chunkErr = s.chunkRetriever.Retrieve(ctx, query, vector, plan)
+	}()
+	go func() {
+		defer work.Done()
+		documentCandidates, documentErr = s.documentRetriever.Retrieve(ctx, query, vector, plan)
+	}()
+	work.Wait()
+	if chunkErr != nil {
+		return SearchResult{}, chunkErr
 	}
+	if documentErr != nil {
+		return SearchResult{}, documentErr
+	}
+	results := s.searchAcceptedEvidence(ctx, query, chunkCandidates, documentCandidates, assessmentCache)
 	documents := documentsFromEvidence(results)
-	documents = s.attachDocumentChunkCounts(ctx, query, vector, documents)
+	documents = mergeDocumentMetadata(documents, documentCandidates)
+	documents = trimDocuments(documents, query.Limit())
 	return SearchResult{Evidence: results, Documents: documents}, nil
-}
-
-func (s *Searcher) attachDocumentChunkCounts(ctx context.Context, query domain.SearchQuery, vector []float32, documents []DocumentResult) []DocumentResult {
-	if len(documents) == 0 {
-		return documents
-	}
-	documentMetadata, err := s.store.SearchDocuments(ctx, query, vector, len(documents), 0)
-	if err != nil || len(documentMetadata.Documents) == 0 {
-		return documents
-	}
-	chunkCounts := make(map[string]uint32, len(documentMetadata.Documents))
-	for _, document := range documentMetadata.Documents {
-		chunkCounts[document.DocumentID] = document.ChunkCount
-	}
-	for index := range documents {
-		documentID := documents[index].DocumentID
-		if chunkCount, found := chunkCounts[documentID]; found {
-			documents[index].ChunkCount = chunkCount
-		}
-	}
-	return documents
-}
-
-func (s *Searcher) searchVisibleEvidence(ctx context.Context, query domain.SearchQuery, vector []float32, assessmentCache *searchAssessmentCache) ([]Evidence, error) {
-	results := make([]Evidence, 0, query.Limit())
-	seen := make(map[string]struct{})
-	maximumSearchCandidates := searchCandidateBudget(s.policy.RequestPolicy.MaximumResultLimit, s.policy.CandidatePageMultiplier)
-	for offset, pageLimit := 0, searchPageLimit(query.Limit(), s.policy.CandidatePageMultiplier); len(results) < query.Limit() && offset < maximumSearchCandidates; offset += pageLimit {
-		candidateLimit := searchCandidateLimit(pageLimit, offset, maximumSearchCandidates)
-		candidates, err := s.store.Search(ctx, query, vector, candidateLimit, offset)
-		if err != nil {
-			return nil, errors.New("search evidence")
-		}
-		candidateCount := len(candidates)
-		candidates = s.filterVisibleEvidence(candidates)
-		visible, err := s.visibility.FilterIndexed(ctx, candidates)
-		if err != nil {
-			return nil, errors.New("validate index visibility")
-		}
-		for _, value := range visible {
-			if len(results) >= query.Limit() {
-				break
-			}
-			if value.EvidenceID == "" {
-				continue
-			}
-			if _, found := seen[value.EvidenceID]; found {
-				continue
-			}
-			assessment, ok := s.assessEvidence(ctx, query.Question(), value, assessmentCache)
-			if !ok || !assessment.Relevant {
-				continue
-			}
-			value.Summary = assessment.Summary
-			seen[value.EvidenceID] = struct{}{}
-			results = append(results, value)
-		}
-		if candidateCount < candidateLimit {
-			break
-		}
-	}
-	sortEvidenceByScore(results)
-	results = trimEvidence(results, query.Limit())
-	return results, nil
 }
 
 func searchPageLimit(limit, candidatePageMultiplier int) int {
@@ -215,7 +177,7 @@ func searchPageLimit(limit, candidatePageMultiplier int) int {
 }
 
 func searchCandidateBudget(maximumResultLimit, candidatePageMultiplier int) int {
-	return maximumResultLimit * candidatePageMultiplier
+	return maximumResultLimit * candidatePageMultiplier * candidatePageMultiplier
 }
 
 func searchCandidateLimit(pageLimit, offset, maximumSearchCandidates int) int {
@@ -230,17 +192,6 @@ func trimEvidence(values []Evidence, limit int) []Evidence {
 		return values
 	}
 	return values[:limit]
-}
-
-func (s *Searcher) filterVisibleEvidence(values []Evidence) []Evidence {
-	results := make([]Evidence, 0, len(values))
-	for _, value := range values {
-		if value.Score < s.policy.MinimumVisibleScore {
-			continue
-		}
-		results = append(results, value)
-	}
-	return results
 }
 
 func sortEvidenceByScore(values []Evidence) {
@@ -274,6 +225,32 @@ func (s *Searcher) assessEvidence(ctx context.Context, question string, value Ev
 		return localAssessment(value.Passage, s.policy.MaximumAssessmentInputRunes)
 	}
 	return assessmentCache.assess(ctx, s.evidenceAssessor, SummaryRequest{Question: question, Passage: value.Passage})
+}
+
+func (s *Searcher) searchAcceptedEvidence(ctx context.Context, query domain.SearchQuery, chunkCandidates []Evidence, documentCandidates []DocumentResult, assessmentCache *searchAssessmentCache) []Evidence {
+	candidates := fusedEvidenceCandidates(s.fusion, query, chunkCandidates, documentCandidates)
+	results := make([]Evidence, 0, query.Limit())
+	seen := make(map[string]struct{})
+	for _, value := range candidates {
+		if len(results) >= query.Limit() {
+			break
+		}
+		if value.EvidenceID == "" {
+			continue
+		}
+		if _, found := seen[value.EvidenceID]; found {
+			continue
+		}
+		assessment, ok := s.assessEvidence(ctx, query.Question(), value, assessmentCache)
+		if !ok || !assessment.Relevant {
+			continue
+		}
+		value.Summary = assessment.Summary
+		seen[value.EvidenceID] = struct{}{}
+		results = append(results, value)
+	}
+	sortEvidenceByScore(results)
+	return trimEvidence(results, query.Limit())
 }
 
 func normalizeSummaryInput(value string, maximumRunes int) string {
