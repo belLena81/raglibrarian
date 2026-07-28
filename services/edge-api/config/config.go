@@ -16,9 +16,7 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/process"
-	"github.com/belLena81/raglibrarian/services/edge-api/answerclient"
-	"github.com/belLena81/raglibrarian/services/edge-api/catalogclient"
-	"github.com/belLena81/raglibrarian/services/edge-api/retrievalclient"
+	"github.com/belLena81/raglibrarian/services/edge-api/internal/rpcpolicy"
 )
 
 var (
@@ -360,15 +358,15 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	answerDeadline, err := boundedDuration("EDGE_ANSWER_DEADLINE", answerclient.MaxAnswerDeadline, answerclient.MaxAnswerDeadline)
+	answerDeadline, err := boundedDuration("EDGE_ANSWER_DEADLINE", rpcpolicy.MaximumAnswerDeadline, rpcpolicy.MaximumAnswerDeadline)
 	if err != nil {
 		return Config{}, err
 	}
-	retrievalSearchDeadline, err := boundedDuration("EDGE_RETRIEVAL_SEARCH_DEADLINE", 2*time.Minute, retrievalclient.MaxSearchDeadline)
+	retrievalSearchDeadline, err := boundedDuration("EDGE_RETRIEVAL_SEARCH_DEADLINE", 2*time.Minute, rpcpolicy.MaximumRetrievalSearchDeadline)
 	if err != nil {
 		return Config{}, err
 	}
-	catalogPreviewDeadline, err := boundedDuration("EDGE_CATALOG_PREVIEW_DEADLINE", 6*time.Second, catalogclient.MaxPreviewDeadline)
+	catalogPreviewDeadline, err := boundedDuration("EDGE_CATALOG_PREVIEW_DEADLINE", 6*time.Second, rpcpolicy.MaximumCatalogPreviewDeadline)
 	if err != nil {
 		return Config{}, err
 	}

@@ -13,6 +13,7 @@ import (
 
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/edge-api/handler"
+	"github.com/belLena81/raglibrarian/services/edge-api/internal/rpcpolicy"
 	"github.com/belLena81/raglibrarian/services/edge-api/internal/searchcontract"
 )
 
@@ -20,9 +21,6 @@ var (
 	// ErrUnavailable is the sanitized Retrieval transport failure.
 	ErrUnavailable = errors.New("retrieval unavailable")
 )
-
-// MaxSearchDeadline bounds Edge's gRPC retrieval request budget.
-const MaxSearchDeadline = 5 * time.Minute
 
 // Client translates Edge search requests to the versioned Retrieval contract.
 type Client struct {
@@ -44,7 +42,7 @@ func New(service retrievalv1.RetrievalServiceClient, policy Policy) *Client {
 	if policy.ReadinessTimeout <= 0 {
 		panic("retrievalclient: readiness timeout must be positive")
 	}
-	if policy.SearchDeadline <= 0 || policy.SearchDeadline > MaxSearchDeadline {
+	if policy.SearchDeadline <= 0 || policy.SearchDeadline > rpcpolicy.MaximumRetrievalSearchDeadline {
 		panic("retrievalclient: deadline must be between zero and 5 minutes")
 	}
 	return &Client{service: service, policy: policy}
