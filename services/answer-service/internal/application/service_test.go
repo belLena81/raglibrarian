@@ -70,13 +70,17 @@ func TestAnswerSelectsOnlyTopPrimaryEvidenceForSynthesis(t *testing.T) {
 	}
 }
 
-type fakeObserver struct{}
+type fakeObserver struct {
+	lastFailureDetail string
+}
 
-func (fakeObserver) Observe(Outcome, time.Duration)                         {}
-func (fakeObserver) Failure(Outcome, string, string, string, time.Duration) {}
-func (fakeObserver) ProviderStarted()                                       {}
-func (fakeObserver) ProviderResponse(int, int)                              {}
-func (fakeObserver) ProviderFinished()                                      {}
+func (o *fakeObserver) Observe(Outcome, time.Duration) {}
+func (o *fakeObserver) Failure(_ Outcome, _ string, _ string, detail string, _ time.Duration) {
+	o.lastFailureDetail = detail
+}
+func (o *fakeObserver) ProviderStarted()          {}
+func (o *fakeObserver) ProviderResponse(int, int) {}
+func (o *fakeObserver) ProviderFinished()         {}
 
 func TestAnswerReturnsValidatedGroundedSegments(t *testing.T) {
 	retriever := &fakeRetriever{result: searchResult("evidence-1")}
@@ -215,9 +219,28 @@ func TestAnswerRejectsOversizedOrMixedValidityOutput(t *testing.T) {
 	}
 }
 
+func TestAnswerTruncatesFailureDetailUsingConfiguredLimit(t *testing.T) {
+	limits := testLimits()
+	limits.MaximumFailureDetailRunes = 12
+	observer := &fakeObserver{}
+	service, err := NewService(&fakeRetriever{result: searchResult("evidence-1")}, &fakeProvider{err: errors.New(strings.Repeat(" detail ", 10))}, observer, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, callErr := service.Answer(context.Background(), validRequest())
+
+	if callErr != nil || result.Answer != nil {
+		t.Fatalf("Answer() = %#v, %v", result, callErr)
+	}
+	if len([]rune(observer.lastFailureDetail)) != 12 {
+		t.Fatalf("failure detail length = %d, want 12; detail=%q", len([]rune(observer.lastFailureDetail)), observer.lastFailureDetail)
+	}
+}
+
 func newTestService(t *testing.T, retriever Retriever, provider LLMProvider, limits Limits) *Service {
 	t.Helper()
-	service, err := NewService(retriever, provider, fakeObserver{}, limits)
+	service, err := NewService(retriever, provider, &fakeObserver{}, limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,18 +249,19 @@ func newTestService(t *testing.T, retriever Retriever, provider LLMProvider, lim
 
 func testLimits() Limits {
 	return Limits{
-		MaximumEvidence:      8,
-		MaximumContextBytes:  32 << 10,
-		MaximumEvidenceBytes: 8 << 10,
-		MaximumSegments:      8,
-		MaximumAnswerBytes:   8 << 10,
-		MaximumSummaryRunes:  512,
-		MaximumCitations:     8,
-		MaximumOutputTokens:  768,
-		ProviderConcurrency:  4,
-		RequestTimeout:       5 * time.Minute,
-		RetrievalTimeout:     4*time.Minute + 45*time.Second,
-		ProviderTimeout:      4*time.Minute + 30*time.Second,
+		MaximumEvidence:           8,
+		MaximumContextBytes:       32 << 10,
+		MaximumEvidenceBytes:      8 << 10,
+		MaximumSegments:           8,
+		MaximumAnswerBytes:        8 << 10,
+		MaximumSummaryRunes:       512,
+		MaximumFailureDetailRunes: 160,
+		MaximumCitations:          8,
+		MaximumOutputTokens:       768,
+		ProviderConcurrency:       4,
+		RequestTimeout:            5 * time.Minute,
+		RetrievalTimeout:          4*time.Minute + 45*time.Second,
+		ProviderTimeout:           4*time.Minute + 30*time.Second,
 	}
 }
 

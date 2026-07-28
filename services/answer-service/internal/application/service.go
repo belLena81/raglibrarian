@@ -58,18 +58,19 @@ type detailedReason interface {
 }
 
 type Limits struct {
-	MaximumEvidence      int
-	MaximumContextBytes  int
-	MaximumEvidenceBytes int
-	MaximumSegments      int
-	MaximumAnswerBytes   int
-	MaximumSummaryRunes  int
-	MaximumCitations     int
-	MaximumOutputTokens  int
-	ProviderConcurrency  int
-	RequestTimeout       time.Duration
-	RetrievalTimeout     time.Duration
-	ProviderTimeout      time.Duration
+	MaximumEvidence           int
+	MaximumContextBytes       int
+	MaximumEvidenceBytes      int
+	MaximumSegments           int
+	MaximumAnswerBytes        int
+	MaximumSummaryRunes       int
+	MaximumFailureDetailRunes int
+	MaximumCitations          int
+	MaximumOutputTokens       int
+	ProviderConcurrency       int
+	RequestTimeout            time.Duration
+	RetrievalTimeout          time.Duration
+	ProviderTimeout           time.Duration
 }
 
 type Service struct {
@@ -91,6 +92,7 @@ func validLimits(l Limits) bool {
 	return l.MaximumEvidence > 0 && l.MaximumEvidence <= 64 && l.MaximumContextBytes > 0 && l.MaximumContextBytes <= 1<<20 &&
 		l.MaximumEvidenceBytes > 0 && l.MaximumEvidenceBytes <= l.MaximumContextBytes && l.MaximumSegments > 0 && l.MaximumSegments <= 64 &&
 		l.MaximumAnswerBytes > 0 && l.MaximumAnswerBytes <= 1<<20 && l.MaximumSummaryRunes > 0 && l.MaximumSummaryRunes <= 1<<20 &&
+		l.MaximumFailureDetailRunes > 0 && l.MaximumFailureDetailRunes <= 1<<20 &&
 		l.MaximumCitations > 0 && l.MaximumCitations <= 64 &&
 		l.MaximumOutputTokens > 0 && l.MaximumOutputTokens <= 8192 && l.ProviderConcurrency > 0 && l.ProviderConcurrency <= 64 &&
 		l.RequestTimeout > 0 && l.RetrievalTimeout > 0 && l.ProviderTimeout > 0 && l.RetrievalTimeout < l.RequestTimeout && l.ProviderTimeout < l.RequestTimeout
@@ -113,7 +115,7 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 	search, err := s.retriever.Search(retrievalContext, request)
 	retrievalCancel()
 	if err != nil {
-		s.observer.Failure(OutcomeRetrievalFailure, "retrieval", failureReasonCode(err, "retrieval"), failureReasonDetail(err), time.Since(started))
+		s.observer.Failure(OutcomeRetrievalFailure, "retrieval", failureReasonCode(err, "retrieval"), failureReasonDetail(err, s.limits.MaximumFailureDetailRunes), time.Since(started))
 		return domain.AnswerResult{}, err
 	}
 	search = filterSearchByMinimumEvidenceScore(search, request.MinimumEvidenceScore)
@@ -139,12 +141,12 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 		MaxTokens: s.limits.MaximumOutputTokens, MaxSegment: s.limits.MaximumSegments})
 	providerCancel()
 	if err != nil {
-		s.observer.Failure(OutcomeProviderFailure, "provider", failureReasonCode(err, "provider"), failureReasonDetail(err), time.Since(started))
+		s.observer.Failure(OutcomeProviderFailure, "provider", failureReasonCode(err, "provider"), failureReasonDetail(err, s.limits.MaximumFailureDetailRunes), time.Since(started))
 		return result, nil
 	}
 	validated, err := validateSegments(segments, evidence, s.limits)
 	if err != nil {
-		s.observer.Failure(OutcomeInvalidOutput, "validation", failureReasonCode(err, "validation"), failureReasonDetail(err), time.Since(started))
+		s.observer.Failure(OutcomeInvalidOutput, "validation", failureReasonCode(err, "validation"), failureReasonDetail(err, s.limits.MaximumFailureDetailRunes), time.Since(started))
 		return result, nil
 	}
 	summary := summarizeSegments(validated, s.limits.MaximumSummaryRunes)
@@ -338,7 +340,7 @@ func failureReasonCode(err error, stage string) string {
 	}
 }
 
-func failureReasonDetail(err error) string {
+func failureReasonDetail(err error, maximumFailureDetailRunes int) string {
 	if err == nil {
 		return ""
 	}
@@ -346,17 +348,17 @@ func failureReasonDetail(err error) string {
 	if errors.As(err, &detailed) {
 		return detailed.ReasonDetail()
 	}
-	return sanitizeFailureDetail(err.Error())
+	return sanitizeFailureDetail(err.Error(), maximumFailureDetailRunes)
 }
 
-func sanitizeFailureDetail(value string) string {
+func sanitizeFailureDetail(value string, maximumFailureDetailRunes int) string {
 	value = strings.TrimSpace(strings.Join(strings.Fields(value), " "))
 	if value == "" {
 		return ""
 	}
-	if utf8.RuneCountInString(value) > 160 {
+	if utf8.RuneCountInString(value) > maximumFailureDetailRunes {
 		runes := []rune(value)
-		value = string(runes[:160])
+		value = string(runes[:maximumFailureDetailRunes])
 	}
 	return value
 }

@@ -17,6 +17,9 @@ func TestLoadUsesSecureBoundedDefaults(t *testing.T) {
 	if configuration.Limits.MaximumSummaryRunes != 512 {
 		t.Fatalf("MaximumSummaryRunes = %d, want 512", configuration.Limits.MaximumSummaryRunes)
 	}
+	if configuration.Limits.MaximumFailureDetailRunes != 160 {
+		t.Fatalf("MaximumFailureDetailRunes = %d, want 160", configuration.Limits.MaximumFailureDetailRunes)
+	}
 	if configuration.LLMMaxResponseBytes != 128<<10 || configuration.LLMMaxCandidateBytes != 32<<10 {
 		t.Fatalf("unexpected provider policy: response=%d candidate=%d", configuration.LLMMaxResponseBytes, configuration.LLMMaxCandidateBytes)
 	}
@@ -41,8 +44,8 @@ func TestLoadDefaultsFreeTierProviderRateLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if configuration.LLMRequestsPerMinute != 15 {
-		t.Fatalf("LLMRequestsPerMinute = %d, want 15", configuration.LLMRequestsPerMinute)
+	if configuration.LLMRequestsPerMinute != 0 {
+		t.Fatalf("LLMRequestsPerMinute = %d, want 0", configuration.LLMRequestsPerMinute)
 	}
 	if configuration.LogProviderErrorBody {
 		t.Fatal("LogProviderErrorBody = true, want false")
@@ -68,6 +71,7 @@ func TestLoadOverridesProviderPolicy(t *testing.T) {
 	t.Setenv("ANSWER_PROVIDER_MAX_CANDIDATE_BYTES", "16384")
 	t.Setenv("ANSWER_PROVIDER_HTTP_TIMEOUT", "15s")
 	t.Setenv("ANSWER_MAX_SUMMARY_RUNES", "256")
+	t.Setenv("ANSWER_MAX_FAILURE_DETAIL_RUNES", "80")
 	t.Setenv("ANSWER_METRICS_MAX_HEADER_BYTES", "65535")
 	configuration, err := Load()
 	if err != nil {
@@ -84,6 +88,9 @@ func TestLoadOverridesProviderPolicy(t *testing.T) {
 	}
 	if configuration.Limits.MaximumSummaryRunes != 256 {
 		t.Fatalf("MaximumSummaryRunes = %d, want 256", configuration.Limits.MaximumSummaryRunes)
+	}
+	if configuration.Limits.MaximumFailureDetailRunes != 80 {
+		t.Fatalf("MaximumFailureDetailRunes = %d, want 80", configuration.Limits.MaximumFailureDetailRunes)
 	}
 	if configuration.LLMHTTPClientTimeout != 15*time.Second {
 		t.Fatalf("LLMHTTPClientTimeout = %s, want 15s", configuration.LLMHTTPClientTimeout)

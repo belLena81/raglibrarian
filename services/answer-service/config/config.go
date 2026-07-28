@@ -22,6 +22,7 @@ const (
 	defaultMaximumSegments           = 8
 	defaultMaximumAnswerBytes        = 8 << 10
 	defaultMaximumSummaryRunes       = 512
+	defaultMaximumFailureDetailRunes = 160
 	defaultMaximumCitations          = 8
 	defaultMaximumOutputTokens       = 768
 	defaultProviderConcurrency       = 4
@@ -68,6 +69,7 @@ func Load() (Config, error) {
 	maximumSegments, segmentErr := positiveInteger("ANSWER_MAX_SEGMENTS", defaultMaximumSegments, 1, 64)
 	maximumAnswer, answerErr := positiveInteger("ANSWER_MAX_ANSWER_BYTES", defaultMaximumAnswerBytes, 1, 1<<20)
 	maximumSummaryRunes, summaryErr := positiveInteger("ANSWER_MAX_SUMMARY_RUNES", defaultMaximumSummaryRunes, 1, 1<<20)
+	maximumFailureDetailRunes, failureDetailErr := positiveInteger("ANSWER_MAX_FAILURE_DETAIL_RUNES", defaultMaximumFailureDetailRunes, 1, 1<<20)
 	maximumCitations, citationErr := positiveInteger("ANSWER_MAX_CITATIONS_PER_SEGMENT", defaultMaximumCitations, 1, 64)
 	maximumTokens, tokenErr := positiveInteger("ANSWER_MAX_OUTPUT_TOKENS", defaultMaximumOutputTokens, 1, 8192)
 	concurrency, concurrencyErr := positiveInteger("ANSWER_PROVIDER_CONCURRENCY", defaultProviderConcurrency, 1, 64)
@@ -92,8 +94,9 @@ func Load() (Config, error) {
 		TLS:                  internaltls.Files{CA: os.Getenv("ANSWER_TLS_CA_FILE"), Certificate: os.Getenv("ANSWER_TLS_CERT_FILE"), Key: os.Getenv("ANSWER_TLS_KEY_FILE")},
 		RunAs:                process.Identity{UID: uid, GID: gid}, Limits: application.Limits{MaximumEvidence: maximumEvidence, MaximumContextBytes: maximumContext,
 			MaximumEvidenceBytes: maximumItem, MaximumSegments: maximumSegments, MaximumAnswerBytes: maximumAnswer, MaximumSummaryRunes: maximumSummaryRunes,
-			MaximumCitations:    maximumCitations,
-			MaximumOutputTokens: maximumTokens, ProviderConcurrency: concurrency, RequestTimeout: requestTimeout, RetrievalTimeout: retrievalTimeout, ProviderTimeout: providerTimeout},
+			MaximumFailureDetailRunes: maximumFailureDetailRunes,
+			MaximumCitations:          maximumCitations,
+			MaximumOutputTokens:       maximumTokens, ProviderConcurrency: concurrency, RequestTimeout: requestTimeout, RetrievalTimeout: retrievalTimeout, ProviderTimeout: providerTimeout},
 		ReadinessProbeTimeout:    readinessProbeTimeout,
 		ReadinessPollInterval:    readinessPollInterval,
 		ShutdownTimeout:          shutdownTimeout,
@@ -103,7 +106,7 @@ func Load() (Config, error) {
 		MetricsWriteTimeout:      metricsWriteTimeout,
 		MetricsIdleTimeout:       metricsIdleTimeout,
 	}
-	rpm, rpmErr := providerRequestsPerMinute("ANSWER_PROVIDER_REQUESTS_PER_MINUTE", configuration.LLMModel)
+	rpm, rpmErr := providerRequestsPerMinute("ANSWER_PROVIDER_REQUESTS_PER_MINUTE")
 	if rpmErr != nil {
 		return Config{}, errors.New("invalid answer configuration")
 	}
@@ -121,7 +124,7 @@ func Load() (Config, error) {
 		configuration.RetrievalDNSName = "retrieval-service"
 	}
 	errs := []error{
-		uidErr, gidErr, evidenceErr, contextErr, itemErr, segmentErr, answerErr, summaryErr, citationErr, tokenErr, concurrencyErr,
+		uidErr, gidErr, evidenceErr, contextErr, itemErr, segmentErr, answerErr, summaryErr, failureDetailErr, citationErr, tokenErr, concurrencyErr,
 		maxResponseBytesErr, maxCandidateBytesErr,
 		requestErr, retrievalErr, providerErr, readinessProbeErr, readinessPollErr, shutdownErr, metricsReadErr,
 		providerHTTPTimeoutErr,
@@ -211,7 +214,7 @@ func validProviderURL(value string) bool {
 	return err == nil && len(value) <= 2048 && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
-func providerRequestsPerMinute(key, model string) (int, error) {
+func providerRequestsPerMinute(key string) (int, error) {
 	value := os.Getenv(key)
 	if value != "" {
 		parsed, err := strconv.Atoi(value)
@@ -219,9 +222,6 @@ func providerRequestsPerMinute(key, model string) (int, error) {
 			return 0, errors.New("invalid integer")
 		}
 		return parsed, nil
-	}
-	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(model)), ":free") {
-		return 15, nil
 	}
 	return 0, nil
 }

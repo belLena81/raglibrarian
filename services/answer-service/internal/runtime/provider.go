@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/belLena81/raglibrarian/pkg/providerhttp"
 	"github.com/belLena81/raglibrarian/services/answer-service/config"
@@ -19,7 +20,7 @@ func NewLLMProvider(configuration config.Config) (application.LLMProvider, error
 	if err != nil {
 		return nil, errors.New("configure provider transport")
 	}
-	limit, err := throttle.NewPerMinute(configuration.LLMRequestsPerMinute)
+	limit, err := throttle.NewPerMinute(providerRequestsPerMinute(configuration.LLMModel, configuration.LLMRequestsPerMinute))
 	if err != nil {
 		return nil, errors.New("configure provider throttle")
 	}
@@ -31,4 +32,14 @@ func NewLLMProvider(configuration config.Config) (application.LLMProvider, error
 		return nil, errors.New("configure openai compatible provider")
 	}
 	return providerAdapter, nil
+}
+
+func providerRequestsPerMinute(model string, configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(model)), ":free") {
+		return 15
+	}
+	return configured
 }
