@@ -63,6 +63,7 @@ type Limits struct {
 	MaximumEvidenceBytes int
 	MaximumSegments      int
 	MaximumAnswerBytes   int
+	MaximumSummaryRunes  int
 	MaximumCitations     int
 	MaximumOutputTokens  int
 	ProviderConcurrency  int
@@ -89,7 +90,8 @@ func NewService(retriever Retriever, provider LLMProvider, observer Observer, li
 func validLimits(l Limits) bool {
 	return l.MaximumEvidence > 0 && l.MaximumEvidence <= 64 && l.MaximumContextBytes > 0 && l.MaximumContextBytes <= 1<<20 &&
 		l.MaximumEvidenceBytes > 0 && l.MaximumEvidenceBytes <= l.MaximumContextBytes && l.MaximumSegments > 0 && l.MaximumSegments <= 64 &&
-		l.MaximumAnswerBytes > 0 && l.MaximumAnswerBytes <= 1<<20 && l.MaximumCitations > 0 && l.MaximumCitations <= 64 &&
+		l.MaximumAnswerBytes > 0 && l.MaximumAnswerBytes <= 1<<20 && l.MaximumSummaryRunes > 0 && l.MaximumSummaryRunes <= 1<<20 &&
+		l.MaximumCitations > 0 && l.MaximumCitations <= 64 &&
 		l.MaximumOutputTokens > 0 && l.MaximumOutputTokens <= 8192 && l.ProviderConcurrency > 0 && l.ProviderConcurrency <= 64 &&
 		l.RequestTimeout > 0 && l.RetrievalTimeout > 0 && l.ProviderTimeout > 0 && l.RetrievalTimeout < l.RequestTimeout && l.ProviderTimeout < l.RequestTimeout
 }
@@ -145,7 +147,7 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 		s.observer.Failure(OutcomeInvalidOutput, "validation", failureReasonCode(err, "validation"), failureReasonDetail(err), time.Since(started))
 		return result, nil
 	}
-	summary := summarizeSegments(validated)
+	summary := summarizeSegments(validated, s.limits.MaximumSummaryRunes)
 	result.Answer = &domain.GroundedAnswer{Segments: validated}
 	result.Summary = summary
 	s.observer.ProviderResponse(len(validated), utf8.RuneCountInString(summary))
@@ -359,7 +361,7 @@ func sanitizeFailureDetail(value string) string {
 	return value
 }
 
-func summarizeSegments(values []domain.AnswerSegment) string {
+func summarizeSegments(values []domain.AnswerSegment, maximumSummaryRunes int) string {
 	if len(values) == 0 {
 		return ""
 	}
@@ -372,7 +374,6 @@ func summarizeSegments(values []domain.AnswerSegment) string {
 	}
 	summary := strings.Join(parts, " ")
 	summary = strings.Join(strings.Fields(summary), " ")
-	const maximumSummaryRunes = 512
 	if utf8.RuneCountInString(summary) <= maximumSummaryRunes {
 		return summary
 	}

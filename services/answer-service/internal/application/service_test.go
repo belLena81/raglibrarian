@@ -231,6 +231,7 @@ func testLimits() Limits {
 		MaximumEvidenceBytes: 8 << 10,
 		MaximumSegments:      8,
 		MaximumAnswerBytes:   8 << 10,
+		MaximumSummaryRunes:  512,
 		MaximumCitations:     8,
 		MaximumOutputTokens:  768,
 		ProviderConcurrency:  4,

@@ -98,3 +98,13 @@ func TestLimiterPacesPerMinuteCalls(t *testing.T) {
 		t.Fatalf("second Wait() = %s, %v", wait, err)
 	}
 }
+
+func TestLimiterAllowsHighConfiguredThroughput(t *testing.T) {
+	limiter, err := New(2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limiter == nil {
+		t.Fatal("New(2000) = nil limiter")
+	}
+}

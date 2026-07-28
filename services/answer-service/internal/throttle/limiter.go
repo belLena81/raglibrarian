@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-const maximumRequestsPerSecond = 1000
-
 type reservation struct {
 	target time.Time
 }
@@ -30,7 +28,7 @@ func NewPerMinute(requestsPerMinute int) (*Limiter, error) {
 }
 
 func newLimiter(window time.Duration, requests int) (*Limiter, error) {
-	if requests < 0 || requests > maximumRequestsPerSecond {
+	if requests < 0 {
 		return nil, errors.New("invalid rate limit")
 	}
 	if requests == 0 {

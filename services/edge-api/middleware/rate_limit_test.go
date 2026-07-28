@@ -57,7 +57,7 @@ func TestPrincipalRateLimiterAppliesIndependentTenPerMinuteLimit(t *testing.T) {
 func TestBoundedConcurrencyRejectsWhenFull(t *testing.T) {
 	release := make(chan struct{})
 	entered := make(chan struct{})
-	limiter := qmiddleware.BoundedConcurrency(1)
+	limiter := qmiddleware.BoundedConcurrency(1, 90*time.Second)
 	next := limiter(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		close(entered)
 		<-release
@@ -85,7 +85,7 @@ func TestBoundedConcurrencyRejectsWhenFull(t *testing.T) {
 		}
 	}, time.Second, 10*time.Millisecond)
 	assert.Equal(t, http.StatusNoContent, first.Code)
-	assert.Equal(t, "60", second.Header().Get("Retry-After"))
+	assert.Equal(t, "90", second.Header().Get("Retry-After"))
 }
 
 func principalRequest(userID, role string) *http.Request {

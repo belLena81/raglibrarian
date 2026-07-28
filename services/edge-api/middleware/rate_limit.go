@@ -138,8 +138,8 @@ func (l *PrincipalRateLimiter) Allow(userID, role string) (bool, time.Duration) 
 	return true, 0
 }
 
-func BoundedConcurrency(limit int) func(http.Handler) http.Handler {
-	if limit < 1 {
+func BoundedConcurrency(limit int, retryAfter time.Duration) func(http.Handler) http.Handler {
+	if limit < 1 || retryAfter <= 0 {
 		panic("middleware: invalid concurrency limit")
 	}
 	tokens := make(chan struct{}, limit)
@@ -150,7 +150,7 @@ func BoundedConcurrency(limit int) func(http.Handler) http.Handler {
 				defer func() { <-tokens }()
 				next.ServeHTTP(w, r)
 			default:
-				writeRateLimited(w, r, time.Minute)
+				writeRateLimited(w, r, retryAfter)
 			}
 		})
 	}
@@ -159,7 +159,7 @@ func BoundedConcurrency(limit int) func(http.Handler) http.Handler {
 func remainingWindow(now, started time.Time, window time.Duration) time.Duration {
 	remaining := window - now.Sub(started)
 	if remaining <= 0 {
-		return time.Second
+		return 0
 	}
 	return remaining
 }

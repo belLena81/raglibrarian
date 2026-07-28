@@ -293,6 +293,7 @@ func testRouterConfig() edgeapi.RouterConfig {
 		QueryRateWindow:                      time.Minute,
 		QueryRateMaxKeys:                     10000,
 		QueryConcurrency:                     8,
+		QueryConcurrencyRetryAfter:           time.Minute,
 		AuthRegisterRateLimit:                20,
 		AuthRegisterRateWindow:               time.Hour,
 		AuthRegisterRateMaxKeys:              10000,

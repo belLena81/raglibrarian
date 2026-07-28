@@ -181,7 +181,8 @@ func Run(ctx context.Context, cfg config.Config, diagnostics *diagnostic.Recorde
 		Addr: cfg.Addr,
 		Handler: edgeapi.NewRouter(queryHandler, authHandler, healthHandler, setupHandler, adminHandler, verifier, identity, diagnostics, edgeapi.RouterConfig{
 			TrustedProxyCIDRs: cfg.TrustedProxyCIDRs, PublicOrigin: cfg.PublicOrigin, EnforceBrowserOrigin: cfg.EnforceBrowserOrigin,
-			QueryRateLimit: cfg.QueryRateLimit, QueryRateWindow: cfg.QueryRateWindow, QueryRateMaxKeys: cfg.QueryRateMaxKeys, QueryConcurrency: cfg.QueryConcurrency,
+			QueryRateLimit: cfg.QueryRateLimit, QueryRateWindow: cfg.QueryRateWindow, QueryRateMaxKeys: cfg.QueryRateMaxKeys,
+			QueryConcurrency: cfg.QueryConcurrency, QueryConcurrencyRetryAfter: cfg.QueryConcurrencyRetryAfter,
 			AuthRegisterRateLimit: cfg.AuthRegisterRateLimit, AuthRegisterRateWindow: cfg.AuthRegisterRateWindow, AuthRegisterRateMaxKeys: cfg.AuthRegisterRateMaxKeys,
 			AuthVerifyEmailRateLimit: cfg.AuthVerifyEmailRateLimit, AuthVerifyEmailRateWindow: cfg.AuthVerifyEmailRateWindow, AuthVerifyEmailRateMaxKeys: cfg.AuthVerifyEmailRateMaxKeys,
 			AuthLoginRateLimit: cfg.AuthLoginRateLimit, AuthLoginRateWindow: cfg.AuthLoginRateWindow, AuthLoginRateMaxKeys: cfg.AuthLoginRateMaxKeys,

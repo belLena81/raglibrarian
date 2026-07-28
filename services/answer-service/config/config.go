@@ -21,6 +21,7 @@ const (
 	defaultMaximumEvidenceBytes      = 8 << 10
 	defaultMaximumSegments           = 8
 	defaultMaximumAnswerBytes        = 8 << 10
+	defaultMaximumSummaryRunes       = 512
 	defaultMaximumCitations          = 8
 	defaultMaximumOutputTokens       = 768
 	defaultProviderConcurrency       = 4
@@ -66,6 +67,7 @@ func Load() (Config, error) {
 	maximumItem, itemErr := positiveInteger("ANSWER_MAX_EVIDENCE_BYTES", defaultMaximumEvidenceBytes, 1, 1<<20)
 	maximumSegments, segmentErr := positiveInteger("ANSWER_MAX_SEGMENTS", defaultMaximumSegments, 1, 64)
 	maximumAnswer, answerErr := positiveInteger("ANSWER_MAX_ANSWER_BYTES", defaultMaximumAnswerBytes, 1, 1<<20)
+	maximumSummaryRunes, summaryErr := positiveInteger("ANSWER_MAX_SUMMARY_RUNES", defaultMaximumSummaryRunes, 1, 1<<20)
 	maximumCitations, citationErr := positiveInteger("ANSWER_MAX_CITATIONS_PER_SEGMENT", defaultMaximumCitations, 1, 64)
 	maximumTokens, tokenErr := positiveInteger("ANSWER_MAX_OUTPUT_TOKENS", defaultMaximumOutputTokens, 1, 8192)
 	concurrency, concurrencyErr := positiveInteger("ANSWER_PROVIDER_CONCURRENCY", defaultProviderConcurrency, 1, 64)
@@ -89,7 +91,8 @@ func Load() (Config, error) {
 		LLMHTTPClientTimeout: providerHTTPTimeout,
 		TLS:                  internaltls.Files{CA: os.Getenv("ANSWER_TLS_CA_FILE"), Certificate: os.Getenv("ANSWER_TLS_CERT_FILE"), Key: os.Getenv("ANSWER_TLS_KEY_FILE")},
 		RunAs:                process.Identity{UID: uid, GID: gid}, Limits: application.Limits{MaximumEvidence: maximumEvidence, MaximumContextBytes: maximumContext,
-			MaximumEvidenceBytes: maximumItem, MaximumSegments: maximumSegments, MaximumAnswerBytes: maximumAnswer, MaximumCitations: maximumCitations,
+			MaximumEvidenceBytes: maximumItem, MaximumSegments: maximumSegments, MaximumAnswerBytes: maximumAnswer, MaximumSummaryRunes: maximumSummaryRunes,
+			MaximumCitations:    maximumCitations,
 			MaximumOutputTokens: maximumTokens, ProviderConcurrency: concurrency, RequestTimeout: requestTimeout, RetrievalTimeout: retrievalTimeout, ProviderTimeout: providerTimeout},
 		ReadinessProbeTimeout:    readinessProbeTimeout,
 		ReadinessPollInterval:    readinessPollInterval,
@@ -118,7 +121,7 @@ func Load() (Config, error) {
 		configuration.RetrievalDNSName = "retrieval-service"
 	}
 	errs := []error{
-		uidErr, gidErr, evidenceErr, contextErr, itemErr, segmentErr, answerErr, citationErr, tokenErr, concurrencyErr,
+		uidErr, gidErr, evidenceErr, contextErr, itemErr, segmentErr, answerErr, summaryErr, citationErr, tokenErr, concurrencyErr,
 		maxResponseBytesErr, maxCandidateBytesErr,
 		requestErr, retrievalErr, providerErr, readinessProbeErr, readinessPollErr, shutdownErr, metricsReadErr,
 		providerHTTPTimeoutErr,

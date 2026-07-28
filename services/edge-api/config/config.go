@@ -51,7 +51,7 @@ type Config struct {
 	QueryRateLimit, QueryRateMaxKeys, QueryConcurrency                                int
 	QueryMaxQuestionLength, QueryMaxTags, QueryMaxTagLength, QueryMaxAuthorLength     int
 	QueryDefaultLimit, QueryMaxLimit                                                  int
-	QueryRateWindow                                                                   time.Duration
+	QueryRateWindow, QueryConcurrencyRetryAfter                                       time.Duration
 	AuthRegisterRateLimit, AuthRegisterRateMaxKeys                                    int
 	AuthVerifyEmailRateLimit, AuthVerifyEmailRateMaxKeys                              int
 	AuthLoginRateLimit, AuthLoginRateMaxKeys                                          int
@@ -140,6 +140,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	queryConcurrency, err := positiveInt("EDGE_QUERY_CONCURRENCY", 8)
+	if err != nil {
+		return Config{}, err
+	}
+	queryConcurrencyRetryAfter, err := positiveDuration("EDGE_QUERY_CONCURRENCY_RETRY_AFTER", time.Minute)
 	if err != nil {
 		return Config{}, err
 	}
@@ -471,6 +475,7 @@ func Load() (Config, error) {
 		QueryRateWindow:                      queryRateWindow,
 		QueryRateMaxKeys:                     queryRateMaxKeys,
 		QueryConcurrency:                     queryConcurrency,
+		QueryConcurrencyRetryAfter:           queryConcurrencyRetryAfter,
 		QueryMaxQuestionLength:               queryMaxQuestionLength,
 		QueryMaxTags:                         queryMaxTags,
 		QueryMaxTagLength:                    queryMaxTagLength,

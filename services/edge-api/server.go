@@ -28,6 +28,7 @@ type RouterConfig struct {
 	QueryRateWindow                      time.Duration
 	QueryRateMaxKeys                     int
 	QueryConcurrency                     int
+	QueryConcurrencyRetryAfter           time.Duration
 	AuthRegisterRateLimit                int
 	AuthRegisterRateWindow               time.Duration
 	AuthRegisterRateMaxKeys              int
@@ -154,7 +155,7 @@ func NewRouter(
 	router.Group(func(router chi.Router) {
 		router.Use(middleware.Authenticator(verifier, sessions, diagnostics))
 		router.Use(middleware.FixedWindowPrincipalRateLimit(config.QueryRateLimit, config.QueryRateWindow, config.QueryRateMaxKeys))
-		router.Use(middleware.BoundedConcurrency(config.QueryConcurrency))
+		router.Use(middleware.BoundedConcurrency(config.QueryConcurrency, config.QueryConcurrencyRetryAfter))
 		router.Post("/query", query.Query)
 		router.Route("/query", func(router chi.Router) { router.Post("/", query.Query) })
 	})
@@ -190,6 +191,7 @@ func validateRouterConfig(config RouterConfig) error {
 		config.QueryRateWindow <= 0,
 		config.QueryRateMaxKeys <= 0,
 		config.QueryConcurrency <= 0,
+		config.QueryConcurrencyRetryAfter <= 0,
 		config.AuthRegisterRateLimit <= 0,
 		config.AuthRegisterRateWindow <= 0,
 		config.AuthRegisterRateMaxKeys <= 0,
