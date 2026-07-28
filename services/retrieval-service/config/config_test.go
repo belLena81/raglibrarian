@@ -768,6 +768,31 @@ func TestLoadCleanupJobPolicyRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestLoadRunAsDefaultsAndRejectsInvalidValues(t *testing.T) {
+	runAs, err := LoadRunAs()
+	if err != nil {
+		t.Fatalf("LoadRunAs() error = %v", err)
+	}
+	if runAs.UID != 65532 || runAs.GID != 65532 {
+		t.Fatalf("LoadRunAs() = %#v, want default identity", runAs)
+	}
+
+	t.Setenv("RUN_AS_UID", "123")
+	t.Setenv("RUN_AS_GID", "456")
+	runAs, err = LoadRunAs()
+	if err != nil {
+		t.Fatalf("LoadRunAs() override error = %v", err)
+	}
+	if runAs.UID != 123 || runAs.GID != 456 {
+		t.Fatalf("LoadRunAs() = %#v, want overridden identity", runAs)
+	}
+
+	t.Setenv("RUN_AS_UID", "0")
+	if _, err = LoadRunAs(); err == nil {
+		t.Fatal("LoadRunAs() accepted invalid UID")
+	}
+}
+
 func setWorkerEnvironment(t *testing.T) {
 	t.Helper()
 	directory := t.TempDir()

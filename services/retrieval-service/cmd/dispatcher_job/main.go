@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -19,8 +18,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rabbitmq/amqp091-go"
 )
-
-const defaultRunAs = 65532
 
 var (
 	dropPrivileges = process.DropPrivileges
@@ -48,7 +45,7 @@ func run(ctx context.Context) error {
 	if err = config.ValidateServerlessBrokerURI(uri); err != nil {
 		return err
 	}
-	runAs, err := parseRunAs()
+	runAs, err := config.LoadRunAs()
 	if err != nil {
 		return err
 	}
@@ -102,31 +99,6 @@ func run(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-func parseRunAs() (process.Identity, error) {
-	uid, err := parseRunAsIdentity("RUN_AS_UID")
-	if err != nil {
-		return process.Identity{}, err
-	}
-	gid, err := parseRunAsIdentity("RUN_AS_GID")
-	if err != nil {
-		return process.Identity{}, err
-	}
-	return process.Identity{UID: uid, GID: gid}, nil
-}
-
-func parseRunAsIdentity(name string) (int, error) {
-	value := os.Getenv(name)
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return defaultRunAs, nil
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < 1 {
-		return 0, errors.New("invalid process identity")
-	}
-	return parsed, nil
 }
 
 func readSecretFile(key string, maximum int64) (string, error) {

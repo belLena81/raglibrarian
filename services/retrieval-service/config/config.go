@@ -139,6 +139,15 @@ type CleanupJobPolicy struct {
 	BatchSize         int
 }
 
+func LoadRunAs() (process.Identity, error) {
+	uid, uidErr := positiveInteger(os.Getenv("RUN_AS_UID"), 65532)
+	gid, gidErr := positiveInteger(os.Getenv("RUN_AS_GID"), 65532)
+	if uidErr != nil || gidErr != nil {
+		return process.Identity{}, errors.New("invalid process identity")
+	}
+	return process.Identity{UID: uid, GID: gid}, nil
+}
+
 func Load() (Config, error) {
 	grpcAddress := os.Getenv("RETRIEVAL_GRPC_ADDR")
 	if grpcAddress == "" {
@@ -148,8 +157,7 @@ func Load() (Config, error) {
 	if collection == "" {
 		collection = DefaultQdrantCollection
 	}
-	uid, uidErr := positiveInteger(os.Getenv("RUN_AS_UID"), 65532)
-	gid, gidErr := positiveInteger(os.Getenv("RUN_AS_GID"), 65532)
+	runAs, runAsErr := LoadRunAs()
 	finalizationLease, finalizationLeaseErr := optionalDuration("RETRIEVAL_FINALIZATION_LEASE", 15*time.Minute)
 	configuration := Config{
 		GRPCAddress: grpcAddress, MetricsAddress: os.Getenv("RETRIEVAL_METRICS_ADDR"), FinalizationLease: finalizationLease,
@@ -159,7 +167,7 @@ func Load() (Config, error) {
 		SummaryLLMModel: os.Getenv("RETRIEVAL_SUMMARY_LLM_MODEL"), SummaryLLMAPIKeyFile: os.Getenv("RETRIEVAL_SUMMARY_LLM_API_KEY_FILE"),
 		SummaryLLMCAFile: os.Getenv("RETRIEVAL_SUMMARY_LLM_CA_FILE"), SummaryLLMOutputMode: strings.ToLower(strings.TrimSpace(os.Getenv("RETRIEVAL_SUMMARY_LLM_OUTPUT_MODE"))),
 		TLS:   internaltls.Files{CA: os.Getenv("RETRIEVAL_TLS_CA_FILE"), Certificate: os.Getenv("RETRIEVAL_TLS_CERT_FILE"), Key: os.Getenv("RETRIEVAL_TLS_KEY_FILE")},
-		RunAs: process.Identity{UID: uid, GID: gid},
+		RunAs: runAs,
 	}
 	searchTimeout, searchTimeoutErr := optionalDuration("RETRIEVAL_SEARCH_TIMEOUT", 2*time.Minute)
 	dependencyTimeout, dependencyTimeoutErr := optionalDuration("RETRIEVAL_DEPENDENCY_TIMEOUT", searchTimeout)
@@ -213,7 +221,7 @@ func Load() (Config, error) {
 	configuration.ReadinessShutdownTimeout = readinessShutdownTimeout
 	if configuration.GRPCAddress == "" || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
 		configuration.PostgresDSNFile == "" || configuration.QdrantAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
-		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || uidErr != nil || gidErr != nil || finalizationLeaseErr != nil ||
+		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || runAsErr != nil || finalizationLeaseErr != nil ||
 		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || searchCandidatePageMultiplierErr != nil || summaryMaxInputRunesErr != nil || summaryMaxResponseBytesErr != nil || summaryMaxSummaryBytesErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || summaryLLMOutputModeErr != nil || teiRequestsPerSecondErr != nil || teiMaxResponseBytesErr != nil || teiBatchSizeErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || qdrantMaxResponseBytesErr != nil || qdrantBatchResponseBytesErr != nil ||
 		readinessProbeTimeoutErr != nil || readinessReadHeaderTimeoutErr != nil || readinessIdleTimeoutErr != nil || readinessShutdownTimeoutErr != nil ||
 		configuration.SummaryLLMTimeout >= configuration.SearchTimeout ||
@@ -334,8 +342,7 @@ func LoadWorker() (WorkerConfig, error) {
 	if err != nil {
 		return WorkerConfig{}, err
 	}
-	uid, uidErr := positiveInteger(os.Getenv("RUN_AS_UID"), 65532)
-	gid, gidErr := positiveInteger(os.Getenv("RUN_AS_GID"), 65532)
+	runAs, runAsErr := LoadRunAs()
 	concurrency, concurrencyErr := positiveInteger(os.Getenv("RETRIEVAL_WORK_CONCURRENCY"), 1)
 	minioInsecure, insecureErr := strconv.ParseBool(os.Getenv("RETRIEVAL_MINIO_INSECURE"))
 	serverlessInvocationTimeout, timeoutErr := boundedDuration(os.Getenv("RETRIEVAL_SERVERLESS_INVOCATION_TIMEOUT"), 10*time.Second, 13*time.Minute, 3*time.Minute)
@@ -380,9 +387,9 @@ func LoadWorker() (WorkerConfig, error) {
 		CleanupTimeout: cleanupTimeout, CleanupBatchSize: cleanupBatchSize, MaxRetryAttempts: maxRetryAttempts, StaleBatchAge: staleBatchAge, FailureRecordTimeout: failureRecordTimeout, PublishTimeout: publishTimeout,
 		RabbitDialTimeout: rabbitDialTimeout, RabbitHeartbeat: rabbitHeartbeat,
 		ReadinessReadHeaderTimeout: readinessReadHeaderTimeout, ReadinessIdleTimeout: readinessIdleTimeout, ReadinessShutdownTimeout: readinessShutdownTimeout,
-		MetricsAddress: optional("RETRIEVAL_WORKER_METRICS_ADDR", os.Getenv("RETRIEVAL_METRICS_ADDR")), ServerlessInvocationTimeout: serverlessInvocationTimeout, Concurrency: concurrency, RunAs: process.Identity{UID: uid, GID: gid}}
+		MetricsAddress: optional("RETRIEVAL_WORKER_METRICS_ADDR", os.Getenv("RETRIEVAL_METRICS_ADDR")), ServerlessInvocationTimeout: serverlessInvocationTimeout, Concurrency: concurrency, RunAs: runAs}
 	configuration.TEIRequestsPerSecond = teiRequestsPerSecond
-	if uidErr != nil || gidErr != nil || concurrencyErr != nil || concurrency > 16 || insecureErr != nil || timeoutErr != nil ||
+	if runAsErr != nil || concurrencyErr != nil || concurrency > 16 || insecureErr != nil || timeoutErr != nil ||
 		dbPingTimeoutErr != nil || dependencyTimeoutErr != nil || collectionEnsureTimeoutErr != nil || finalizationLeaseErr != nil || readinessInitialDelayErr != nil || readinessMaxDelayErr != nil ||
 		readinessMaxAttemptsErr != nil || readinessProbeTimeoutErr != nil || reconnectInitialBackoffErr != nil || reconnectMaxBackoffErr != nil ||
 		dispatchIntervalErr != nil || cleanupIntervalErr != nil || cleanupTimeoutErr != nil || cleanupBatchSizeErr != nil || maxRetryAttemptsErr != nil || staleBatchAgeErr != nil || failureRecordTimeoutErr != nil || publishTimeoutErr != nil ||

@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -22,8 +21,6 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-const defaultRunAs = 65532
 
 var (
 	dropPrivileges = process.DropPrivileges
@@ -52,7 +49,7 @@ func run(ctx context.Context) error {
 	if !privateURL(qdrantURL) {
 		return errors.New("invalid private vector endpoint")
 	}
-	runAs, err := parseRunAs()
+	runAs, err := retrievalconfig.LoadRunAs()
 	if err != nil {
 		return err
 	}
@@ -142,29 +139,4 @@ func randomID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(value[:]), nil
-}
-
-func parseRunAs() (process.Identity, error) {
-	uid, err := parseRunAsIdentity("RUN_AS_UID")
-	if err != nil {
-		return process.Identity{}, err
-	}
-	gid, err := parseRunAsIdentity("RUN_AS_GID")
-	if err != nil {
-		return process.Identity{}, err
-	}
-	return process.Identity{UID: uid, GID: gid}, nil
-}
-
-func parseRunAsIdentity(name string) (int, error) {
-	value := os.Getenv(name)
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return defaultRunAs, nil
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < 1 {
-		return 0, errors.New("invalid process identity")
-	}
-	return parsed, nil
 }
