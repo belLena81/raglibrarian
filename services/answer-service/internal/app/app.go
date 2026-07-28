@@ -86,7 +86,7 @@ func New(configuration config.Config) (*App, error) {
 	})))
 	answerv1.RegisterAnswerServiceServer(grpcServer, answergrpc.NewServer(service))
 	return &App{grpcServer: grpcServer, httpServer: &http.Server{Handler: metricRecorder.Handler(), ReadTimeout: configuration.MetricsReadTimeout,
-		ReadHeaderTimeout: configuration.MetricsReadHeaderTimeout, WriteTimeout: configuration.MetricsWriteTimeout, IdleTimeout: configuration.MetricsIdleTimeout, MaxHeaderBytes: 16 << 10},
+		ReadHeaderTimeout: configuration.MetricsReadHeaderTimeout, WriteTimeout: configuration.MetricsWriteTimeout, IdleTimeout: configuration.MetricsIdleTimeout, MaxHeaderBytes: configuration.MetricsMaxHeaderBytes},
 		grpcListener: grpcListener, httpListener: httpListener, connection: connection, service: service, metrics: metricRecorder, log: log,
 		readinessProbeTimeout: configuration.ReadinessProbeTimeout, readinessPollInterval: configuration.ReadinessPollInterval, shutdownTimeout: configuration.ShutdownTimeout}, nil
 }

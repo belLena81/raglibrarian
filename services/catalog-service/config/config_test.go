@@ -118,6 +118,9 @@ func TestLoadAppliesPreviewTimeoutDefault(t *testing.T) {
 	if cfg.PreviewTimeout != 5*time.Second {
 		t.Fatalf("PreviewTimeout = %v, want %v", cfg.PreviewTimeout, 5*time.Second)
 	}
+	if cfg.MinIOCAMaxBytes != 1<<20 {
+		t.Fatalf("MinIOCAMaxBytes = %d, want %d", cfg.MinIOCAMaxBytes, 1<<20)
+	}
 	if cfg.MaxPreviewBytes != 1<<20 {
 		t.Fatalf("MaxPreviewBytes = %d, want %d", cfg.MaxPreviewBytes, 1<<20)
 	}
@@ -134,6 +137,7 @@ func TestLoadParsesPreviewTimeout(t *testing.T) {
 	t.Setenv("CATALOG_MAX_PREVIEW_BYTES", "524288")
 	t.Setenv("CATALOG_MAX_PREVIEW_PAGES", "5")
 	t.Setenv("CATALOG_MAX_PREVIEW_EPUB_ENTRIES", "3000")
+	t.Setenv("CATALOG_MINIO_CA_MAX_BYTES", "2097152")
 	t.Setenv("CATALOG_PREVIEW_TIMEOUT", "9s")
 	t.Setenv("CATALOG_PERSISTENCE_LOOKUP_TIMEOUT", "6s")
 	t.Setenv("CATALOG_OBJECT_DELETE_TIMEOUT", "7s")
@@ -145,6 +149,9 @@ func TestLoadParsesPreviewTimeout(t *testing.T) {
 	}
 	if cfg.PreviewTimeout != 9*time.Second {
 		t.Fatalf("PreviewTimeout = %v, want %v", cfg.PreviewTimeout, 9*time.Second)
+	}
+	if cfg.MinIOCAMaxBytes != 1<<21 {
+		t.Fatalf("MinIOCAMaxBytes = %d, want %d", cfg.MinIOCAMaxBytes, 1<<21)
 	}
 	if cfg.MaxPreviewBytes != 1<<19 {
 		t.Fatalf("MaxPreviewBytes = %d, want %d", cfg.MaxPreviewBytes, 1<<19)

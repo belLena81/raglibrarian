@@ -113,7 +113,7 @@ func NewCleanup(ctx context.Context, cfg config.CleanupConfig) (*CleanupRuntime,
 			pool.Close()
 			return nil, clientErr
 		}
-		artifactStore, err = storage.NewAWSArtifactStore(client, cfg.ArtifactBucket, cfg.KMSKeyARN)
+		artifactStore, err = storage.NewAWSArtifactStoreWithPolicy(client, cfg.ArtifactBucket, cfg.KMSKeyARN, cfg.ArtifactVersionCleanupPasses)
 	} else {
 		var minioClient *minio.Client
 		minioClient, err = newMinIOClient(minIOConfig{endpoint: cfg.MinIOEndpoint, accessKey: cfg.MinIOAccessKey, secretKey: cfg.MinIOSecretKey, caFile: cfg.MinIOCAFile, insecure: cfg.MinIOInsecure})
@@ -174,7 +174,7 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		if err == nil {
 			sourceStore = awsSource
 			var awsArtifact *storage.AWSArtifactStore
-			awsArtifact, err = storage.NewAWSArtifactStore(client, cfg.ArtifactBucket, cfg.KMSKeyARN)
+			awsArtifact, err = storage.NewAWSArtifactStoreWithPolicy(client, cfg.ArtifactBucket, cfg.KMSKeyARN, cfg.ArtifactVersionCleanupPasses)
 			if err == nil {
 				artifactStore = awsArtifact
 				storageProbe = func(probeCtx context.Context) bool { return storage.AllReady(probeCtx, awsSource, awsArtifact) }

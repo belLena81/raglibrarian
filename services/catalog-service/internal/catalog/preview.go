@@ -23,7 +23,7 @@ var previewTempDir = os.MkdirTemp
 var previewExecCommand = runCommand
 
 func defaultPreviewBook(ctx context.Context, book Book, objects OriginalObjectStore, maximumPreviewBytes, maximumPreviewPages, maximumPreviewEPUBEntries int) (string, error) {
-	if objects == nil || book.ObjectReference == "" {
+	if objects == nil || book.ObjectReference == "" || maximumPreviewBytes <= 0 || maximumPreviewPages <= 0 || maximumPreviewEPUBEntries <= 0 {
 		return "", errors.New("preview unavailable")
 	}
 	source, err := objects.Get(ctx, book.ObjectReference)
@@ -73,7 +73,7 @@ func defaultPreviewBook(ctx context.Context, book Book, objects OriginalObjectSt
 
 func previewPDFFragment(ctx context.Context, sourcePath, outputDir string, maximumPreviewPages int) (string, error) {
 	if maximumPreviewPages <= 0 {
-		maximumPreviewPages = defaultMaxPreviewPages
+		return "", errors.New("invalid preview configuration")
 	}
 	outputPattern := filepath.Join(outputDir, "catalog-preview-page-%03d.pdf")
 	if err := previewSandboxCommand(ctx, "/usr/bin/pdfseparate", "-f", "1", "-l", strconv.Itoa(maximumPreviewPages), sourcePath, outputPattern); err != nil {
@@ -159,11 +159,8 @@ func epubPreviewHeadInsertOffset(content string) int {
 }
 
 func extractEPUBPreviewPages(sourcePath string, maximumPreviewBytes, maximumPreviewPages, maximumPreviewEPUBEntries int) ([][]byte, error) {
-	if maximumPreviewPages <= 0 {
-		maximumPreviewPages = defaultMaxPreviewPages
-	}
-	if maximumPreviewEPUBEntries <= 0 {
-		maximumPreviewEPUBEntries = defaultMaxEPUBEntries
+	if maximumPreviewBytes <= 0 || maximumPreviewPages <= 0 || maximumPreviewEPUBEntries <= 0 {
+		return nil, errors.New("invalid preview configuration")
 	}
 	archive, err := zip.OpenReader(sourcePath)
 	if err != nil {
@@ -296,14 +293,14 @@ func readEPUBEntry(file *zip.File, maximumPreviewBytes int) ([]byte, error) {
 	if file == nil {
 		return nil, errors.New("invalid EPUB archive")
 	}
+	if maximumPreviewBytes <= 0 {
+		return nil, errors.New("invalid preview configuration")
+	}
 	reader, err := file.Open()
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = reader.Close() }()
-	if maximumPreviewBytes <= 0 {
-		maximumPreviewBytes = defaultMaxPreviewBytes
-	}
 	data, err := io.ReadAll(io.LimitReader(reader, int64(maximumPreviewBytes)))
 	if err != nil {
 		return nil, err

@@ -68,12 +68,11 @@ func (s *AWSSourceStore) Open(ctx context.Context, reference string) (io.ReadClo
 }
 
 type AWSArtifactStore struct {
-	client    s3API
-	bucket    string
-	kmsKeyARN string
+	client                      s3API
+	bucket                      string
+	kmsKeyARN                   string
+	maximumVersionCleanupPasses int
 }
-
-const maximumVersionCleanupPasses = 256
 
 func (s *AWSArtifactStore) Ready(ctx context.Context) bool {
 	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: &s.bucket})
@@ -81,10 +80,17 @@ func (s *AWSArtifactStore) Ready(ctx context.Context) bool {
 }
 
 func NewAWSArtifactStore(client s3API, bucket, kmsKeyARN string) (*AWSArtifactStore, error) {
+	return NewAWSArtifactStoreWithPolicy(client, bucket, kmsKeyARN, 256)
+}
+
+func NewAWSArtifactStoreWithPolicy(client s3API, bucket, kmsKeyARN string, maximumVersionCleanupPasses int) (*AWSArtifactStore, error) {
 	if client == nil || !validBucket(bucket) || strings.TrimSpace(kmsKeyARN) == "" {
 		return nil, errors.New("invalid AWS artifact store")
 	}
-	return &AWSArtifactStore{client: client, bucket: bucket, kmsKeyARN: kmsKeyARN}, nil
+	if maximumVersionCleanupPasses < 1 {
+		return nil, errors.New("invalid AWS artifact store")
+	}
+	return &AWSArtifactStore{client: client, bucket: bucket, kmsKeyARN: kmsKeyARN, maximumVersionCleanupPasses: maximumVersionCleanupPasses}, nil
 }
 
 func (s *AWSArtifactStore) Put(ctx context.Context, reference string, contents []byte, checksum [sha256.Size]byte) error {
@@ -134,7 +140,7 @@ func (s *AWSArtifactStore) DeletePrefix(ctx context.Context, prefix string) erro
 }
 
 func (s *AWSArtifactStore) deleteVersions(ctx context.Context, target string, exact bool) error {
-	for range maximumVersionCleanupPasses {
+	for range s.maximumVersionCleanupPasses {
 		listed, err := s.client.ListObjectVersions(ctx, &s3.ListObjectVersionsInput{
 			Bucket: &s.bucket, Prefix: &target,
 		})

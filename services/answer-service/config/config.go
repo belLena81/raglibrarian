@@ -15,6 +15,22 @@ import (
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/application"
 )
 
+const (
+	defaultMaximumEvidence           = 8
+	defaultMaximumContextBytes       = 32 << 10
+	defaultMaximumEvidenceBytes      = 8 << 10
+	defaultMaximumSegments           = 8
+	defaultMaximumAnswerBytes        = 8 << 10
+	defaultMaximumCitations          = 8
+	defaultMaximumOutputTokens       = 768
+	defaultProviderConcurrency       = 4
+	defaultRequestTimeout            = 5 * time.Minute
+	defaultRetrievalTimeout          = 4*time.Minute + 45*time.Second
+	defaultProviderTimeout           = 4*time.Minute + 30*time.Second
+	defaultProviderMaxResponseBytes  = 128 << 10
+	defaultProviderMaxCandidateBytes = 32 << 10
+)
+
 type Config struct {
 	GRPCAddress              string
 	MetricsAddress           string
@@ -34,6 +50,7 @@ type Config struct {
 	ReadinessProbeTimeout    time.Duration
 	ReadinessPollInterval    time.Duration
 	ShutdownTimeout          time.Duration
+	MetricsMaxHeaderBytes    int
 	MetricsReadTimeout       time.Duration
 	MetricsReadHeaderTimeout time.Duration
 	MetricsWriteTimeout      time.Duration
@@ -41,25 +58,25 @@ type Config struct {
 }
 
 func Load() (Config, error) {
-	defaults := application.DefaultLimits()
 	uid, uidErr := positiveInteger("RUN_AS_UID", 65532, 1, 1<<31-1)
 	gid, gidErr := positiveInteger("RUN_AS_GID", 65532, 1, 1<<31-1)
-	maximumEvidence, evidenceErr := positiveInteger("ANSWER_MAX_EVIDENCE", defaults.MaximumEvidence, 1, 64)
-	maximumContext, contextErr := positiveInteger("ANSWER_MAX_CONTEXT_BYTES", defaults.MaximumContextBytes, 1, 1<<20)
-	maximumItem, itemErr := positiveInteger("ANSWER_MAX_EVIDENCE_BYTES", defaults.MaximumEvidenceBytes, 1, 1<<20)
-	maximumSegments, segmentErr := positiveInteger("ANSWER_MAX_SEGMENTS", defaults.MaximumSegments, 1, 64)
-	maximumAnswer, answerErr := positiveInteger("ANSWER_MAX_ANSWER_BYTES", defaults.MaximumAnswerBytes, 1, 1<<20)
-	maximumCitations, citationErr := positiveInteger("ANSWER_MAX_CITATIONS_PER_SEGMENT", defaults.MaximumCitations, 1, 64)
-	maximumTokens, tokenErr := positiveInteger("ANSWER_MAX_OUTPUT_TOKENS", defaults.MaximumOutputTokens, 1, 8192)
-	concurrency, concurrencyErr := positiveInteger("ANSWER_PROVIDER_CONCURRENCY", defaults.ProviderConcurrency, 1, 64)
-	requestTimeout, requestErr := duration("ANSWER_REQUEST_TIMEOUT", defaults.RequestTimeout, 100*time.Millisecond, 5*time.Minute)
-	retrievalTimeout, retrievalErr := duration("ANSWER_RETRIEVAL_TIMEOUT", defaults.RetrievalTimeout, 100*time.Millisecond, 5*time.Minute)
-	providerTimeout, providerErr := duration("ANSWER_PROVIDER_TIMEOUT", defaults.ProviderTimeout, 100*time.Millisecond, 5*time.Minute)
+	maximumEvidence, evidenceErr := positiveInteger("ANSWER_MAX_EVIDENCE", defaultMaximumEvidence, 1, 64)
+	maximumContext, contextErr := positiveInteger("ANSWER_MAX_CONTEXT_BYTES", defaultMaximumContextBytes, 1, 1<<20)
+	maximumItem, itemErr := positiveInteger("ANSWER_MAX_EVIDENCE_BYTES", defaultMaximumEvidenceBytes, 1, 1<<20)
+	maximumSegments, segmentErr := positiveInteger("ANSWER_MAX_SEGMENTS", defaultMaximumSegments, 1, 64)
+	maximumAnswer, answerErr := positiveInteger("ANSWER_MAX_ANSWER_BYTES", defaultMaximumAnswerBytes, 1, 1<<20)
+	maximumCitations, citationErr := positiveInteger("ANSWER_MAX_CITATIONS_PER_SEGMENT", defaultMaximumCitations, 1, 64)
+	maximumTokens, tokenErr := positiveInteger("ANSWER_MAX_OUTPUT_TOKENS", defaultMaximumOutputTokens, 1, 8192)
+	concurrency, concurrencyErr := positiveInteger("ANSWER_PROVIDER_CONCURRENCY", defaultProviderConcurrency, 1, 64)
+	requestTimeout, requestErr := duration("ANSWER_REQUEST_TIMEOUT", defaultRequestTimeout, 100*time.Millisecond, 5*time.Minute)
+	retrievalTimeout, retrievalErr := duration("ANSWER_RETRIEVAL_TIMEOUT", defaultRetrievalTimeout, 100*time.Millisecond, 5*time.Minute)
+	providerTimeout, providerErr := duration("ANSWER_PROVIDER_TIMEOUT", defaultProviderTimeout, 100*time.Millisecond, 5*time.Minute)
 	readinessProbeTimeout, readinessProbeErr := duration("ANSWER_READINESS_PROBE_TIMEOUT", 2*time.Second, 100*time.Millisecond, time.Minute)
 	readinessPollInterval, readinessPollErr := duration("ANSWER_READINESS_POLL_INTERVAL", 2*time.Second, 100*time.Millisecond, time.Minute)
 	shutdownTimeout, shutdownErr := duration("ANSWER_SHUTDOWN_TIMEOUT", 3*time.Second, 100*time.Millisecond, time.Minute)
 	metricsReadTimeout, metricsReadErr := duration("ANSWER_METRICS_READ_TIMEOUT", 3*time.Second, 100*time.Millisecond, time.Minute)
 	metricsReadHeaderTimeout, metricsReadHeaderErr := duration("ANSWER_METRICS_READ_HEADER_TIMEOUT", 2*time.Second, 100*time.Millisecond, time.Minute)
+	metricsMaxHeaderBytes, metricsMaxHeaderBytesErr := positiveInteger("ANSWER_METRICS_MAX_HEADER_BYTES", 16<<10, 1, 1<<20)
 	metricsWriteTimeout, metricsWriteErr := duration("ANSWER_METRICS_WRITE_TIMEOUT", 5*time.Second, 100*time.Millisecond, time.Minute)
 	metricsIdleTimeout, metricsIdleErr := duration("ANSWER_METRICS_IDLE_TIMEOUT", 30*time.Second, time.Second, 5*time.Minute)
 	configuration := Config{
@@ -74,6 +91,7 @@ func Load() (Config, error) {
 		ReadinessProbeTimeout:    readinessProbeTimeout,
 		ReadinessPollInterval:    readinessPollInterval,
 		ShutdownTimeout:          shutdownTimeout,
+		MetricsMaxHeaderBytes:    metricsMaxHeaderBytes,
 		MetricsReadTimeout:       metricsReadTimeout,
 		MetricsReadHeaderTimeout: metricsReadHeaderTimeout,
 		MetricsWriteTimeout:      metricsWriteTimeout,
@@ -84,8 +102,8 @@ func Load() (Config, error) {
 		return Config{}, errors.New("invalid answer configuration")
 	}
 	configuration.LLMRequestsPerMinute = rpm
-	maxResponseBytes, maxResponseBytesErr := positiveInteger("ANSWER_PROVIDER_MAX_RESPONSE_BYTES", 128<<10, 1, 1<<20)
-	maxCandidateBytes, maxCandidateBytesErr := positiveInteger("ANSWER_PROVIDER_MAX_CANDIDATE_BYTES", 32<<10, 1, 256<<10)
+	maxResponseBytes, maxResponseBytesErr := positiveInteger("ANSWER_PROVIDER_MAX_RESPONSE_BYTES", defaultProviderMaxResponseBytes, 1, 1<<20)
+	maxCandidateBytes, maxCandidateBytesErr := positiveInteger("ANSWER_PROVIDER_MAX_CANDIDATE_BYTES", defaultProviderMaxCandidateBytes, 1, 256<<10)
 	configuration.LLMMaxResponseBytes = maxResponseBytes
 	configuration.LLMMaxCandidateBytes = maxCandidateBytes
 	logProviderErrorBody, logProviderErrorBodyErr := boolean("ANSWER_PROVIDER_LOG_ERROR_BODY", false)
@@ -100,7 +118,7 @@ func Load() (Config, error) {
 		uidErr, gidErr, evidenceErr, contextErr, itemErr, segmentErr, answerErr, citationErr, tokenErr, concurrencyErr,
 		maxResponseBytesErr, maxCandidateBytesErr,
 		requestErr, retrievalErr, providerErr, readinessProbeErr, readinessPollErr, shutdownErr, metricsReadErr,
-		metricsReadHeaderErr, metricsWriteErr, metricsIdleErr,
+		metricsReadHeaderErr, metricsMaxHeaderBytesErr, metricsWriteErr, metricsIdleErr,
 	}
 	for _, err := range errs {
 		if err != nil {

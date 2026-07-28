@@ -14,6 +14,12 @@ import (
 	"time"
 )
 
+const (
+	testServiceMaxPreviewBytes = 1 << 20
+	testServiceMaxPreviewPages = 3
+	testServiceMaxEPUBEntries  = 2048
+)
+
 func TestDefaultUploadEnvelopeMatchesM4SourceProfile(t *testing.T) {
 	if DefaultMaxBytes != 25<<20 {
 		t.Fatalf("DefaultMaxBytes = %d, want %d", DefaultMaxBytes, 25<<20)
@@ -493,7 +499,8 @@ func TestGetBookIncludesPreviewFromConfiguredExtractor(t *testing.T) {
 	repository := NewMemoryRepository()
 	objects := NewMemoryObjectStore()
 	service := NewServiceWithOptions(repository, objects, ServiceOptions{
-		MaxBytes: 1024,
+		MaxBytes:        1024,
+		MaxPreviewBytes: testServiceMaxPreviewBytes,
 		PreviewBook: func(_ context.Context, book Book, _ OriginalObjectStore) (string, error) {
 			return "data:application/pdf;base64,ZmFrZQ==", nil
 		},
@@ -515,7 +522,8 @@ func TestGetBookIgnoresPreviewFailures(t *testing.T) {
 	repository := NewMemoryRepository()
 	objects := NewMemoryObjectStore()
 	service := NewServiceWithOptions(repository, objects, ServiceOptions{
-		MaxBytes: 1024,
+		MaxBytes:        1024,
+		MaxPreviewBytes: testServiceMaxPreviewBytes,
 		PreviewBook: func(_ context.Context, book Book, _ OriginalObjectStore) (string, error) {
 			return "", errors.New("preview unavailable")
 		},
@@ -537,9 +545,12 @@ func TestGetBookDropsOversizedPreview(t *testing.T) {
 	repository := NewMemoryRepository()
 	objects := NewMemoryObjectStore()
 	service := NewServiceWithOptions(repository, objects, ServiceOptions{
-		MaxBytes: 1024,
+		MaxBytes:              1024,
+		MaxPreviewBytes:       testServiceMaxPreviewBytes,
+		MaxPreviewPages:       testServiceMaxPreviewPages,
+		MaxPreviewEPUBEntries: testServiceMaxEPUBEntries,
 		PreviewBook: func(_ context.Context, _ Book, _ OriginalObjectStore) (string, error) {
-			return strings.Repeat("a", defaultMaxPreviewBytes+1), nil
+			return strings.Repeat("a", testServiceMaxPreviewBytes+1), nil
 		},
 	})
 	book, err := service.UploadBook(context.Background(), validUploadInput(strings.NewReader("%PDF-1.7\nbody")))
@@ -560,8 +571,9 @@ func TestGetBookFallsBackWhenPreviewTimeoutExpires(t *testing.T) {
 	repository := NewMemoryRepository()
 	objects := NewMemoryObjectStore()
 	service := NewServiceWithOptions(repository, objects, ServiceOptions{
-		MaxBytes:       1024,
-		PreviewTimeout: 50 * time.Millisecond,
+		MaxBytes:        1024,
+		MaxPreviewBytes: testServiceMaxPreviewBytes,
+		PreviewTimeout:  50 * time.Millisecond,
 		PreviewBook: func(ctx context.Context, _ Book, _ OriginalObjectStore) (string, error) {
 			<-ctx.Done()
 			return "", ctx.Err()
@@ -585,8 +597,9 @@ func TestGetBookUsesConfiguredPreviewTimeout(t *testing.T) {
 	repository := NewMemoryRepository()
 	objects := NewMemoryObjectStore()
 	service := NewServiceWithOptions(repository, objects, ServiceOptions{
-		MaxBytes:       1024,
-		PreviewTimeout: 150 * time.Millisecond,
+		MaxBytes:        1024,
+		MaxPreviewBytes: testServiceMaxPreviewBytes,
+		PreviewTimeout:  150 * time.Millisecond,
 		PreviewBook: func(ctx context.Context, _ Book, _ OriginalObjectStore) (string, error) {
 			select {
 			case <-time.After(10 * time.Millisecond):
@@ -618,6 +631,7 @@ func TestGetBookBoundsPreviewConcurrency(t *testing.T) {
 	var calls atomic.Int32
 	service := NewServiceWithOptions(repository, objects, ServiceOptions{
 		MaxBytes:           1024,
+		MaxPreviewBytes:    testServiceMaxPreviewBytes,
 		PreviewConcurrency: 1,
 		PreviewBook: func(ctx context.Context, _ Book, _ OriginalObjectStore) (string, error) {
 			calls.Add(1)

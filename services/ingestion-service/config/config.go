@@ -34,8 +34,9 @@ type Config struct {
 	MaximumSourceBytes, MaximumExtractedBytes, MaximumPageBytes                 int64
 	MaximumManifestBytes, MaximumTemporaryBytes                                 int64
 	ArtifactChunksPerShard                                                      int
+	ArtifactVersionCleanupPasses                                                int
 	ArtifactMaximumShardBytes                                                   int64
-	MemoryLimitBytes, ParserSandboxMemoryBytes                                  int64
+	MemoryLimitBytes, ParserSandboxMemoryBytes, ParserRuntimeHeadroomBytes      int64
 	MaximumPages                                                                uint32
 	ProcessingTimeout, PersistenceTimeout, ArtifactAbortTimeout, JobLease       time.Duration
 	FirstRetryDelay, SecondRetryDelay, SubsequentRetryDelay, OutboxInterval     time.Duration
@@ -56,6 +57,7 @@ type CleanupConfig struct {
 	ArtifactBucket, MinIOCAFile                        string
 	AWSRegion, KMSKeyARN                               string
 	MinIOInsecure                                      bool
+	ArtifactVersionCleanupPasses                       int
 	RetryDispatchDelay, OutboxRetryBaseDelay           time.Duration
 	OutboxRetryMaxDelay                                time.Duration
 	CleanupInterval, OrphanGracePeriod                 time.Duration
@@ -178,6 +180,10 @@ func loadLocalCleanup() (CleanupConfig, error) {
 	if err != nil {
 		return CleanupConfig{}, err
 	}
+	artifactVersionCleanupPasses, err := boundedInt("INGESTION_ARTIFACT_VERSION_CLEANUP_PASSES", 256, 4096)
+	if err != nil {
+		return CleanupConfig{}, err
+	}
 	cleanupInterval, err := boundedDuration("INGESTION_CLEANUP_INTERVAL", time.Minute, 24*time.Hour, 15*time.Minute)
 	if err != nil {
 		return CleanupConfig{}, err
@@ -199,19 +205,20 @@ func loadLocalCleanup() (CleanupConfig, error) {
 		return CleanupConfig{}, err
 	}
 	return CleanupConfig{
-		RuntimeBackend:       "local",
-		DSN:                  dsn,
-		MinIOEndpoint:        endpoint,
-		MinIOAccessKey:       accessKey,
-		MinIOSecretKey:       secretKey,
-		ArtifactBucket:       artifactBucket,
-		MinIOCAFile:          caFile,
-		MinIOInsecure:        insecure,
-		RetryDispatchDelay:   retryDispatchDelay,
-		OutboxRetryBaseDelay: outboxRetryBaseDelay,
-		OutboxRetryMaxDelay:  outboxRetryMaxDelay,
-		CleanupInterval:      cleanupInterval,
-		OrphanGracePeriod:    orphanGracePeriod,
+		RuntimeBackend:               "local",
+		DSN:                          dsn,
+		MinIOEndpoint:                endpoint,
+		MinIOAccessKey:               accessKey,
+		MinIOSecretKey:               secretKey,
+		ArtifactBucket:               artifactBucket,
+		ArtifactVersionCleanupPasses: artifactVersionCleanupPasses,
+		MinIOCAFile:                  caFile,
+		MinIOInsecure:                insecure,
+		RetryDispatchDelay:           retryDispatchDelay,
+		OutboxRetryBaseDelay:         outboxRetryBaseDelay,
+		OutboxRetryMaxDelay:          outboxRetryMaxDelay,
+		CleanupInterval:              cleanupInterval,
+		OrphanGracePeriod:            orphanGracePeriod,
 	}, nil
 }
 
@@ -309,6 +316,10 @@ func loadLocal() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	artifactVersionCleanupPasses, err := boundedInt("INGESTION_ARTIFACT_VERSION_CLEANUP_PASSES", 256, 4096)
+	if err != nil {
+		return Config{}, err
+	}
 	artifactMaximumShardBytes, err := boundedInt64("INGESTION_ARTIFACT_MAX_SHARD_BYTES", 4<<20, 32<<20)
 	if err != nil {
 		return Config{}, err
@@ -328,11 +339,14 @@ func loadLocal() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	parserRuntimeHeadroomBytes, err := boundedInt64("INGESTION_PARSER_RUNTIME_HEADROOM_BYTES", 256<<20, 4<<30)
+	if err != nil {
+		return Config{}, err
+	}
 	if parserMemory < defaultParserSandboxMemoryBytes {
 		return Config{}, fmt.Errorf("INGESTION_PARSER_SANDBOX_MEMORY_BYTES must be at least %d", defaultParserSandboxMemoryBytes)
 	}
-	const runtimeHeadroom = int64(256 << 20)
-	if int64(workConcurrency)*parserMemory+runtimeHeadroom > memoryLimit {
+	if int64(workConcurrency)*parserMemory+parserRuntimeHeadroomBytes > memoryLimit {
 		return Config{}, fmt.Errorf("INGESTION_WORK_CONCURRENCY exceeds INGESTION_MEMORY_LIMIT_BYTES")
 	}
 	timeout, err := boundedDuration("INGESTION_PROCESSING_TIMEOUT", time.Minute, 13*time.Minute+30*time.Second, 12*time.Minute+30*time.Second)
@@ -471,10 +485,12 @@ func loadLocal() (Config, error) {
 		MaximumPageBytes:               maximumPage,
 		MaximumManifestBytes:           maximumManifest,
 		ArtifactChunksPerShard:         artifactChunksPerShard,
+		ArtifactVersionCleanupPasses:   artifactVersionCleanupPasses,
 		ArtifactMaximumShardBytes:      artifactMaximumShardBytes,
 		MaximumTemporaryBytes:          maximumTemporary,
 		MemoryLimitBytes:               memoryLimit,
 		ParserSandboxMemoryBytes:       parserMemory,
+		ParserRuntimeHeadroomBytes:     parserRuntimeHeadroomBytes,
 		MaximumPages:                   maximumPages,
 		ProcessingTimeout:              timeout,
 		PersistenceTimeout:             persistenceTimeout,

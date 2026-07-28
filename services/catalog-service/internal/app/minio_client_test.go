@@ -17,7 +17,7 @@ import (
 )
 
 func TestMinIOTransportIsSecureByDefault(t *testing.T) {
-	client, transport, err := newMinIOClient(config.Config{MinIOEndpoint: "storage.internal:9000", MinIOAccessKey: "access", MinIOSecretKey: "secret"})
+	client, transport, err := newMinIOClient(config.Config{MinIOEndpoint: "storage.internal:9000", MinIOAccessKey: "access", MinIOSecretKey: "secret", MinIOCAMaxBytes: 1 << 20})
 	if err != nil {
 		t.Fatalf("newMinIOClient(): %v", err)
 	}
@@ -28,7 +28,7 @@ func TestMinIOTransportIsSecureByDefault(t *testing.T) {
 }
 
 func TestMinIOTransportAllowsExplicitInsecureMode(t *testing.T) {
-	client, transport, err := newMinIOClient(config.Config{MinIOEndpoint: "minio:9000", MinIOAccessKey: "access", MinIOSecretKey: "secret", MinIOInsecure: true})
+	client, transport, err := newMinIOClient(config.Config{MinIOEndpoint: "minio:9000", MinIOAccessKey: "access", MinIOSecretKey: "secret", MinIOInsecure: true, MinIOCAMaxBytes: 1 << 20})
 	if err != nil {
 		t.Fatalf("newMinIOClient(): %v", err)
 	}
@@ -48,7 +48,7 @@ func TestLoadPrivateCAPoolAllowsReadOnlySymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadPrivateCAPool(link); err != nil {
+	if _, err := loadPrivateCAPool(link, 1<<20); err != nil {
 		t.Fatalf("loadPrivateCAPool() symlink: %v", err)
 	}
 }
@@ -59,7 +59,7 @@ func TestLoadPrivateCAPool(t *testing.T) {
 	if err := os.WriteFile(validPath, testCertificatePEM(t), 0o444); err != nil {
 		t.Fatal(err)
 	}
-	pool, err := loadPrivateCAPool(validPath)
+	pool, err := loadPrivateCAPool(validPath, 1<<20)
 	if err != nil {
 		t.Fatalf("loadPrivateCAPool(): %v", err)
 	}
@@ -72,7 +72,7 @@ func TestLoadPrivateCAPool(t *testing.T) {
 	if err = os.WriteFile(invalidPath, []byte("not a certificate"), 0o444); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = loadPrivateCAPool(invalidPath); err == nil {
+	if _, err = loadPrivateCAPool(invalidPath, 1<<20); err == nil {
 		t.Fatal("expected malformed CA rejection")
 	}
 
@@ -80,8 +80,19 @@ func TestLoadPrivateCAPool(t *testing.T) {
 	if err = os.WriteFile(writablePath, testCertificatePEM(t), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = loadPrivateCAPool(writablePath); err == nil {
+	if _, err = loadPrivateCAPool(writablePath, 1<<20); err == nil {
 		t.Fatal("expected writable CA rejection")
+	}
+}
+
+func TestLoadPrivateCAPoolRejectsNonPositiveMaximumBytes(t *testing.T) {
+	directory := t.TempDir()
+	validPath := filepath.Join(directory, "ca.pem")
+	if err := os.WriteFile(validPath, testCertificatePEM(t), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadPrivateCAPool(validPath, 0); err == nil {
+		t.Fatal("expected invalid max-bytes rejection")
 	}
 }
 

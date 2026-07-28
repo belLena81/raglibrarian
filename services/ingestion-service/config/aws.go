@@ -148,6 +148,10 @@ func loadAWS(ctx context.Context) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	artifactVersionCleanupPasses, err := boundedInt("INGESTION_ARTIFACT_VERSION_CLEANUP_PASSES", 256, 4096)
+	if err != nil {
+		return Config{}, err
+	}
 	artifactMaximumShardBytes, err := boundedInt64("INGESTION_ARTIFACT_MAX_SHARD_BYTES", 4<<20, 32<<20)
 	if err != nil {
 		return Config{}, err
@@ -164,10 +168,14 @@ func loadAWS(ctx context.Context) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	parserRuntimeHeadroomBytes, err := boundedInt64("INGESTION_PARSER_RUNTIME_HEADROOM_BYTES", 256<<20, 4<<30)
+	if err != nil {
+		return Config{}, err
+	}
 	if parserMemory < defaultParserSandboxMemoryBytes {
 		return Config{}, fmt.Errorf("INGESTION_PARSER_SANDBOX_MEMORY_BYTES must be at least %d", defaultParserSandboxMemoryBytes)
 	}
-	if int64(workConcurrency)*parserMemory+(256<<20) > memoryLimit {
+	if int64(workConcurrency)*parserMemory+parserRuntimeHeadroomBytes > memoryLimit {
 		return Config{}, fmt.Errorf("INGESTION_WORK_CONCURRENCY exceeds INGESTION_MEMORY_LIMIT_BYTES")
 	}
 	timeout, err := boundedDuration("INGESTION_PROCESSING_TIMEOUT", time.Minute, 13*time.Minute+30*time.Second, 12*time.Minute+30*time.Second)
@@ -290,11 +298,13 @@ func loadAWS(ctx context.Context) (Config, error) {
 		MaximumPageBytes:               maximumPage,
 		MaximumManifestBytes:           maximumManifest,
 		ArtifactChunksPerShard:         artifactChunksPerShard,
+		ArtifactVersionCleanupPasses:   artifactVersionCleanupPasses,
 		ArtifactMaximumShardBytes:      artifactMaximumShardBytes,
 		MaximumTemporaryBytes:          maximumTemporary,
 		MaximumPages:                   uint32(maximumPages), // #nosec G115 -- bounded above.
 		MemoryLimitBytes:               memoryLimit,
 		ParserSandboxMemoryBytes:       parserMemory,
+		ParserRuntimeHeadroomBytes:     parserRuntimeHeadroomBytes,
 		ProcessingTimeout:              timeout,
 		PersistenceTimeout:             persistenceTimeout,
 		ArtifactAbortTimeout:           artifactAbortTimeout,
@@ -394,6 +404,10 @@ func loadAWSCleanup(ctx context.Context) (CleanupConfig, error) {
 	if err != nil {
 		return CleanupConfig{}, err
 	}
+	artifactVersionCleanupPasses, err := boundedInt("INGESTION_ARTIFACT_VERSION_CLEANUP_PASSES", 256, 4096)
+	if err != nil {
+		return CleanupConfig{}, err
+	}
 	kmsKey, err := required("INGESTION_KMS_KEY_ARN")
 	if err != nil {
 		return CleanupConfig{}, err
@@ -403,7 +417,7 @@ func loadAWSCleanup(ctx context.Context) (CleanupConfig, error) {
 		return CleanupConfig{}, err
 	}
 	grace, err := boundedDuration("INGESTION_ORPHAN_GRACE_PERIOD", 15*time.Minute, 7*24*time.Hour, time.Hour)
-	return CleanupConfig{RuntimeBackend: "aws", DSN: dsn, ArtifactBucket: bucket, AWSRegion: region, KMSKeyARN: kmsKey, CleanupInterval: interval, OrphanGracePeriod: grace}, err
+	return CleanupConfig{RuntimeBackend: "aws", DSN: dsn, ArtifactBucket: bucket, ArtifactVersionCleanupPasses: artifactVersionCleanupPasses, AWSRegion: region, KMSKeyARN: kmsKey, CleanupInterval: interval, OrphanGracePeriod: grace}, err
 }
 
 type secretsAPI interface {

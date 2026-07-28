@@ -19,6 +19,9 @@ func TestLoadUsesBoundedProductionDefaults(t *testing.T) {
 	if value.ArtifactChunksPerShard != 256 || value.ArtifactMaximumShardBytes != 4<<20 {
 		t.Fatalf("unexpected artifact shard policy defaults: %#v", value)
 	}
+	if value.ArtifactVersionCleanupPasses != 256 {
+		t.Fatalf("ArtifactVersionCleanupPasses = %d, want 256", value.ArtifactVersionCleanupPasses)
+	}
 	if value.WorkerReadinessProbeTimeout != 5*time.Second || value.WorkerReadinessRefreshInterval != 5*time.Second ||
 		value.WorkerMetricsReadHeaderTimeout != 10*time.Second || value.WorkerMetricsShutdownTimeout != 10*time.Second {
 		t.Fatalf("unexpected worker runtime defaults: %#v", value)
@@ -33,6 +36,9 @@ func TestLoadUsesBoundedProductionDefaults(t *testing.T) {
 	}
 	if value.MemoryLimitBytes != 2<<30 || value.ParserSandboxMemoryBytes != 1536<<20 {
 		t.Fatalf("unexpected parser memory defaults: %#v", value)
+	}
+	if value.ParserRuntimeHeadroomBytes != 256<<20 {
+		t.Fatalf("unexpected parser runtime headroom default: %#v", value)
 	}
 	if value.ChunkMaximumTokens != 512 || value.ChunkOverlapTokens != 120 || value.ChunkTargetPages != 2 || value.ChunkMaximumPages != 3 {
 		t.Fatalf("unexpected chunk profile defaults: %#v", value)
@@ -123,6 +129,14 @@ func TestLoadRejectsParserSandboxMemoryBelowEPUBSafeDefault(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsParserRuntimeHeadroomOvercommit(t *testing.T) {
+	setRequiredEnvironment(t)
+	t.Setenv("INGESTION_PARSER_RUNTIME_HEADROOM_BYTES", "1073741824")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected parser runtime headroom overcommit to fail closed")
+	}
+}
+
 func TestLoadRejectsTemporaryLimitBelowAcceptedSource(t *testing.T) {
 	setRequiredEnvironment(t)
 	t.Setenv("INGESTION_MAX_TEMP_BYTES", "1024")
@@ -135,12 +149,14 @@ func TestLoadParsesArtifactShardPolicy(t *testing.T) {
 	setRequiredEnvironment(t)
 	t.Setenv("INGESTION_ARTIFACT_CHUNKS_PER_SHARD", "128")
 	t.Setenv("INGESTION_ARTIFACT_MAX_SHARD_BYTES", "2097152")
+	t.Setenv("INGESTION_ARTIFACT_VERSION_CLEANUP_PASSES", "512")
+	t.Setenv("INGESTION_PARSER_RUNTIME_HEADROOM_BYTES", "536870912")
 
 	value, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.ArtifactChunksPerShard != 128 || value.ArtifactMaximumShardBytes != 2<<20 {
+	if value.ArtifactChunksPerShard != 128 || value.ArtifactMaximumShardBytes != 2<<20 || value.ArtifactVersionCleanupPasses != 512 || value.ParserRuntimeHeadroomBytes != 512<<20 {
 		t.Fatalf("unexpected artifact shard policy: %#v", value)
 	}
 }
@@ -189,7 +205,7 @@ func TestLoadCleanupRequiresOnlyCleanupCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.DSN == "" || value.MinIOAccessKey == "" || value.ArtifactBucket != "ingestion-artifacts" {
+	if value.DSN == "" || value.MinIOAccessKey == "" || value.ArtifactBucket != "ingestion-artifacts" || value.ArtifactVersionCleanupPasses != 256 {
 		t.Fatalf("unexpected cleanup config: %#v", value)
 	}
 }

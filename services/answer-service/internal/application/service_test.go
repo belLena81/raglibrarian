@@ -45,7 +45,7 @@ func (f *fakeProvider) Generate(ctx context.Context, input ProviderRequest) ([]d
 }
 
 func TestAnswerSelectsOnlyTopPrimaryEvidenceForSynthesis(t *testing.T) {
-	limits := DefaultLimits()
+	limits := testLimits()
 	limits.MaximumEvidence = 2
 	limits.MaximumEvidenceBytes = 8
 	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"e-1"}}}}
@@ -81,7 +81,7 @@ func (fakeObserver) ProviderFinished()                                      {}
 func TestAnswerReturnsValidatedGroundedSegments(t *testing.T) {
 	retriever := &fakeRetriever{result: searchResult("evidence-1")}
 	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: " Grounded answer ", EvidenceIDs: []string{"evidence-1"}}}}
-	service := newTestService(t, retriever, provider, DefaultLimits())
+	service := newTestService(t, retriever, provider, testLimits())
 	result, err := service.Answer(context.Background(), validRequest())
 	if err != nil || result.Answer == nil || result.Answer.Segments[0].Text != "Grounded answer" || result.Summary != "Grounded answer" {
 		t.Fatalf("Answer() = %#v, %v", result, err)
@@ -104,7 +104,7 @@ func TestAnswerFiltersEvidenceBeforeSynthesisUsingMinimumScore(t *testing.T) {
 		}},
 	}}
 	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"high"}}}}
-	service := newTestService(t, retriever, provider, DefaultLimits())
+	service := newTestService(t, retriever, provider, testLimits())
 	request := validRequest()
 	request.MinimumEvidenceScore = 0.6
 
@@ -138,7 +138,7 @@ func TestAnswerFallsBackToTopDocumentEvidenceWhenPrimaryResultsAreEmpty(t *testi
 		}},
 	}}
 	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "document synopsis", EvidenceIDs: []string{"doc-evidence"}}}}
-	service := newTestService(t, retriever, provider, DefaultLimits())
+	service := newTestService(t, retriever, provider, testLimits())
 
 	result, err := service.Answer(context.Background(), validRequest())
 	if err != nil || result.Answer == nil || len(provider.input.Evidence) != 1 || provider.input.Evidence[0].EvidenceID != "doc-evidence" {
@@ -151,7 +151,7 @@ func TestAnswerFallsBackToTopDocumentEvidenceWhenPrimaryResultsAreEmpty(t *testi
 
 func TestAnswerDoesNotCallProviderWithoutEvidence(t *testing.T) {
 	provider := &fakeProvider{}
-	service := newTestService(t, &fakeRetriever{result: domain.SearchResult{}}, provider, DefaultLimits())
+	service := newTestService(t, &fakeRetriever{result: domain.SearchResult{}}, provider, testLimits())
 	result, err := service.Answer(context.Background(), validRequest())
 	if err != nil || result.Answer != nil || provider.calls.Load() != 0 {
 		t.Fatalf("Answer() = %#v, %v; calls=%d", result, err, provider.calls.Load())
@@ -165,7 +165,7 @@ func TestAnswerDegradesForProviderAndCitationFailures(t *testing.T) {
 		{segments: []domain.AnswerSegment{{Text: "duplicate", EvidenceIDs: []string{"evidence-1", "evidence-1"}}}},
 	}
 	for index, provider := range tests {
-		service := newTestService(t, &fakeRetriever{result: searchResult("evidence-1")}, provider, DefaultLimits())
+		service := newTestService(t, &fakeRetriever{result: searchResult("evidence-1")}, provider, testLimits())
 		result, err := service.Answer(context.Background(), validRequest())
 		if err != nil || result.Answer != nil || len(result.Search.Results) != 1 {
 			t.Fatalf("case %d: %#v, %v", index, result, err)
@@ -174,7 +174,7 @@ func TestAnswerDegradesForProviderAndCitationFailures(t *testing.T) {
 }
 
 func TestAnswerBoundsContextAndUsesNonBlockingConcurrency(t *testing.T) {
-	limits := DefaultLimits()
+	limits := testLimits()
 	limits.ProviderConcurrency = 1
 	block := make(chan struct{})
 	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}, block: block}
@@ -198,7 +198,7 @@ func TestAnswerBoundsContextAndUsesNonBlockingConcurrency(t *testing.T) {
 }
 
 func TestAnswerRejectsOversizedOrMixedValidityOutput(t *testing.T) {
-	limits := DefaultLimits()
+	limits := testLimits()
 	limits.MaximumAnswerBytes = 4
 	providers := []*fakeProvider{
 		{segments: []domain.AnswerSegment{{Text: "large", EvidenceIDs: []string{"evidence-1"}}}},
@@ -222,6 +222,22 @@ func newTestService(t *testing.T, retriever Retriever, provider LLMProvider, lim
 		t.Fatal(err)
 	}
 	return service
+}
+
+func testLimits() Limits {
+	return Limits{
+		MaximumEvidence:      8,
+		MaximumContextBytes:  32 << 10,
+		MaximumEvidenceBytes: 8 << 10,
+		MaximumSegments:      8,
+		MaximumAnswerBytes:   8 << 10,
+		MaximumCitations:     8,
+		MaximumOutputTokens:  768,
+		ProviderConcurrency:  4,
+		RequestTimeout:       5 * time.Minute,
+		RetrievalTimeout:     4*time.Minute + 45*time.Second,
+		ProviderTimeout:      4*time.Minute + 30*time.Second,
+	}
 }
 
 func validRequest() domain.SearchRequest {

@@ -15,8 +15,6 @@ import (
 	"github.com/belLena81/raglibrarian/services/catalog-service/config"
 )
 
-const maximumMinIOCABytes = 1 << 20
-
 func newMinIOClient(cfg config.Config) (*minio.Client, *http.Transport, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
@@ -30,7 +28,7 @@ func newMinIOClient(cfg config.Config) (*minio.Client, *http.Transport, error) {
 			transport.CloseIdleConnections()
 			return nil, nil, errors.New("private CA cannot be used with insecure object storage")
 		}
-		pool, err := loadPrivateCAPool(cfg.MinIOCAFile)
+		pool, err := loadPrivateCAPool(cfg.MinIOCAFile, cfg.MinIOCAMaxBytes)
 		if err != nil {
 			transport.CloseIdleConnections()
 			return nil, nil, err
@@ -50,18 +48,21 @@ func newMinIOClient(cfg config.Config) (*minio.Client, *http.Transport, error) {
 	return client, transport, nil
 }
 
-func loadPrivateCAPool(path string) (*x509.CertPool, error) {
+func loadPrivateCAPool(path string, maximumBytes int) (*x509.CertPool, error) {
+	if maximumBytes < 1 {
+		return nil, errors.New("CATALOG_MINIO_CA_FILE is invalid")
+	}
 	file, err := os.Open(path) // #nosec G304 -- operator-provided CA path is validated through its opened descriptor.
 	if err != nil {
 		return nil, errors.New("CATALOG_MINIO_CA_FILE is invalid")
 	}
 	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o222 != 0 || info.Size() < 1 || info.Size() > maximumMinIOCABytes {
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o222 != 0 || info.Size() < 1 || info.Size() > int64(maximumBytes) {
 		return nil, errors.New("CATALOG_MINIO_CA_FILE is invalid")
 	}
-	contents, err := io.ReadAll(io.LimitReader(file, maximumMinIOCABytes+1))
-	if err != nil || len(contents) > maximumMinIOCABytes {
+	contents, err := io.ReadAll(io.LimitReader(file, int64(maximumBytes)+1))
+	if err != nil || len(contents) > maximumBytes {
 		return nil, errors.New("CATALOG_MINIO_CA_FILE is invalid")
 	}
 	pool := x509.NewCertPool()

@@ -24,11 +24,8 @@ import (
 )
 
 const (
-	ChunkSize              = 64 << 10
-	DefaultMaxBytes        = 25 << 20
-	defaultMaxPreviewBytes = 1 << 20
-	defaultMaxPreviewPages = 3
-	defaultMaxEPUBEntries  = 2048
+	ChunkSize       = 64 << 10
+	DefaultMaxBytes = 25 << 20
 )
 
 var (
@@ -150,24 +147,6 @@ func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStor
 	if options.PreviewConcurrency <= 0 {
 		options.PreviewConcurrency = 2
 	}
-	if options.MaxPreviewBytes <= 0 {
-		options.MaxPreviewBytes = defaultMaxPreviewBytes
-	}
-	if options.MaxPreviewPages <= 0 {
-		options.MaxPreviewPages = defaultMaxPreviewPages
-	}
-	if options.MaxPreviewEPUBEntries <= 0 {
-		options.MaxPreviewEPUBEntries = defaultMaxEPUBEntries
-	}
-	if options.PreviewTimeout <= 0 {
-		options.PreviewTimeout = 5 * time.Second
-	}
-	if options.PersistenceLookupTimeout <= 0 {
-		options.PersistenceLookupTimeout = 5 * time.Second
-	}
-	if options.ObjectDeleteTimeout <= 0 {
-		options.ObjectDeleteTimeout = 5 * time.Second
-	}
 	if options.Clock == nil {
 		options.Clock = func() time.Time { return time.Now().UTC() }
 	}
@@ -176,6 +155,9 @@ func NewServiceWithOptions(repository BookRepository, objects OriginalObjectStor
 	}
 	if options.PreviewBook == nil {
 		options.PreviewBook = func(ctx context.Context, book Book, objects OriginalObjectStore) (string, error) {
+			if options.MaxPreviewBytes <= 0 || options.MaxPreviewPages <= 0 || options.MaxPreviewEPUBEntries <= 0 {
+				return "", errors.New("preview unavailable")
+			}
 			return defaultPreviewBook(ctx, book, objects, options.MaxPreviewBytes, options.MaxPreviewPages, options.MaxPreviewEPUBEntries)
 		}
 	}
@@ -302,7 +284,7 @@ func (s *Service) UploadBook(ctx context.Context, input UploadInput) (Book, erro
 	}
 	statusEvent := OutboxEvent{ID: statusEventID, Type: contracts.EventCatalogBookProcessingStatusChange, AggregateID: book.ID, Sequence: book.ProcessingVersion, OccurredAt: now, Payload: statusPayload}
 	if err = s.repository.Create(ctx, book, event, statusEvent); err != nil {
-		lookupCtx, cancel := context.WithTimeout(context.Background(), s.persistenceLookupTimeout)
+		lookupCtx, cancel := derivedContext(context.Background(), s.persistenceLookupTimeout)
 		defer cancel()
 		persisted, lookupErr := s.repository.Get(lookupCtx, book.ID)
 		if lookupErr == nil {
@@ -402,7 +384,7 @@ func validCommandID(value string) bool {
 }
 
 func (s *Service) deleteObject(reference string) {
-	ctx, cancel := context.WithTimeout(context.Background(), s.objectDeleteTimeout)
+	ctx, cancel := derivedContext(context.Background(), s.objectDeleteTimeout)
 	defer cancel()
 	_ = s.objects.Delete(ctx, reference)
 }
@@ -434,13 +416,16 @@ func (s *Service) GetBook(ctx context.Context, id string) (Book, error) {
 		return Book{}, err
 	}
 	if s.previewBook != nil && book.ObjectReference != "" && book.ProcessingStatus != BookStatusDeleted {
+		if s.maxPreviewBytes <= 0 {
+			return book, nil
+		}
 		select {
 		case s.preview <- struct{}{}:
 			defer func() { <-s.preview }()
 		default:
 			return book, nil
 		}
-		previewContext, cancel := context.WithTimeout(ctx, s.previewTimeout)
+		previewContext, cancel := derivedContext(ctx, s.previewTimeout)
 		preview, previewErr := s.previewBook(previewContext, book, s.objects)
 		cancel()
 		if previewErr == nil && len(preview) <= s.maxPreviewBytes {
@@ -448,6 +433,13 @@ func (s *Service) GetBook(ctx context.Context, id string) (Book, error) {
 		}
 	}
 	return book, nil
+}
+
+func derivedContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout > 0 {
+		return context.WithTimeout(parent, timeout)
+	}
+	return context.WithCancel(parent)
 }
 
 type boundedBookReader struct {

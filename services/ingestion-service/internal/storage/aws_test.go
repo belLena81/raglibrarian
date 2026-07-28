@@ -88,3 +88,9 @@ func TestAWSSourceStoreOpenRejectsUnsafeReferences(t *testing.T) {
 		})
 	}
 }
+
+func TestNewAWSArtifactStoreRejectsNonPositiveCleanupPassLimit(t *testing.T) {
+	if _, err := NewAWSArtifactStoreWithPolicy(&stubS3API{}, "artifact-books", "kms-key", 0); err == nil {
+		t.Fatal("expected cleanup-pass policy rejection")
+	}
+}

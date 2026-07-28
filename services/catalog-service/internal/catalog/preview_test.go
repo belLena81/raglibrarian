@@ -10,6 +10,12 @@ import (
 	"testing"
 )
 
+const (
+	testMaxPreviewBytes = 1 << 20
+	testMaxPreviewPages = 3
+	testMaxEPUBEntries  = 2048
+)
+
 func TestDefaultPreviewBookRemovesTemporaryWorkspace(t *testing.T) {
 	originalPreviewTempDir := previewTempDir
 	originalPreviewExecCommand := previewExecCommand
@@ -31,7 +37,7 @@ func TestDefaultPreviewBookRemovesTemporaryWorkspace(t *testing.T) {
 			switch args[0] {
 			case "/usr/bin/pdfseparate":
 				outputPattern := args[len(args)-1]
-				for page := 1; page <= defaultMaxPreviewPages; page++ {
+				for page := 1; page <= testMaxPreviewPages; page++ {
 					pagePath := fmt.Sprintf(outputPattern, page)
 					if err := os.WriteFile(pagePath, []byte(fmt.Sprintf("page-%d", page)), 0o600); err != nil {
 						return err
@@ -53,7 +59,7 @@ func TestDefaultPreviewBookRemovesTemporaryWorkspace(t *testing.T) {
 	if _, err := objects.Put(context.Background(), "book.pdf", strings.NewReader("%PDF-1.4\nbody")); err != nil {
 		t.Fatal(err)
 	}
-	preview, err := defaultPreviewBook(context.Background(), Book{MediaType: "application/pdf", ObjectReference: "book.pdf"}, objects, defaultMaxPreviewBytes, defaultMaxPreviewPages, defaultMaxEPUBEntries)
+	preview, err := defaultPreviewBook(context.Background(), Book{MediaType: "application/pdf", ObjectReference: "book.pdf"}, objects, testMaxPreviewBytes, testMaxPreviewPages, testMaxEPUBEntries)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,11 +73,11 @@ func TestDefaultPreviewBookRemovesTemporaryWorkspace(t *testing.T) {
 
 func TestExtractEPUBPreviewPagesRejectsOversizedArchive(t *testing.T) {
 	sourcePath := filepath.Join(t.TempDir(), "book.epub")
-	if err := writePreviewEPUB(sourcePath, defaultMaxEPUBEntries+1); err != nil {
+	if err := writePreviewEPUB(sourcePath, testMaxEPUBEntries+1); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := extractEPUBPreviewPages(sourcePath, defaultMaxPreviewBytes, defaultMaxPreviewPages, defaultMaxEPUBEntries)
+	_, err := extractEPUBPreviewPages(sourcePath, testMaxPreviewBytes, testMaxPreviewPages, testMaxEPUBEntries)
 
 	if err == nil {
 		t.Fatal("oversized EPUB archive was accepted")

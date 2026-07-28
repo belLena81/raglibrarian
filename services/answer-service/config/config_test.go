@@ -17,6 +17,9 @@ func TestLoadUsesSecureBoundedDefaults(t *testing.T) {
 	if configuration.LLMMaxResponseBytes != 128<<10 || configuration.LLMMaxCandidateBytes != 32<<10 {
 		t.Fatalf("unexpected provider policy: response=%d candidate=%d", configuration.LLMMaxResponseBytes, configuration.LLMMaxCandidateBytes)
 	}
+	if configuration.MetricsMaxHeaderBytes != 16<<10 {
+		t.Fatalf("MetricsMaxHeaderBytes = %d, want %d", configuration.MetricsMaxHeaderBytes, 16<<10)
+	}
 	if configuration.ReadinessProbeTimeout != 2*time.Second || configuration.ReadinessPollInterval != 2*time.Second ||
 		configuration.ShutdownTimeout != 3*time.Second || configuration.MetricsReadTimeout != 3*time.Second ||
 		configuration.MetricsReadHeaderTimeout != 2*time.Second || configuration.MetricsWriteTimeout != 5*time.Second ||
@@ -56,12 +59,16 @@ func TestLoadOverridesProviderPolicy(t *testing.T) {
 	setRequiredEnvironment(t)
 	t.Setenv("ANSWER_PROVIDER_MAX_RESPONSE_BYTES", "65536")
 	t.Setenv("ANSWER_PROVIDER_MAX_CANDIDATE_BYTES", "16384")
+	t.Setenv("ANSWER_METRICS_MAX_HEADER_BYTES", "65535")
 	configuration, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if configuration.LLMMaxResponseBytes != 65536 || configuration.LLMMaxCandidateBytes != 16384 {
 		t.Fatalf("unexpected provider policy: response=%d candidate=%d", configuration.LLMMaxResponseBytes, configuration.LLMMaxCandidateBytes)
+	}
+	if configuration.MetricsMaxHeaderBytes != 65535 {
+		t.Fatalf("MetricsMaxHeaderBytes = %d, want %d", configuration.MetricsMaxHeaderBytes, 65535)
 	}
 }
 
@@ -106,6 +113,11 @@ func TestLoadRejectsInsecureProviderAndInvalidBounds(t *testing.T) {
 	t.Setenv("ANSWER_PROVIDER_MAX_CANDIDATE_BYTES", "32768")
 	if _, err := Load(); err == nil {
 		t.Fatal("provider candidate limit above response limit accepted")
+	}
+	setRequiredEnvironment(t)
+	t.Setenv("ANSWER_METRICS_MAX_HEADER_BYTES", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("non-positive metrics header limit accepted")
 	}
 }
 
