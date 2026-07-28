@@ -93,7 +93,7 @@ func ensureCollection(ctx context.Context, store collectionEnsurer) error {
 func loadConfig(getenv func(string) string) (initConfig, error) {
 	collection := strings.TrimSpace(getenv("RETRIEVAL_QDRANT_COLLECTION"))
 	if collection == "" {
-		collection = "evidence_v2"
+		collection = retrievalconfig.DefaultQdrantCollection
 	}
 	configuration := initConfig{
 		URL:        strings.TrimSpace(getenv("RETRIEVAL_QDRANT_URL")),

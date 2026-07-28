@@ -50,6 +50,8 @@ type Config struct {
 	RetrievalReadinessRequired                                                        bool
 	QueryRateLimit, QueryRateMaxKeys, QueryConcurrency                                int
 	QueryRateWindow                                                                   time.Duration
+	SetupAdminRateLimit, SetupAdminRateMaxKeys                                        int
+	SetupAdminRateWindow, BookUploadDeadline                                          time.Duration
 	BookUploadRateLimit, BookUploadRateMaxKeys                                        int
 	BookUploadRateWindow                                                              time.Duration
 	AnswerRateLimit                                                                   int
@@ -111,6 +113,18 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	setupAdminRateLimit, err := positiveInt("EDGE_SETUP_ADMIN_RATE_LIMIT", 5)
+	if err != nil {
+		return Config{}, err
+	}
+	setupAdminRateWindow, err := positiveDuration("EDGE_SETUP_ADMIN_RATE_WINDOW", 15*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	setupAdminRateMaxKeys, err := positiveInt("EDGE_SETUP_ADMIN_RATE_MAX_KEYS", 1000)
+	if err != nil {
+		return Config{}, err
+	}
 	bookUploadRateLimit, err := positiveInt("EDGE_BOOK_UPLOAD_RATE_LIMIT", 20)
 	if err != nil {
 		return Config{}, err
@@ -120,6 +134,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	bookUploadRateMaxKeys, err := positiveInt("EDGE_BOOK_UPLOAD_RATE_MAX_KEYS", 10000)
+	if err != nil {
+		return Config{}, err
+	}
+	bookUploadDeadline, err := positiveDuration("EDGE_BOOK_UPLOAD_DEADLINE", 2*time.Minute+10*time.Second)
 	if err != nil {
 		return Config{}, err
 	}
@@ -199,9 +217,13 @@ func Load() (Config, error) {
 		QueryRateWindow:            queryRateWindow,
 		QueryRateMaxKeys:           queryRateMaxKeys,
 		QueryConcurrency:           queryConcurrency,
+		SetupAdminRateLimit:        setupAdminRateLimit,
+		SetupAdminRateWindow:       setupAdminRateWindow,
+		SetupAdminRateMaxKeys:      setupAdminRateMaxKeys,
 		BookUploadRateLimit:        bookUploadRateLimit,
 		BookUploadRateWindow:       bookUploadRateWindow,
 		BookUploadRateMaxKeys:      bookUploadRateMaxKeys,
+		BookUploadDeadline:         bookUploadDeadline,
 		AnswerRateLimit:            answerRateLimit,
 		AnswerRateWindow:           answerRateWindow,
 		AnswerDeadline:             answerDeadline,

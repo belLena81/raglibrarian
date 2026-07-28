@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/grpcauth"
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
@@ -18,14 +17,9 @@ import (
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
-	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/embedding"
 	retrievalgrpc "github.com/belLena81/raglibrarian/services/retrieval-service/internal/grpc"
-	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/provider"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
-	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/throttle"
-	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/vector"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )
 
@@ -42,25 +36,12 @@ func main() {
 		os.Exit(1)
 	}
 	httpClient := &http.Client{Timeout: configuration.DependencyTimeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
-	teiLimiter, err := throttle.New(configuration.TEIRequestsPerSecond)
-	if err != nil {
-		log.Print("retrieval server could not configure embedding throttle")
-		os.Exit(1)
-	}
-	embedder, err := embedding.NewTEIWithOptions(configuration.TEIURL, httpClient, serviceLogger, teiLimiter, embedding.RawResponseLog{
-		Enabled:      configuration.TEILogRawResponse,
-		MaximumBytes: configuration.TEILogRawResponseMaxBytes,
-	})
+	embedder, err := configureEmbedder(configuration, httpClient, serviceLogger)
 	if err != nil {
 		log.Print("retrieval server could not configure embedding dependency")
 		os.Exit(1)
 	}
-	apiKey, err := readSecret(configuration.QdrantAPIKeyFile)
-	if err != nil {
-		log.Print("retrieval server could not read vector dependency credentials")
-		os.Exit(1)
-	}
-	store, err := vector.NewAuthenticatedQdrant(configuration.QdrantURL, configuration.QdrantCollection, apiKey, httpClient, configuration.MinimumSearchScore)
+	store, err := configureVectorStore(configuration, httpClient)
 	if err != nil {
 		log.Print("retrieval server could not configure vector dependency")
 		os.Exit(1)
@@ -109,7 +90,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if configuration.MetricsAddress != "" {
-		go serveReadiness(ctx, configuration.MetricsAddress, embedder, store, records)
+		go serveReadiness(ctx, configuration, embedder, store, records)
 	}
 	go func() {
 		<-ctx.Done()
@@ -125,10 +106,10 @@ type readinessDependency interface {
 	CheckReady(context.Context) error
 }
 
-func serveReadiness(ctx context.Context, address string, dependencies ...readinessDependency) {
+func serveReadiness(ctx context.Context, configuration config.Config, dependencies ...readinessDependency) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/readyz", func(writer http.ResponseWriter, request *http.Request) {
-		probeContext, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+		probeContext, cancel := context.WithTimeout(request.Context(), configuration.ReadinessProbeTimeout)
 		defer cancel()
 		for _, dependency := range dependencies {
 			if dependency.CheckReady(probeContext) != nil {
@@ -138,10 +119,10 @@ func serveReadiness(ctx context.Context, address string, dependencies ...readine
 		}
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	server := &http.Server{Addr: address, Handler: mux, ReadHeaderTimeout: 2 * time.Second, IdleTimeout: 30 * time.Second}
+	server := &http.Server{Addr: configuration.MetricsAddress, Handler: mux, ReadHeaderTimeout: configuration.ReadinessReadHeaderTimeout, IdleTimeout: configuration.ReadinessIdleTimeout}
 	go func() {
 		<-ctx.Done()
-		shutdownContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		shutdownContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), configuration.ReadinessShutdownTimeout)
 		defer cancel()
 		_ = server.Shutdown(shutdownContext)
 	}()
@@ -166,46 +147,4 @@ func readSecret(path string) (string, error) {
 		return "", os.ErrInvalid
 	}
 	return secret, nil
-}
-
-func configureSummaryProvider(configuration config.Config, serviceLogger *zap.Logger) (application.SummaryProvider, error) {
-	if configuration.SummaryLLMBaseURL == "" {
-		return nil, nil
-	}
-	apiKey, err := provider.ReadAPIKey(configuration.SummaryLLMAPIKeyFile)
-	if err != nil {
-		if serviceLogger != nil {
-			serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "api_key_unavailable"))
-		}
-		return nil, nil
-	}
-	httpClient, err := provider.NewHTTPClient(configuration.SummaryLLMCAFile, configuration.SummaryLLMTimeout)
-	if err != nil {
-		if serviceLogger != nil {
-			serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "transport_unavailable"))
-		}
-		return nil, nil
-	}
-	limit, err := throttle.NewPerMinute(configuration.SummaryLLMRequestsPerMinute)
-	if err != nil {
-		if serviceLogger != nil {
-			serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "rate_limit_invalid"))
-		}
-		return nil, nil
-	}
-	outputMode, err := provider.ParseSummaryOutputMode(configuration.SummaryLLMOutputMode)
-	if err != nil {
-		if serviceLogger != nil {
-			serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "output_mode_invalid"))
-		}
-		return nil, nil
-	}
-	summaryProvider, err := provider.NewOpenAI(configuration.SummaryLLMBaseURL, configuration.SummaryLLMModel, apiKey, httpClient, serviceLogger, limit, configuration.SummaryLLMMaxOutputTokens, outputMode)
-	if err != nil {
-		if serviceLogger != nil {
-			serviceLogger.Warn("retrieval summary provider disabled", zap.String("reason", "configuration_invalid"))
-		}
-		return nil, nil
-	}
-	return summaryProvider, nil
 }

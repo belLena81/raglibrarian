@@ -4,21 +4,17 @@ package provider
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"path"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/belLena81/raglibrarian/pkg/providerhttp"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/domain"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/throttle"
@@ -39,31 +35,11 @@ type OpenAI struct {
 }
 
 func NewOpenAI(baseURL, model, apiKey string, client *http.Client, limit *throttle.Limiter, logErrorBody bool) (*OpenAI, error) {
-	parsed, err := url.Parse(baseURL)
-	if err != nil || len(baseURL) > 2048 || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
-		strings.TrimSpace(model) == "" || len(model) > 256 || strings.ContainsAny(model, "\r\n") || strings.TrimSpace(apiKey) == "" || strings.ContainsAny(apiKey, "\r\n") || client == nil {
+	endpoint, err := providerhttp.OpenAIChatCompletionsURL(baseURL)
+	if err != nil || strings.TrimSpace(model) == "" || len(model) > 256 || strings.ContainsAny(model, "\r\n") || strings.TrimSpace(apiKey) == "" || strings.ContainsAny(apiKey, "\r\n") || client == nil {
 		return nil, errors.New("invalid provider configuration")
 	}
-	endpoint := *parsed
-	endpoint.Path = openAIChatCompletionsPath(parsed.Hostname(), parsed.Path)
-	return &OpenAI{endpoint: &endpoint, model: model, apiKey: apiKey, client: client, limit: limit, logErrorBody: logErrorBody}, nil
-}
-
-func openAIChatCompletionsPath(host, basePath string) string {
-	trimmed := strings.TrimRight(basePath, "/")
-	if trimmed == "" {
-		if strings.EqualFold(host, "openrouter.ai") {
-			return "/api/v1/chat/completions"
-		}
-		return "/v1/chat/completions"
-	}
-	if strings.EqualFold(host, "openrouter.ai") && trimmed == "/api/v1" {
-		return "/api/v1/chat/completions"
-	}
-	if path.Base(trimmed) == "v1" {
-		return path.Join(trimmed, "chat/completions")
-	}
-	return path.Join(trimmed, "v1/chat/completions")
+	return &OpenAI{endpoint: endpoint, model: model, apiKey: apiKey, client: client, limit: limit, logErrorBody: logErrorBody}, nil
 }
 
 type chatRequest struct {
@@ -135,7 +111,7 @@ func (p *OpenAI) Generate(ctx context.Context, input application.ProviderRequest
 
 func (p *OpenAI) generate(ctx context.Context, input application.ProviderRequest, systemPrompt string, responseFormat *responseFormat) ([]domain.AnswerSegment, bool, error) {
 	if wait, err := p.wait(ctx); err != nil {
-		return nil, false, &providerError{code: "provider_rate_limited", detail: sanitizeProviderDetail(wait.String()), err: err}
+		return nil, false, &providerError{code: "provider_rate_limited", detail: providerhttp.SanitizeDetail(wait.String()), err: err}
 	}
 	userJSON, err := json.Marshal(userPayload{Question: input.Question, Evidence: input.Evidence})
 	if err != nil {
@@ -156,20 +132,20 @@ func (p *OpenAI) generate(ctx context.Context, input application.ProviderRequest
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint.String(), bytes.NewReader(payload))
 	if err != nil {
-		return nil, false, &providerError{code: "provider_request_create_failed", detail: sanitizeProviderDetail(err.Error()), err: err}
+		return nil, false, &providerError{code: "provider_request_create_failed", detail: providerhttp.SanitizeDetail(err.Error()), err: err}
 	}
 	request.Header.Set("Authorization", "Bearer "+p.apiKey)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := p.client.Do(request) // #nosec G704 -- the HTTPS endpoint is operator-configured, startup-validated, and never derived from public input.
 	if err != nil {
-		return nil, false, &providerError{code: classifyProviderRequestError(err), detail: sanitizeProviderDetail(err.Error()), err: err}
+		return nil, false, &providerError{code: providerhttp.ClassifyRequestError(err), detail: providerhttp.SanitizeDetail(err.Error()), err: err}
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.ReadAll(io.LimitReader(response.Body, maximumProviderResponseBytes+1))
 		detail := fmt.Sprintf("provider_http_status_%d", response.StatusCode)
 		if p.logErrorBody {
-			if preview := sanitizeProviderDetail(response.Status); preview != "" {
+			if preview := providerhttp.SanitizeDetail(response.Status); preview != "" {
 				detail = preview
 			}
 		}
@@ -223,51 +199,6 @@ func (p *OpenAI) wait(ctx context.Context) (time.Duration, error) {
 		return 0, nil
 	}
 	return p.limit.Wait(ctx)
-}
-
-func sanitizeProviderDetail(value string) string {
-	value = strings.TrimSpace(strings.Join(strings.Fields(value), " "))
-	if value == "" {
-		return ""
-	}
-	if utf8.RuneCountInString(value) > 160 {
-		runes := []rune(value)
-		value = string(runes[:160])
-	}
-	return value
-}
-
-func classifyProviderRequestError(err error) string {
-	if err == nil {
-		return "provider_unavailable"
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "provider_timeout"
-	}
-	if errors.Is(err, context.Canceled) {
-		return "provider_canceled"
-	}
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) && urlErr.Err != nil {
-		return classifyProviderRequestError(urlErr.Err)
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return "provider_timeout"
-	}
-	text := err.Error()
-	switch {
-	case strings.Contains(text, "x509:"):
-		return "provider_tls_error"
-	case strings.Contains(text, "certificate"):
-		return "provider_tls_error"
-	case strings.Contains(text, "no such host") || strings.Contains(text, "lookup "):
-		return "provider_dns_error"
-	case strings.Contains(text, "connection refused"), strings.Contains(text, "connect: connection timed out"), strings.Contains(text, "network is unreachable"), strings.Contains(text, "connection reset by peer"):
-		return "provider_network_error"
-	default:
-		return "provider_transport_error"
-	}
 }
 
 func looksLikeJSON(content []byte) bool {
@@ -571,39 +502,17 @@ func rejectDuplicateObjectFields(data []byte) error {
 }
 
 func ReadAPIKey(filePath string) (string, error) {
-	if filePath == "" {
-		return "", errors.New("invalid provider credential file")
-	}
-	file, err := os.Open(filePath) // #nosec G304 -- operator-controlled secret path.
+	value, err := providerhttp.ReadSingleLineSecret(filePath, 4096)
 	if err != nil {
-		return "", errors.New("invalid provider credential file")
-	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	pathInfo, pathErr := os.Lstat(filePath)
-	if err != nil || pathErr != nil || !info.Mode().IsRegular() || !pathInfo.Mode().IsRegular() || info.Size() < 1 || info.Size() > 4096 || info.Mode().Perm()&0o077 != 0 {
-		return "", errors.New("invalid provider credential file")
-	}
-	contents, err := io.ReadAll(io.LimitReader(file, 4097))
-	value := strings.TrimSpace(string(contents))
-	if err != nil || value == "" || strings.ContainsAny(value, "\r\n") {
 		return "", errors.New("invalid provider credential file")
 	}
 	return value, nil
 }
 
 func NewHTTPClient(caFile string) (*http.Client, error) {
-	pool, err := x509.SystemCertPool()
+	client, err := providerhttp.NewTLSHTTPClient(caFile, 0)
 	if err != nil {
 		return nil, errors.New("load provider trust roots")
 	}
-	if caFile != "" {
-		contents, readErr := os.ReadFile(caFile) // #nosec G304 -- operator-controlled trust file.
-		if readErr != nil || !pool.AppendCertsFromPEM(contents) {
-			return nil, errors.New("load provider trust roots")
-		}
-	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: pool}
-	return &http.Client{Transport: transport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, nil
+	return client, nil
 }

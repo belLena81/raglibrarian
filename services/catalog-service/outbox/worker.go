@@ -6,16 +6,13 @@ import (
 	"errors"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 	"github.com/rabbitmq/amqp091-go"
 
 	"github.com/belLena81/raglibrarian/services/catalog-service/repository"
 )
 
-const (
-	uploadExchange = "raglibrarian.events.v1"
-	statusExchange = "raglibrarian.edge-status.v1"
-	drainBudget    = 250 * time.Millisecond
-)
+const drainBudget = 250 * time.Millisecond
 
 type store interface {
 	ClaimOutbox(context.Context, time.Time, time.Duration) ([]repository.PendingOutboxEvent, error)
@@ -113,12 +110,12 @@ func publishPending(ctx context.Context, store store, publisher publisher, recor
 
 func publicationRoute(eventType string) (exchange, routingKey string, mandatory bool, err error) {
 	switch eventType {
-	case "catalog.book.uploaded.v1",
-		"catalog.book.reindex-requested.v1",
-		"catalog.book.deletion-requested.v1":
-		return uploadExchange, eventType, true, nil
-	case "catalog.book.processing-status-changed.v1":
-		return statusExchange, eventType, false, nil
+	case contracts.EventCatalogBookUploaded,
+		contracts.EventCatalogBookReindexRequested,
+		contracts.EventCatalogBookDeletionRequested:
+		return contracts.ExchangeEvents, eventType, true, nil
+	case contracts.EventCatalogBookProcessingStatusChange:
+		return contracts.ExchangeEdgeStatus, eventType, false, nil
 	default:
 		return "", "", false, errors.New("unsupported catalog outbox event")
 	}

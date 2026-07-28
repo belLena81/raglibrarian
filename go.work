@@ -4,11 +4,13 @@ toolchain go1.26.5
 
 use (
 	./pkg/auth
+	./pkg/contracts
 	./pkg/grpcauth
 	./pkg/indexprofile
 	./pkg/internaltls
 	./pkg/logger
 	./pkg/process
+	./pkg/providerhttp
 	./pkg/proto
 	./services/answer-service
 	./services/catalog-service

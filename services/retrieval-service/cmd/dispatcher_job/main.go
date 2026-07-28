@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 	"github.com/belLena81/raglibrarian/pkg/process"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/rabbitmq"
@@ -85,7 +86,7 @@ func run(ctx context.Context) error {
 		return err
 	}
 	for _, record := range pending {
-		if err = publisher.Publish(ctx, "raglibrarian.retrieval.events.v1", record.EventType, amqp091.Publishing{ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent, Type: record.EventType, MessageId: record.EventID, Body: record.Payload}); err != nil {
+		if err = publisher.Publish(ctx, contracts.ExchangeRetrievalEvents, record.EventType, amqp091.Publishing{ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent, Type: record.EventType, MessageId: record.EventID, Body: record.Payload}); err != nil {
 			_ = records.DeferOutbox(ctx, record.EventID, time.Now().UTC())
 			return errors.New("publish retrieval event")
 		}

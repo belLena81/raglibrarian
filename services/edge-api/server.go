@@ -28,9 +28,13 @@ type RouterConfig struct {
 	QueryRateWindow       time.Duration
 	QueryRateMaxKeys      int
 	QueryConcurrency      int
+	SetupAdminRateLimit   int
+	SetupAdminRateWindow  time.Duration
+	SetupAdminRateMaxKeys int
 	BookUploadRateLimit   int
 	BookUploadRateWindow  time.Duration
 	BookUploadRateMaxKeys int
+	BookUploadDeadline    time.Duration
 }
 
 // NewRouter wires all public routes and mandatory authentication dependencies.
@@ -107,7 +111,11 @@ func NewRouter(
 	router.Route("/setup", func(router chi.Router) {
 		router.Get("/status", setup.Status)
 		router.Group(func(router chi.Router) {
-			router.Use(middleware.FixedWindowRateLimit(5, 15*time.Minute, 1000))
+			router.Use(middleware.FixedWindowRateLimit(
+				setupAdminRateLimit(config.SetupAdminRateLimit),
+				setupAdminRateWindow(config.SetupAdminRateWindow),
+				setupAdminRateMaxKeys(config.SetupAdminRateMaxKeys),
+			))
 			router.Post("/admin", setup.CreateAdmin)
 		})
 	})
@@ -141,7 +149,7 @@ func NewRouter(
 						bookUploadRateWindow(config.BookUploadRateWindow),
 						bookUploadRateMaxKeys(config.BookUploadRateMaxKeys),
 					))
-					uploadRouter.Use(middleware.UploadDeadline)
+					uploadRouter.Use(middleware.UploadDeadlineWithBudget(bookUploadDeadline(config.BookUploadDeadline)))
 					uploadRouter.Post("/", booksHandler.Upload)
 				})
 				router.Post("/{book_id}/reindex", booksHandler.Reindex)
@@ -199,4 +207,32 @@ func bookUploadRateMaxKeys(value int) int {
 		return value
 	}
 	return 10000
+}
+
+func setupAdminRateLimit(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 5
+}
+
+func setupAdminRateWindow(value time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return 15 * time.Minute
+}
+
+func setupAdminRateMaxKeys(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 1000
+}
+
+func bookUploadDeadline(value time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return 2*time.Minute + 10*time.Second
 }

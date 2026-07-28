@@ -7,14 +7,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/diagnostic"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/repository"
 	"github.com/rabbitmq/amqp091-go"
 )
 
-const UploadRoute = "catalog.book.uploaded.v1"
-const DeletionRoute = "catalog.book.deletion-requested.v1"
+const UploadRoute = contracts.EventCatalogBookUploaded
+const DeletionRoute = contracts.EventCatalogBookDeletionRequested
 const RetryExchange = "raglibrarian.ingestion.retry.v1"
 
 const (

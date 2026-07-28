@@ -8,6 +8,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 	"github.com/rabbitmq/amqp091-go"
 	"google.golang.org/protobuf/proto"
 
@@ -75,7 +76,7 @@ func consume(ctx context.Context, uri, queue string, hub Hub) error {
 	if err != nil {
 		return err
 	}
-	if err = channel.QueueBind(declared.Name, "catalog.book.processing-status-changed.v1", "raglibrarian.edge-status.v1", false, nil); err != nil {
+	if err = channel.QueueBind(declared.Name, contracts.EventCatalogBookProcessingStatusChange, contracts.ExchangeEdgeStatus, false, nil); err != nil {
 		return err
 	}
 	deliveries, err := channel.Consume(declared.Name, "", false, true, false, false, nil)
@@ -108,7 +109,7 @@ func consume(ctx context.Context, uri, queue string, hub Hub) error {
 }
 
 func decode(delivery amqp091.Delivery) (handler.BookStatusEvent, bool) {
-	if delivery.ContentType != "application/x-protobuf" || delivery.Type != "catalog.book.processing-status-changed.v1" ||
+	if delivery.ContentType != "application/x-protobuf" || delivery.Type != contracts.EventCatalogBookProcessingStatusChange ||
 		delivery.MessageId == "" || len(delivery.Body) == 0 || len(delivery.Body) > maxEventBytes {
 		return handler.BookStatusEvent{}, false
 	}

@@ -5,19 +5,24 @@ import (
 	"time"
 )
 
-const uploadBudget = 2*time.Minute + 10*time.Second
+// UploadDeadlineWithBudget extends only the connection deadline needed to
+// stream a valid book upload. It must run before a handler reads the multipart
+// body.
+func UploadDeadlineWithBudget(uploadBudget time.Duration) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			controller := http.NewResponseController(w)
+			deadline := time.Now().Add(uploadBudget)
+			if controller.SetReadDeadline(deadline) != nil || controller.SetWriteDeadline(deadline) != nil {
+				w.Header().Set("Cache-Control", "no-store, private")
+				http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
 
-// UploadDeadline extends only the connection deadline needed to stream a valid
-// book upload. It must run before a handler reads the multipart body.
 func UploadDeadline(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		controller := http.NewResponseController(w)
-		deadline := time.Now().Add(uploadBudget)
-		if controller.SetReadDeadline(deadline) != nil || controller.SetWriteDeadline(deadline) != nil {
-			w.Header().Set("Cache-Control", "no-store, private")
-			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+	return UploadDeadlineWithBudget(2*time.Minute + 10*time.Second)(next)
 }

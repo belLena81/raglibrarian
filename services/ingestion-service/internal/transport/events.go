@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/application"
@@ -17,10 +18,10 @@ import (
 )
 
 const (
-	StartedRoute          = "ingestion.book.processing-started.v1"
-	ReadyRoute            = "ingestion.book.chunks-ready.v1"
-	FailedRoute           = "ingestion.book.processing-failed.v1"
-	ArtifactsDeletedRoute = "ingestion.book.artifacts-deleted.v1"
+	StartedRoute          = contracts.EventIngestionBookProcessingStarted
+	ReadyRoute            = contracts.EventIngestionBookChunksReady
+	FailedRoute           = contracts.EventIngestionBookProcessingFailed
+	ArtifactsDeletedRoute = contracts.EventIngestionBookArtifactsDeleted
 )
 
 func DecodeUploaded(payload []byte) (application.UploadedEvent, error) {

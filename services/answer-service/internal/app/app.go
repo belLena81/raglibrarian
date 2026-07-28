@@ -19,9 +19,7 @@ import (
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/application"
 	answergrpc "github.com/belLena81/raglibrarian/services/answer-service/internal/grpc"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/metrics"
-	"github.com/belLena81/raglibrarian/services/answer-service/internal/provider"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/retrieval"
-	"github.com/belLena81/raglibrarian/services/answer-service/internal/throttle"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )
@@ -50,19 +48,7 @@ func New(configuration config.Config) (*App, error) {
 	if err != nil {
 		return nil, errors.New("load client transport credentials")
 	}
-	apiKey, err := provider.ReadAPIKey(configuration.LLMAPIKeyFile)
-	if err != nil {
-		return nil, errors.New("load provider credentials")
-	}
-	httpClient, err := provider.NewHTTPClient(configuration.LLMCAFile)
-	if err != nil {
-		return nil, errors.New("configure provider transport")
-	}
-	limit, err := throttle.NewPerMinute(configuration.LLMRequestsPerMinute)
-	if err != nil {
-		return nil, errors.New("configure provider throttle")
-	}
-	providerAdapter, err := provider.NewOpenAI(configuration.LLMBaseURL, configuration.LLMModel, apiKey, httpClient, limit, configuration.LogProviderErrorBody)
+	providerAdapter, err := configureLLMProvider(configuration)
 	if err != nil {
 		return nil, errors.New("configure provider")
 	}

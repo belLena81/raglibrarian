@@ -16,6 +16,7 @@ func TestConfigureSummaryProviderDisablesInvalidConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider, err := configureSummaryProvider(config.Config{
+		SummaryLLMProviderKind:      "openai_compatible",
 		SummaryLLMBaseURL:           "http://openrouter.ai",
 		SummaryLLMModel:             "ohere/north-mini-code:free",
 		SummaryLLMAPIKeyFile:        apiKeyFile,
@@ -37,6 +38,7 @@ func TestConfigureSummaryProviderRejectsPermissiveAPIKeyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider, err := configureSummaryProvider(config.Config{
+		SummaryLLMProviderKind:      "openai_compatible",
 		SummaryLLMBaseURL:           "https://openrouter.ai",
 		SummaryLLMModel:             "ohere/north-mini-code:free",
 		SummaryLLMAPIKeyFile:        apiKeyFile,

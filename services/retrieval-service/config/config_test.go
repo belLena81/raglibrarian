@@ -26,6 +26,9 @@ func TestLoadRequiresCompletePrivateRuntimeConfiguration(t *testing.T) {
 	if configuration.GRPCAddress != ":8083" || configuration.QdrantCollection != "evidence_v2" {
 		t.Fatalf("unexpected configuration: %#v", configuration)
 	}
+	if configuration.EmbeddingProviderKind != "tei" || configuration.VectorProviderKind != "qdrant" || configuration.SummaryLLMProviderKind != "openai_compatible" {
+		t.Fatalf("unexpected provider kinds: %#v", configuration)
+	}
 }
 
 func TestLoadRejectsPublicDependencyURL(t *testing.T) {
@@ -259,6 +262,34 @@ func TestLoadRejectsInvalidSummaryProviderOutputMode(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsUnknownProviderKinds(t *testing.T) {
+	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+	t.Setenv("RETRIEVAL_EMBEDDING_PROVIDER", "voyage")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted an invalid embedding provider kind")
+	}
+
+	t.Setenv("RETRIEVAL_EMBEDDING_PROVIDER", "tei")
+	t.Setenv("RETRIEVAL_VECTOR_PROVIDER", "pinecone")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted an invalid vector provider kind")
+	}
+
+	t.Setenv("RETRIEVAL_VECTOR_PROVIDER", "qdrant")
+	t.Setenv("RETRIEVAL_SUMMARY_LLM_PROVIDER", "anthropic")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted an invalid summary provider kind")
+	}
+}
+
 func TestLoadOverridesRetrievalTimeouts(t *testing.T) {
 	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
 	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
@@ -286,6 +317,31 @@ func TestLoadOverridesRetrievalTimeouts(t *testing.T) {
 	}
 	if configuration.SummaryLLMTimeout != 30*time.Second {
 		t.Fatalf("SummaryLLMTimeout = %s, want 30s", configuration.SummaryLLMTimeout)
+	}
+}
+
+func TestLoadOverridesReadinessPolicy(t *testing.T) {
+	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+	t.Setenv("RETRIEVAL_READY_PROBE_TIMEOUT", "4s")
+	t.Setenv("RETRIEVAL_READY_READ_HEADER_TIMEOUT", "5s")
+	t.Setenv("RETRIEVAL_READY_IDLE_TIMEOUT", "40s")
+	t.Setenv("RETRIEVAL_READY_SHUTDOWN_TIMEOUT", "6s")
+
+	configuration, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if configuration.ReadinessProbeTimeout != 4*time.Second || configuration.ReadinessReadHeaderTimeout != 5*time.Second ||
+		configuration.ReadinessIdleTimeout != 40*time.Second || configuration.ReadinessShutdownTimeout != 6*time.Second {
+		t.Fatalf("unexpected readiness policy: %#v", configuration)
 	}
 }
 
@@ -463,6 +519,57 @@ func TestLoadWorkerParsesTEIRawResponseDiagnostics(t *testing.T) {
 	}
 	if !configuration.TEILogRawResponse || configuration.TEILogRawResponseMaxBytes != 1024 {
 		t.Fatalf("unexpected TEI diagnostics config: %#v", configuration)
+	}
+}
+
+func TestLoadWorkerOverridesRuntimePolicy(t *testing.T) {
+	setWorkerEnvironment(t)
+	t.Setenv("RETRIEVAL_WORKER_DB_PING_TIMEOUT", "7s")
+	t.Setenv("RETRIEVAL_WORKER_DEPENDENCY_TIMEOUT", "80s")
+	t.Setenv("RETRIEVAL_WORKER_COLLECTION_TIMEOUT", "11s")
+	t.Setenv("RETRIEVAL_WORKER_READINESS_INITIAL_DELAY", "2s")
+	t.Setenv("RETRIEVAL_WORKER_READINESS_MAX_DELAY", "9s")
+	t.Setenv("RETRIEVAL_WORKER_READINESS_MAX_ATTEMPTS", "12")
+	t.Setenv("RETRIEVAL_WORKER_READINESS_PROBE_TIMEOUT", "3s")
+	t.Setenv("RETRIEVAL_WORKER_RECONNECT_INITIAL_BACKOFF", "2s")
+	t.Setenv("RETRIEVAL_WORKER_RECONNECT_MAX_BACKOFF", "35s")
+	t.Setenv("RETRIEVAL_WORKER_DISPATCH_INTERVAL", "750ms")
+	t.Setenv("RETRIEVAL_WORKER_CLEANUP_INTERVAL", "16m")
+	t.Setenv("RETRIEVAL_WORKER_CLEANUP_TIMEOUT", "31s")
+	t.Setenv("RETRIEVAL_WORKER_STALE_BATCH_AGE", "17m")
+	t.Setenv("RETRIEVAL_WORKER_FAILURE_RECORD_TIMEOUT", "11s")
+	t.Setenv("RETRIEVAL_WORKER_PUBLISH_TIMEOUT", "12s")
+	t.Setenv("RETRIEVAL_WORKER_READY_READ_HEADER_TIMEOUT", "4s")
+	t.Setenv("RETRIEVAL_WORKER_READY_IDLE_TIMEOUT", "35s")
+	t.Setenv("RETRIEVAL_WORKER_READY_SHUTDOWN_TIMEOUT", "5s")
+
+	configuration, err := LoadWorker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuration.DBPingTimeout != 7*time.Second || configuration.DependencyTimeout != 80*time.Second || configuration.CollectionEnsureTimeout != 11*time.Second ||
+		configuration.ReadinessInitialDelay != 2*time.Second || configuration.ReadinessMaxDelay != 9*time.Second || configuration.ReadinessMaxAttempts != 12 ||
+		configuration.ReadinessProbeTimeout != 3*time.Second || configuration.ReconnectInitialBackoff != 2*time.Second || configuration.ReconnectMaxBackoff != 35*time.Second ||
+		configuration.DispatchInterval != 750*time.Millisecond || configuration.CleanupInterval != 16*time.Minute || configuration.CleanupTimeout != 31*time.Second ||
+		configuration.StaleBatchAge != 17*time.Minute || configuration.FailureRecordTimeout != 11*time.Second || configuration.PublishTimeout != 12*time.Second ||
+		configuration.ReadinessReadHeaderTimeout != 4*time.Second || configuration.ReadinessIdleTimeout != 35*time.Second || configuration.ReadinessShutdownTimeout != 5*time.Second {
+		t.Fatalf("unexpected worker policy: %#v", configuration)
+	}
+}
+
+func TestLoadWorkerRejectsInvalidRuntimePolicy(t *testing.T) {
+	setWorkerEnvironment(t)
+	t.Setenv("RETRIEVAL_WORKER_READINESS_INITIAL_DELAY", "11s")
+	t.Setenv("RETRIEVAL_WORKER_READINESS_MAX_DELAY", "10s")
+	if _, err := LoadWorker(); err == nil {
+		t.Fatal("LoadWorker() accepted readiness initial delay above max delay")
+	}
+
+	setWorkerEnvironment(t)
+	t.Setenv("RETRIEVAL_WORKER_RECONNECT_INITIAL_BACKOFF", "31s")
+	t.Setenv("RETRIEVAL_WORKER_RECONNECT_MAX_BACKOFF", "30s")
+	if _, err := LoadWorker(); err == nil {
+		t.Fatal("LoadWorker() accepted reconnect initial backoff above max backoff")
 	}
 }
 

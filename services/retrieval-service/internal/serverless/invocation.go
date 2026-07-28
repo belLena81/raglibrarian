@@ -3,6 +3,8 @@ package serverless
 
 import (
 	"errors"
+
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 )
 
 var ErrInvalidMessage = errors.New("invalid broker message")
@@ -10,10 +12,10 @@ var ErrInvalidMessage = errors.New("invalid broker message")
 const maximumMessageBytes = 256 << 10
 
 const (
-	MetadataQueue  = "retrieval.book-uploaded.v1"
-	ManifestQueue  = "retrieval.chunks-ready.v1"
-	IndexQueue     = "retrieval.index-batch.v1"
-	LifecycleQueue = "retrieval.book-lifecycle.v1"
+	MetadataQueue  = contracts.QueueRetrievalMetadata
+	ManifestQueue  = contracts.QueueRetrievalManifest
+	IndexQueue     = contracts.QueueRetrievalIndex
+	LifecycleQueue = contracts.QueueRetrievalLifecycle
 )
 
 type Message struct {
@@ -31,19 +33,19 @@ func Validate(message Message) error {
 	}
 	switch message.Queue {
 	case MetadataQueue:
-		if message.EventType != "catalog.book.uploaded.v1" {
+		if message.EventType != contracts.EventCatalogBookUploaded {
 			return ErrInvalidMessage
 		}
 	case ManifestQueue:
-		if message.EventType != "ingestion.book.chunks-ready.v1" {
+		if message.EventType != contracts.EventIngestionBookChunksReady {
 			return ErrInvalidMessage
 		}
 	case IndexQueue:
-		if message.EventType != "retrieval.index-batch.v1" {
+		if message.EventType != contracts.EventRetrievalIndexBatch {
 			return ErrInvalidMessage
 		}
 	case LifecycleQueue:
-		if message.EventType != "catalog.book.reindex-requested.v1" && message.EventType != "catalog.book.deletion-requested.v1" {
+		if message.EventType != contracts.EventCatalogBookReindexRequested && message.EventType != contracts.EventCatalogBookDeletionRequested {
 			return ErrInvalidMessage
 		}
 	}

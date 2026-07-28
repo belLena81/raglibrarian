@@ -3,6 +3,7 @@ module github.com/belLena81/raglibrarian/services/catalog-service
 go 1.26.5
 
 require (
+	github.com/belLena81/raglibrarian/pkg/contracts v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/pkg/grpcauth v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/pkg/internaltls v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/pkg/logger v0.0.0-00010101000000-000000000000
@@ -43,6 +44,7 @@ require (
 )
 
 replace (
+	github.com/belLena81/raglibrarian/pkg/contracts => ../../pkg/contracts
 	github.com/belLena81/raglibrarian/pkg/grpcauth => ../../pkg/grpcauth
 	github.com/belLena81/raglibrarian/pkg/internaltls => ../../pkg/internaltls
 	github.com/belLena81/raglibrarian/pkg/logger => ../../pkg/logger

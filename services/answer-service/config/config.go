@@ -20,6 +20,7 @@ type Config struct {
 	MetricsAddress       string
 	RetrievalAddress     string
 	RetrievalDNSName     string
+	LLMProviderKind      string
 	LLMBaseURL           string
 	LLMModel             string
 	LLMRequestsPerMinute int
@@ -48,7 +49,8 @@ func Load() (Config, error) {
 	providerTimeout, providerErr := duration("ANSWER_PROVIDER_TIMEOUT", defaults.ProviderTimeout, 100*time.Millisecond, 5*time.Minute)
 	configuration := Config{
 		GRPCAddress: os.Getenv("ANSWER_GRPC_ADDR"), MetricsAddress: os.Getenv("ANSWER_METRICS_ADDR"), RetrievalAddress: os.Getenv("ANSWER_RETRIEVAL_GRPC_ADDR"),
-		RetrievalDNSName: os.Getenv("ANSWER_RETRIEVAL_TLS_SERVER_NAME"), LLMBaseURL: os.Getenv("ANSWER_LLM_BASE_URL"), LLMModel: os.Getenv("ANSWER_LLM_MODEL"),
+		RetrievalDNSName: os.Getenv("ANSWER_RETRIEVAL_TLS_SERVER_NAME"), LLMProviderKind: strings.ToLower(strings.TrimSpace(optional("ANSWER_LLM_PROVIDER", "openai_compatible"))),
+		LLMBaseURL: os.Getenv("ANSWER_LLM_BASE_URL"), LLMModel: os.Getenv("ANSWER_LLM_MODEL"),
 		LLMAPIKeyFile: os.Getenv("ANSWER_LLM_API_KEY_FILE"), LLMCAFile: os.Getenv("ANSWER_LLM_CA_FILE"),
 		TLS:   internaltls.Files{CA: os.Getenv("ANSWER_TLS_CA_FILE"), Certificate: os.Getenv("ANSWER_TLS_CERT_FILE"), Key: os.Getenv("ANSWER_TLS_KEY_FILE")},
 		RunAs: process.Identity{UID: uid, GID: gid}, Limits: application.Limits{MaximumEvidence: maximumEvidence, MaximumContextBytes: maximumContext,
@@ -75,7 +77,8 @@ func Load() (Config, error) {
 		}
 	}
 	if !validListenAddress(configuration.GRPCAddress) || !validListenAddress(configuration.MetricsAddress) || !validServiceAddress(configuration.RetrievalAddress) ||
-		configuration.RetrievalDNSName != "retrieval-service" || !validProviderURL(configuration.LLMBaseURL) || strings.TrimSpace(configuration.LLMModel) == "" || len(configuration.LLMModel) > 256 || strings.ContainsAny(configuration.LLMModel, "\r\n") ||
+		configuration.RetrievalDNSName != "retrieval-service" || !validLLMProviderKind(configuration.LLMProviderKind) ||
+		!validProviderURL(configuration.LLMBaseURL) || strings.TrimSpace(configuration.LLMModel) == "" || len(configuration.LLMModel) > 256 || strings.ContainsAny(configuration.LLMModel, "\r\n") ||
 		configuration.LLMAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		configuration.Limits.MaximumEvidenceBytes > configuration.Limits.MaximumContextBytes || configuration.Limits.RetrievalTimeout >= configuration.Limits.RequestTimeout ||
 		configuration.Limits.ProviderTimeout >= configuration.Limits.RequestTimeout {
@@ -151,4 +154,15 @@ func providerRequestsPerMinute(key, model string) (int, error) {
 		return 15, nil
 	}
 	return 0, nil
+}
+
+func optional(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func validLLMProviderKind(value string) bool {
+	return value == "openai_compatible"
 }

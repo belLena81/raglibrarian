@@ -16,6 +16,7 @@ import (
 
 	awscfg "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 	retrievalconfig "github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/artifact"
@@ -151,7 +152,7 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 			return nil, err
 		}
 		httpClient := &http.Client{Timeout: 90 * time.Second, CheckRedirect: rejectRedirect}
-		index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, "evidence_v2", secret.QdrantAPIKey, httpClient, minimumSearchScore)
+		index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, retrievalconfig.DefaultQdrantCollection, secret.QdrantAPIKey, httpClient, minimumSearchScore)
 		if err != nil {
 			pool.Close()
 			return nil, err
@@ -213,7 +214,7 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
-	index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, "evidence_v2", secret.QdrantAPIKey, httpClient, minimumSearchScore)
+	index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, retrievalconfig.DefaultQdrantCollection, secret.QdrantAPIKey, httpClient, minimumSearchScore)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -270,7 +271,7 @@ func NewCleanupRuntime(ctx context.Context) (*Runtime, error) {
 	}
 	records := repository.NewPostgres(pool)
 	httpClient := &http.Client{Timeout: 90 * time.Second, CheckRedirect: rejectRedirect}
-	index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, "evidence_v2", secret.QdrantAPIKey, httpClient, minimumSearchScore)
+	index, err := vector.NewAuthenticatedQdrant(secret.QdrantURL, retrievalconfig.DefaultQdrantCollection, secret.QdrantAPIKey, httpClient, minimumSearchScore)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -322,14 +323,14 @@ func (r *Runtime) Plan(ctx context.Context, event RabbitEvent) error {
 	if err != nil {
 		return err
 	}
-	if queueContains(queue, "retrieval.book-uploaded.v1") {
+	if queueContains(queue, contracts.QueueRetrievalMetadata) {
 		metadata, decodeErr := transport.DecodeMetadata(payload)
 		if decodeErr != nil {
 			return decodeErr
 		}
 		return r.planner.HandleMetadata(ctx, metadata)
 	}
-	if queueContains(queue, "retrieval.book-lifecycle.v1") {
+	if queueContains(queue, contracts.QueueRetrievalLifecycle) {
 		if r.lifecycle == nil {
 			return errors.New("lifecycle processor unavailable")
 		}
@@ -343,7 +344,7 @@ func (r *Runtime) Plan(ctx context.Context, event RabbitEvent) error {
 		}
 		return r.lifecycle.HandleDeletion(ctx, deletion)
 	}
-	if !queueContains(queue, "retrieval.chunks-ready.v1") {
+	if !queueContains(queue, contracts.QueueRetrievalManifest) {
 		return application.ErrInvalidEvent
 	}
 	manifest, err := transport.DecodeManifestEnvelope(payload)
@@ -467,7 +468,7 @@ func (r *Runtime) Dispatch(ctx context.Context) error {
 		return err
 	}
 	for _, record := range records {
-		publishErr := publisher.Publish(ctx, "raglibrarian.retrieval.events.v1", record.EventType, amqp091.Publishing{ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent, Type: record.EventType, MessageId: record.EventID, Body: record.Payload})
+		publishErr := publisher.Publish(ctx, contracts.ExchangeRetrievalEvents, record.EventType, amqp091.Publishing{ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent, Type: record.EventType, MessageId: record.EventID, Body: record.Payload})
 		if publishErr != nil {
 			_ = r.repository.DeferOutbox(ctx, record.EventID, time.Now().UTC())
 			return errors.New("publish retrieval event")

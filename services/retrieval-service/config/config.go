@@ -19,23 +19,34 @@ import (
 const (
 	defaultMinimumSearchScore      = 0.6
 	minimumSearchScoreKey          = "RETRIEVAL_MINIMUM_SEARCH_SCORE"
+	DefaultQdrantCollection        = "evidence_v2"
 	defaultSummaryLLMMaxCalls      = 100
 	defaultSummaryLLMOutputMode    = "json_or_plain"
 	summaryLLMOutputModeStrictJSON = "strict_json"
+	defaultEmbeddingProviderKind   = "tei"
+	defaultVectorProviderKind      = "qdrant"
+	defaultSummaryProviderKind     = "openai_compatible"
 )
 
 type Config struct {
 	GRPCAddress                 string
 	MetricsAddress              string
+	ReadinessProbeTimeout       time.Duration
+	ReadinessReadHeaderTimeout  time.Duration
+	ReadinessIdleTimeout        time.Duration
+	ReadinessShutdownTimeout    time.Duration
+	EmbeddingProviderKind       string
 	TEIURL                      string
 	TEIRequestsPerSecond        int
 	DependencyTimeout           time.Duration
 	SearchTimeout               time.Duration
 	MinimumSearchScore          float64
+	VectorProviderKind          string
 	QdrantURL                   string
 	QdrantCollection            string
 	QdrantAPIKeyFile            string
 	PostgresDSNFile             string
+	SummaryLLMProviderKind      string
 	SummaryLLMBaseURL           string
 	SummaryLLMModel             string
 	SummaryLLMTimeout           time.Duration
@@ -61,6 +72,24 @@ type WorkerConfig struct {
 	TEILogRawResponseMaxBytes                                     int
 	MinimumSearchScore                                            float64
 	MetricsAddress                                                string
+	DBPingTimeout                                                 time.Duration
+	DependencyTimeout                                             time.Duration
+	CollectionEnsureTimeout                                       time.Duration
+	ReadinessInitialDelay                                         time.Duration
+	ReadinessMaxDelay                                             time.Duration
+	ReadinessMaxAttempts                                          int
+	ReadinessProbeTimeout                                         time.Duration
+	ReconnectInitialBackoff                                       time.Duration
+	ReconnectMaxBackoff                                           time.Duration
+	DispatchInterval                                              time.Duration
+	CleanupInterval                                               time.Duration
+	CleanupTimeout                                                time.Duration
+	StaleBatchAge                                                 time.Duration
+	FailureRecordTimeout                                          time.Duration
+	PublishTimeout                                                time.Duration
+	ReadinessReadHeaderTimeout                                    time.Duration
+	ReadinessIdleTimeout                                          time.Duration
+	ReadinessShutdownTimeout                                      time.Duration
 	ServerlessInvocationTimeout                                   time.Duration
 	Concurrency                                                   int
 	RunAs                                                         process.Identity
@@ -73,14 +102,15 @@ func Load() (Config, error) {
 	}
 	collection := os.Getenv("RETRIEVAL_QDRANT_COLLECTION")
 	if collection == "" {
-		collection = "evidence_v2"
+		collection = DefaultQdrantCollection
 	}
 	uid, uidErr := positiveInteger(os.Getenv("RUN_AS_UID"), 65532)
 	gid, gidErr := positiveInteger(os.Getenv("RUN_AS_GID"), 65532)
 	configuration := Config{
-		GRPCAddress: grpcAddress, MetricsAddress: os.Getenv("RETRIEVAL_METRICS_ADDR"), TEIURL: os.Getenv("RETRIEVAL_TEI_URL"),
+		GRPCAddress: grpcAddress, MetricsAddress: os.Getenv("RETRIEVAL_METRICS_ADDR"), EmbeddingProviderKind: strings.ToLower(strings.TrimSpace(optional("RETRIEVAL_EMBEDDING_PROVIDER", defaultEmbeddingProviderKind))),
+		TEIURL: os.Getenv("RETRIEVAL_TEI_URL"), VectorProviderKind: strings.ToLower(strings.TrimSpace(optional("RETRIEVAL_VECTOR_PROVIDER", defaultVectorProviderKind))),
 		QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: collection, QdrantAPIKeyFile: os.Getenv("RETRIEVAL_QDRANT_API_KEY_FILE"),
-		PostgresDSNFile: os.Getenv("RETRIEVAL_POSTGRES_DSN_FILE"), SummaryLLMBaseURL: os.Getenv("RETRIEVAL_SUMMARY_LLM_BASE_URL"),
+		PostgresDSNFile: os.Getenv("RETRIEVAL_POSTGRES_DSN_FILE"), SummaryLLMProviderKind: strings.ToLower(strings.TrimSpace(optional("RETRIEVAL_SUMMARY_LLM_PROVIDER", defaultSummaryProviderKind))), SummaryLLMBaseURL: os.Getenv("RETRIEVAL_SUMMARY_LLM_BASE_URL"),
 		SummaryLLMModel: os.Getenv("RETRIEVAL_SUMMARY_LLM_MODEL"), SummaryLLMAPIKeyFile: os.Getenv("RETRIEVAL_SUMMARY_LLM_API_KEY_FILE"),
 		SummaryLLMCAFile: os.Getenv("RETRIEVAL_SUMMARY_LLM_CA_FILE"), SummaryLLMOutputMode: strings.ToLower(strings.TrimSpace(os.Getenv("RETRIEVAL_SUMMARY_LLM_OUTPUT_MODE"))),
 		TLS:   internaltls.Files{CA: os.Getenv("RETRIEVAL_TLS_CA_FILE"), Certificate: os.Getenv("RETRIEVAL_TLS_CERT_FILE"), Key: os.Getenv("RETRIEVAL_TLS_KEY_FILE")},
@@ -101,6 +131,10 @@ func Load() (Config, error) {
 	teiRequestsPerSecond, teiRequestsPerSecondErr := nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000)
 	teiLogRawResponse, teiLogRawResponseErr := optionalBool("RETRIEVAL_TEI_LOG_RAW_RESPONSE", false)
 	teiLogRawResponseMaxBytes, teiLogRawResponseMaxBytesErr := nonNegativeInteger("RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", 4096, 64<<10)
+	readinessProbeTimeout, readinessProbeTimeoutErr := optionalDuration("RETRIEVAL_READY_PROBE_TIMEOUT", 2*time.Second)
+	readinessReadHeaderTimeout, readinessReadHeaderTimeoutErr := optionalDuration("RETRIEVAL_READY_READ_HEADER_TIMEOUT", 2*time.Second)
+	readinessIdleTimeout, readinessIdleTimeoutErr := optionalDuration("RETRIEVAL_READY_IDLE_TIMEOUT", 30*time.Second)
+	readinessShutdownTimeout, readinessShutdownTimeoutErr := optionalDuration("RETRIEVAL_READY_SHUTDOWN_TIMEOUT", 3*time.Second)
 	configuration.SearchTimeout = searchTimeout
 	configuration.DependencyTimeout = dependencyTimeout
 	configuration.SummaryLLMTimeout = summaryTimeout
@@ -112,10 +146,17 @@ func Load() (Config, error) {
 	configuration.TEIRequestsPerSecond = teiRequestsPerSecond
 	configuration.TEILogRawResponse = teiLogRawResponse
 	configuration.TEILogRawResponseMaxBytes = teiLogRawResponseMaxBytes
-	if configuration.GRPCAddress == "" || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
+	configuration.ReadinessProbeTimeout = readinessProbeTimeout
+	configuration.ReadinessReadHeaderTimeout = readinessReadHeaderTimeout
+	configuration.ReadinessIdleTimeout = readinessIdleTimeout
+	configuration.ReadinessShutdownTimeout = readinessShutdownTimeout
+	if configuration.GRPCAddress == "" || !validEmbeddingProviderKind(configuration.EmbeddingProviderKind) || !validVectorProviderKind(configuration.VectorProviderKind) ||
+		!validSummaryProviderKind(configuration.SummaryLLMProviderKind) || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
 		configuration.PostgresDSNFile == "" || configuration.QdrantAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || uidErr != nil || gidErr != nil ||
-		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || summaryLLMOutputModeErr != nil || teiRequestsPerSecondErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || configuration.SummaryLLMTimeout >= configuration.SearchTimeout ||
+		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || summaryLLMOutputModeErr != nil || teiRequestsPerSecondErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil ||
+		readinessProbeTimeoutErr != nil || readinessReadHeaderTimeoutErr != nil || readinessIdleTimeoutErr != nil || readinessShutdownTimeoutErr != nil ||
+		configuration.SummaryLLMTimeout >= configuration.SearchTimeout ||
 		!validSummaryProviderConfiguration(configuration) {
 		return Config{}, errors.New("invalid retrieval configuration")
 	}
@@ -138,6 +179,18 @@ func validSummaryProviderConfiguration(configuration Config) bool {
 	}
 	return validProviderURL(configuration.SummaryLLMBaseURL) && strings.TrimSpace(configuration.SummaryLLMModel) != "" && len(configuration.SummaryLLMModel) <= 256 &&
 		!strings.ContainsAny(configuration.SummaryLLMModel, "\r\n") && configuration.SummaryLLMAPIKeyFile != ""
+}
+
+func validEmbeddingProviderKind(value string) bool {
+	return value == defaultEmbeddingProviderKind
+}
+
+func validVectorProviderKind(value string) bool {
+	return value == defaultVectorProviderKind
+}
+
+func validSummaryProviderKind(value string) bool {
+	return value == defaultSummaryProviderKind
 }
 
 func positiveInteger(value string, fallback int) (int, error) {
@@ -237,18 +290,47 @@ func LoadWorker() (WorkerConfig, error) {
 	concurrency, concurrencyErr := positiveInteger(os.Getenv("RETRIEVAL_WORK_CONCURRENCY"), 1)
 	minioInsecure, insecureErr := strconv.ParseBool(os.Getenv("RETRIEVAL_MINIO_INSECURE"))
 	serverlessInvocationTimeout, timeoutErr := boundedDuration(os.Getenv("RETRIEVAL_SERVERLESS_INVOCATION_TIMEOUT"), 10*time.Second, 13*time.Minute, 3*time.Minute)
+	dbPingTimeout, dbPingTimeoutErr := optionalDuration("RETRIEVAL_WORKER_DB_PING_TIMEOUT", 5*time.Second)
+	dependencyTimeout, dependencyTimeoutErr := optionalDuration("RETRIEVAL_WORKER_DEPENDENCY_TIMEOUT", 90*time.Second)
+	collectionEnsureTimeout, collectionEnsureTimeoutErr := optionalDuration("RETRIEVAL_WORKER_COLLECTION_TIMEOUT", 10*time.Second)
+	readinessInitialDelay, readinessInitialDelayErr := optionalDuration("RETRIEVAL_WORKER_READINESS_INITIAL_DELAY", time.Second)
+	readinessMaxDelay, readinessMaxDelayErr := optionalDuration("RETRIEVAL_WORKER_READINESS_MAX_DELAY", 10*time.Second)
+	readinessMaxAttempts, readinessMaxAttemptsErr := positiveInteger(os.Getenv("RETRIEVAL_WORKER_READINESS_MAX_ATTEMPTS"), 90)
+	readinessProbeTimeout, readinessProbeTimeoutErr := optionalDuration("RETRIEVAL_WORKER_READINESS_PROBE_TIMEOUT", 2*time.Second)
+	reconnectInitialBackoff, reconnectInitialBackoffErr := optionalDuration("RETRIEVAL_WORKER_RECONNECT_INITIAL_BACKOFF", time.Second)
+	reconnectMaxBackoff, reconnectMaxBackoffErr := optionalDuration("RETRIEVAL_WORKER_RECONNECT_MAX_BACKOFF", 30*time.Second)
+	dispatchInterval, dispatchIntervalErr := optionalDuration("RETRIEVAL_WORKER_DISPATCH_INTERVAL", 500*time.Millisecond)
+	cleanupInterval, cleanupIntervalErr := optionalDuration("RETRIEVAL_WORKER_CLEANUP_INTERVAL", 15*time.Minute)
+	cleanupTimeout, cleanupTimeoutErr := optionalDuration("RETRIEVAL_WORKER_CLEANUP_TIMEOUT", 30*time.Second)
+	staleBatchAge, staleBatchAgeErr := optionalDuration("RETRIEVAL_WORKER_STALE_BATCH_AGE", 15*time.Minute)
+	failureRecordTimeout, failureRecordTimeoutErr := optionalDuration("RETRIEVAL_WORKER_FAILURE_RECORD_TIMEOUT", 10*time.Second)
+	publishTimeout, publishTimeoutErr := optionalDuration("RETRIEVAL_WORKER_PUBLISH_TIMEOUT", 10*time.Second)
+	readinessReadHeaderTimeout, readinessReadHeaderTimeoutErr := optionalDuration("RETRIEVAL_WORKER_READY_READ_HEADER_TIMEOUT", 2*time.Second)
+	readinessIdleTimeout, readinessIdleTimeoutErr := optionalDuration("RETRIEVAL_WORKER_READY_IDLE_TIMEOUT", 30*time.Second)
+	readinessShutdownTimeout, readinessShutdownTimeoutErr := optionalDuration("RETRIEVAL_WORKER_READY_SHUTDOWN_TIMEOUT", 3*time.Second)
 	teiRequestsPerSecond, teiRequestsPerSecondErr := nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000)
 	teiLogRawResponse, teiLogRawResponseErr := optionalBool("RETRIEVAL_TEI_LOG_RAW_RESPONSE", false)
 	teiLogRawResponseMaxBytes, teiLogRawResponseMaxBytesErr := nonNegativeInteger("RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", 4096, 64<<10)
 	minimumSearchScore, minimumSearchScoreErr := LoadMinimumSearchScore()
 	configuration := WorkerConfig{DSN: dsn, ConsumerRabbitURI: consumerURI, PublisherRabbitURI: publisherURI,
 		MinIOEndpoint: os.Getenv("RETRIEVAL_MINIO_ENDPOINT"), MinIOAccessKey: accessKey, MinIOSecretKey: secretKey, ArtifactBucket: os.Getenv("RETRIEVAL_ARTIFACT_BUCKET"), MinIOInsecure: minioInsecure,
-		TEIURL: os.Getenv("RETRIEVAL_TEI_URL"), QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: "evidence_v2", QdrantAPIKey: qdrantAPIKey,
+		TEIURL: os.Getenv("RETRIEVAL_TEI_URL"), QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: optional("RETRIEVAL_QDRANT_COLLECTION", DefaultQdrantCollection), QdrantAPIKey: qdrantAPIKey,
 		TEIRequestsPerSecond: teiRequestsPerSecond, TEILogRawResponse: teiLogRawResponse, TEILogRawResponseMaxBytes: teiLogRawResponseMaxBytes,
-		MinimumSearchScore: minimumSearchScore,
-		MetricsAddress:     optional("RETRIEVAL_WORKER_METRICS_ADDR", os.Getenv("RETRIEVAL_METRICS_ADDR")), ServerlessInvocationTimeout: serverlessInvocationTimeout, Concurrency: concurrency, RunAs: process.Identity{UID: uid, GID: gid}}
+		MinimumSearchScore: minimumSearchScore, DBPingTimeout: dbPingTimeout, DependencyTimeout: dependencyTimeout, CollectionEnsureTimeout: collectionEnsureTimeout,
+		ReadinessInitialDelay: readinessInitialDelay, ReadinessMaxDelay: readinessMaxDelay, ReadinessMaxAttempts: readinessMaxAttempts, ReadinessProbeTimeout: readinessProbeTimeout,
+		ReconnectInitialBackoff: reconnectInitialBackoff, ReconnectMaxBackoff: reconnectMaxBackoff, DispatchInterval: dispatchInterval, CleanupInterval: cleanupInterval,
+		CleanupTimeout: cleanupTimeout, StaleBatchAge: staleBatchAge, FailureRecordTimeout: failureRecordTimeout, PublishTimeout: publishTimeout,
+		ReadinessReadHeaderTimeout: readinessReadHeaderTimeout, ReadinessIdleTimeout: readinessIdleTimeout, ReadinessShutdownTimeout: readinessShutdownTimeout,
+		MetricsAddress: optional("RETRIEVAL_WORKER_METRICS_ADDR", os.Getenv("RETRIEVAL_METRICS_ADDR")), ServerlessInvocationTimeout: serverlessInvocationTimeout, Concurrency: concurrency, RunAs: process.Identity{UID: uid, GID: gid}}
 	configuration.TEIRequestsPerSecond = teiRequestsPerSecond
-	if uidErr != nil || gidErr != nil || concurrencyErr != nil || concurrency > 16 || insecureErr != nil || timeoutErr != nil || teiRequestsPerSecondErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || minimumSearchScoreErr != nil || configuration.MinIOEndpoint == "" ||
+	if uidErr != nil || gidErr != nil || concurrencyErr != nil || concurrency > 16 || insecureErr != nil || timeoutErr != nil ||
+		dbPingTimeoutErr != nil || dependencyTimeoutErr != nil || collectionEnsureTimeoutErr != nil || readinessInitialDelayErr != nil || readinessMaxDelayErr != nil ||
+		readinessMaxAttemptsErr != nil || readinessProbeTimeoutErr != nil || reconnectInitialBackoffErr != nil || reconnectMaxBackoffErr != nil ||
+		dispatchIntervalErr != nil || cleanupIntervalErr != nil || cleanupTimeoutErr != nil || staleBatchAgeErr != nil || failureRecordTimeoutErr != nil || publishTimeoutErr != nil ||
+		readinessReadHeaderTimeoutErr != nil || readinessIdleTimeoutErr != nil || readinessShutdownTimeoutErr != nil ||
+		teiRequestsPerSecondErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || minimumSearchScoreErr != nil ||
+		configuration.ReadinessInitialDelay > configuration.ReadinessMaxDelay || configuration.ReconnectInitialBackoff > configuration.ReconnectMaxBackoff ||
+		configuration.MinIOEndpoint == "" ||
 		configuration.ArtifactBucket == "" || configuration.MetricsAddress == "" || !privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) {
 		return WorkerConfig{}, errors.New("invalid retrieval worker configuration")
 	}

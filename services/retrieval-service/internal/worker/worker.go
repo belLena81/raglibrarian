@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/diagnostic"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
@@ -31,20 +32,13 @@ import (
 )
 
 const (
-	metadataQueue         = "retrieval.book-uploaded.v1"
-	manifestQueue         = "retrieval.chunks-ready.v1"
-	batchQueue            = "retrieval.index-batch.v1"
-	lifecycleQueue        = "retrieval.book-lifecycle.v1"
-	eventExchange         = "raglibrarian.retrieval.events.v1"
-	retryExchange         = "raglibrarian.retrieval.retry.v1"
-	initialReconnectDelay = time.Second
-	maxReconnectDelay     = 30 * time.Second
-	maximumRetryAttempts  = int64(4)
-
-	embeddingReadinessInitialDelay = time.Second
-	embeddingReadinessMaxDelay     = 10 * time.Second
-	maxEmbeddingReadinessAttempts  = 90
-	embeddingReadinessProbeTimeout = 2 * time.Second
+	metadataQueue        = contracts.QueueRetrievalMetadata
+	manifestQueue        = contracts.QueueRetrievalManifest
+	batchQueue           = contracts.QueueRetrievalIndex
+	lifecycleQueue       = contracts.QueueRetrievalLifecycle
+	eventExchange        = contracts.ExchangeRetrievalEvents
+	retryExchange        = contracts.ExchangeRetrievalRetry
+	maximumRetryAttempts = int64(4)
 )
 
 var errManifestArtifactRead = errors.New("manifest artifact read failed")
@@ -106,7 +100,7 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 	if err != nil {
 		return nil, errors.New("configure retrieval database")
 	}
-	probeContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+	probeContext, cancel := context.WithTimeout(ctx, configuration.DBPingTimeout)
 	defer cancel()
 	if err = pool.Ping(probeContext); err != nil {
 		pool.Close()
@@ -123,7 +117,7 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 		pool.Close()
 		return nil, err
 	}
-	httpClient := &http.Client{Timeout: 90 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	httpClient := &http.Client{Timeout: configuration.DependencyTimeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	teiLimiter, err := throttle.New(configuration.TEIRequestsPerSecond)
 	if err != nil {
 		pool.Close()
@@ -168,17 +162,17 @@ func (r *Runtime) Close() {
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
-	collectionContext, collectionCancel := context.WithTimeout(ctx, 10*time.Second)
+	collectionContext, collectionCancel := context.WithTimeout(ctx, r.configuration.CollectionEnsureTimeout)
 	collectionErr := r.vector.EnsureCollection(collectionContext)
 	collectionCancel()
 	if collectionErr != nil {
 		return errors.New("initialize vector collection")
 	}
-	if err := awaitReadiness(ctx, r.embedder.CheckReady, maxEmbeddingReadinessAttempts, embeddingReadinessInitialDelay, embeddingReadinessMaxDelay, embeddingReadinessProbeTimeout); err != nil {
+	if err := awaitReadiness(ctx, r.embedder.CheckReady, r.configuration.ReadinessMaxAttempts, r.configuration.ReadinessInitialDelay, r.configuration.ReadinessMaxDelay, r.configuration.ReadinessProbeTimeout); err != nil {
 		return errors.New("wait for embedding service readiness")
 	}
 	go r.serveReadiness(ctx)
-	return r.runBrokerLoop(ctx, r.runBrokerSession, initialReconnectDelay, maxReconnectDelay)
+	return r.runBrokerLoop(ctx, r.runBrokerSession, r.configuration.ReconnectInitialBackoff, r.configuration.ReconnectMaxBackoff)
 }
 
 func awaitReadiness(ctx context.Context, check func(context.Context) error, maxAttempts int, initialDelay, maxDelay, probeTimeout time.Duration) error {
@@ -294,9 +288,9 @@ func (r *Runtime) runBrokerSession(ctx context.Context) error {
 	semaphore := make(chan struct{}, r.configuration.Concurrency)
 	var handlers sync.WaitGroup
 	defer handlers.Wait()
-	dispatchTicker := time.NewTicker(500 * time.Millisecond)
+	dispatchTicker := time.NewTicker(r.configuration.DispatchInterval)
 	defer dispatchTicker.Stop()
-	cleanupTicker := time.NewTicker(15 * time.Minute)
+	cleanupTicker := time.NewTicker(r.configuration.CleanupInterval)
 	defer cleanupTicker.Stop()
 	for {
 		select {
@@ -343,8 +337,8 @@ func (r *Runtime) runBrokerSession(ctx context.Context) error {
 		case <-dispatchTicker.C:
 			r.dispatchOutbox(sessionContext, publisher)
 		case now := <-cleanupTicker.C:
-			cleanupContext, cleanupCancel := context.WithTimeout(sessionContext, 30*time.Second)
-			recovered, _ := r.repository.RecoverStaleBatches(cleanupContext, now.UTC().Add(-15*time.Minute), now.UTC())
+			cleanupContext, cleanupCancel := context.WithTimeout(sessionContext, r.configuration.CleanupTimeout)
+			recovered, _ := r.repository.RecoverStaleBatches(cleanupContext, now.UTC().Add(-r.configuration.StaleBatchAge), now.UTC())
 			r.logStaleBatchesRecovered(recovered)
 			_ = r.retryPendingVectorCleanup(cleanupContext, now.UTC(), 64)
 			if r.lifecycle != nil {
@@ -358,7 +352,7 @@ func (r *Runtime) runBrokerSession(ctx context.Context) error {
 func (r *Runtime) serveReadiness(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/readyz", func(writer http.ResponseWriter, request *http.Request) {
-		probeContext, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+		probeContext, cancel := context.WithTimeout(request.Context(), r.configuration.ReadinessProbeTimeout)
 		defer cancel()
 		if r.pool.Ping(probeContext) != nil || r.embedder.CheckReady(probeContext) != nil || r.vector.CheckReady(probeContext) != nil {
 			http.Error(writer, "not ready", http.StatusServiceUnavailable)
@@ -366,10 +360,10 @@ func (r *Runtime) serveReadiness(ctx context.Context) {
 		}
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	server := &http.Server{Addr: r.configuration.MetricsAddress, Handler: mux, ReadHeaderTimeout: 2 * time.Second, IdleTimeout: 30 * time.Second}
+	server := &http.Server{Addr: r.configuration.MetricsAddress, Handler: mux, ReadHeaderTimeout: r.configuration.ReadinessReadHeaderTimeout, IdleTimeout: r.configuration.ReadinessIdleTimeout}
 	go func() {
 		<-ctx.Done()
-		shutdownContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		shutdownContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.configuration.ReadinessShutdownTimeout)
 		defer cancel()
 		_ = server.Shutdown(shutdownContext)
 	}()
@@ -401,7 +395,7 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 			return
 		}
 		if terminalFailure != nil && application.TerminalIndexingFailure(err) {
-			failureContext, failureCancel := context.WithTimeout(ctx, 10*time.Second)
+			failureContext, failureCancel := context.WithTimeout(ctx, r.configuration.FailureRecordTimeout)
 			failureErr := terminalFailure(failureContext, delivery.Body, err)
 			failureCancel()
 			if failureErr == nil {
@@ -442,7 +436,7 @@ func (r *Runtime) handle(ctx context.Context, semaphore chan struct{}, handlers 
 				r.logDeliverySettled(sourceQueue, delivery.Type, delivery.MessageId, bookID, "nack")
 				return
 			}
-			failureContext, failureCancel := context.WithTimeout(ctx, 10*time.Second)
+			failureContext, failureCancel := context.WithTimeout(ctx, r.configuration.FailureRecordTimeout)
 			failureErr := terminalFailure(failureContext, delivery.Body, err)
 			failureCancel()
 			if failureErr == nil {
@@ -489,7 +483,7 @@ func (r *Runtime) publishRetry(ctx context.Context, publisher retryPublisher, so
 	if err != nil {
 		return err
 	}
-	publishContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	publishContext, cancel := context.WithTimeout(ctx, r.configuration.PublishTimeout)
 	defer cancel()
 	return publisher.Publish(publishContext, retryExchange, routingKey, amqp091.Publishing{
 		// Only the application-owned attempt counter crosses the retry boundary.
@@ -545,17 +539,17 @@ func (r *Runtime) handleMetadata(ctx context.Context, payload []byte) error {
 func (r *Runtime) ProcessOne(ctx context.Context, queue, eventType string, payload []byte) error {
 	switch queue {
 	case metadataQueue:
-		if eventType != "catalog.book.uploaded.v1" {
+		if eventType != contracts.EventCatalogBookUploaded {
 			return application.ErrInvalidEvent
 		}
 		return r.handleMetadata(ctx, payload)
 	case manifestQueue:
-		if eventType != "ingestion.book.chunks-ready.v1" {
+		if eventType != contracts.EventIngestionBookChunksReady {
 			return application.ErrInvalidEvent
 		}
 		return r.handleManifest(ctx, payload)
 	case batchQueue:
-		if eventType != "retrieval.index-batch.v1" {
+		if eventType != contracts.EventRetrievalIndexBatch {
 			return application.ErrInvalidEvent
 		}
 		return r.handleBatch(ctx, payload)
@@ -819,7 +813,7 @@ func (r *Runtime) dispatchOutbox(ctx context.Context, publisher *rabbitmq.Publis
 		return
 	}
 	for _, record := range records {
-		publishContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+		publishContext, cancel := context.WithTimeout(ctx, r.configuration.PublishTimeout)
 		publishErr := publisher.Publish(publishContext, eventExchange, record.EventType, amqp091.Publishing{
 			ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent, Type: record.EventType, MessageId: record.EventID, Timestamp: time.Now().UTC(), Body: record.Payload,
 		})

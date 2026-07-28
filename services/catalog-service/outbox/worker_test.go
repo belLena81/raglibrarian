@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/contracts"
 	"github.com/rabbitmq/amqp091-go"
 
 	"github.com/belLena81/raglibrarian/services/catalog-service/repository"
@@ -76,11 +77,11 @@ func TestDrainPendingClaimsUntilStoreIsEmpty(t *testing.T) {
 
 func TestPublicationRouteSeparatesDurableWorkFromDisposableStatus(t *testing.T) {
 	exchange, key, mandatory, err := publicationRoute("catalog.book.uploaded.v1")
-	if err != nil || exchange != uploadExchange || key != "catalog.book.uploaded.v1" || !mandatory {
+	if err != nil || exchange != contracts.ExchangeEvents || key != "catalog.book.uploaded.v1" || !mandatory {
 		t.Fatalf("upload route = %q %q %v %v", exchange, key, mandatory, err)
 	}
 	exchange, key, mandatory, err = publicationRoute("catalog.book.processing-status-changed.v1")
-	if err != nil || exchange != statusExchange || key != "catalog.book.processing-status-changed.v1" || mandatory {
+	if err != nil || exchange != contracts.ExchangeEdgeStatus || key != "catalog.book.processing-status-changed.v1" || mandatory {
 		t.Fatalf("status route = %q %q %v %v", exchange, key, mandatory, err)
 	}
 	for _, eventType := range []string{
@@ -88,7 +89,7 @@ func TestPublicationRouteSeparatesDurableWorkFromDisposableStatus(t *testing.T) 
 		"catalog.book.deletion-requested.v1",
 	} {
 		exchange, key, mandatory, err = publicationRoute(eventType)
-		if err != nil || exchange != uploadExchange || key != eventType || !mandatory {
+		if err != nil || exchange != contracts.ExchangeEvents || key != eventType || !mandatory {
 			t.Fatalf("%s route = %q %q %v %v", eventType, exchange, key, mandatory, err)
 		}
 	}

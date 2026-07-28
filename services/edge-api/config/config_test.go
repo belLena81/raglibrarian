@@ -51,9 +51,13 @@ func TestLoadParsesExplicitSecurityConfiguration(t *testing.T) {
 	assert.Equal(t, time.Minute, cfg.QueryRateWindow)
 	assert.Equal(t, 10000, cfg.QueryRateMaxKeys)
 	assert.Equal(t, 8, cfg.QueryConcurrency)
+	assert.Equal(t, 5, cfg.SetupAdminRateLimit)
+	assert.Equal(t, 15*time.Minute, cfg.SetupAdminRateWindow)
+	assert.Equal(t, 1000, cfg.SetupAdminRateMaxKeys)
 	assert.Equal(t, 20, cfg.BookUploadRateLimit)
 	assert.Equal(t, time.Hour, cfg.BookUploadRateWindow)
 	assert.Equal(t, 10000, cfg.BookUploadRateMaxKeys)
+	assert.Equal(t, 2*time.Minute+10*time.Second, cfg.BookUploadDeadline)
 }
 
 func TestLoadParsesRetrievalReadinessPolicy(t *testing.T) {
@@ -72,9 +76,13 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	t.Setenv("EDGE_QUERY_RATE_WINDOW", "30s")
 	t.Setenv("EDGE_QUERY_RATE_MAX_KEYS", "500")
 	t.Setenv("EDGE_QUERY_CONCURRENCY", "3")
+	t.Setenv("EDGE_SETUP_ADMIN_RATE_LIMIT", "7")
+	t.Setenv("EDGE_SETUP_ADMIN_RATE_WINDOW", "20m")
+	t.Setenv("EDGE_SETUP_ADMIN_RATE_MAX_KEYS", "700")
 	t.Setenv("EDGE_BOOK_UPLOAD_RATE_LIMIT", "40")
 	t.Setenv("EDGE_BOOK_UPLOAD_RATE_WINDOW", "15m")
 	t.Setenv("EDGE_BOOK_UPLOAD_RATE_MAX_KEYS", "600")
+	t.Setenv("EDGE_BOOK_UPLOAD_DEADLINE", "90s")
 	t.Setenv("EDGE_ANSWER_DEADLINE", "7s")
 	t.Setenv("EDGE_RETRIEVAL_SEARCH_DEADLINE", "11s")
 	t.Setenv("EDGE_CATALOG_PREVIEW_DEADLINE", "9s")
@@ -88,9 +96,13 @@ func TestLoadParsesQueryAdmissionControls(t *testing.T) {
 	assert.Equal(t, 30*time.Second, cfg.QueryRateWindow)
 	assert.Equal(t, 500, cfg.QueryRateMaxKeys)
 	assert.Equal(t, 3, cfg.QueryConcurrency)
+	assert.Equal(t, 7, cfg.SetupAdminRateLimit)
+	assert.Equal(t, 20*time.Minute, cfg.SetupAdminRateWindow)
+	assert.Equal(t, 700, cfg.SetupAdminRateMaxKeys)
 	assert.Equal(t, 40, cfg.BookUploadRateLimit)
 	assert.Equal(t, 15*time.Minute, cfg.BookUploadRateWindow)
 	assert.Equal(t, 600, cfg.BookUploadRateMaxKeys)
+	assert.Equal(t, 90*time.Second, cfg.BookUploadDeadline)
 	assert.Equal(t, 7*time.Second, cfg.AnswerDeadline)
 	assert.Equal(t, 11*time.Second, cfg.RetrievalSearchDeadline)
 	assert.Equal(t, 9*time.Second, cfg.CatalogPreviewDeadline)
@@ -218,6 +230,27 @@ func TestLoadClassifiesConfigurationFailures(t *testing.T) {
 			expected: config.ErrQueryLimitConfiguration,
 		},
 		{
+			name: "setup admin rate invalid",
+			configure: func(t *testing.T) {
+				t.Setenv("EDGE_SETUP_ADMIN_RATE_LIMIT", "0")
+			},
+			expected: config.ErrQueryLimitConfiguration,
+		},
+		{
+			name: "setup admin window invalid",
+			configure: func(t *testing.T) {
+				t.Setenv("EDGE_SETUP_ADMIN_RATE_WINDOW", "0s")
+			},
+			expected: config.ErrQueryLimitConfiguration,
+		},
+		{
+			name: "setup admin max keys invalid",
+			configure: func(t *testing.T) {
+				t.Setenv("EDGE_SETUP_ADMIN_RATE_MAX_KEYS", "0")
+			},
+			expected: config.ErrQueryLimitConfiguration,
+		},
+		{
 			name: "book upload rate invalid",
 			configure: func(t *testing.T) {
 				t.Setenv("EDGE_BOOK_UPLOAD_RATE_LIMIT", "0")
@@ -235,6 +268,13 @@ func TestLoadClassifiesConfigurationFailures(t *testing.T) {
 			name: "book upload max keys invalid",
 			configure: func(t *testing.T) {
 				t.Setenv("EDGE_BOOK_UPLOAD_RATE_MAX_KEYS", "0")
+			},
+			expected: config.ErrQueryLimitConfiguration,
+		},
+		{
+			name: "book upload deadline invalid",
+			configure: func(t *testing.T) {
+				t.Setenv("EDGE_BOOK_UPLOAD_DEADLINE", "0s")
 			},
 			expected: config.ErrQueryLimitConfiguration,
 		},

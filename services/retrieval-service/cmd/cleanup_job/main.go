@@ -72,7 +72,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	index, err := newQdrant(qdrantURL, "evidence_v2", qdrantKey, &http.Client{Timeout: 90 * time.Second}, minimumSearchScore)
+	index, err := newQdrant(qdrantURL, retrievalconfig.DefaultQdrantCollection, qdrantKey, &http.Client{Timeout: 90 * time.Second}, minimumSearchScore)
 	if err != nil {
 		return err
 	}
