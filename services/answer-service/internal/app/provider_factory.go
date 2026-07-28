@@ -3,17 +3,16 @@ package app
 import (
 	"errors"
 
+	"github.com/belLena81/raglibrarian/pkg/providerhttp"
 	"github.com/belLena81/raglibrarian/services/answer-service/config"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/provider"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/throttle"
 )
 
-const answerLLMProviderOpenAICompatible = "openai_compatible"
-
 func configureLLMProvider(configuration config.Config) (application.LLMProvider, error) {
 	switch configuration.LLMProviderKind {
-	case answerLLMProviderOpenAICompatible:
+	case providerhttp.OpenAICompatibleProviderKind:
 		apiKey, err := provider.ReadAPIKey(configuration.LLMAPIKeyFile)
 		if err != nil {
 			return nil, errors.New("load provider credentials")

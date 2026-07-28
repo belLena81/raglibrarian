@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
+	"github.com/belLena81/raglibrarian/pkg/providerhttp"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/embedding"
@@ -16,10 +18,20 @@ import (
 const (
 	retrievalEmbeddingProviderTEI            = "tei"
 	retrievalVectorProviderQdrant            = "qdrant"
-	retrievalSummaryProviderOpenAICompatible = "openai_compatible"
+	retrievalSummaryProviderOpenAICompatible = providerhttp.OpenAICompatibleProviderKind
 )
 
-func configureEmbedder(configuration config.Config, httpClient *http.Client, serviceLogger *zap.Logger) (*embedding.TEI, error) {
+type queryEmbedder interface {
+	application.QueryEmbedder
+	CheckReady(context.Context) error
+}
+
+type evidenceStore interface {
+	application.EvidenceStore
+	CheckReady(context.Context) error
+}
+
+func configureEmbedder(configuration config.Config, httpClient *http.Client, serviceLogger *zap.Logger) (queryEmbedder, error) {
 	switch configuration.EmbeddingProviderKind {
 	case retrievalEmbeddingProviderTEI:
 		teiLimiter, err := throttle.New(configuration.TEIRequestsPerSecond)
@@ -39,7 +51,7 @@ func configureEmbedder(configuration config.Config, httpClient *http.Client, ser
 	}
 }
 
-func configureVectorStore(configuration config.Config, httpClient *http.Client) (*vector.Qdrant, error) {
+func configureVectorStore(configuration config.Config, httpClient *http.Client) (evidenceStore, error) {
 	switch configuration.VectorProviderKind {
 	case retrievalVectorProviderQdrant:
 		apiKey, err := readSecret(configuration.QdrantAPIKeyFile)

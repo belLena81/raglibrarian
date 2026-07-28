@@ -14,6 +14,7 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/process"
+	"github.com/belLena81/raglibrarian/pkg/providerhttp"
 )
 
 const (
@@ -25,7 +26,7 @@ const (
 	summaryLLMOutputModeStrictJSON = "strict_json"
 	defaultEmbeddingProviderKind   = "tei"
 	defaultVectorProviderKind      = "qdrant"
-	defaultSummaryProviderKind     = "openai_compatible"
+	defaultSummaryProviderKind     = providerhttp.OpenAICompatibleProviderKind
 )
 
 type Config struct {

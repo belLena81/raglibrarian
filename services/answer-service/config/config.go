@@ -12,6 +12,7 @@ import (
 
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/process"
+	"github.com/belLena81/raglibrarian/pkg/providerhttp"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/application"
 )
 
@@ -63,7 +64,7 @@ func Load() (Config, error) {
 	metricsIdleTimeout, metricsIdleErr := duration("ANSWER_METRICS_IDLE_TIMEOUT", 30*time.Second, time.Second, 5*time.Minute)
 	configuration := Config{
 		GRPCAddress: os.Getenv("ANSWER_GRPC_ADDR"), MetricsAddress: os.Getenv("ANSWER_METRICS_ADDR"), RetrievalAddress: os.Getenv("ANSWER_RETRIEVAL_GRPC_ADDR"),
-		RetrievalDNSName: os.Getenv("ANSWER_RETRIEVAL_TLS_SERVER_NAME"), LLMProviderKind: strings.ToLower(strings.TrimSpace(optional("ANSWER_LLM_PROVIDER", "openai_compatible"))),
+		RetrievalDNSName: os.Getenv("ANSWER_RETRIEVAL_TLS_SERVER_NAME"), LLMProviderKind: strings.ToLower(strings.TrimSpace(optional("ANSWER_LLM_PROVIDER", providerhttp.OpenAICompatibleProviderKind))),
 		LLMBaseURL: os.Getenv("ANSWER_LLM_BASE_URL"), LLMModel: os.Getenv("ANSWER_LLM_MODEL"),
 		LLMAPIKeyFile: os.Getenv("ANSWER_LLM_API_KEY_FILE"), LLMCAFile: os.Getenv("ANSWER_LLM_CA_FILE"),
 		TLS:   internaltls.Files{CA: os.Getenv("ANSWER_TLS_CA_FILE"), Certificate: os.Getenv("ANSWER_TLS_CERT_FILE"), Key: os.Getenv("ANSWER_TLS_KEY_FILE")},
@@ -189,5 +190,5 @@ func optional(key, fallback string) string {
 }
 
 func validLLMProviderKind(value string) bool {
-	return value == "openai_compatible"
+	return value == providerhttp.OpenAICompatibleProviderKind
 }
