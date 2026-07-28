@@ -14,11 +14,6 @@ import (
 
 var ErrSearchForbidden = errors.New("search forbidden")
 
-const (
-	defaultSearchCandidatePageMultiplier = 2
-	defaultMaximumSummaryInputRunes      = 4096
-)
-
 // Evidence is Retrieval's controlled local chunk projection returned to an authorized caller.
 type Evidence struct {
 	EvidenceID, ChunkID, JobID, BookID, Title, Author, MediaType, Chapter, Section, Passage string
@@ -92,15 +87,6 @@ type SearchPolicy struct {
 	SummaryTimeout           time.Duration
 	CandidatePageMultiplier  int
 	MaximumSummaryInputRunes int
-}
-
-func NewSearcher(embedder QueryEmbedder, store EvidenceStore, visibility IndexVisibility, minimumVisibleScore float64, summaryCallLimit int) (*Searcher, error) {
-	return NewSearcherWithPolicy(embedder, store, visibility, nil, SearchPolicy{
-		MinimumVisibleScore:      minimumVisibleScore,
-		SummaryCallLimit:         summaryCallLimit,
-		CandidatePageMultiplier:  defaultSearchCandidatePageMultiplier,
-		MaximumSummaryInputRunes: defaultMaximumSummaryInputRunes,
-	})
 }
 
 func NewSearcherWithPolicy(embedder QueryEmbedder, store EvidenceStore, visibility IndexVisibility, provider SummaryProvider, policy SearchPolicy) (*Searcher, error) {

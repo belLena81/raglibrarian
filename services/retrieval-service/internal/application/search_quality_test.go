@@ -23,9 +23,14 @@ import (
 func TestSearchQualityBenchmark(t *testing.T) {
 	embedder := newQualityEmbedder(t)
 	store := newQualityQdrant(t, embedder)
-	searcher, err := application.NewSearcher(embedder, store, qualityVisibility{}, 0.05, 4)
+	searcher, err := application.NewSearcherWithPolicy(embedder, store, qualityVisibility{}, nil, application.SearchPolicy{
+		MinimumVisibleScore:      0.05,
+		SummaryCallLimit:         4,
+		CandidatePageMultiplier:  2,
+		MaximumSummaryInputRunes: 4096,
+	})
 	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
+		t.Fatalf("NewSearcherWithPolicy() error = %v", err)
 	}
 
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "reader-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{

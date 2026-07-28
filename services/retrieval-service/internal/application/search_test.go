@@ -10,13 +10,35 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 )
 
+func testSearchPolicy(summaryCallLimit int) SearchPolicy {
+	return SearchPolicy{
+		MinimumVisibleScore:      0.6,
+		SummaryCallLimit:         summaryCallLimit,
+		CandidatePageMultiplier:  2,
+		MaximumSummaryInputRunes: 4096,
+	}
+}
+
+func newTestSearcher(
+	t *testing.T,
+	embedder QueryEmbedder,
+	store EvidenceStore,
+	visibility IndexVisibility,
+	summaryCallLimit int,
+) *Searcher {
+	t.Helper()
+	searcher, err := NewSearcherWithPolicy(embedder, store, visibility, nil, testSearchPolicy(summaryCallLimit))
+	if err != nil {
+		t.Fatalf("NewSearcherWithPolicy() error = %v", err)
+	}
+	return searcher
+}
+
 func TestSearcherAuthorizesBeforeCallingDependencies(t *testing.T) {
 	embedder := &stubEmbedder{}
 	store := &stubEvidenceStore{}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 4)
-	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
-	}
+	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 4)
+	var err error
 	_, err = searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "pending"}, domain.SearchQueryInput{Question: "replication"})
 	if !errors.Is(err, ErrSearchForbidden) {
 		t.Fatalf("Search() error = %v, want ErrSearchForbidden", err)
@@ -32,10 +54,7 @@ func TestSearcherReturnsRankedEvidence(t *testing.T) {
 		results:   []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Replication keeps copies.", Score: 0.91}},
 		documents: []DocumentResult{{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", ChunkCount: 10, Score: 0.91, Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "Replication keeps copies.", Score: 0.91}}}},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 4)
-	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
-	}
+	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 4)
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: " replication ", Limit: 3})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
@@ -56,10 +75,7 @@ func TestSearcherUsesProviderAssessmentsAndDoesNotSummarizeDocuments(t *testing.
 			Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "Deterministic retries keep search stable.", Score: 0.91}},
 		}},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 4)
-	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
-	}
+	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 4)
 	provider := &stubSummaryProvider{response: func(value SummaryRequest) EvidenceAssessment {
 		return EvidenceAssessment{Relevant: true, Summary: "summary: " + strings.TrimSpace(value.Question) + " | " + strings.TrimSpace(value.Passage)}
 	}}
@@ -92,10 +108,7 @@ func TestSearcherFallsBackToLocalAssessmentsAfterProviderFailure(t *testing.T) {
 			{EvidenceID: "evidence-2", JobID: "job-2", BookID: "book-2", Title: "Systems", Passage: "Keep local evidence after failure.", Score: 0.90},
 		},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 4)
-	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
-	}
+	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 4)
 
 	provider := &stubSummaryProvider{err: errors.New("provider failed")}
 	searcher.SetSummaryProvider(provider)
@@ -127,10 +140,7 @@ func TestSearcherUsesLocalAssessmentsWhenProviderCallsAreDisabled(t *testing.T) 
 		Passage:    "Use local evidence without provider calls.",
 		Score:      0.91,
 	}}}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 0)
-	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
-	}
+	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 0)
 	provider := &stubSummaryProvider{}
 	searcher.SetSummaryProvider(provider)
 
@@ -152,10 +162,7 @@ func TestSearcherFallsBackToLocalAssessmentAfterProviderBudgetIsExhausted(t *tes
 		{EvidenceID: "irrelevant", JobID: "job-1", BookID: "book-1", Passage: "irrelevant evidence", Score: 0.91},
 		{EvidenceID: "local", JobID: "job-2", BookID: "book-2", Passage: "keep this locally assessed evidence", Score: 0.90},
 	}}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 1)
-	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
-	}
+	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 1)
 	provider := &stubSummaryProvider{response: func(SummaryRequest) EvidenceAssessment {
 		return EvidenceAssessment{Relevant: false}
 	}}
@@ -182,10 +189,7 @@ func TestSearcherDoesNotFallbackWhenParentContextIsCanceled(t *testing.T) {
 		Passage:    "Do not return canceled provider work.",
 		Score:      0.91,
 	}}}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 1)
-	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
-	}
+	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 1)
 	searcher.SetSummaryProvider(&stubSummaryProvider{err: context.Canceled})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -200,7 +204,7 @@ func TestSearcherDoesNotFallbackWhenParentContextIsCanceled(t *testing.T) {
 }
 
 func TestSearchAssessmentCacheDoesNotOpenCircuitForCanceledParentContext(t *testing.T) {
-	cache := newSearchAssessmentCache(2, 0, defaultMaximumSummaryInputRunes)
+	cache := newSearchAssessmentCache(2, 0, testSearchPolicy(2).MaximumSummaryInputRunes)
 	provider := &stubSummaryProvider{err: context.Canceled}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -240,7 +244,7 @@ func TestSearcherWithPolicyUsesConfiguredCandidatePageMultiplier(t *testing.T) {
 		MinimumVisibleScore:      0.6,
 		SummaryCallLimit:         4,
 		CandidatePageMultiplier:  3,
-		MaximumSummaryInputRunes: defaultMaximumSummaryInputRunes,
+		MaximumSummaryInputRunes: testSearchPolicy(4).MaximumSummaryInputRunes,
 	})
 	if err != nil {
 		t.Fatalf("NewSearcherWithPolicy() error = %v", err)
@@ -274,10 +278,7 @@ func TestSearcherExcludesIrrelevantProviderAssessmentsAndBackfills(t *testing.T)
 		})
 	}
 	store := &stubEvidenceStore{results: results}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 5)
-	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
-	}
+	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 5)
 	provider := &stubSummaryProvider{response: func(value SummaryRequest) EvidenceAssessment {
 		if strings.Contains(value.Passage, "evidence a") || strings.Contains(value.Passage, "evidence c") {
 			return EvidenceAssessment{Relevant: false}
@@ -315,10 +316,7 @@ func TestSearcherBackfillsAfterProviderExclusions(t *testing.T) {
 			},
 		},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 4)
-	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
-	}
+	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 4)
 	provider := &stubSummaryProvider{response: func(value SummaryRequest) EvidenceAssessment {
 		if strings.HasPrefix(value.Passage, "relevant ") {
 			return EvidenceAssessment{Relevant: true, Summary: value.Passage}
@@ -360,10 +358,7 @@ func TestSearcherFiltersLowScoringEvidenceBeforeReturningResults(t *testing.T) {
 			},
 		},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 4)
-	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
-	}
+	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 4)
 
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 1})
 	if err != nil {
@@ -388,10 +383,7 @@ func TestSearcherBuildsDocumentGroupsOnlyFromAcceptedEvidence(t *testing.T) {
 			{DocumentID: "document-high", JobID: "job-2", BookID: "book-2", ChunkCount: 1, Score: 0.67, Evidence: []Evidence{{EvidenceID: "evidence-2", Passage: "better visible passage", Score: 0.78}}},
 		},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 4)
-	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
-	}
+	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 4)
 
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 5})
 	if err != nil {
@@ -415,10 +407,7 @@ func TestSearcherUsesAuthoritativeDocumentChunkCountFromSearchDocuments(t *testi
 			{DocumentID: "book-1:job-1", JobID: "job-1", BookID: "book-1", ChunkCount: 42, Score: 0.91},
 		},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 4)
-	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
-	}
+	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 4)
 
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 5})
 	if err != nil {
@@ -454,10 +443,7 @@ func TestSearcherSortsEvidenceDocumentsAndSupportingPassagesByScore(t *testing.T
 			},
 		},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 4)
-	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
-	}
+	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 4)
 
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 5})
 	if err != nil {
@@ -480,10 +466,7 @@ func TestSearcherSkipsEmptyPassagesForAssessments(t *testing.T) {
 			Evidence: []Evidence{{EvidenceID: "evidence-1", Passage: "   ", Score: 0.91}},
 		}},
 	}
-	searcher, err := NewSearcher(embedder, store, visibleIndexes{}, 0.6, 4)
-	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
-	}
+	searcher := newTestSearcher(t, embedder, store, visibleIndexes{}, 4)
 	provider := &stubSummaryProvider{}
 	searcher.SetSummaryProvider(provider)
 
@@ -524,10 +507,7 @@ func TestSearcherBackfillsAfterVisibilityFiltering(t *testing.T) {
 		},
 	}
 	visibility := filteringVisibility{indexedJobs: map[string]struct{}{"indexed-1": {}, "indexed-2": {}}}
-	searcher, err := NewSearcher(embedder, store, visibility, 0.6, 4)
-	if err != nil {
-		t.Fatalf("NewSearcher() error = %v", err)
-	}
+	searcher := newTestSearcher(t, embedder, store, visibility, 4)
 
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 1})
 
