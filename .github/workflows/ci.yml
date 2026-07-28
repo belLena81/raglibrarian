@@ -84,6 +84,10 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
+    env:
+      CI_COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
+      TEST_COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
+      INTEGRATION_COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
     steps:
       - uses: actions/checkout@v4.2.2
       - uses: ./.github/actions/setup-go-ci
@@ -94,87 +98,30 @@ jobs:
       - name: Validate and start the local stack
         run: |
           make compose-config
-          docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian config --quiet
+          docker compose $CI_COMPOSE_FILES --profile raglibrarian config --quiet
           POSTGRES_PORT=5432 MINIO_API_PORT=9000 RABBITMQ_AMQP_PORT=5672 EDGE_RETRIEVAL_READINESS_REQUIRED=true \
-            docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian up -d --build --wait --wait-timeout 300
+            docker compose $CI_COMPOSE_FILES --profile raglibrarian up -d --build --wait --wait-timeout 300
       - name: Configure host-side integration clients
-        run: |
-          compose=(docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian)
-          container_ip() {
-            local service="$1"
-            local container_id
-            container_id="$("${compose[@]}" ps -q "$service")"
-            test -n "$container_id"
-            docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_id"
-          }
-          require_ipv4() {
-            [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
-          }
-          wait_for_port() {
-            local host="$1"
-            local port="$2"
-            for attempt in $(seq 1 30); do
-              if timeout 2 bash -c ":</dev/tcp/$host/$port" 2>/dev/null; then
-                return 0
-              fi
-              sleep 1
-            done
-            echo "Compose service is not reachable: $host:$port" >&2
-            return 1
-          }
-          rewrite_endpoint() {
-            local file="$1"
-            local port="$2"
-            local host="$3"
-            local temporary
-            temporary="$(mktemp "${file}.XXXXXX")"
-            chmod 600 "$temporary"
-            sed "s/127\\.0\\.0\\.1:${port}/${host}:${port}/g" "$file" > "$temporary"
-            mv "$temporary" "$file"
-            chmod 400 "$file"
-            grep -q "${host}:${port}" "$file"
-          }
-
-          postgres_ip="$(container_ip postgres)"
-          rabbitmq_ip="$(container_ip rabbitmq)"
-          minio_ip="$(container_ip minio)"
-          require_ipv4 "$postgres_ip"
-          require_ipv4 "$rabbitmq_ip"
-          require_ipv4 "$minio_ip"
-          wait_for_port "$postgres_ip" 5432
-          wait_for_port "$rabbitmq_ip" 5672
-          wait_for_port "$minio_ip" 9000
-
-          rewrite_endpoint .dev/secrets/ingestion_e2e_dsn 5432 "$postgres_ip"
-          rewrite_endpoint .dev/secrets/retrieval_runtime_host_dsn 5432 "$postgres_ip"
-          rewrite_endpoint .dev/secrets/ingestion_e2e_rabbitmq_uri 5672 "$rabbitmq_ip"
-          {
-            echo "M4_E2E_MINIO_ENDPOINT=${minio_ip}:9000"
-          } >> "$GITHUB_ENV"
+        run: bash ./scripts/configure-ci-host-clients.sh
       - name: Show TEI startup diagnostics
         if: failure()
         run: |
           docker inspect --format 'exit={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{.State.Error}} memory_bytes={{.HostConfig.Memory}} nano_cpus={{.HostConfig.NanoCPUs}}' raglibrarian-text-embeddings-inference-1 || true
-          docker compose -f docker-compose.yml -f docker-compose.ci.yml logs --no-color --tail=200 text-embeddings-inference || true
+          docker compose $CI_COMPOSE_FILES logs --no-color --tail=200 text-embeddings-inference || true
       - name: Run live mTLS service contracts
         run: make m4-contract-test
       - name: Verify MinIO multipart cleanup
         run: make minio-runtime-test
       - name: Run black-box and controlled worker-recovery tests
-        env:
-          TEST_COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
         run: |
           E2E_BOOTSTRAP_CODE="$(cat .dev/secrets/e2e_bootstrap_code)" \
           E2E_MAIL_FIXTURE_URL=http://127.0.0.1:8025/view/latest.txt \
-          INTEGRATION_COMPOSE_FILES='-f docker-compose.yml -f docker-compose.ci.yml' \
             make m4-m5-m6-integration-test
       - name: Show integration diagnostics
         if: failure()
         run: |
-          docker compose -f docker-compose.yml -f docker-compose.ci.yml logs --no-color --tail=300 ingestion-service retrieval-worker retrieval-service answer-service llm-provider-stub rabbitmq qdrant || true
+          docker compose $CI_COMPOSE_FILES logs --no-color --tail=300 ingestion-service retrieval-worker retrieval-service answer-service llm-provider-stub rabbitmq qdrant || true
       - name: Run focused M5 worker-recovery tests
-        env:
-          TEST_COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
         run: make m5-worker-recovery-test
       - name: Verify database-loss readiness behavior
         run: |
@@ -190,10 +137,10 @@ jobs:
           exit 1
       - name: Show container state
         if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian ps --all
+        run: docker compose $CI_COMPOSE_FILES --profile raglibrarian ps --all
       - name: Tear down stack
         if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian down -v
+        run: docker compose $CI_COMPOSE_FILES --profile raglibrarian down -v
 
   m4-performance:
     if: github.event_name == 'schedule'

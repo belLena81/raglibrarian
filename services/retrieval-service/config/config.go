@@ -23,18 +23,19 @@ const (
 	defaultSearchCandidatePageMultiplier   = 2
 	DefaultLambdaProcessingTimeout         = 13*time.Minute + 30*time.Second
 	DefaultLambdaFailureRecordTimeout      = 10 * time.Second
+	DefaultTEIMaxResponseBytes             = 8 << 20
+	DefaultQdrantMaxResponseBytes          = 4 << 20
+	DefaultQdrantBatchResponseBytes        = 8 << 20
+	MaximumTEIRawResponseLogBytes          = 64 << 10
 	defaultSummaryLLMMaxCalls              = 100
 	defaultSummaryLLMOutputMode            = "json_or_plain"
 	summaryLLMOutputModeStrictJSON         = "strict_json"
 	defaultCleanupJobTimeout               = 90 * time.Second
 	defaultCleanupJobBatchSize             = 64
-	defaultTEIResponseMaxBytes             = 8 << 20
 	defaultTEIBatchSize                    = 8
 	DefaultSummaryProviderMaxInputRunes    = 4096
 	DefaultSummaryProviderMaxResponseBytes = 64 << 10
 	DefaultSummaryProviderMaxSummaryBytes  = 16 << 10
-	defaultQdrantResponseBytes             = 4 << 20
-	defaultQdrantBatchResponseBytes        = 8 << 20
 )
 
 type Config struct {
@@ -171,12 +172,12 @@ func Load() (Config, error) {
 	summaryLLMRequestsPerMinute, summaryLLMRequestsPerMinuteErr := nonNegativeInteger("RETRIEVAL_SUMMARY_LLM_REQUESTS_PER_MINUTE", 15, 1000)
 	summaryLLMOutputMode, summaryLLMOutputModeErr := summaryOutputMode(configuration.SummaryLLMOutputMode)
 	teiRequestsPerSecond, teiRequestsPerSecondErr := nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000)
-	teiMaxResponseBytes, teiMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_TEI_MAX_RESPONSE_BYTES", defaultTEIResponseMaxBytes, 32<<20)
+	teiMaxResponseBytes, teiMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_TEI_MAX_RESPONSE_BYTES", DefaultTEIMaxResponseBytes, 32<<20)
 	teiBatchSize, teiBatchSizeErr := boundedPositiveInteger("RETRIEVAL_TEI_BATCH_SIZE", defaultTEIBatchSize, 256)
 	teiLogRawResponse, teiLogRawResponseErr := optionalBool("RETRIEVAL_TEI_LOG_RAW_RESPONSE", false)
 	teiLogRawResponseMaxBytes, teiLogRawResponseMaxBytesErr := nonNegativeInteger("RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", 4096, 64<<10)
-	qdrantMaxResponseBytes, qdrantMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_MAX_RESPONSE_BYTES", defaultQdrantResponseBytes, 32<<20)
-	qdrantBatchResponseBytes, qdrantBatchResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_BATCH_RESPONSE_BYTES", defaultQdrantBatchResponseBytes, 32<<20)
+	qdrantMaxResponseBytes, qdrantMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_MAX_RESPONSE_BYTES", DefaultQdrantMaxResponseBytes, 32<<20)
+	qdrantBatchResponseBytes, qdrantBatchResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_BATCH_RESPONSE_BYTES", DefaultQdrantBatchResponseBytes, 32<<20)
 	summaryMaxInputRunes, summaryMaxInputRunesErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_INPUT_RUNES", DefaultSummaryProviderMaxInputRunes, 32768)
 	summaryMaxResponseBytes, summaryMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_RESPONSE_BYTES", DefaultSummaryProviderMaxResponseBytes, 1<<20)
 	summaryMaxSummaryBytes, summaryMaxSummaryBytesErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_SUMMARY_BYTES", DefaultSummaryProviderMaxSummaryBytes, 256<<10)
@@ -358,13 +359,13 @@ func LoadWorker() (WorkerConfig, error) {
 	readinessIdleTimeout, readinessIdleTimeoutErr := optionalDuration("RETRIEVAL_WORKER_READY_IDLE_TIMEOUT", 30*time.Second)
 	readinessShutdownTimeout, readinessShutdownTimeoutErr := optionalDuration("RETRIEVAL_WORKER_READY_SHUTDOWN_TIMEOUT", 3*time.Second)
 	teiRequestsPerSecond, teiRequestsPerSecondErr := nonNegativeInteger("RETRIEVAL_TEI_REQUESTS_PER_SECOND", 0, 1000)
-	teiMaxResponseBytes, teiMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_TEI_MAX_RESPONSE_BYTES", defaultTEIResponseMaxBytes, 32<<20)
+	teiMaxResponseBytes, teiMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_TEI_MAX_RESPONSE_BYTES", DefaultTEIMaxResponseBytes, 32<<20)
 	teiBatchSize, teiBatchSizeErr := boundedPositiveInteger("RETRIEVAL_TEI_BATCH_SIZE", defaultTEIBatchSize, 256)
 	teiLogRawResponse, teiLogRawResponseErr := optionalBool("RETRIEVAL_TEI_LOG_RAW_RESPONSE", false)
 	teiLogRawResponseMaxBytes, teiLogRawResponseMaxBytesErr := nonNegativeInteger("RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES", 4096, 64<<10)
 	minimumSearchScore, minimumSearchScoreErr := LoadMinimumSearchScore()
-	qdrantMaxResponseBytes, qdrantMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_MAX_RESPONSE_BYTES", defaultQdrantResponseBytes, 32<<20)
-	qdrantBatchResponseBytes, qdrantBatchResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_BATCH_RESPONSE_BYTES", defaultQdrantBatchResponseBytes, 32<<20)
+	qdrantMaxResponseBytes, qdrantMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_MAX_RESPONSE_BYTES", DefaultQdrantMaxResponseBytes, 32<<20)
+	qdrantBatchResponseBytes, qdrantBatchResponseBytesErr := boundedPositiveInteger("RETRIEVAL_QDRANT_BATCH_RESPONSE_BYTES", DefaultQdrantBatchResponseBytes, 32<<20)
 	configuration := WorkerConfig{DSN: dsn, ConsumerRabbitURI: consumerURI, PublisherRabbitURI: publisherURI,
 		MinIOEndpoint: os.Getenv("RETRIEVAL_MINIO_ENDPOINT"), MinIOAccessKey: accessKey, MinIOSecretKey: secretKey, ArtifactBucket: os.Getenv("RETRIEVAL_ARTIFACT_BUCKET"), MinIOInsecure: minioInsecure,
 		TEIURL: os.Getenv("RETRIEVAL_TEI_URL"), QdrantURL: os.Getenv("RETRIEVAL_QDRANT_URL"), QdrantCollection: optional("RETRIEVAL_QDRANT_COLLECTION", DefaultQdrantCollection), QdrantAPIKey: qdrantAPIKey,

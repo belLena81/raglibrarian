@@ -45,7 +45,10 @@ func NewWorkerEmbedder(configuration config.WorkerConfig, httpClient *http.Clien
 }
 
 func NewDirectEmbedder(endpoint string, requestsPerSecond int, rawResponseLog embedding.RawResponseLog, httpClient *http.Client, serviceLogger *zap.Logger) (*embedding.TEI, error) {
-	return newEmbedder(endpoint, requestsPerSecond, rawResponseLog, embedding.Policy{}, httpClient, serviceLogger)
+	return newEmbedder(endpoint, requestsPerSecond, rawResponseLog, embedding.Policy{
+		MaximumResponseBytes: config.DefaultTEIMaxResponseBytes,
+		ProviderBatchSize:    1,
+	}, httpClient, serviceLogger)
 }
 
 func newEmbedder(endpoint string, requestsPerSecond int, rawResponseLog embedding.RawResponseLog, policy embedding.Policy, httpClient *http.Client, serviceLogger *zap.Logger) (*embedding.TEI, error) {
@@ -79,7 +82,10 @@ func NewWorkerVectorStore(configuration config.WorkerConfig, httpClient *http.Cl
 }
 
 func NewDirectVectorStore(endpoint, collection, apiKey string, minimumSearchScore float64, httpClient *http.Client) (*vector.Qdrant, error) {
-	return newVectorStore(endpoint, collection, apiKey, minimumSearchScore, vector.Policy{}, httpClient)
+	return newVectorStore(endpoint, collection, apiKey, minimumSearchScore, vector.Policy{
+		MaximumResponseBytes:      config.DefaultQdrantMaxResponseBytes,
+		MaximumBatchResponseBytes: config.DefaultQdrantBatchResponseBytes,
+	}, httpClient)
 }
 
 func newVectorStore(endpoint, collection, apiKey string, minimumSearchScore float64, policy vector.Policy, httpClient *http.Client) (*vector.Qdrant, error) {

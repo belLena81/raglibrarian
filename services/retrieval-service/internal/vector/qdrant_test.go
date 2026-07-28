@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	retrievalconfig "github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 )
@@ -103,10 +104,10 @@ func TestQdrantSearchDocumentsKeepsFullRawPageOpenAfterHydrationDrops(t *testing
 }
 
 func TestQdrantSearchEvidenceBatchAcceptsHydrationResponseLargerThanFourMiB(t *testing.T) {
-	passage := strings.Repeat("e", defaultMaximumQdrantResponseBytes)
+	passage := strings.Repeat("e", retrievalconfig.DefaultQdrantMaxResponseBytes)
 	batchResponse := `{"result":[{"points":[{"score":0.9,"payload":{"evidence_id":"evidence-1","chunk_id":"chunk-1","job_id":"job-1","book_id":"book-1","passage":"` + passage + `"}}]}]}`
-	if len(batchResponse) <= defaultMaximumQdrantResponseBytes || len(batchResponse) >= defaultMaximumEvidenceBatchResponseBytes {
-		t.Fatalf("batch response size = %d, want between %d and %d", len(batchResponse), defaultMaximumQdrantResponseBytes, defaultMaximumEvidenceBatchResponseBytes)
+	if len(batchResponse) <= retrievalconfig.DefaultQdrantMaxResponseBytes || len(batchResponse) >= retrievalconfig.DefaultQdrantBatchResponseBytes {
+		t.Fatalf("batch response size = %d, want between %d and %d", len(batchResponse), retrievalconfig.DefaultQdrantMaxResponseBytes, retrievalconfig.DefaultQdrantBatchResponseBytes)
 	}
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
 		if request.URL.Path != "/collections/evidence/points/query/batch" {

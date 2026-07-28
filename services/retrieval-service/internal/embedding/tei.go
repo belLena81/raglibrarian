@@ -15,17 +15,16 @@ import (
 	"strings"
 	"time"
 
+	retrievalconfig "github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/throttle"
 	"go.uber.org/zap"
 )
 
 const (
-	defaultMaximumResponseBytes       = 8 << 20
-	defaultProviderBatchSize          = 8
-	defaultQueryInstruction           = "Represent this sentence for searching relevant passages: "
-	defaultFailureDetailHTTPStatus    = "provider_http_status"
-	defaultMaximumRawResponseLogBytes = 64 << 10
+	defaultProviderBatchSize       = 8
+	defaultQueryInstruction        = "Represent this sentence for searching relevant passages: "
+	defaultFailureDetailHTTPStatus = "provider_http_status"
 )
 
 type Policy struct {
@@ -66,7 +65,7 @@ func NewTEIWithOptions(endpoint string, client *http.Client, log *zap.Logger, li
 	if policy.MaximumResponseBytes < 1 || policy.ProviderBatchSize < 1 {
 		return nil, errors.New("invalid TEI configuration")
 	}
-	if rawResponseLog.MaximumBytes < 0 || rawResponseLog.MaximumBytes > defaultMaximumRawResponseLogBytes || rawResponseLog.MaximumBytes > policy.MaximumResponseBytes {
+	if rawResponseLog.MaximumBytes < 0 || rawResponseLog.MaximumBytes > retrievalconfig.MaximumTEIRawResponseLogBytes || rawResponseLog.MaximumBytes > policy.MaximumResponseBytes {
 		return nil, errors.New("invalid TEI diagnostics configuration")
 	}
 	return &TEI{endpoint: strings.TrimRight(endpoint, "/"), client: client, log: log, limit: limit, rawResponseLog: rawResponseLog, policy: policy}, nil
@@ -258,7 +257,7 @@ func sanitizeRawResponsePrefix(body []byte) string {
 
 func defaultPolicy() Policy {
 	return Policy{
-		MaximumResponseBytes: defaultMaximumResponseBytes,
+		MaximumResponseBytes: retrievalconfig.DefaultTEIMaxResponseBytes,
 		ProviderBatchSize:    defaultProviderBatchSize,
 	}
 }

@@ -84,9 +84,6 @@ func NewOpenAIWithOptions(baseURL, model, apiKey string, client *http.Client, lo
 		outputMode = SummaryOutputModeJSONOrPlain
 	}
 	policy := options.Policy
-	if policy == (Policy{}) {
-		policy = defaultPolicy()
-	}
 	endpoint, err := providerhttp.OpenAIChatCompletionsURL(baseURL)
 	if err != nil ||
 		strings.TrimSpace(model) == "" || len(model) > 256 || strings.ContainsAny(model, "\r\n") || strings.TrimSpace(apiKey) == "" || strings.ContainsAny(apiKey, "\r\n") || client == nil ||

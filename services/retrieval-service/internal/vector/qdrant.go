@@ -14,15 +14,14 @@ import (
 	"net/url"
 	"strings"
 
+	retrievalconfig "github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 )
 
 const (
-	defaultMaximumQdrantResponseBytes        = 4 << 20
-	defaultMaximumEvidenceBatchResponseBytes = 8 << 20
-	collectionProfileDigestKey               = "raglibrarian_index_profile_digest"
-	collectionSchemaDigestKey                = "raglibrarian_collection_schema_digest"
+	collectionProfileDigestKey = "raglibrarian_index_profile_digest"
+	collectionSchemaDigestKey  = "raglibrarian_collection_schema_digest"
 )
 
 type Policy struct {
@@ -643,7 +642,7 @@ func normalizedValues(values []string) []string {
 
 func defaultPolicy() Policy {
 	return Policy{
-		MaximumResponseBytes:      defaultMaximumQdrantResponseBytes,
-		MaximumBatchResponseBytes: defaultMaximumEvidenceBatchResponseBytes,
+		MaximumResponseBytes:      retrievalconfig.DefaultQdrantMaxResponseBytes,
+		MaximumBatchResponseBytes: retrievalconfig.DefaultQdrantBatchResponseBytes,
 	}
 }

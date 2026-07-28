@@ -96,6 +96,9 @@ func TestNewOpenAIRejectsInvalidConfiguration(t *testing.T) {
 	if _, err := NewOpenAI("https://provider", "model", "key", client, zap.NewNop(), nil, 64, SummaryOutputMode("invalid")); err == nil {
 		t.Fatal("NewOpenAI accepted an invalid output mode")
 	}
+	if _, err := NewOpenAIWithOptions("https://provider", "model", "key", client, zap.NewNop(), nil, 64, Options{}); err == nil {
+		t.Fatal("NewOpenAIWithOptions accepted an empty policy")
+	}
 }
 
 func TestParseSummaryOutputMode(t *testing.T) {
