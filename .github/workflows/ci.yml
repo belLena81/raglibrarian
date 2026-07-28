@@ -146,19 +146,21 @@ jobs:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      CI_COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
+      TEST_COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
     steps:
       - uses: actions/checkout@v4.2.2
       - uses: ./.github/actions/setup-go-ci
       - name: Create ephemeral file-backed local configuration
         run: make ci-bootstrap-local-config
       - name: Start isolated M4 stack
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile raglibrarian up -d --build --wait --wait-timeout 240
+        run: docker compose $CI_COMPOSE_FILES --profile raglibrarian up -d --build --wait --wait-timeout 240
       - name: Run M4 performance smoke and soak suites
         env:
           E2E_BASE_URL: http://127.0.0.1:8080
           E2E_SECONDARY_BASE_URL: http://127.0.0.1:8081
           E2E_MAIL_FIXTURE_URL: http://127.0.0.1:8025/view/latest.txt
-          TEST_COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
           M4_PERFORMANCE_PROFILE: m4-slo-v1
           M4_SOAK_DURATION: 30m
         run: |
@@ -175,7 +177,7 @@ jobs:
           M4_E2E_REFRESH_COOKIE_FILE="$token_dir/refresh" make m4-soak
       - name: Show container state and logs
         if: failure()
-        run: docker compose --profile raglibrarian ps --all
+        run: docker compose $CI_COMPOSE_FILES --profile raglibrarian ps --all
       - name: Tear down stack
         if: always()
-        run: docker compose --profile raglibrarian down -v
+        run: docker compose $CI_COMPOSE_FILES --profile raglibrarian down -v
