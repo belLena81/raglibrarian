@@ -267,8 +267,25 @@ m5-contract-ci-test: _require_root
 	@project=raglibrarian-m5-contract-test; \
 	status=0; \
 	compose() { MAILPIT_UI_PORT=0 POSTGRES_PORT=0 MINIO_API_PORT=0 RABBITMQ_AMQP_PORT=0 QDRANT_HTTP_PORT=0 QDRANT_GRPC_PORT=0 COMPOSE_PROJECT_NAME=$$project docker compose $(M5_TEST_COMPOSE_FILES) --profile raglibrarian --profile tests "$$@"; }; \
+	retry_compose_build() { \
+		attempts="$${M5_COMPOSE_BUILD_ATTEMPTS:-3}"; \
+		case "$$attempts" in ""|*[!0-9]*|0) attempts=3 ;; esac; \
+		attempt=1; \
+		while true; do \
+			if compose build "$$@"; then \
+				return 0; \
+			fi; \
+			if [ "$$attempt" -ge "$$attempts" ]; then \
+				return 1; \
+			fi; \
+			sleep_seconds=$$((attempt * 10)); \
+			echo "Compose build failed; retrying in $${sleep_seconds}s ($$attempt/$$attempts)" >&2; \
+			sleep "$$sleep_seconds"; \
+			attempt=$$((attempt + 1)); \
+		done; \
+	}; \
 	trap 'compose down -v --remove-orphans' EXIT; \
-	compose build retrieval-qdrant-init retrieval-service retrieval-contract-tests && \
+	retry_compose_build retrieval-qdrant-init retrieval-service retrieval-contract-tests && \
 	compose up -d --wait text-embeddings-inference && \
 	compose run --rm --no-deps -e RETRIEVAL_TEI_URL=http://text-embeddings-inference:8080 retrieval-contract-tests "go -C /src/services/retrieval-service test -count=1 -v -run '^TestSearchQualityBenchmark$$' ./internal/application" && \
 	compose run --rm retrieval-contract-tests || status=$$?; \
