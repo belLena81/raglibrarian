@@ -121,6 +121,51 @@ func TestQdrantSearchDocumentsKeepsFullRawPageOpenAfterHydrationDrops(t *testing
 	}
 }
 
+func TestQdrantSearchDocumentsIncludesDocumentQueryDiagnosticDetail(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) *http.Response {
+		return response(http.StatusBadGateway, `{}`)
+	})}
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
+	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 1}, testSearchRequestPolicy())
+
+	_, err := store.SearchDocuments(context.Background(), query, make([]float32, domain.EmbeddingDimensions), 1, 0)
+	if err == nil {
+		t.Fatal("SearchDocuments() error = nil")
+	}
+	var detailed interface{ ReasonDetail() string }
+	if !errors.As(err, &detailed) {
+		t.Fatalf("SearchDocuments() error detail missing: %v", err)
+	}
+	if got := detailed.ReasonDetail(); got != "operation document_query path /points/query failure_class http_status detail status 502" {
+		t.Fatalf("ReasonDetail() = %q", got)
+	}
+}
+
+func TestQdrantSearchDocumentsIncludesHydrationBatchDiagnosticDetail(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) *http.Response {
+		requests++
+		if requests == 1 {
+			return response(http.StatusOK, `{"result":{"points":[{"id":"document-point-1","score":0.8,"payload":{"document_id":"document-1","job_id":"job-1","book_id":"book-1","chunk_count":1}}]}}`)
+		}
+		return response(http.StatusOK, `{"result":[]}`)
+	})}
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
+	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 1}, testSearchRequestPolicy())
+
+	_, err := store.SearchDocuments(context.Background(), query, make([]float32, domain.EmbeddingDimensions), 1, 0)
+	if err == nil {
+		t.Fatal("SearchDocuments() error = nil")
+	}
+	var detailed interface{ ReasonDetail() string }
+	if !errors.As(err, &detailed) {
+		t.Fatalf("SearchDocuments() error detail missing: %v", err)
+	}
+	if got := detailed.ReasonDetail(); got != "operation document_hydration_batch path /points/query/batch failure_class invalid_batch_result_count detail expected 1 actual 0" {
+		t.Fatalf("ReasonDetail() = %q", got)
+	}
+}
+
 func TestQdrantSearchEvidenceBatchAcceptsHydrationResponseLargerThanFourMiB(t *testing.T) {
 	passage := strings.Repeat("e", retrievalconfig.DefaultQdrantMaxResponseBytes)
 	batchResponse := `{"result":[{"points":[{"score":0.9,"payload":{"evidence_id":"evidence-1","chunk_id":"chunk-1","job_id":"job-1","book_id":"book-1","passage":"` + passage + `"}}]}]}`

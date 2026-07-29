@@ -19,6 +19,10 @@ type SearchService interface {
 	Search(context.Context, domain.Actor, domain.SearchQueryInput) (application.SearchResult, error)
 }
 
+type detailedReason interface {
+	ReasonDetail() string
+}
+
 type Server struct {
 	retrievalv1.UnimplementedRetrievalServiceServer
 	search                SearchService
@@ -87,10 +91,14 @@ func (s *Server) Search(parent context.Context, request *retrievalv1.SearchReque
 	results, err := s.search.Search(ctx, actor, domain.SearchQueryInput{Question: request.Question, Filters: filters, Limit: int(request.Limit)})
 	if err != nil {
 		if s.log != nil {
-			s.log.Warn("retrieval.query.failed",
+			fields := []zap.Field{
 				zap.String("reason_code", errorReason(err)),
 				zap.Int64("duration_ms", time.Since(started).Milliseconds()),
-			)
+			}
+			if detail := errorDetail(err); detail != "" {
+				fields = append(fields, zap.String("reason_detail", detail))
+			}
+			s.log.Warn("retrieval.query.failed", fields...)
 		}
 		return nil, mapError(err)
 	}
@@ -177,6 +185,17 @@ func errorReason(err error) string {
 	case errors.Is(err, context.DeadlineExceeded):
 		return "deadline_exceeded"
 	default:
-		return "retrieval_unavailable"
+		return "retrieval_failed"
 	}
+}
+
+func errorDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	var detailed detailedReason
+	if errors.As(err, &detailed) {
+		return detailed.ReasonDetail()
+	}
+	return ""
 }

@@ -145,11 +145,50 @@ type pointPayload struct {
 	ChunkCount uint32   `json:"chunk_count"`
 }
 
+type diagnosticError struct {
+	err       error
+	operation string
+	path      string
+	class     string
+	detail    string
+}
+
+func (e *diagnosticError) Error() string { return e.err.Error() }
+
+func (e *diagnosticError) Unwrap() error { return e.err }
+
+func (e *diagnosticError) ReasonDetail() string {
+	parts := []string{
+		"operation " + e.operation,
+		"path " + e.path,
+		"failure_class " + e.class,
+	}
+	if detail := sanitizeDiagnosticDetail(e.detail); detail != "" {
+		parts = append(parts, "detail "+detail)
+	}
+	return strings.Join(parts, " ")
+}
+
+func sanitizeDiagnosticDetail(value string) string {
+	return strings.TrimSpace(strings.Join(strings.Fields(value), " "))
+}
+
+func queryFailure(operation, path, class, detail string, err error) error {
+	return &diagnosticError{
+		err:       err,
+		operation: operation,
+		path:      path,
+		class:     class,
+		detail:    detail,
+	}
+}
+
 func (q *Qdrant) Search(ctx context.Context, query domain.SearchQuery, vector []float32, limit, offset int) ([]application.Evidence, error) {
 	return q.searchEvidence(ctx, query, vector, limit, offset, []condition{{Key: "vector_kind", Match: &matchValue{Value: "chunk"}}})
 }
 
 func (q *Qdrant) SearchDocuments(ctx context.Context, query domain.SearchQuery, vector []float32, limit, offset int) (application.DocumentPage, error) {
+	const path = "/points/query"
 	payload, err := json.Marshal(queryRequest{Query: vector, Limit: limit, Offset: offset, WithPayload: true, Filter: buildFilter(query.Filters(), []condition{{Key: "vector_kind", Match: &matchValue{Value: "document"}}}), ScoreThreshold: q.minimumSearchScore})
 	if err != nil {
 		return application.DocumentPage{}, errors.New("encode vector query")
@@ -164,16 +203,16 @@ func (q *Qdrant) SearchDocuments(ctx context.Context, query domain.SearchQuery, 
 	}
 	response, err := q.client.Do(request) // #nosec G704 -- NewQdrant accepts only a validated operator-controlled endpoint.
 	if err != nil {
-		return application.DocumentPage{}, errors.New("vector dependency unavailable")
+		return application.DocumentPage{}, queryFailure("document_query", path, "network_error", err.Error(), errors.New("vector dependency unavailable"))
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes)))
-		return application.DocumentPage{}, errors.New("vector dependency rejected query")
+		return application.DocumentPage{}, queryFailure("document_query", path, "http_status", fmt.Sprintf("status %d", response.StatusCode), errors.New("vector dependency rejected query"))
 	}
 	var decoded queryResponse
 	if err = json.NewDecoder(io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes))).Decode(&decoded); err != nil {
-		return application.DocumentPage{}, errors.New("invalid vector response")
+		return application.DocumentPage{}, queryFailure("document_query", path, "decode_error", err.Error(), errors.New("invalid vector response"))
 	}
 	results := make([]application.DocumentResult, 0, len(decoded.Result.Points))
 	jobIDs := make([]string, 0, len(decoded.Result.Points))
@@ -203,6 +242,7 @@ func (q *Qdrant) SearchDocuments(ctx context.Context, query domain.SearchQuery, 
 }
 
 func (q *Qdrant) searchEvidence(ctx context.Context, query domain.SearchQuery, vector []float32, limit, offset int, extra []condition) ([]application.Evidence, error) {
+	const path = "/points/query"
 	payload, err := json.Marshal(queryRequest{Query: vector, Limit: limit, Offset: offset, WithPayload: true, Filter: buildFilter(query.Filters(), extra), ScoreThreshold: q.minimumSearchScore})
 	if err != nil {
 		return nil, errors.New("encode vector query")
@@ -217,16 +257,16 @@ func (q *Qdrant) searchEvidence(ctx context.Context, query domain.SearchQuery, v
 	}
 	response, err := q.client.Do(request) // #nosec G704 -- NewQdrant accepts only a validated operator-controlled endpoint.
 	if err != nil {
-		return nil, errors.New("vector dependency unavailable")
+		return nil, queryFailure("chunk_query", path, "network_error", err.Error(), errors.New("vector dependency unavailable"))
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes)))
-		return nil, errors.New("vector dependency rejected query")
+		return nil, queryFailure("chunk_query", path, "http_status", fmt.Sprintf("status %d", response.StatusCode), errors.New("vector dependency rejected query"))
 	}
 	var decoded queryResponse
 	if err = json.NewDecoder(io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes))).Decode(&decoded); err != nil {
-		return nil, errors.New("invalid vector response")
+		return nil, queryFailure("chunk_query", path, "decode_error", err.Error(), errors.New("invalid vector response"))
 	}
 	results := make([]application.Evidence, 0, len(decoded.Result.Points))
 	for _, point := range decoded.Result.Points {
@@ -242,6 +282,7 @@ func (q *Qdrant) searchEvidence(ctx context.Context, query domain.SearchQuery, v
 }
 
 func (q *Qdrant) searchEvidenceBatch(ctx context.Context, query domain.SearchQuery, vector []float32, jobIDs []string, limit int) ([][]application.Evidence, error) {
+	const path = "/points/query/batch"
 	results := make([][]application.Evidence, len(jobIDs))
 	if len(jobIDs) == 0 {
 		return results, nil
@@ -267,16 +308,19 @@ func (q *Qdrant) searchEvidenceBatch(ctx context.Context, query domain.SearchQue
 	}
 	response, err := q.client.Do(request) // #nosec G704 -- NewQdrant accepts only a validated operator-controlled endpoint.
 	if err != nil {
-		return nil, errors.New("vector dependency unavailable")
+		return nil, queryFailure("document_hydration_batch", path, "network_error", err.Error(), errors.New("vector dependency unavailable"))
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, int64(q.policy.MaximumResponseBytes)))
-		return nil, errors.New("vector dependency rejected query")
+		return nil, queryFailure("document_hydration_batch", path, "http_status", fmt.Sprintf("status %d", response.StatusCode), errors.New("vector dependency rejected query"))
 	}
 	var decoded queryBatchResponse
-	if err = json.NewDecoder(io.LimitReader(response.Body, int64(q.policy.MaximumBatchResponseBytes))).Decode(&decoded); err != nil || len(decoded.Result) != len(jobIDs) {
-		return nil, errors.New("invalid vector response")
+	if err = json.NewDecoder(io.LimitReader(response.Body, int64(q.policy.MaximumBatchResponseBytes))).Decode(&decoded); err != nil {
+		return nil, queryFailure("document_hydration_batch", path, "decode_error", err.Error(), errors.New("invalid vector response"))
+	}
+	if len(decoded.Result) != len(jobIDs) {
+		return nil, queryFailure("document_hydration_batch", path, "invalid_batch_result_count", fmt.Sprintf("expected %d actual %d", len(jobIDs), len(decoded.Result)), errors.New("invalid vector response"))
 	}
 	for index, result := range decoded.Result {
 		results[index] = evidenceFromPoints(result.Points)

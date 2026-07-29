@@ -49,6 +49,20 @@ func TestRetrievalLexicalSearchMigrationAddsOnlyIndexAndGrant(t *testing.T) {
 	}
 }
 
+func TestPostgresBootstrapRunsRetrievalLexicalSearchMigration(t *testing.T) {
+	contents := strings.Join(strings.Fields(readMigration(t, "../../../../infra/postgres/bootstrap.sql")), " ")
+
+	for _, fragment := range []string{
+		"\\connect retrieval",
+		"\\ir /schema/retrieval/001_retrieval_schema.up.sql",
+		"\\ir /schema/retrieval/002_retrieval_lexical_search.up.sql",
+	} {
+		if !strings.Contains(contents, fragment) {
+			t.Fatalf("postgres bootstrap is missing %q", fragment)
+		}
+	}
+}
+
 func readMigration(t *testing.T, path string) string {
 	t.Helper()
 	contents, err := os.ReadFile(path) // #nosec G304 -- fixed repository-owned migration fixture.

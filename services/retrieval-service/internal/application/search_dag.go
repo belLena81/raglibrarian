@@ -3,7 +3,9 @@ package application
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 )
@@ -34,6 +36,37 @@ type RetrievalPlan struct {
 	DocumentLimit          int
 	LexicalCandidateBudget int
 	LexicalPageLimit       int
+}
+
+type retrievalDiagnosticError struct {
+	err    error
+	detail string
+}
+
+func (e *retrievalDiagnosticError) Error() string { return e.err.Error() }
+
+func (e *retrievalDiagnosticError) Unwrap() error { return e.err }
+
+func (e *retrievalDiagnosticError) ReasonDetail() string {
+	return sanitizeRetrievalDiagnosticDetail(e.detail)
+}
+
+func sanitizeRetrievalDiagnosticDetail(value string) string {
+	return strings.TrimSpace(strings.Join(strings.Fields(value), " "))
+}
+
+func visibilityFailure(scope string, err error) error {
+	return &retrievalDiagnosticError{
+		err:    errors.New("validate index visibility"),
+		detail: fmt.Sprintf("operation visibility_filter scope %s detail %v", scope, err),
+	}
+}
+
+func lexicalSearchFailure(err error) error {
+	return &retrievalDiagnosticError{
+		err:    errors.New("search lexical evidence"),
+		detail: fmt.Sprintf("operation lexical_search detail %v", err),
+	}
 }
 
 type heuristicQueryAnalyzer struct {
@@ -69,13 +102,13 @@ func (r storeChunkRetriever) Retrieve(ctx context.Context, query domain.SearchQu
 		candidateLimit := searchCandidateLimit(plan.ChunkPageLimit, offset, plan.ChunkCandidateBudget)
 		candidates, err := r.store.Search(ctx, query, vector, candidateLimit, offset)
 		if err != nil {
-			return nil, errors.New("search evidence")
+			return nil, fmt.Errorf("search evidence: %w", err)
 		}
 		candidateCount := len(candidates)
 		candidates = filterEvidenceByMinimumScore(candidates, r.policy.MinimumVisibleScore)
 		visible, err := r.visibility.FilterIndexed(ctx, candidates)
 		if err != nil {
-			return nil, errors.New("validate index visibility")
+			return nil, visibilityFailure("chunk_candidates", err)
 		}
 		for _, value := range visible {
 			if value.EvidenceID == "" {
@@ -107,14 +140,14 @@ func (r storeDocumentRetriever) Retrieve(ctx context.Context, query domain.Searc
 	}
 	page, err := r.store.SearchDocuments(ctx, query, vector, plan.DocumentLimit, 0)
 	if err != nil {
-		return nil, errors.New("search documents")
+		return nil, fmt.Errorf("search documents: %w", err)
 	}
 	if len(page.Documents) == 0 {
 		return nil, nil
 	}
 	visible, err := r.visibility.FilterIndexedDocuments(ctx, page.Documents)
 	if err != nil {
-		return nil, errors.New("validate index visibility")
+		return nil, visibilityFailure("document_candidates", err)
 	}
 	results := make([]DocumentResult, 0, len(visible))
 	for _, document := range visible {
@@ -122,7 +155,7 @@ func (r storeDocumentRetriever) Retrieve(ctx context.Context, query domain.Searc
 		if len(document.Evidence) > 0 {
 			evidence, filterErr := r.visibility.FilterIndexed(ctx, document.Evidence)
 			if filterErr != nil {
-				return nil, errors.New("validate index visibility")
+				return nil, visibilityFailure("document_evidence", filterErr)
 			}
 			sortEvidenceByScore(evidence)
 			document.Evidence = evidence
@@ -145,12 +178,12 @@ func (r storeLexicalRetriever) Retrieve(ctx context.Context, query domain.Search
 		candidateLimit := searchCandidateLimit(plan.LexicalPageLimit, offset, plan.LexicalCandidateBudget)
 		candidates, err := r.store.SearchLexical(ctx, query, candidateLimit, offset)
 		if err != nil {
-			return nil, errors.New("search lexical evidence")
+			return nil, lexicalSearchFailure(err)
 		}
 		candidateCount := len(candidates)
 		visible, err := r.visibility.FilterIndexed(ctx, candidates)
 		if err != nil {
-			return nil, errors.New("validate index visibility")
+			return nil, visibilityFailure("lexical_candidates", err)
 		}
 		for _, value := range visible {
 			if value.EvidenceID == "" {

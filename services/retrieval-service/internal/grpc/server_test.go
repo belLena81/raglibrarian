@@ -1,10 +1,13 @@
 package retrievalgrpc
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/logger"
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
@@ -57,6 +60,38 @@ func TestSearchAppliesConfiguredDeadline(t *testing.T) {
 	}
 }
 
+func TestSearchLogsReasonDetailForDetailedFailures(t *testing.T) {
+	var output bytes.Buffer
+	log, err := logger.NewWithWriter(&output)
+	if err != nil {
+		t.Fatalf("logger.NewWithWriter() error = %v", err)
+	}
+	server := NewServer(&stubSearchService{err: detailedFailure{detail: "operation document_hydration_batch path /points/query/batch failure_class http_status detail status 502"}}, log, 25*time.Second, 2*time.Second)
+
+	_, _ = server.Search(context.Background(), &retrievalv1.SearchRequest{Question: "replication"})
+
+	value := output.String()
+	if !strings.Contains(value, "retrieval query failed") || !strings.Contains(value, "reason_code=retrieval_failed") || !strings.Contains(value, "reason_detail=operation document_hydration_batch path /points/query/batch failure_class http_status detail status 502") {
+		t.Fatalf("Search() logs = %q", value)
+	}
+}
+
+func TestSearchLogsReasonDetailForChunkQueryFailures(t *testing.T) {
+	var output bytes.Buffer
+	log, err := logger.NewWithWriter(&output)
+	if err != nil {
+		t.Fatalf("logger.NewWithWriter() error = %v", err)
+	}
+	server := NewServer(&stubSearchService{err: detailedFailure{detail: "operation chunk_query path /points/query failure_class http_status detail status 502"}}, log, 25*time.Second, 2*time.Second)
+
+	_, _ = server.Search(context.Background(), &retrievalv1.SearchRequest{Question: "replication"})
+
+	value := output.String()
+	if !strings.Contains(value, "retrieval query failed") || !strings.Contains(value, "reason_code=retrieval_failed") || !strings.Contains(value, "reason_detail=operation chunk_query path /points/query failure_class http_status detail status 502") {
+		t.Fatalf("Search() logs = %q", value)
+	}
+}
+
 type stubSearchService struct {
 	result application.SearchResult
 	err    error
@@ -69,3 +104,11 @@ func (s *stubSearchService) Search(ctx context.Context, actor domain.Actor, inpu
 	}
 	return s.result, s.err
 }
+
+type detailedFailure struct {
+	detail string
+}
+
+func (d detailedFailure) Error() string { return "vector dependency rejected query" }
+
+func (d detailedFailure) ReasonDetail() string { return d.detail }

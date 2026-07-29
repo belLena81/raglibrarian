@@ -103,6 +103,7 @@ GRANT CONNECT ON DATABASE retrieval TO retrieval_e2e;
 \connect retrieval
 SET ROLE retrieval_migrator;
 \ir /schema/retrieval/001_retrieval_schema.up.sql
+\ir /schema/retrieval/002_retrieval_lexical_search.up.sql
 RESET ROLE;
 
 \unset identity_migration_password

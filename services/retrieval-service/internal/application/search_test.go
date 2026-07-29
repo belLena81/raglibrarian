@@ -156,6 +156,103 @@ func TestSearcherFallsBackToLocalAssessmentsAfterProviderFailure(t *testing.T) {
 	}
 }
 
+func TestSearcherReturnsDetailedChunkVisibilityFailure(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{
+		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Passage: "Replication keeps copies.", Score: 0.91}},
+	}
+	searcher := newTestSearcher(t, embedder, store, failingVisibility{err: errors.New("evidence has no index job")}, 4)
+
+	_, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 3})
+	if err == nil || err.Error() != "validate index visibility" {
+		t.Fatalf("Search() error = %v", err)
+	}
+	var detailed interface{ ReasonDetail() string }
+	if !errors.As(err, &detailed) {
+		t.Fatalf("Search() error missing ReasonDetail: %v", err)
+	}
+	want := "operation visibility_filter scope chunk_candidates detail evidence has no index job"
+	if detailed.ReasonDetail() != want {
+		t.Fatalf("Search() reason detail = %q, want %q", detailed.ReasonDetail(), want)
+	}
+}
+
+func TestSearcherReturnsDetailedDocumentVisibilityFailure(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{
+		documents: []DocumentResult{{
+			DocumentID: "document-1",
+			JobID:      "job-1",
+			BookID:     "book-1",
+			ChunkCount: 1,
+			Score:      0.91,
+			Evidence:   []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Passage: "Replication keeps copies.", Score: 0.91}},
+		}},
+	}
+	searcher := newTestSearcher(t, embedder, store, failingVisibility{documentErr: errors.New("document has no index job")}, 4)
+
+	_, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 3})
+	if err == nil || err.Error() != "validate index visibility" {
+		t.Fatalf("Search() error = %v", err)
+	}
+	var detailed interface{ ReasonDetail() string }
+	if !errors.As(err, &detailed) {
+		t.Fatalf("Search() error missing ReasonDetail: %v", err)
+	}
+	want := "operation visibility_filter scope document_candidates detail document has no index job"
+	if detailed.ReasonDetail() != want {
+		t.Fatalf("Search() reason detail = %q, want %q", detailed.ReasonDetail(), want)
+	}
+}
+
+func TestSearcherReturnsDetailedDocumentEvidenceVisibilityFailure(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{
+		documents: []DocumentResult{{
+			DocumentID: "document-1",
+			JobID:      "job-1",
+			BookID:     "book-1",
+			ChunkCount: 1,
+			Score:      0.91,
+			Evidence:   []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Passage: "Replication keeps copies.", Score: 0.91}},
+		}},
+	}
+	searcher := newTestSearcher(t, embedder, store, failingVisibility{evidenceErr: errors.New("evidence has no index job")}, 4)
+
+	_, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 3})
+	if err == nil || err.Error() != "validate index visibility" {
+		t.Fatalf("Search() error = %v", err)
+	}
+	var detailed interface{ ReasonDetail() string }
+	if !errors.As(err, &detailed) {
+		t.Fatalf("Search() error missing ReasonDetail: %v", err)
+	}
+	want := "operation visibility_filter scope document_evidence detail evidence has no index job"
+	if detailed.ReasonDetail() != want {
+		t.Fatalf("Search() reason detail = %q, want %q", detailed.ReasonDetail(), want)
+	}
+}
+
+func TestSearcherReturnsDetailedLexicalSearchFailure(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{}
+	lexicalStore := &stubLexicalEvidenceStore{err: errors.New("pq: function websearch_to_tsquery(unknown, text) does not exist")}
+	searcher := newTestSearcherWithLexical(t, embedder, store, lexicalStore, visibleIndexes{}, 4)
+
+	_, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 3})
+	if err == nil || err.Error() != "search lexical evidence" {
+		t.Fatalf("Search() error = %v", err)
+	}
+	var detailed interface{ ReasonDetail() string }
+	if !errors.As(err, &detailed) {
+		t.Fatalf("Search() error missing ReasonDetail: %v", err)
+	}
+	want := "operation lexical_search detail pq: function websearch_to_tsquery(unknown, text) does not exist"
+	if detailed.ReasonDetail() != want {
+		t.Fatalf("Search() reason detail = %q, want %q", detailed.ReasonDetail(), want)
+	}
+}
+
 func TestSearcherUsesLocalAssessmentsWhenProviderCallsAreDisabled(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{results: []Evidence{{
@@ -828,6 +925,32 @@ func (v filteringVisibility) FilterIndexedDocuments(_ context.Context, values []
 		}
 	}
 	return results, nil
+}
+
+type failingVisibility struct {
+	err         error
+	documentErr error
+	evidenceErr error
+}
+
+func (v failingVisibility) FilterIndexed(_ context.Context, values []Evidence) ([]Evidence, error) {
+	if len(values) > 0 && v.evidenceErr != nil {
+		return nil, v.evidenceErr
+	}
+	if v.err != nil {
+		return nil, v.err
+	}
+	return values, nil
+}
+
+func (v failingVisibility) FilterIndexedDocuments(_ context.Context, values []DocumentResult) ([]DocumentResult, error) {
+	if len(values) > 0 && v.documentErr != nil {
+		return nil, v.documentErr
+	}
+	if v.err != nil {
+		return nil, v.err
+	}
+	return values, nil
 }
 
 type stubEvidenceAssessor struct {
