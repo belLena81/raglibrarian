@@ -61,6 +61,7 @@ printf '%s' "$compose_config" | jq -e '
 	.services["answer-service"].depends_on["llm-provider-stub"].condition == "service_healthy" and
 	.services["retrieval-service"].environment.RETRIEVAL_SUMMARY_LLM_BASE_URL == "" and
 	.services["retrieval-service"].environment.RETRIEVAL_SUMMARY_LLM_MODEL == "" and
+	.services["retrieval-service"].environment.RETRIEVAL_MINIMUM_SEARCH_SCORE == "0.05" and
 	.services["edge-api"].environment.EDGE_ANSWER_RATE_LIMIT == "30" and
 	.services["edge-api-2"].environment.EDGE_ANSWER_RATE_LIMIT == "30"
 ' >/dev/null || {

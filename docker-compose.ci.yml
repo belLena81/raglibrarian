@@ -11,6 +11,12 @@ services:
       EDGE_ANSWER_RATE_LIMIT: "${M6_TEST_ANSWER_RATE_LIMIT:-30}"
       EDGE_BOOK_UPLOAD_RATE_LIMIT: "${INTEGRATION_TEST_BOOK_UPLOAD_RATE_LIMIT:-120}"
 
+  retrieval-service:
+    environment:
+      # The CI TEI stub uses token-overlap vectors whose similarity scale is
+      # lower than the production embedding model; keep this test-only.
+      RETRIEVAL_MINIMUM_SEARCH_SCORE: "${M5_TEST_MINIMUM_SEARCH_SCORE:-0.05}"
+
   text-embeddings-inference:
     image: raglibrarian-tei-stub:local
     build:
