@@ -20,6 +20,8 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 )
 
+const queryInstruction = "Represent this sentence for searching relevant passages: "
+
 type stubConfig struct {
 	Address             string
 	ReadHeaderTimeout   time.Duration
@@ -146,7 +148,7 @@ func decodeInputs(raw json.RawMessage) ([]string, error) {
 
 func vectorForText(text string) []float32 {
 	vector := make([]float32, domain.EmbeddingDimensions)
-	for _, token := range textTokens(text) {
+	for _, token := range textTokens(strings.TrimPrefix(text, queryInstruction)) {
 		index := stableIndex(token)
 		vector[index]++
 	}

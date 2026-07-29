@@ -36,6 +36,25 @@ func TestEmbedReturnsDeterministicNormalizedVectors(t *testing.T) {
 	}
 }
 
+func TestEmbedIgnoresQueryInstructionForDeterministicStubSimilarity(t *testing.T) {
+	body := bytes.NewBufferString(`{"inputs":["` + queryInstruction + `Why are deterministic retries harmless?","Chapter Two. Deterministic output makes retries harmless."],"truncate":false}`)
+	request := httptest.NewRequest(http.MethodPost, "/embed", body)
+	response := httptest.NewRecorder()
+
+	embed(1<<20).ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("embed status = %d, want 200", response.Code)
+	}
+	var vectors [][]float32
+	if err := json.Unmarshal(response.Body.Bytes(), &vectors); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if score := cosine(vectors[0], vectors[1]); score < 0.5 {
+		t.Fatalf("fixture query score = %.3f, want at least 0.5", score)
+	}
+}
+
 func TestEmbedRejectsEmptyInput(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/embed", bytes.NewBufferString(`{"inputs":[""]}`))
 	response := httptest.NewRecorder()
