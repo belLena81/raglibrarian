@@ -47,6 +47,76 @@ func TestUnknownFailureRemainsPersistenceUnavailable(t *testing.T) {
 	}
 }
 
+func TestContextErrorsKeepTheirGRPCStatusAndDiagnosticReason(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		err        error
+		wantCode   codes.Code
+		wantReason string
+	}{
+		{name: "cancelled", err: fmt.Errorf("wrapped: %w", context.Canceled), wantCode: codes.Canceled, wantReason: "request_cancelled"},
+		{name: "deadline", err: fmt.Errorf("wrapped: %w", context.DeadlineExceeded), wantCode: codes.DeadlineExceeded, wantReason: "deadline_exceeded"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := status.Code(mapError(testCase.err)); got != testCase.wantCode {
+				t.Fatalf("mapError() code = %v, want %v", got, testCase.wantCode)
+			}
+			if got := uploadFailureReason(testCase.err); got != testCase.wantReason {
+				t.Fatalf("uploadFailureReason() = %q, want %q", got, testCase.wantReason)
+			}
+		})
+	}
+}
+
+func TestUploadBookRejectsMissingRequestIDBeforeReceivingBody(t *testing.T) {
+	service := catalog.NewServiceWithOptions(fakeBookRepository{}, nil, catalog.ServiceOptions{MaxBytes: 1024})
+	server := NewServer(service, diagnostic.New(zap.NewNop()), Policy{
+		PreviewTimeout:        time.Second,
+		ReadinessProbeTimeout: time.Second,
+		UploadTimeout:         time.Second,
+		LifecycleTimeout:      time.Second,
+		ListTimeout:           time.Second,
+	})
+	stream := &noRecvUploadStream{ctx: context.Background()}
+
+	err := server.UploadBook(stream)
+
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("UploadBook() code = %v, want %v", status.Code(err), codes.InvalidArgument)
+	}
+	if stream.received {
+		t.Fatal("UploadBook() received body before validating request ID")
+	}
+}
+
+func TestCheckPreservesReadinessContextErrors(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		err      error
+		wantCode codes.Code
+	}{
+		{name: "cancelled", err: fmt.Errorf("wrapped: %w", context.Canceled), wantCode: codes.Canceled},
+		{name: "deadline", err: fmt.Errorf("wrapped: %w", context.DeadlineExceeded), wantCode: codes.DeadlineExceeded},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			service := catalog.NewServiceWithOptions(fakeBookRepository{}, nil, catalog.ServiceOptions{MaxBytes: 1024})
+			server := NewServer(service, diagnostic.New(zap.NewNop()), Policy{
+				PreviewTimeout:        time.Second,
+				ReadinessProbeTimeout: time.Second,
+				UploadTimeout:         time.Second,
+				LifecycleTimeout:      time.Second,
+				ListTimeout:           time.Second,
+			}, readinessError{err: testCase.err})
+
+			_, err := server.Check(context.Background(), &catalogv1.CheckRequest{})
+
+			if status.Code(err) != testCase.wantCode {
+				t.Fatalf("Check() code = %v, want %v", status.Code(err), testCase.wantCode)
+			}
+		})
+	}
+}
+
 func TestProcessingEventConflictMapsToLifecycleConflict(t *testing.T) {
 	mapped := mapError(catalog.ErrProcessingEventConflict)
 	if status.Code(mapped) != codes.Aborted || status.Convert(mapped).Message() != "lifecycle conflict" {
@@ -100,6 +170,29 @@ func TestGetBookUsesConfiguredPreviewTimeout(t *testing.T) {
 
 type fakeBookRepository struct {
 	book catalog.Book
+}
+
+type noRecvUploadStream struct {
+	catalogv1.CatalogService_UploadBookServer
+	ctx      context.Context
+	received bool
+}
+
+type readinessError struct {
+	err error
+}
+
+func (r readinessError) CheckReady(context.Context) error {
+	return r.err
+}
+
+func (s *noRecvUploadStream) Context() context.Context {
+	return s.ctx
+}
+
+func (s *noRecvUploadStream) Recv() (*catalogv1.UploadBookRequest, error) {
+	s.received = true
+	return nil, errors.New("unexpected receive")
 }
 
 func (f fakeBookRepository) Create(context.Context, catalog.Book, ...catalog.OutboxEvent) error {

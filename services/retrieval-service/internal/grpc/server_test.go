@@ -60,6 +60,28 @@ func TestSearchAppliesConfiguredDeadline(t *testing.T) {
 	}
 }
 
+func TestSearchMapsContextTermination(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		code codes.Code
+	}{
+		{name: "canceled", err: context.Canceled, code: codes.Canceled},
+		{name: "deadline exceeded", err: context.DeadlineExceeded, code: codes.DeadlineExceeded},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := NewServer(&stubSearchService{err: test.err}, zap.NewNop(), 25*time.Second, 2*time.Second)
+
+			_, err := server.Search(context.Background(), &retrievalv1.SearchRequest{Question: "replication"})
+
+			if status.Code(err) != test.code {
+				t.Fatalf("Search() code = %v, want %v", status.Code(err), test.code)
+			}
+		})
+	}
+}
+
 func TestSearchLogsReasonDetailForDetailedFailures(t *testing.T) {
 	var output bytes.Buffer
 	log, err := logger.NewWithWriter(&output)

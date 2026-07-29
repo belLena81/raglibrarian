@@ -3,6 +3,7 @@ package catalog
 import (
 	"archive/zip"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -56,10 +57,16 @@ func TestDefaultPreviewBookRemovesTemporaryWorkspace(t *testing.T) {
 	}
 
 	objects := NewMemoryObjectStore()
-	if _, err := objects.Put(context.Background(), "book.pdf", strings.NewReader("%PDF-1.4\nbody")); err != nil {
+	source := []byte("%PDF-1.4\nbody")
+	if _, err := objects.Put(context.Background(), "book.pdf", strings.NewReader(string(source))); err != nil {
 		t.Fatal(err)
 	}
-	preview, err := defaultPreviewBook(context.Background(), Book{MediaType: "application/pdf", ObjectReference: "book.pdf"}, objects, testMaxPreviewBytes, testMaxPreviewPages, testMaxEPUBEntries)
+	preview, err := defaultPreviewBook(context.Background(), Book{
+		MediaType:       "application/pdf",
+		ObjectReference: "book.pdf",
+		ByteSize:        int64(len(source)),
+		Checksum:        sha256.Sum256(source),
+	}, objects, int64(len(source)), testMaxPreviewBytes, testMaxPreviewPages, testMaxEPUBEntries)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,6 +75,25 @@ func TestDefaultPreviewBookRemovesTemporaryWorkspace(t *testing.T) {
 	}
 	if _, err := os.Stat(workspace); !os.IsNotExist(err) {
 		t.Fatalf("workspace %q still exists after preview generation: %v", workspace, err)
+	}
+}
+
+func TestDefaultPreviewBookRejectsStoredSourceIntegrityMismatch(t *testing.T) {
+	objects := NewMemoryObjectStore()
+	source := []byte("%PDF-1.4\nbody")
+	if _, err := objects.Put(context.Background(), "book.pdf", strings.NewReader(string(source))); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := defaultPreviewBook(context.Background(), Book{
+		MediaType:       "application/pdf",
+		ObjectReference: "book.pdf",
+		ByteSize:        int64(len(source)),
+		Checksum:        sha256.Sum256([]byte("different")),
+	}, objects, int64(len(source)), testMaxPreviewBytes, testMaxPreviewPages, testMaxEPUBEntries)
+
+	if err == nil {
+		t.Fatal("preview source checksum mismatch was accepted")
 	}
 }
 
@@ -81,6 +107,104 @@ func TestExtractEPUBPreviewPagesRejectsOversizedArchive(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("oversized EPUB archive was accepted")
+	}
+}
+
+func TestPreviewPDFFragmentRejectsOversizedOutput(t *testing.T) {
+	originalPreviewExecCommand := previewExecCommand
+	t.Cleanup(func() {
+		previewExecCommand = originalPreviewExecCommand
+	})
+	outputDir := t.TempDir()
+	previewExecCommand = func(_ context.Context, _ string, args ...string) error {
+		switch args[0] {
+		case "/usr/bin/pdfseparate":
+			pagePath := strings.Replace(args[len(args)-1], "%03d", "001", 1)
+			return os.WriteFile(pagePath, []byte("page"), 0o600)
+		case "/usr/bin/pdfunite":
+			return os.WriteFile(args[len(args)-1], []byte("12345"), 0o600)
+		default:
+			return fmt.Errorf("unexpected command %q", args[0])
+		}
+	}
+
+	_, err := previewPDFFragment(context.Background(), "source.pdf", outputDir, 4, 1)
+
+	if err == nil {
+		t.Fatal("oversized PDF preview was accepted")
+	}
+}
+
+func TestPreviewPDFFragmentBoundsFinalDataURI(t *testing.T) {
+	originalPreviewExecCommand := previewExecCommand
+	t.Cleanup(func() {
+		previewExecCommand = originalPreviewExecCommand
+	})
+	outputDir := t.TempDir()
+	previewExecCommand = func(_ context.Context, _ string, args ...string) error {
+		switch args[0] {
+		case "/usr/bin/pdfseparate":
+			pagePath := strings.Replace(args[len(args)-1], "%03d", "001", 1)
+			return os.WriteFile(pagePath, []byte("page"), 0o600)
+		case "/usr/bin/pdfunite":
+			return os.WriteFile(args[len(args)-1], []byte("123456"), 0o600)
+		default:
+			return fmt.Errorf("unexpected command %q", args[0])
+		}
+	}
+	const maximumBytes = len("data:application/pdf;base64,") + 8
+
+	preview, err := previewPDFFragment(context.Background(), "source.pdf", outputDir, maximumBytes, 1)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview) != maximumBytes {
+		t.Fatalf("preview length = %d, want %d", len(preview), maximumBytes)
+	}
+}
+
+func TestPreviewEPUBFragmentRejectsEscapedOutputBeyondFinalBudget(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "book.epub")
+	if err := writeValidPreviewEPUB(sourcePath, strings.Repeat("&", 512)); err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := previewEPUBFragment(sourcePath, 1024, 1, 16)
+
+	if err == nil {
+		t.Fatalf("escape-amplified EPUB preview was accepted with %d bytes", len(preview))
+	}
+}
+
+func TestReadEPUBEntryRejectsOversizedContent(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "entry.zip")
+	file, err := os.Create(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := zip.NewWriter(file)
+	entry, err := writer.Create("page.xhtml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = entry.Write([]byte("12345")); err != nil {
+		t.Fatal(err)
+	}
+	if err = writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := zip.OpenReader(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = archive.Close() }()
+
+	if _, err = readEPUBEntry(archive.File[0], 4); err == nil {
+		t.Fatal("oversized EPUB entry was accepted")
 	}
 }
 
@@ -107,6 +231,31 @@ func writePreviewEPUB(path string, totalEntries int) error {
 		}
 		if _, err = entry.Write([]byte("synthetic")); err != nil {
 			return err
+		}
+	}
+	return writer.Close()
+}
+
+func writeValidPreviewEPUB(filePath, page string) error {
+	file, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	writer := zip.NewWriter(file)
+	entries := map[string]string{
+		"mimetype":               "application/epub+zip",
+		"META-INF/container.xml": `<container><rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`,
+		"EPUB/content.opf":       `<package><manifest><item id="page" href="page.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="page"/></spine></package>`,
+		"EPUB/page.xhtml":        `<html><head></head><body>` + page + `</body></html>`,
+	}
+	for name, contents := range entries {
+		entry, createErr := writer.Create(name)
+		if createErr != nil {
+			return createErr
+		}
+		if _, writeErr := entry.Write([]byte(contents)); writeErr != nil {
+			return writeErr
 		}
 	}
 	return writer.Close()

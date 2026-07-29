@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
+	"golang.org/x/sync/errgroup"
 )
 
 var ErrSearchForbidden = errors.New("search forbidden")
@@ -135,14 +136,6 @@ func NewSearcherWithPolicyAndLexical(
 	}, nil
 }
 
-func (s *Searcher) SetEvidenceAssessor(assessor EvidenceAssessor) {
-	s.evidenceAssessor = assessor
-}
-
-func (s *Searcher) SetEvidenceAssessorTimeout(timeout time.Duration) {
-	s.policy.AssessmentTimeout = timeout
-}
-
 func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.SearchQueryInput) (SearchResult, error) {
 	if !actor.CanSearch() {
 		return SearchResult{}, ErrSearchForbidden
@@ -154,55 +147,62 @@ func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.
 	}
 	vector, err := s.embedder.EmbedQuery(ctx, query.Question())
 	if err != nil {
-		return SearchResult{}, errors.New("embed query")
+		return SearchResult{}, searchOperationFailure("embed query", err)
 	}
 	if len(vector) != domain.EmbeddingDimensions {
 		return SearchResult{}, errors.New("invalid embedding dimensions")
 	}
 	plan := s.analyzer.Analyze(query)
-	var (
-		chunkCandidates    []Evidence
-		documentCandidates []DocumentResult
-		lexicalCandidates  []Evidence
-		chunkErr           error
-		documentErr        error
-		lexicalErr         error
-	)
-	var work sync.WaitGroup
-	retrievalCount := 2
-	if s.lexicalRetriever != nil {
-		retrievalCount++
+	chunkCandidates, documentCandidates, lexicalCandidates, err := s.retrieveCandidates(ctx, query, vector, plan)
+	if err != nil {
+		return SearchResult{}, err
 	}
-	work.Add(retrievalCount)
-	go func() {
-		defer work.Done()
-		chunkCandidates, chunkErr = s.chunkRetriever.Retrieve(ctx, query, vector, plan)
-	}()
-	go func() {
-		defer work.Done()
-		documentCandidates, documentErr = s.documentRetriever.Retrieve(ctx, query, vector, plan)
-	}()
-	if s.lexicalRetriever != nil {
-		go func() {
-			defer work.Done()
-			lexicalCandidates, lexicalErr = s.lexicalRetriever.Retrieve(ctx, query, plan)
-		}()
+	results, err := s.searchAcceptedEvidence(ctx, query, chunkCandidates, documentCandidates, lexicalCandidates, assessmentCache)
+	if err != nil {
+		return SearchResult{}, err
 	}
-	work.Wait()
-	if chunkErr != nil {
-		return SearchResult{}, chunkErr
-	}
-	if documentErr != nil {
-		return SearchResult{}, documentErr
-	}
-	if lexicalErr != nil {
-		return SearchResult{}, lexicalErr
-	}
-	results := s.searchAcceptedEvidence(ctx, query, chunkCandidates, documentCandidates, lexicalCandidates, assessmentCache)
 	documents := documentsFromEvidence(results)
 	documents = mergeDocumentMetadata(documents, documentCandidates)
 	documents = trimDocuments(documents, query.Limit())
 	return SearchResult{Evidence: results, Documents: documents}, nil
+}
+
+func (s *Searcher) retrieveCandidates(
+	ctx context.Context,
+	query domain.SearchQuery,
+	vector []float32,
+	plan RetrievalPlan,
+) ([]Evidence, []DocumentResult, []Evidence, error) {
+	var (
+		chunkCandidates    []Evidence
+		documentCandidates []DocumentResult
+		lexicalCandidates  []Evidence
+	)
+	group, retrievalContext := errgroup.WithContext(ctx)
+	group.Go(func() error {
+		var err error
+		chunkCandidates, err = s.chunkRetriever.Retrieve(retrievalContext, query, vector, plan)
+		return err
+	})
+	group.Go(func() error {
+		var err error
+		documentCandidates, err = s.documentRetriever.Retrieve(retrievalContext, query, vector, plan)
+		return err
+	})
+	if s.lexicalRetriever != nil {
+		group.Go(func() error {
+			var err error
+			lexicalCandidates, err = s.lexicalRetriever.Retrieve(retrievalContext, query, plan)
+			return err
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, err
+	}
+	return chunkCandidates, documentCandidates, lexicalCandidates, nil
 }
 
 func searchPageLimit(limit, candidatePageMultiplier int) int {
@@ -272,11 +272,14 @@ func (s *Searcher) searchAcceptedEvidence(
 	documentCandidates []DocumentResult,
 	lexicalCandidates []Evidence,
 	assessmentCache *searchAssessmentCache,
-) []Evidence {
+) ([]Evidence, error) {
 	candidates := fusedEvidenceCandidates(s.fusion, query, chunkCandidates, documentCandidates, lexicalCandidates)
 	results := make([]Evidence, 0, query.Limit())
 	seen := make(map[string]struct{})
 	for _, value := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if len(results) >= query.Limit() {
 			break
 		}
@@ -287,6 +290,9 @@ func (s *Searcher) searchAcceptedEvidence(
 			continue
 		}
 		assessment, ok := s.assessEvidence(ctx, query.Question(), value, assessmentCache)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if !ok || !assessment.Relevant {
 			continue
 		}
@@ -294,7 +300,10 @@ func (s *Searcher) searchAcceptedEvidence(
 		seen[value.EvidenceID] = struct{}{}
 		results = append(results, value)
 	}
-	return trimEvidence(results, query.Limit())
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return trimEvidence(results, query.Limit()), nil
 }
 
 func normalizeSummaryInput(value string, maximumRunes int) string {

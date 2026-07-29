@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/indexprofile"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -53,6 +54,19 @@ func TestSupportedM5ProfileDigestMatchesProducerContract(t *testing.T) {
 	const expected = "5ba059650ec508283e2ba1ff8b2fb8215d50267d14e1724a5a8c078f255a69b1"
 	if digest := hex.EncodeToString(supportedM5ProfileDigest[:]); digest != expected {
 		t.Fatalf("M5 profile digest = %q, want %q", digest, expected)
+	}
+}
+
+func TestSupportedProfilesUseSharedContractValues(t *testing.T) {
+	if supportedM4Profile.extractionVersion != indexprofile.ExtractionPDF ||
+		supportedM7EPUBProfile.extractionVersion != indexprofile.ExtractionEPUB ||
+		supportedM4Profile.normalizationVersion != indexprofile.NormalizationNFC ||
+		supportedM4Profile.tokenizerVersion != indexprofile.TokenizerCL100K ||
+		supportedM4Profile.chunkingVersion != indexprofile.ChunkingChapterPageWindow ||
+		supportedM4Profile.structureVersion != indexprofile.StructureChapterBoundary ||
+		supportedM4Profile.maximumTokens != indexprofile.MaximumTokens ||
+		supportedM4Profile.overlapTokens != indexprofile.OverlapTokens {
+		t.Fatal("Catalog processing profiles diverged from pkg/indexprofile")
 	}
 }
 

@@ -7,10 +7,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/contracts"
+	"github.com/belLena81/raglibrarian/pkg/indexprofile"
 	"google.golang.org/protobuf/proto"
 
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
@@ -33,31 +35,30 @@ type processingProfile struct {
 	configDigest         [sha256.Size]byte
 }
 
-var supportedM4Profile = newProcessingProfile("poppler-layout-v1")
-var supportedM7EPUBProfile = newProcessingProfile("epub-spine-v1")
+var supportedM4Profile = newProcessingProfile(indexprofile.ExtractionPDF)
+var supportedM7EPUBProfile = newProcessingProfile(indexprofile.ExtractionEPUB)
 
-var supportedM5ProfileDigest = newM5ProfileDigest("poppler-layout-v1")
-var supportedM7EPUBIndexProfileDigest = newM5ProfileDigest("epub-spine-v1")
+var supportedM5ProfileDigest = newM5ProfileDigest(indexprofile.ExtractionPDF)
+var supportedM7EPUBIndexProfileDigest = newM5ProfileDigest(indexprofile.ExtractionEPUB)
 
 func newM5ProfileDigest(extractionVersion string) [sha256.Size]byte {
-	values := []string{
-		"BAAI/bge-base-en-v1.5",
-		"5e233c43ad83ba072172bca158a7c7dec46302a0",
-		"768",
-		"cosine",
-		"cls",
-		"normalized",
-		"retrieval-index-v2",
+	return indexprofile.Digest(
+		indexprofile.EmbeddingModel,
+		indexprofile.EmbeddingRevision,
+		strconv.Itoa(indexprofile.EmbeddingDimensions),
+		indexprofile.DistanceCosine,
+		indexprofile.PoolingCLS,
+		indexprofile.NormalizationNormalized,
+		indexprofile.IndexSchema,
 		extractionVersion,
-		"nfc-v1",
-		"cl100k_base-v1",
-		"chapter-page-window-v1",
-		"chapter-boundary-v1",
-		"512",
-		"120",
-		"v1",
-	}
-	return sha256.Sum256([]byte(strings.Join(values, "\x00") + "\x00"))
+		indexprofile.NormalizationNFC,
+		indexprofile.TokenizerCL100K,
+		indexprofile.ChunkingChapterPageWindow,
+		indexprofile.StructureChapterBoundary,
+		strconv.Itoa(indexprofile.MaximumTokens),
+		strconv.Itoa(indexprofile.OverlapTokens),
+		indexprofile.ManifestSchema,
+	)
 }
 
 func newProcessingProfile(extractionVersion string) processingProfile {
@@ -65,12 +66,12 @@ func newProcessingProfile(extractionVersion string) processingProfile {
 	// contract values, not authentication credentials.
 	profile := processingProfile{
 		extractionVersion:    extractionVersion,
-		normalizationVersion: "nfc-v1",
-		tokenizerVersion:     "cl100k_base-v1",
-		chunkingVersion:      "chapter-page-window-v1",
-		structureVersion:     "chapter-boundary-v1",
-		maximumTokens:        512,
-		overlapTokens:        120,
+		normalizationVersion: indexprofile.NormalizationNFC,
+		tokenizerVersion:     indexprofile.TokenizerCL100K,
+		chunkingVersion:      indexprofile.ChunkingChapterPageWindow,
+		structureVersion:     indexprofile.StructureChapterBoundary,
+		maximumTokens:        indexprofile.MaximumTokens,
+		overlapTokens:        indexprofile.OverlapTokens,
 	}
 	// The final values are M4's maximum chunks, chunks per shard, and maximum
 	// shard bytes. Future profiles need an explicit registry entry rather than

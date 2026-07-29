@@ -374,9 +374,13 @@ func validTransition(current, next BookStatus) bool {
 }
 
 func ValidateMetadata(metadata BookMetadata) error {
+	return validateMetadataAt(metadata, time.Now().UTC())
+}
+
+func validateMetadataAt(metadata BookMetadata, now time.Time) error {
 	if len(strings.TrimSpace(metadata.Title)) == 0 || len(metadata.Title) > maxTitleLength ||
 		len(strings.TrimSpace(metadata.Author)) == 0 || len(metadata.Author) > maxAuthorLength ||
-		metadata.Year < 0 || metadata.Year > time.Now().UTC().Year()+1 || len(metadata.Tags) > maxTags {
+		metadata.Year < 0 || metadata.Year > now.UTC().Year()+1 || len(metadata.Tags) > maxTags {
 		return ErrInvalidMetadata
 	}
 	for _, tag := range metadata.Tags {
