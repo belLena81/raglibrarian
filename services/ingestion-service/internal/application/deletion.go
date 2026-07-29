@@ -48,7 +48,10 @@ func (p *Processor) ProcessDeletion(ctx context.Context, event DeletionEvent) er
 		return err
 	}
 	payloadDigest := sha256.Sum256(event.Payload)
-	if err = p.repository.AcceptDeletion(ctx, event, payloadDigest, ack, now); err != nil {
+	acceptCtx, acceptCancel := context.WithTimeout(ctx, p.config.PersistenceTimeout)
+	err = p.repository.AcceptDeletion(acceptCtx, event, payloadDigest, ack, now)
+	acceptCancel()
+	if err != nil {
 		return operational("accept_deletion_failed", err)
 	}
 	return nil

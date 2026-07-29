@@ -15,38 +15,49 @@ import (
 	"unicode/utf8"
 
 	"github.com/belLena81/raglibrarian/pkg/providerhttp"
-	answerconfig "github.com/belLena81/raglibrarian/services/answer-service/config"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/domain"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/throttle"
 )
 
 type Policy struct {
+	MaximumRequestBytes   int
 	MaximumResponseBytes  int
 	MaximumCandidateBytes int
 }
 
 type OpenAI struct {
-	endpoint     *url.URL
-	model        string
-	apiKey       string
-	client       *http.Client
-	limit        *throttle.Limiter
-	logErrorBody bool
-	policy       Policy
+	endpoint *url.URL
+	model    string
+	apiKey   string
+	client   *http.Client
+	limit    *throttle.Limiter
+	policy   Policy
 }
 
-func NewOpenAI(baseURL, model, apiKey string, client *http.Client, limit *throttle.Limiter, logErrorBody bool) (*OpenAI, error) {
-	return NewOpenAIWithPolicy(baseURL, model, apiKey, client, limit, logErrorBody, defaultPolicy())
-}
-
-func NewOpenAIWithPolicy(baseURL, model, apiKey string, client *http.Client, limit *throttle.Limiter, logErrorBody bool, policy Policy) (*OpenAI, error) {
+func NewOpenAI(baseURL, model, apiKey string, client *http.Client, limit *throttle.Limiter, policy Policy) (*OpenAI, error) {
 	endpoint, err := providerhttp.OpenAIChatCompletionsURL(baseURL)
-	if err != nil || strings.TrimSpace(model) == "" || len(model) > 256 || strings.ContainsAny(model, "\r\n") || strings.TrimSpace(apiKey) == "" || strings.ContainsAny(apiKey, "\r\n") || client == nil ||
-		policy.MaximumResponseBytes < 1 || policy.MaximumCandidateBytes < 1 || policy.MaximumCandidateBytes > policy.MaximumResponseBytes {
+	if err != nil ||
+		strings.TrimSpace(model) == "" ||
+		len(model) > 256 ||
+		strings.ContainsAny(model, "\r\n") ||
+		strings.TrimSpace(apiKey) == "" ||
+		strings.ContainsAny(apiKey, "\r\n") ||
+		client == nil ||
+		!validPolicy(policy) {
 		return nil, errors.New("invalid provider configuration")
 	}
-	return &OpenAI{endpoint: endpoint, model: model, apiKey: apiKey, client: client, limit: limit, logErrorBody: logErrorBody, policy: policy}, nil
+	return &OpenAI{endpoint: endpoint, model: model, apiKey: apiKey, client: client, limit: limit, policy: policy}, nil
+}
+
+func validPolicy(policy Policy) bool {
+	return policy.MaximumRequestBytes >= 1 &&
+		policy.MaximumRequestBytes <= 1<<20 &&
+		policy.MaximumResponseBytes >= 1 &&
+		policy.MaximumResponseBytes <= 1<<20 &&
+		policy.MaximumCandidateBytes >= 1 &&
+		policy.MaximumCandidateBytes <= 256<<10 &&
+		policy.MaximumCandidateBytes <= policy.MaximumResponseBytes
 }
 
 type chatRequest struct {
@@ -117,9 +128,6 @@ func (p *OpenAI) Generate(ctx context.Context, input application.GeneratorReques
 }
 
 func (p *OpenAI) generate(ctx context.Context, input application.GeneratorRequest, systemPrompt string, responseFormat *responseFormat) ([]domain.AnswerSegment, bool, error) {
-	if wait, err := p.wait(ctx); err != nil {
-		return nil, false, &providerError{code: "provider_rate_limited", detail: providerhttp.SanitizeDetail(wait.String()), err: err}
-	}
 	userJSON, err := json.Marshal(userPayload{Question: input.Question, Evidence: input.Evidence})
 	if err != nil {
 		return nil, false, errors.New("encode provider request")
@@ -137,6 +145,12 @@ func (p *OpenAI) generate(ctx context.Context, input application.GeneratorReques
 	if err != nil {
 		return nil, false, errors.New("encode provider request")
 	}
+	if len(payload) > p.policy.MaximumRequestBytes {
+		return nil, false, &providerError{code: "invalid_provider_request", detail: "request_too_large", err: errors.New("invalid provider request")}
+	}
+	if wait, waitErr := p.wait(ctx); waitErr != nil {
+		return nil, false, &providerError{code: "provider_rate_limited", detail: providerhttp.SanitizeDetail(wait.String()), err: waitErr}
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint.String(), bytes.NewReader(payload))
 	if err != nil {
 		return nil, false, &providerError{code: "provider_request_create_failed", detail: providerhttp.SanitizeDetail(err.Error()), err: err}
@@ -151,11 +165,6 @@ func (p *OpenAI) generate(ctx context.Context, input application.GeneratorReques
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.ReadAll(io.LimitReader(response.Body, int64(p.policy.MaximumResponseBytes)+1))
 		detail := fmt.Sprintf("provider_http_status_%d", response.StatusCode)
-		if p.logErrorBody {
-			if preview := providerhttp.SanitizeDetail(response.Status); preview != "" {
-				detail = preview
-			}
-		}
 		retryable := responseFormat != nil && response.StatusCode == http.StatusBadRequest
 		return nil, retryable, &providerError{code: fmt.Sprintf("provider_http_status_%d", response.StatusCode), detail: detail, err: fmt.Errorf("provider returned HTTP status %d", response.StatusCode)}
 	}
@@ -186,26 +195,30 @@ func (p *OpenAI) generate(ctx context.Context, input application.GeneratorReques
 		return nil, false, &providerError{code: "invalid_provider_response", detail: "candidate_invalid_utf8", err: errors.New("invalid provider response")}
 	}
 	content := []byte(envelope.Choices[0].Message.Content)
-	if segments, ok := parseCandidateSegments(content, input.Evidence); ok {
-		return segments, false, nil
-	}
-	if segments, ok := parsePlainTextCandidateSegments(string(content), input.Evidence); ok {
-		return segments, false, nil
-	}
 	if looksLikeJSON(content) {
-		return nil, false, &providerError{code: "invalid_provider_response", detail: "candidate_json_shape_invalid", err: errors.New("invalid provider response")}
+		if candidateErr := rejectDuplicateObjectFields(content); candidateErr != nil {
+			detail := "candidate_json_shape_invalid"
+			if errors.Is(candidateErr, errDuplicateObjectField) {
+				detail = "candidate_duplicate_object_fields"
+			}
+			return nil, responseFormat != nil && detail == "candidate_json_shape_invalid", &providerError{
+				code:   "invalid_provider_response",
+				detail: detail,
+				err:    errors.New("invalid provider response"),
+			}
+		}
+		if segments, ok := parseCandidateSegments(content); ok {
+			return segments, false, nil
+		}
+		return nil, responseFormat != nil, &providerError{code: "invalid_provider_response", detail: "candidate_json_shape_invalid", err: errors.New("invalid provider response")}
+	}
+	if segments, ok := parsePlainTextCandidateSegments(string(content)); ok {
+		return segments, false, nil
 	}
 	if responseFormat != nil {
 		return nil, true, &providerError{code: "invalid_provider_response", detail: "candidate_plain_text_response", err: errors.New("invalid provider response")}
 	}
 	return nil, false, &providerError{code: "invalid_provider_response", detail: "candidate_plain_text_response", err: errors.New("invalid provider response")}
-}
-
-func defaultPolicy() Policy {
-	return Policy{
-		MaximumResponseBytes:  answerconfig.DefaultProviderMaxResponseBytes,
-		MaximumCandidateBytes: answerconfig.DefaultProviderMaxCandidateBytes,
-	}
 }
 
 func (p *OpenAI) wait(ctx context.Context) (time.Duration, error) {
@@ -220,10 +233,7 @@ func looksLikeJSON(content []byte) bool {
 	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
 }
 
-func parseCandidateSegments(content []byte, evidence []domain.ContextEvidence) ([]domain.AnswerSegment, bool) {
-	if err := rejectDuplicateObjectFields(content); err != nil {
-		return nil, false
-	}
+func parseCandidateSegments(content []byte) ([]domain.AnswerSegment, bool) {
 	var result candidate
 	if err := decodeOne(content, &result, true); err != nil {
 		return nil, false
@@ -237,7 +247,7 @@ func parseCandidateSegments(content []byte, evidence []domain.ContextEvidence) (
 		if text == "" {
 			return nil, false
 		}
-		evidenceIDs := validateEvidenceIDs(segment.EvidenceIDs, evidence)
+		evidenceIDs := validateEvidenceIDs(segment.EvidenceIDs)
 		if len(evidenceIDs) == 0 {
 			return nil, false
 		}
@@ -246,24 +256,14 @@ func parseCandidateSegments(content []byte, evidence []domain.ContextEvidence) (
 	return segments, true
 }
 
-func parsePlainTextCandidateSegments(content string, evidence []domain.ContextEvidence) ([]domain.AnswerSegment, bool) {
+func parsePlainTextCandidateSegments(content string) ([]domain.AnswerSegment, bool) {
 	citations, answer, ok := parsePlainTextCandidate(content)
 	if !ok || len(citations) == 0 {
 		return nil, false
 	}
-	allowed := make(map[string]struct{}, len(evidence))
-	for _, value := range evidence {
-		if value.EvidenceID == "" {
-			continue
-		}
-		allowed[value.EvidenceID] = struct{}{}
-	}
 	seen := make(map[string]struct{}, len(citations))
 	ids := make([]string, 0, len(citations))
 	for _, id := range citations {
-		if _, found := allowed[id]; !found {
-			return nil, false
-		}
 		if _, duplicate := seen[id]; duplicate {
 			return nil, false
 		}
@@ -277,27 +277,12 @@ func parsePlainTextCandidateSegments(content string, evidence []domain.ContextEv
 	return []domain.AnswerSegment{{Text: text, EvidenceIDs: ids}}, true
 }
 
-func validateEvidenceIDs(values []string, evidence []domain.ContextEvidence) []string {
-	allowed := map[string]struct{}{}
-	if evidence != nil {
-		allowed = make(map[string]struct{}, len(evidence))
-		for _, value := range evidence {
-			if value.EvidenceID == "" {
-				continue
-			}
-			allowed[value.EvidenceID] = struct{}{}
-		}
-	}
+func validateEvidenceIDs(values []string) []string {
 	ids := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		if value == "" {
 			continue
-		}
-		if len(allowed) > 0 {
-			if _, found := allowed[value]; !found {
-				return nil
-			}
 		}
 		if _, duplicate := seen[value]; duplicate {
 			return nil
@@ -309,35 +294,28 @@ func validateEvidenceIDs(values []string, evidence []domain.ContextEvidence) []s
 }
 
 func parsePlainTextCandidate(content string) ([]string, string, bool) {
+	content = strings.TrimSuffix(content, "\n")
 	lines := strings.Split(content, "\n")
-	cleaned := make([]string, 0, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-		if line != "" {
-			cleaned = append(cleaned, line)
-		}
-	}
-	if len(cleaned) < 2 {
+	if len(lines) != 2 {
 		return nil, "", false
 	}
-	prefix, rest, ok := strings.Cut(cleaned[0], ":")
-	if !ok || !strings.EqualFold(strings.TrimSpace(prefix), "Citations") {
+	citationLine := strings.TrimSpace(strings.TrimSuffix(lines[0], "\r"))
+	answerLine := strings.TrimSpace(strings.TrimSuffix(lines[1], "\r"))
+	if !strings.HasPrefix(citationLine, "Citations:") || !strings.HasPrefix(answerLine, "Answer:") {
 		return nil, "", false
 	}
-	citations := splitPlainTextEvidenceIDs(rest)
+	citations := splitPlainTextEvidenceIDs(strings.TrimPrefix(citationLine, "Citations:"))
 	if len(citations) == 0 {
 		return nil, "", false
 	}
-	bodyLines := append([]string(nil), cleaned[1:]...)
-	if prefix, rest, ok := strings.Cut(bodyLines[0], ":"); ok && strings.EqualFold(strings.TrimSpace(prefix), "Answer") {
-		bodyLines[0] = rest
-	}
-	answer := strings.TrimSpace(strings.Join(bodyLines, " "))
+	answer := strings.TrimSpace(strings.TrimPrefix(answerLine, "Answer:"))
 	if answer == "" {
 		return nil, "", false
 	}
 	return citations, answer, true
 }
+
+var errDuplicateObjectField = errors.New("duplicate object key")
 
 func splitPlainTextEvidenceIDs(value string) []string {
 	tokens := strings.Fields(strings.NewReplacer(",", " ").Replace(strings.TrimSpace(value)))
@@ -485,7 +463,7 @@ func rejectDuplicateObjectFields(data []byte) error {
 					return errors.New("invalid object key")
 				}
 				if _, duplicate := seen[key]; duplicate {
-					return errors.New("duplicate object key")
+					return errDuplicateObjectField
 				}
 				seen[key] = struct{}{}
 				if err = walk(); err != nil {

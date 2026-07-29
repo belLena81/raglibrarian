@@ -178,7 +178,7 @@ func (c *Consumer) retry(ctx context.Context, delivery amqp091.Delivery) {
 	cancel()
 	if err != nil {
 		if ctx.Err() == nil {
-			settleNack(ctx, delivery, false)
+			settleNack(ctx, delivery, true)
 		}
 		return
 	}

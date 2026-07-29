@@ -1,6 +1,7 @@
 package extractor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -377,6 +378,40 @@ func TestFailureDetailIncludesSanitizedCommandDiagnostics(t *testing.T) {
 	}
 	if strings.Contains(detail, "loader") || strings.Contains(detail, "runtime") {
 		t.Fatalf("FailureDetail() exposed stderr text: %q", detail)
+	}
+}
+
+func TestCommandFailureTraceContainsOnlySanitizedStderrMetadata(t *testing.T) {
+	exitErr := exec.Command("sh", "-c", "exit 9").Run() // #nosec G204 -- fixed synthetic test input.
+	stderr := []byte("epub_parser_panic\nPRIVATE_BOOK_CANARY\x1b[31m\r\n")
+	var output bytes.Buffer
+	traceCommandFailureTo(
+		&output,
+		"/usr/local/bin/epub-parser",
+		[]string{"v1", "1", "1", "1", "1", "1", "/tmp/private-book.epub"},
+		stderr,
+		exitErr,
+		[]byte("bounded parent stack\n"),
+	)
+	trace := output.String()
+	for _, want := range []string{
+		"command=epub-parser",
+		"argc=7",
+		"reason=epub_parser_panic",
+		"exit_code=9",
+		"signal=none",
+		"stderr_bytes=44",
+		"stderr_sha256=",
+		"bounded parent stack",
+	} {
+		if !strings.Contains(trace, want) {
+			t.Fatalf("command trace missing %q: %q", want, trace)
+		}
+	}
+	for _, forbidden := range []string{"PRIVATE_BOOK_CANARY", "\x1b", "/tmp/private-book.epub", "command stderr"} {
+		if strings.Contains(trace, forbidden) {
+			t.Fatalf("command trace exposed %q: %q", forbidden, trace)
+		}
 	}
 }
 

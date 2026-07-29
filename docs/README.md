@@ -426,25 +426,31 @@ Implementation:
   bounded by `RETRIEVAL_TEI_LOG_RAW_RESPONSE_MAX_BYTES` and defaults to 4096
   bytes. Do not enable this in shared or production logs.
 - Ingestion host mode sets `INGESTION_COMMAND_FAILURE_TRACE=1` so parser
-  command failures include bounded raw parser stderr in the service log. This
-  is limited to command diagnostics. For local owner-controlled debugging, set
-  `INGESTION_DEBUG_DUMP_PDFTEXT_DIR` to an absolute private directory to write
-  the raw `pdftotext` stdout stream as a `0600` file; the service log records
-  only the dump path, byte count, and SHA-256. Keep the setting empty in shared
-  and production environments. If a streaming page consumer fails after
-  `pdftotext` starts successfully, preserve and log the downstream stage error
-  instead of relabeling it as a parser failure.
+  command failures include only sanitized diagnostics in the service log:
+  command basename and argument count, an allowlisted reason, exit code or
+  signal, and parser-stderr byte count plus a truncated SHA-256 digest. Raw
+  parser stderr and arguments are never logged. For local owner-controlled
+  debugging, set `INGESTION_DEBUG_DUMP_PDFTEXT_DIR` to an absolute private
+  directory to write the raw `pdftotext` stdout stream as a `0600` file; the
+  service log records only the dump path, byte count, and SHA-256. Keep the
+  setting empty in shared and production environments. If a streaming page
+  consumer fails after `pdftotext` starts successfully, preserve and log the
+  downstream stage error instead of relabeling it as a parser failure.
 - `INGESTION_PARSER_SANDBOX_MEMORY_BYTES` defaults to 1536 MiB. Keep it aligned
   with `INGESTION_MEMORY_LIMIT_BYTES` and `INGESTION_WORK_CONCURRENCY`: EPUB
   parsing runs a Go child process inside `parser_sandbox`, and the Go runtime
   needs more virtual address space than its live heap suggests. A lower
   `RLIMIT_AS` can surface as `epub_parser_invalid_args` or a Go runtime
   out-of-memory stack even when the EPUB is within archive limits.
+- The parser seccomp policy denies direct and `io_uring` networking, namespace
+  changes, process/session detachment, and process creation. Legacy `clone` is
+  permitted only with `CLONE_THREAD` so the Go EPUB parser can create runtime
+  threads; the sandbox intentionally does not restore `RLIMIT_NPROC`.
 - EPUB parser sandbox incident note: if the first attempt fails with
-  `epub_parser_invalid_args` but bounded command stderr shows a Go runtime
-  out-of-memory stack, treat it as a sandbox address-space budget problem, not
-  as malformed EPUB argv. Keep the 1536 MiB default and the worker overcommit
-  guard unless a replacement parser/runtime is proven with live EPUB uploads.
+  `epub_parser_invalid_args` and the sanitized diagnostics indicate a resource
+  failure, check the parser address-space budget before treating it as malformed
+  EPUB argv. Keep the 1536 MiB default and the worker overcommit guard unless a
+  replacement parser/runtime is proven with live EPUB uploads.
 - Answer synthesis receives only the top accepted passage after Retrieval
   exclusions and minimum-score filtering. Answer service owns the final
   human-readable citation format: book title, author when available, page range,

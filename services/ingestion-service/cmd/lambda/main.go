@@ -53,7 +53,7 @@ func handleWithLoader(ctx context.Context, incoming events.RabbitMQEvent, load i
 		return err
 	}
 	if !valid {
-		return errInvalidBrokerMessage
+		return nil
 	}
 	processor, publisher, err := load(ctx)
 	if err != nil {
@@ -114,7 +114,7 @@ func invoke(ctx context.Context, event invocation, processor eventProcessor, pub
 	case application.DeliveryAcknowledge:
 		return nil
 	case application.DeliveryReject:
-		return processErr
+		return nil
 	case application.DeliveryRequeue:
 		return processErr
 	default:

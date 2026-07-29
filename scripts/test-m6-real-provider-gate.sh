@@ -53,7 +53,7 @@ chmod 700 "$test_root/bin/docker"
 cat > "$test_root/bin/recursive-make" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ " $* " == *" M6_E2E_PATTERN=^TestM6SearchRemainsCompatibleAndAnswerCitesReturnedEvidence$ "* ]]
+[[ " $* " == *" M6_E2E_PATTERN=^TestM6RealProviderAdversarialGroundingMatrix$ "* ]]
 [[ " $* " == *" m6-e2e "* ]]
 : > "${M6_FAKE_STATE:?}/e2e"
 EOF

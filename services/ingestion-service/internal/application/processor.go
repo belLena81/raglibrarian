@@ -332,7 +332,9 @@ func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
 	}
 	payloadDigest := sha256.Sum256(event.Payload)
 	var accepted bool
-	job, accepted, err = p.repository.Accept(parent, event, payloadDigest, job, started)
+	acceptCtx, acceptCancel := context.WithTimeout(parent, p.config.PersistenceTimeout)
+	job, accepted, err = p.repository.Accept(acceptCtx, event, payloadDigest, job, started)
+	acceptCancel()
 	if err != nil {
 		return operational("accept_failed", err)
 	}

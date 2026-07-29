@@ -255,8 +255,23 @@ func TestDeletionBarrierWaitsForActiveLeaseAndCleanupRoleCanFinalize(t *testing.
 		t.Fatalf("claim after fenced final write = (%#v, %v), want one artifact", claimed, err)
 	}
 
-	if err = NewPostgres(cleanupPool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute}).CompleteDeletionArtifact(ctx, eventID, jobID, finalizedAt); err != nil {
-		t.Fatalf("cleanup role finalize deletion: %v", err)
+	cleanupRepository := NewPostgres(cleanupPool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute})
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			results <- cleanupRepository.CompleteDeletionArtifact(ctx, eventID, jobID, finalizedAt)
+		}()
+	}
+	close(start)
+	for range 2 {
+		if completionErr := <-results; completionErr != nil {
+			t.Fatalf("concurrent cleanup role finalize deletion: %v", completionErr)
+		}
+	}
+	if err = cleanupRepository.CompleteDeletionArtifact(ctx, eventID, jobID, finalizedAt); err != nil {
+		t.Fatalf("repeated cleanup role finalize deletion: %v", err)
 	}
 	var outboxCount int
 	if err = runtimePool.QueryRow(ctx, `SELECT count(*) FROM ingestion.outbox WHERE event_id=$1`, ackID).Scan(&outboxCount); err != nil {

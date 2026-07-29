@@ -28,16 +28,18 @@ func (r *Recorder) Observe(outcome application.Outcome, duration time.Duration) 
 	if outcome == application.OutcomeAnswered {
 		message = "answer.request.completed"
 	}
-	r.log.Info(message, zap.Int64("duration_ms", duration.Milliseconds()))
+	r.log.Info(message,
+		zap.String("outcome", string(outcome)),
+		zap.Int64("duration_ms", duration.Milliseconds()),
+	)
 }
 
-func (r *Recorder) Failure(outcome application.Outcome, stage, reasonCode, reasonDetail string, duration time.Duration) {
+func (r *Recorder) Failure(outcome application.Outcome, stage, reasonCode string, duration time.Duration) {
 	r.metrics.Observe(outcome, duration)
 	r.log.Info("answer.request.failed",
 		zap.String("outcome", string(outcome)),
 		zap.String("stage", stage),
 		zap.String("reason_code", reasonCode),
-		zap.String("reason_detail", reasonDetail),
 		zap.Int64("duration_ms", duration.Milliseconds()),
 	)
 }

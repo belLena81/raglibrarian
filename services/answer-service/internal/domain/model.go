@@ -49,32 +49,62 @@ type SearchRequest struct {
 }
 
 func (r SearchRequest) Validate(policy RequestPolicy) error {
+	_, err := r.NormalizeAndValidate(policy)
+	return err
+}
+
+func (r SearchRequest) NormalizeAndValidate(policy RequestPolicy) (SearchRequest, error) {
 	if !r.Actor.CanAnswer() {
-		return ErrForbidden
+		return SearchRequest{}, ErrForbidden
 	}
-	question := strings.TrimSpace(r.Question)
 	if !validRequestPolicy(policy) {
-		return ErrInvalidRequest
+		return SearchRequest{}, ErrInvalidRequest
 	}
-	if question == "" || !utf8.ValidString(question) || utf8.RuneCountInString(question) > policy.MaximumQuestionCharacters || r.Limit > policy.MaximumResultLimit ||
-		len(r.Filters.Tags) > policy.MaximumFilterTags || utf8.RuneCountInString(strings.TrimSpace(r.Filters.Author)) > policy.MaximumAuthorCharacters || !validCorrelationID(r.CorrelationID) {
-		return ErrInvalidRequest
+	if !utf8.ValidString(r.Question) ||
+		utf8.RuneCountInString(r.Question) > policy.MaximumQuestionCharacters ||
+		!utf8.ValidString(r.Filters.Author) ||
+		utf8.RuneCountInString(r.Filters.Author) > policy.MaximumAuthorCharacters ||
+		r.Limit > policy.MaximumResultLimit ||
+		len(r.Filters.Tags) > policy.MaximumFilterTags ||
+		!validCorrelationID(r.CorrelationID) {
+		return SearchRequest{}, ErrInvalidRequest
 	}
 	if math.IsNaN(r.MinimumEvidenceScore) || math.IsInf(r.MinimumEvidenceScore, 0) || r.MinimumEvidenceScore < 0 || r.MinimumEvidenceScore > 1 {
-		return ErrInvalidRequest
+		return SearchRequest{}, ErrInvalidRequest
 	}
-	if !utf8.ValidString(r.Filters.Author) || r.Filters.YearFrom != nil && (*r.Filters.YearFrom < 0 || *r.Filters.YearFrom > 9999) ||
+	if r.Filters.YearFrom != nil && (*r.Filters.YearFrom < 0 || *r.Filters.YearFrom > 9999) ||
 		r.Filters.YearTo != nil && (*r.Filters.YearTo < 0 || *r.Filters.YearTo > 9999) ||
 		r.Filters.YearFrom != nil && r.Filters.YearTo != nil && *r.Filters.YearFrom > *r.Filters.YearTo {
-		return ErrInvalidRequest
+		return SearchRequest{}, ErrInvalidRequest
 	}
-	for _, tag := range r.Filters.Tags {
-		tag = strings.TrimSpace(tag)
-		if tag == "" || !utf8.ValidString(tag) || utf8.RuneCountInString(tag) > policy.MaximumTagCharacters {
-			return ErrInvalidRequest
+
+	normalized := r
+	normalized.Question = strings.TrimSpace(r.Question)
+	normalized.Filters.Author = strings.TrimSpace(r.Filters.Author)
+	normalized.Filters.Tags = make([]string, len(r.Filters.Tags))
+	normalized.Filters.YearFrom = copyInt32(r.Filters.YearFrom)
+	normalized.Filters.YearTo = copyInt32(r.Filters.YearTo)
+	if normalized.Question == "" {
+		return SearchRequest{}, ErrInvalidRequest
+	}
+	for index, tag := range r.Filters.Tags {
+		if !utf8.ValidString(tag) || utf8.RuneCountInString(tag) > policy.MaximumTagCharacters {
+			return SearchRequest{}, ErrInvalidRequest
+		}
+		normalized.Filters.Tags[index] = strings.TrimSpace(tag)
+		if normalized.Filters.Tags[index] == "" {
+			return SearchRequest{}, ErrInvalidRequest
 		}
 	}
-	return nil
+	return normalized, nil
+}
+
+func copyInt32(value *int32) *int32 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func validRequestPolicy(policy RequestPolicy) bool {

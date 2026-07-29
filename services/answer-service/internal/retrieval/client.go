@@ -7,7 +7,9 @@ import (
 
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/domain"
+	"google.golang.org/grpc/codes"
 	grpcmetadata "google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 var ErrUnavailable = errors.New("retrieval unavailable")
@@ -25,7 +27,10 @@ func NewClient(rpc retrievalv1.RetrievalServiceClient) *Client {
 
 func (c *Client) CheckReady(ctx context.Context) error {
 	response, err := c.rpc.Check(ctx, &retrievalv1.CheckRequest{})
-	if err != nil || response.GetStatus() != "SERVING" {
+	if err != nil {
+		return mapRPCError(ctx, err)
+	}
+	if response.GetStatus() != "SERVING" {
 		return ErrUnavailable
 	}
 	return nil
@@ -37,10 +42,27 @@ func (c *Client) Search(ctx context.Context, request domain.SearchRequest) (doma
 	metadata.Set("x-request-id", request.CorrelationID)
 	ctx = grpcmetadata.NewOutgoingContext(ctx, metadata)
 	response, err := c.rpc.Search(ctx, toProto(request))
-	if err != nil || response == nil {
+	if err != nil {
+		return domain.SearchResult{}, mapRPCError(ctx, err)
+	}
+	if response == nil {
 		return domain.SearchResult{}, ErrUnavailable
 	}
 	return fromProto(response), nil
+}
+
+func mapRPCError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	switch status.Code(err) {
+	case codes.Canceled:
+		return context.Canceled
+	case codes.DeadlineExceeded:
+		return context.DeadlineExceeded
+	default:
+		return ErrUnavailable
+	}
 }
 
 func toProto(request domain.SearchRequest) *retrievalv1.SearchRequest {

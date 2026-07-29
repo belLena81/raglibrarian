@@ -2,6 +2,7 @@ package throttle
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -35,6 +36,21 @@ func TestLimiterHonorsContextCancellation(t *testing.T) {
 	defer cancel()
 	if _, err = limiter.Wait(ctx); err == nil {
 		t.Fatal("Wait() error = nil")
+	}
+}
+
+func TestLimiterPreCanceledContextDoesNotConsumeCapacity(t *testing.T) {
+	limiter, err := New(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if wait, waitErr := limiter.Wait(ctx); !errors.Is(waitErr, context.Canceled) || wait != 0 {
+		t.Fatalf("pre-canceled Wait() = %s, %v", wait, waitErr)
+	}
+	if wait, waitErr := limiter.Wait(context.Background()); waitErr != nil || wait != 0 {
+		t.Fatalf("live Wait() after pre-canceled call = %s, %v", wait, waitErr)
 	}
 }
 

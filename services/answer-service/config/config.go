@@ -28,13 +28,13 @@ const (
 	defaultMaximumSegments           = 8
 	defaultMaximumAnswerBytes        = 8 << 10
 	defaultMaximumSummaryRunes       = 512
-	defaultMaximumFailureDetailRunes = 160
 	defaultMaximumCitations          = 8
 	defaultMaximumOutputTokens       = 768
 	defaultGeneratorConcurrency      = 4
 	defaultRequestTimeout            = 5 * time.Minute
 	defaultRetrievalTimeout          = 4*time.Minute + 45*time.Second
 	defaultGeneratorTimeout          = 4*time.Minute + 30*time.Second
+	DefaultProviderMaxRequestBytes   = 128 << 10
 	DefaultProviderMaxResponseBytes  = 128 << 10
 	DefaultProviderMaxCandidateBytes = 32 << 10
 )
@@ -63,10 +63,10 @@ type GeneratorConfig struct {
 	BaseURL           string
 	Model             string
 	RequestsPerMinute int
+	MaxRequestBytes   int
 	MaxResponseBytes  int
 	MaxCandidateBytes int
 	HTTPClientTimeout time.Duration
-	LogErrorBody      bool
 	APIKeyFile        string
 	CAFile            string
 }
@@ -85,7 +85,6 @@ func Load() (Config, error) {
 	maximumSegments, segmentErr := positiveInteger("ANSWER_MAX_SEGMENTS", defaultMaximumSegments, 1, 64)
 	maximumAnswer, answerErr := positiveInteger("ANSWER_MAX_ANSWER_BYTES", defaultMaximumAnswerBytes, 1, 1<<20)
 	maximumSummaryRunes, summaryErr := positiveInteger("ANSWER_MAX_SUMMARY_RUNES", defaultMaximumSummaryRunes, 1, 1<<20)
-	maximumFailureDetailRunes, failureDetailErr := positiveInteger("ANSWER_MAX_FAILURE_DETAIL_RUNES", defaultMaximumFailureDetailRunes, 1, 1<<20)
 	maximumCitations, citationErr := positiveInteger("ANSWER_MAX_CITATIONS_PER_SEGMENT", defaultMaximumCitations, 1, 64)
 	maximumTokens, tokenErr := positiveInteger("ANSWER_MAX_OUTPUT_TOKENS", defaultMaximumOutputTokens, 1, 8192)
 	concurrency, concurrencyErr := positiveInteger("ANSWER_PROVIDER_CONCURRENCY", defaultGeneratorConcurrency, 1, 64)
@@ -127,11 +126,20 @@ func Load() (Config, error) {
 			MaximumAuthorCharacters:   maximumAuthorCharacters,
 			MaximumResultLimit:        maximumResultLimit32,
 		},
-		Limits: application.Limits{MaximumEvidence: maximumEvidence, MaximumContextBytes: maximumContext,
-			MaximumEvidenceBytes: maximumItem, MaximumSegments: maximumSegments, MaximumAnswerBytes: maximumAnswer, MaximumSummaryRunes: maximumSummaryRunes,
-			MaximumFailureDetailRunes: maximumFailureDetailRunes,
-			MaximumCitations:          maximumCitations,
-			MaximumOutputTokens:       maximumTokens, GeneratorConcurrency: concurrency, RequestTimeout: requestTimeout, RetrievalTimeout: retrievalTimeout, GeneratorTimeout: providerTimeout},
+		Limits: application.Limits{
+			MaximumEvidence:      maximumEvidence,
+			MaximumContextBytes:  maximumContext,
+			MaximumEvidenceBytes: maximumItem,
+			MaximumSegments:      maximumSegments,
+			MaximumAnswerBytes:   maximumAnswer,
+			MaximumSummaryRunes:  maximumSummaryRunes,
+			MaximumCitations:     maximumCitations,
+			MaximumOutputTokens:  maximumTokens,
+			GeneratorConcurrency: concurrency,
+			RequestTimeout:       requestTimeout,
+			RetrievalTimeout:     retrievalTimeout,
+			GeneratorTimeout:     providerTimeout,
+		},
 		ReadinessProbeTimeout:    readinessProbeTimeout,
 		ReadinessPollInterval:    readinessPollInterval,
 		ShutdownTimeout:          shutdownTimeout,
@@ -141,27 +149,24 @@ func Load() (Config, error) {
 		MetricsWriteTimeout:      metricsWriteTimeout,
 		MetricsIdleTimeout:       metricsIdleTimeout,
 	}
-	rpm, rpmErr := providerRequestsPerMinute("ANSWER_PROVIDER_REQUESTS_PER_MINUTE")
+	rpm, rpmErr := providerRequestsPerMinute(configuration.Generator.Model, "ANSWER_PROVIDER_REQUESTS_PER_MINUTE")
 	if rpmErr != nil {
 		return Config{}, errors.New("invalid answer configuration")
 	}
 	configuration.Generator.RequestsPerMinute = rpm
+	maxRequestBytes, maxRequestBytesErr := positiveInteger("ANSWER_PROVIDER_MAX_REQUEST_BYTES", DefaultProviderMaxRequestBytes, 1, 1<<20)
 	maxResponseBytes, maxResponseBytesErr := positiveInteger("ANSWER_PROVIDER_MAX_RESPONSE_BYTES", DefaultProviderMaxResponseBytes, 1, 1<<20)
 	maxCandidateBytes, maxCandidateBytesErr := positiveInteger("ANSWER_PROVIDER_MAX_CANDIDATE_BYTES", DefaultProviderMaxCandidateBytes, 1, 256<<10)
+	configuration.Generator.MaxRequestBytes = maxRequestBytes
 	configuration.Generator.MaxResponseBytes = maxResponseBytes
 	configuration.Generator.MaxCandidateBytes = maxCandidateBytes
-	logProviderErrorBody, logProviderErrorBodyErr := boolean("ANSWER_PROVIDER_LOG_ERROR_BODY", false)
-	if logProviderErrorBodyErr != nil {
-		return Config{}, errors.New("invalid answer configuration")
-	}
-	configuration.Generator.LogErrorBody = logProviderErrorBody
 	if configuration.RetrievalDNSName == "" {
 		configuration.RetrievalDNSName = "retrieval-service"
 	}
 	errs := []error{
 		uidErr, gidErr, questionErr, filterTagsErr, tagCharactersErr, authorCharactersErr, resultLimitErr,
-		evidenceErr, contextErr, itemErr, segmentErr, answerErr, summaryErr, failureDetailErr, citationErr, tokenErr, concurrencyErr,
-		maxResponseBytesErr, maxCandidateBytesErr,
+		evidenceErr, contextErr, itemErr, segmentErr, answerErr, summaryErr, citationErr, tokenErr, concurrencyErr,
+		maxRequestBytesErr, maxResponseBytesErr, maxCandidateBytesErr,
 		requestErr, retrievalErr, providerErr, readinessProbeErr, readinessPollErr, shutdownErr, metricsReadErr,
 		providerHTTPTimeoutErr,
 		metricsReadHeaderErr, metricsMaxHeaderBytesErr, metricsWriteErr, metricsIdleErr,
@@ -220,18 +225,6 @@ func nonNegativeDuration(key string, fallback, maximum time.Duration) (time.Dura
 	return parsed, nil
 }
 
-func boolean(key string, fallback bool) (bool, error) {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback, nil
-	}
-	parsed, err := strconv.ParseBool(value)
-	if err != nil {
-		return false, errors.New("invalid boolean")
-	}
-	return parsed, nil
-}
-
 func validListenAddress(value string) bool {
 	host, port, err := net.SplitHostPort(value)
 	if err != nil || port == "" {
@@ -250,7 +243,7 @@ func validProviderURL(value string) bool {
 	return err == nil && len(value) <= 2048 && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
-func providerRequestsPerMinute(key string) (int, error) {
+func providerRequestsPerMinute(model, key string) (int, error) {
 	value := os.Getenv(key)
 	if value != "" {
 		parsed, err := strconv.Atoi(value)
@@ -258,6 +251,9 @@ func providerRequestsPerMinute(key string) (int, error) {
 			return 0, errors.New("invalid integer")
 		}
 		return parsed, nil
+	}
+	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(model)), ":free") {
+		return 15, nil
 	}
 	return 0, nil
 }

@@ -15,10 +15,12 @@ type fakeRetriever struct {
 	result domain.SearchResult
 	err    error
 	calls  atomic.Int32
+	input  domain.SearchRequest
 }
 
-func (f *fakeRetriever) Search(context.Context, domain.SearchRequest) (domain.SearchResult, error) {
+func (f *fakeRetriever) Search(_ context.Context, input domain.SearchRequest) (domain.SearchResult, error) {
 	f.calls.Add(1)
+	f.input = input
 	return f.result, f.err
 }
 func (f *fakeRetriever) CheckReady(context.Context) error { return f.err }
@@ -147,17 +149,13 @@ func TestAnswerFillsRemainingEvidenceAfterDiversityPass(t *testing.T) {
 	}
 }
 
-type fakeObserver struct {
-	lastFailureDetail string
-}
+type fakeObserver struct{}
 
-func (o *fakeObserver) Observe(Outcome, time.Duration) {}
-func (o *fakeObserver) Failure(_ Outcome, _ string, _ string, detail string, _ time.Duration) {
-	o.lastFailureDetail = detail
-}
-func (o *fakeObserver) GeneratorStarted()          {}
-func (o *fakeObserver) GeneratorResponse(int, int) {}
-func (o *fakeObserver) GeneratorFinished()         {}
+func (o *fakeObserver) Observe(Outcome, time.Duration)                 {}
+func (o *fakeObserver) Failure(Outcome, string, string, time.Duration) {}
+func (o *fakeObserver) GeneratorStarted()                              {}
+func (o *fakeObserver) GeneratorResponse(int, int)                     {}
+func (o *fakeObserver) GeneratorFinished()                             {}
 
 func TestAnswerReturnsValidatedGroundedSegments(t *testing.T) {
 	retriever := &fakeRetriever{result: searchResult("evidence-1")}
@@ -166,6 +164,30 @@ func TestAnswerReturnsValidatedGroundedSegments(t *testing.T) {
 	result, err := service.Answer(context.Background(), validRequest())
 	if err != nil || result.Answer == nil || result.Answer.Segments[0].Text != "Grounded answer" || result.Summary != "Grounded answer" {
 		t.Fatalf("Answer() = %#v, %v", result, err)
+	}
+}
+
+func TestAnswerUsesNormalizedRequestForRetrievalAndGeneration(t *testing.T) {
+	retriever := &fakeRetriever{result: searchResult("evidence-1")}
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
+	service := newTestService(t, retriever, provider, testLimits())
+	request := validRequest()
+	request.Question = "  question  "
+	request.Filters.Author = "  author  "
+	request.Filters.Tags = []string{" history ", " science "}
+
+	result, err := service.Answer(context.Background(), request)
+
+	if err != nil || result.Answer == nil {
+		t.Fatalf("Answer() = %#v, %v", result, err)
+	}
+	if retriever.input.Question != "question" || retriever.input.Filters.Author != "author" ||
+		len(retriever.input.Filters.Tags) != 2 || retriever.input.Filters.Tags[0] != "history" ||
+		retriever.input.Filters.Tags[1] != "science" {
+		t.Fatalf("retriever request = %#v", retriever.input)
+	}
+	if provider.input.Question != "question" {
+		t.Fatalf("provider question = %q", provider.input.Question)
 	}
 }
 
@@ -254,6 +276,106 @@ func TestAnswerDegradesForProviderAndCitationFailures(t *testing.T) {
 	}
 }
 
+func TestAnswerReturnsOuterCancellationAfterGeneratorFailure(t *testing.T) {
+	tests := []struct {
+		name       string
+		newContext func() (context.Context, context.CancelFunc)
+		want       error
+	}{
+		{
+			name: "canceled",
+			newContext: func() (context.Context, context.CancelFunc) {
+				return context.WithCancel(context.Background())
+			},
+			want: context.Canceled,
+		},
+		{
+			name: "deadline exceeded",
+			newContext: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			},
+			want: context.DeadlineExceeded,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := test.newContext()
+			cancel()
+			provider := &fakeProvider{err: errors.New("provider failed")}
+			service := newTestService(t, &fakeRetriever{result: searchResult("evidence-1")}, provider, testLimits())
+
+			result, err := service.Answer(ctx, validRequest())
+
+			if !errors.Is(err, test.want) || result.Answer != nil {
+				t.Fatalf("Answer() = %#v, %v; want %v", result, err, test.want)
+			}
+		})
+	}
+}
+
+func TestAnswerDegradesForGeneratorOwnedDeadline(t *testing.T) {
+	provider := &fakeProvider{err: context.DeadlineExceeded}
+	service := newTestService(t, &fakeRetriever{result: searchResult("evidence-1")}, provider, testLimits())
+
+	result, err := service.Answer(context.Background(), validRequest())
+
+	if err != nil || result.Answer != nil || len(result.Search.Results) != 1 {
+		t.Fatalf("Answer() = %#v, %v", result, err)
+	}
+}
+
+func TestSelectEvidenceChargesAllContextStringFields(t *testing.T) {
+	limits := testLimits()
+	limits.MaximumContextBytes = 31
+	search := domain.SearchResult{Results: []domain.Evidence{
+		{
+			EvidenceID: "e-1",
+			Passage:    "passage",
+			Book:       domain.BookMetadata{Title: "title", Author: "author"},
+			Chapter:    "chapter",
+			Section:    "section",
+		},
+		{EvidenceID: "e-2", Passage: "second"},
+	}}
+
+	selected := selectEvidence(search, limits)
+
+	if len(selected) != 1 || selected[0].EvidenceID != "e-2" {
+		t.Fatalf("selectEvidence() = %#v", selected)
+	}
+}
+
+func TestSelectEvidenceRejectsInvalidUTF8InEveryContextStringField(t *testing.T) {
+	invalid := string([]byte{0xff})
+	tests := []struct {
+		name   string
+		mutate func(*domain.Evidence)
+	}{
+		{name: "evidence ID", mutate: func(value *domain.Evidence) { value.EvidenceID = invalid }},
+		{name: "passage", mutate: func(value *domain.Evidence) { value.Passage = invalid }},
+		{name: "title", mutate: func(value *domain.Evidence) { value.Book.Title = invalid }},
+		{name: "author", mutate: func(value *domain.Evidence) { value.Book.Author = invalid }},
+		{name: "chapter", mutate: func(value *domain.Evidence) { value.Chapter = invalid }},
+		{name: "section", mutate: func(value *domain.Evidence) { value.Section = invalid }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value := domain.Evidence{
+				EvidenceID: "evidence-1",
+				Passage:    "passage",
+				Book:       domain.BookMetadata{Title: "title", Author: "author"},
+				Chapter:    "chapter",
+				Section:    "section",
+			}
+			test.mutate(&value)
+
+			if selected := selectEvidence(domain.SearchResult{Results: []domain.Evidence{value}}, testLimits()); len(selected) != 0 {
+				t.Fatalf("selectEvidence() = %#v, want none", selected)
+			}
+		})
+	}
+}
+
 func TestAnswerBoundsContextAndUsesNonBlockingConcurrency(t *testing.T) {
 	limits := testLimits()
 	limits.GeneratorConcurrency = 1
@@ -296,25 +418,6 @@ func TestAnswerRejectsOversizedOrMixedValidityOutput(t *testing.T) {
 	}
 }
 
-func TestAnswerTruncatesFailureDetailUsingConfiguredLimit(t *testing.T) {
-	limits := testLimits()
-	limits.MaximumFailureDetailRunes = 12
-	observer := &fakeObserver{}
-	service, err := NewService(&fakeRetriever{result: searchResult("evidence-1")}, &fakeProvider{err: errors.New(strings.Repeat(" detail ", 10))}, observer, limits, testRequestPolicy())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	result, callErr := service.Answer(context.Background(), validRequest())
-
-	if callErr != nil || result.Answer != nil {
-		t.Fatalf("Answer() = %#v, %v", result, callErr)
-	}
-	if len([]rune(observer.lastFailureDetail)) != 12 {
-		t.Fatalf("failure detail length = %d, want 12; detail=%q", len([]rune(observer.lastFailureDetail)), observer.lastFailureDetail)
-	}
-}
-
 func newTestService(t *testing.T, retriever Retriever, generator AnswerGenerator, limits Limits) *Service {
 	t.Helper()
 	service, err := NewService(retriever, generator, &fakeObserver{}, limits, testRequestPolicy())
@@ -336,19 +439,18 @@ func testRequestPolicy() domain.RequestPolicy {
 
 func testLimits() Limits {
 	return Limits{
-		MaximumEvidence:           8,
-		MaximumContextBytes:       32 << 10,
-		MaximumEvidenceBytes:      8 << 10,
-		MaximumSegments:           8,
-		MaximumAnswerBytes:        8 << 10,
-		MaximumSummaryRunes:       512,
-		MaximumFailureDetailRunes: 160,
-		MaximumCitations:          8,
-		MaximumOutputTokens:       768,
-		GeneratorConcurrency:      4,
-		RequestTimeout:            5 * time.Minute,
-		RetrievalTimeout:          4*time.Minute + 45*time.Second,
-		GeneratorTimeout:          4*time.Minute + 30*time.Second,
+		MaximumEvidence:      8,
+		MaximumContextBytes:  32 << 10,
+		MaximumEvidenceBytes: 8 << 10,
+		MaximumSegments:      8,
+		MaximumAnswerBytes:   8 << 10,
+		MaximumSummaryRunes:  512,
+		MaximumCitations:     8,
+		MaximumOutputTokens:  768,
+		GeneratorConcurrency: 4,
+		RequestTimeout:       5 * time.Minute,
+		RetrievalTimeout:     4*time.Minute + 45*time.Second,
+		GeneratorTimeout:     4*time.Minute + 30*time.Second,
 	}
 }
 

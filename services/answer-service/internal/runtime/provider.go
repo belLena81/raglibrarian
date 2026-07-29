@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"errors"
-	"strings"
 
 	"github.com/belLena81/raglibrarian/pkg/providerhttp"
 	"github.com/belLena81/raglibrarian/services/answer-service/config"
@@ -20,11 +19,12 @@ func NewGenerator(configuration config.GeneratorConfig) (application.AnswerGener
 	if err != nil {
 		return nil, errors.New("configure provider transport")
 	}
-	limit, err := throttle.NewPerMinute(providerRequestsPerMinute(configuration.Model, configuration.RequestsPerMinute))
+	limit, err := throttle.NewPerMinute(configuration.RequestsPerMinute)
 	if err != nil {
 		return nil, errors.New("configure provider throttle")
 	}
-	providerAdapter, err := provider.NewOpenAIWithPolicy(configuration.BaseURL, configuration.Model, apiKey, httpClient, limit, configuration.LogErrorBody, provider.Policy{
+	providerAdapter, err := provider.NewOpenAI(configuration.BaseURL, configuration.Model, apiKey, httpClient, limit, provider.Policy{
+		MaximumRequestBytes:   configuration.MaxRequestBytes,
 		MaximumResponseBytes:  configuration.MaxResponseBytes,
 		MaximumCandidateBytes: configuration.MaxCandidateBytes,
 	})
@@ -32,14 +32,4 @@ func NewGenerator(configuration config.GeneratorConfig) (application.AnswerGener
 		return nil, errors.New("configure openai compatible provider")
 	}
 	return providerAdapter, nil
-}
-
-func providerRequestsPerMinute(model string, configured int) int {
-	if configured > 0 {
-		return configured
-	}
-	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(model)), ":free") {
-		return 15
-	}
-	return configured
 }

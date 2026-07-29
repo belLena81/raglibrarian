@@ -619,7 +619,23 @@ func (r *Postgres) CompleteDeletionArtifact(ctx context.Context, eventID, jobID 
 		return fmt.Errorf("ingestion: complete deletion artifact: %w", err)
 	}
 	if command.RowsAffected() == 0 {
-		return application.ErrConflictingEvent
+		var existingEventID *string
+		var completedAt *time.Time
+		err = tx.QueryRow(ctx, `SELECT deletion_event_id,deletion_cleanup_completed_at
+			FROM ingestion.artifact_sets WHERE job_id=$1 FOR UPDATE`, jobID).Scan(&existingEventID, &completedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return application.ErrConflictingEvent
+		}
+		if err != nil {
+			return fmt.Errorf("ingestion: inspect artifact deletion completion: %w", err)
+		}
+		if existingEventID == nil || *existingEventID != eventID || completedAt == nil {
+			return application.ErrConflictingEvent
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return fmt.Errorf("ingestion: commit duplicate artifact deletion completion: %w", err)
+		}
+		return nil
 	}
 	_, err = tx.Exec(ctx, `UPDATE ingestion.jobs
 		SET manifest_reference=NULL,manifest_sha256=NULL,manifest_byte_size=NULL,updated_at=$2

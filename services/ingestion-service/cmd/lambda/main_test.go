@@ -101,7 +101,7 @@ func TestHandleInvocationRejectsInvalidBatchShape(t *testing.T) {
 	}
 }
 
-func TestHandleInvocationFailsMalformedMessagesWithoutProcessing(t *testing.T) {
+func TestHandleInvocationAcknowledgesMalformedMessagesWithoutProcessing(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*events.RabbitMQMessage)
@@ -126,8 +126,8 @@ func TestHandleInvocationFailsMalformedMessagesWithoutProcessing(t *testing.T) {
 				loads++
 				return processor, publisher, errors.New("bootstrap unavailable")
 			})
-			if !errors.Is(err, errInvalidBrokerMessage) {
-				t.Fatalf("handleWithLoader() error = %v, want invalid broker message", err)
+			if err != nil {
+				t.Fatalf("handleWithLoader() error = %v, want nil", err)
 			}
 			if loads != 0 || processor.calls != 0 || publisher.calls != 0 {
 				t.Fatalf("unexpected calls: load=%d process=%d publish=%d", loads, processor.calls, publisher.calls)
@@ -145,9 +145,9 @@ func TestHandleInvocationAppliesDeliveryDispositionAfterPublishing(t *testing.T)
 	}{
 		{name: "success"},
 		{name: "deferred", processErr: application.ErrProcessingDeferred},
-		{name: "invalid", processErr: application.ErrInvalidEvent, wantErr: application.ErrInvalidEvent},
-		{name: "conflicting", processErr: application.ErrConflictingEvent, wantErr: application.ErrConflictingEvent},
-		{name: "unsupported profile", processErr: application.ErrUnsupportedProcessingProfile, wantErr: application.ErrUnsupportedProcessingProfile},
+		{name: "invalid", processErr: application.ErrInvalidEvent},
+		{name: "conflicting", processErr: application.ErrConflictingEvent},
+		{name: "unsupported profile", processErr: application.ErrUnsupportedProcessingProfile},
 		{name: "transient", processErr: transient, wantErr: transient},
 	}
 	for _, test := range tests {

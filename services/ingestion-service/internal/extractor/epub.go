@@ -15,13 +15,17 @@ import (
 	"os/exec"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/defaults"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/domain"
 )
 
-const EPUBExtractionVersion = "epub-spine-v1"
+const (
+	EPUBExtractionVersion     = "epub-spine-v1"
+	EPUBParserProtocolVersion = "v1"
+)
 
 const (
 	epubMediaType           = "application/epub+zip"
@@ -59,6 +63,62 @@ func DefaultEPUBArchiveLimits() EPUBArchiveLimits {
 		MaximumExpandedBytes: defaults.EPUBMaximumExpandedBytes,
 		MaximumTextBytes:     defaults.EPUBMaximumTextBytes,
 	}
+}
+
+// EPUBParserArguments encodes the strict private protocol used between the
+// ingestion adapter, parser sandbox, and standalone EPUB parser.
+func EPUBParserArguments(sourcePath string, limits EPUBArchiveLimits) ([]string, error) {
+	if strings.TrimSpace(sourcePath) == "" || !validEPUBLimits(limits) {
+		return nil, errors.New("invalid EPUB parser arguments")
+	}
+	return []string{
+		EPUBParserProtocolVersion,
+		strconv.Itoa(limits.MaximumEntries),
+		strconv.FormatUint(uint64(limits.MaximumSpineItems), 10),
+		strconv.FormatInt(limits.MaximumEntryBytes, 10),
+		strconv.FormatInt(limits.MaximumExpandedBytes, 10),
+		strconv.FormatInt(limits.MaximumTextBytes, 10),
+		sourcePath,
+	}, nil
+}
+
+// ParseEPUBParserArguments decodes the strict private parser protocol.
+func ParseEPUBParserArguments(arguments []string) (string, EPUBArchiveLimits, error) {
+	if len(arguments) != 7 || arguments[0] != EPUBParserProtocolVersion {
+		return "", EPUBArchiveLimits{}, errors.New("invalid EPUB parser arguments")
+	}
+	maximumEntries, err := strconv.Atoi(arguments[1])
+	if err != nil {
+		return "", EPUBArchiveLimits{}, errors.New("invalid EPUB parser arguments")
+	}
+	maximumSpineItems, err := strconv.ParseUint(arguments[2], 10, 32)
+	if err != nil {
+		return "", EPUBArchiveLimits{}, errors.New("invalid EPUB parser arguments")
+	}
+	maximumEntryBytes, err := strconv.ParseInt(arguments[3], 10, 64)
+	if err != nil {
+		return "", EPUBArchiveLimits{}, errors.New("invalid EPUB parser arguments")
+	}
+	maximumExpandedBytes, err := strconv.ParseInt(arguments[4], 10, 64)
+	if err != nil {
+		return "", EPUBArchiveLimits{}, errors.New("invalid EPUB parser arguments")
+	}
+	maximumTextBytes, err := strconv.ParseInt(arguments[5], 10, 64)
+	if err != nil {
+		return "", EPUBArchiveLimits{}, errors.New("invalid EPUB parser arguments")
+	}
+	limits := EPUBArchiveLimits{
+		MaximumEntries:       maximumEntries,
+		MaximumSpineItems:    uint32(maximumSpineItems),
+		MaximumEntryBytes:    maximumEntryBytes,
+		MaximumExpandedBytes: maximumExpandedBytes,
+		MaximumTextBytes:     maximumTextBytes,
+	}
+	sourcePath := strings.TrimSpace(arguments[6])
+	if sourcePath == "" || sourcePath != arguments[6] || !validEPUBLimits(limits) {
+		return "", EPUBArchiveLimits{}, errors.New("invalid EPUB parser arguments")
+	}
+	return sourcePath, limits, nil
 }
 
 type epubContainer struct {
@@ -212,7 +272,12 @@ func ParseEPUBFile(sourcePath string, limits EPUBArchiveLimits) ([]Page, error) 
 func validEPUBLimits(limits EPUBArchiveLimits) bool {
 	return limits.MaximumEntries >= 3 && limits.MaximumSpineItems > 0 && limits.MaximumEntryBytes > 0 &&
 		limits.MaximumExpandedBytes >= limits.MaximumEntryBytes && limits.MaximumTextBytes > 0 &&
-		limits.MaximumTextBytes <= limits.MaximumExpandedBytes
+		limits.MaximumTextBytes <= limits.MaximumExpandedBytes &&
+		limits.MaximumEntries <= defaults.EPUBMaximumEntriesLimit &&
+		limits.MaximumSpineItems <= defaults.EPUBMaximumSpineItemsLimit &&
+		limits.MaximumEntryBytes <= defaults.EPUBMaximumEntryBytesLimit &&
+		limits.MaximumExpandedBytes <= defaults.EPUBMaximumExpandedBytesLimit &&
+		limits.MaximumTextBytes <= defaults.EPUBMaximumTextBytesLimit
 }
 
 func validEPUBArchivePath(value string) bool {
@@ -622,25 +687,30 @@ func WriteEPUBOutput(writer io.Writer, pages []Page) error {
 // EPUB executes the EPUB parser through the same fail-closed sandbox as
 // Poppler, then validates its bounded output before exposing spine locations.
 type EPUB struct {
-	parserPath string
-	limits     Limits
-	runner     Runner
+	parserPath    string
+	limits        Limits
+	archiveLimits EPUBArchiveLimits
+	runner        Runner
 }
 
-func NewEPUB(parserPath string, limits Limits, runner Runner) *EPUB {
+func NewEPUB(parserPath string, limits Limits, archiveLimits EPUBArchiveLimits, runner Runner) *EPUB {
 	if runner == nil {
 		runner = SandboxedExecRunner{delegate: ExecRunner{}}
 	}
-	return &EPUB{parserPath: parserPath, limits: limits, runner: runner}
+	return &EPUB{parserPath: parserPath, limits: limits, archiveLimits: archiveLimits, runner: runner}
 }
 
 func (e *EPUB) Extract(ctx context.Context, sourcePath string, consume func(Page) error) (DocumentInfo, error) {
 	if e.parserPath == "" || consume == nil || e.limits.MaximumPages == 0 || e.limits.MaximumPageBytes < 1 ||
-		e.limits.MaximumExtractedBytes < 1 {
+		e.limits.MaximumExtractedBytes < 1 || !validEPUBLimits(e.archiveLimits) {
 		return DocumentInfo{}, epubFailure(domain.FailureInternalProcessing, errors.New("invalid EPUB extractor configuration"))
 	}
+	arguments, err := EPUBParserArguments(sourcePath, e.archiveLimits)
+	if err != nil {
+		return DocumentInfo{}, epubFailure(domain.FailureInternalProcessing, err)
+	}
 	maximumOutput := e.limits.MaximumExtractedBytes + int64(e.limits.MaximumPages)*128 + 1024
-	output, err := e.runner.Run(ctx, e.parserPath, []string{sourcePath}, maximumOutput)
+	output, err := e.runner.Run(ctx, e.parserPath, arguments, maximumOutput)
 	if err != nil {
 		return DocumentInfo{}, detailedFailure("epub_parser_failed", classifyEPUBCommandError(ctx, err))
 	}

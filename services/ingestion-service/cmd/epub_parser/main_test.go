@@ -20,7 +20,7 @@ func TestRunReturnsMalformedProtocolCodeWithoutOutput(t *testing.T) {
 	}
 	var output bytes.Buffer
 
-	code := run([]string{sourcePath}, &output)
+	code := run(parserTestArguments(t, sourcePath, extractor.DefaultEPUBArchiveLimits()), &output)
 
 	if code != extractor.EPUBParserExitMalformed {
 		t.Fatalf("run() code = %d, want %d", code, extractor.EPUBParserExitMalformed)
@@ -55,18 +55,18 @@ func TestRunMarksInvalidArgumentCountWithToken(t *testing.T) {
 	}
 }
 
-func TestRunFallsBackToEPUBParserSourcePathEnvironment(t *testing.T) {
+func TestRunRejectsSourceEnvironmentWithoutVersionedArguments(t *testing.T) {
 	sourcePath := writeParserTestEPUB(t)
 	t.Setenv("EPUB_PARSER_SOURCE_PATH", sourcePath)
 	var output bytes.Buffer
 
 	code := run(nil, &output)
 
-	if code != 0 {
-		t.Fatalf("run() code = %d, want 0", code)
+	if code != 2 {
+		t.Fatalf("run() code = %d, want 2", code)
 	}
-	if output.Len() == 0 {
-		t.Fatal("run() produced no parser output")
+	if output.Len() != 0 {
+		t.Fatalf("run() produced output for invalid protocol: %q", output.String())
 	}
 }
 
@@ -96,24 +96,37 @@ func TestRunRejectsMissingArgumentsAndSourceEnvironment(t *testing.T) {
 	}
 }
 
-func TestRunIgnoresLeadingExtraneousArguments(t *testing.T) {
+func TestRunRejectsLeadingExtraneousArguments(t *testing.T) {
 	sourcePath := writeParserTestEPUB(t)
 	var output bytes.Buffer
+	arguments := append([]string{"ignored"}, parserTestArguments(t, sourcePath, extractor.DefaultEPUBArchiveLimits())...)
 
-	code := run([]string{"ignored", sourcePath}, &output)
+	code := run(arguments, &output)
 
-	if code != 0 {
-		t.Fatalf("run() code = %d, want 0", code)
+	if code != 2 {
+		t.Fatalf("run() code = %d, want 2", code)
 	}
-	if output.Len() == 0 {
-		t.Fatal("run() produced no parser output")
+	if output.Len() != 0 {
+		t.Fatalf("run() produced output for invalid protocol: %q", output.String())
+	}
+}
+
+func TestRunAppliesConfiguredArchiveLimits(t *testing.T) {
+	sourcePath := writeParserTestEPUB(t)
+	limits := extractor.DefaultEPUBArchiveLimits()
+	limits.MaximumEntries = 3
+
+	code := run(parserTestArguments(t, sourcePath, limits), &bytes.Buffer{})
+
+	if code != extractor.EPUBParserExitResourceLimit {
+		t.Fatalf("run() code = %d, want %d", code, extractor.EPUBParserExitResourceLimit)
 	}
 }
 
 func TestRunClassifiesOutputFailureAsInternalWithoutDiagnostics(t *testing.T) {
 	sourcePath := writeParserTestEPUB(t)
 
-	code := run([]string{sourcePath}, failingWriter{})
+	code := run(parserTestArguments(t, sourcePath, extractor.DefaultEPUBArchiveLimits()), failingWriter{})
 
 	if code != extractor.EPUBParserExitInternal {
 		t.Fatalf("run() code = %d, want %d", code, extractor.EPUBParserExitInternal)
@@ -131,7 +144,7 @@ func TestRunRecoversFromPanicAndWritesBoundedToken(t *testing.T) {
 	t.Cleanup(func() { os.Stderr = originalStderr })
 	t.Cleanup(func() { _ = reading.Close() })
 
-	code := run([]string{sourcePath}, panicWriter{})
+	code := run(parserTestArguments(t, sourcePath, extractor.DefaultEPUBArchiveLimits()), panicWriter{})
 
 	_ = writing.Close()
 	contents, readErr := io.ReadAll(reading)
@@ -156,6 +169,15 @@ type panicWriter struct{}
 
 func (panicWriter) Write([]byte) (int, error) {
 	panic("private parser panic")
+}
+
+func parserTestArguments(t *testing.T, sourcePath string, limits extractor.EPUBArchiveLimits) []string {
+	t.Helper()
+	arguments, err := extractor.EPUBParserArguments(sourcePath, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return arguments
 }
 
 func writeParserTestEPUB(t *testing.T) string {
