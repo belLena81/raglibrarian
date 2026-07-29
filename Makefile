@@ -664,6 +664,7 @@ dev-secrets-test: _require_root
 
 m6-dev-config-test: _require_root
 	bash ./scripts/test-m6-dev-config.sh
+	bash ./scripts/test-ci-host-clients.sh
 
 bootstrap-verifier: _require_root
 	@secret_dir="$${SECRET_DIR:-$(CURDIR)/.dev/secrets}"; \

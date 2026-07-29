@@ -55,6 +55,15 @@ rewrite_endpoint() {
   grep -q "${host}:${loopback_port}" "$file"
 }
 
+rewrite_postgres_host_dsns() {
+  local secret_dir="$1"
+  local postgres_ip="$2"
+
+  rewrite_endpoint "$secret_dir/retrieval_runtime_host_dsn" 5432 "$postgres_ip"
+  rewrite_endpoint "$secret_dir/retrieval_planner_host_dsn" 5432 "$postgres_ip"
+  rewrite_endpoint "$secret_dir/retrieval_cleanup_host_dsn" 5432 "$postgres_ip"
+}
+
 append_github_env() {
   local name="$1"
   local value="$2"
@@ -87,9 +96,11 @@ main() {
   wait_for_tcp_endpoint "$minio_ip" 9000
 
   rewrite_endpoint "$secret_dir/ingestion_e2e_dsn" 5432 "$postgres_ip"
-  rewrite_endpoint "$secret_dir/retrieval_runtime_host_dsn" 5432 "$postgres_ip"
+  rewrite_postgres_host_dsns "$secret_dir" "$postgres_ip"
   rewrite_endpoint "$secret_dir/ingestion_e2e_rabbitmq_uri" 5672 "$rabbitmq_ip"
   append_github_env M4_E2E_MINIO_ENDPOINT "${minio_ip}:9000"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
