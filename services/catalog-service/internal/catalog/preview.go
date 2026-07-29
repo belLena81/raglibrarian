@@ -2,8 +2,8 @@ package catalog
 
 import (
 	"archive/zip"
-	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/xml"
 	"errors"
@@ -22,8 +22,17 @@ import (
 var previewTempDir = os.MkdirTemp
 var previewExecCommand = runCommand
 
-func defaultPreviewBook(ctx context.Context, book Book, objects OriginalObjectStore, maximumPreviewBytes, maximumPreviewPages, maximumPreviewEPUBEntries int) (string, error) {
-	if objects == nil || book.ObjectReference == "" || maximumPreviewBytes <= 0 || maximumPreviewPages <= 0 || maximumPreviewEPUBEntries <= 0 {
+func defaultPreviewBook(
+	ctx context.Context,
+	book Book,
+	objects OriginalObjectStore,
+	maximumSourceBytes int64,
+	maximumPreviewBytes int,
+	maximumPreviewPages int,
+	maximumPreviewEPUBEntries int,
+) (string, error) {
+	if objects == nil || book.ObjectReference == "" || book.ByteSize < 1 || book.ByteSize > maximumSourceBytes ||
+		maximumSourceBytes <= 0 || maximumPreviewBytes <= 0 || maximumPreviewPages <= 0 || maximumPreviewEPUBEntries <= 0 {
 		return "", errors.New("preview unavailable")
 	}
 	source, err := objects.Get(ctx, book.ObjectReference)
@@ -53,9 +62,17 @@ func defaultPreviewBook(ctx context.Context, book Book, objects OriginalObjectSt
 	if err != nil {
 		return "", err
 	}
-	if _, err = io.Copy(tmp, source); err != nil {
+	digest := sha256.New()
+	copied, copyErr := io.Copy(io.MultiWriter(tmp, digest), io.LimitReader(source, book.ByteSize+1))
+	if copyErr != nil {
 		_ = tmp.Close()
-		return "", err
+		return "", copyErr
+	}
+	var copiedChecksum [sha256.Size]byte
+	copy(copiedChecksum[:], digest.Sum(nil))
+	if copied != book.ByteSize || copiedChecksum != book.Checksum {
+		_ = tmp.Close()
+		return "", errors.New("preview source integrity mismatch")
 	}
 	if err = tmp.Close(); err != nil {
 		return "", err
@@ -63,7 +80,7 @@ func defaultPreviewBook(ctx context.Context, book Book, objects OriginalObjectSt
 
 	switch book.MediaType {
 	case "application/pdf":
-		return previewPDFFragment(ctx, tmp.Name(), outputDir, maximumPreviewPages)
+		return previewPDFFragment(ctx, tmp.Name(), outputDir, maximumPreviewBytes, maximumPreviewPages)
 	case "application/epub+zip":
 		return previewEPUBFragment(tmp.Name(), maximumPreviewBytes, maximumPreviewPages, maximumPreviewEPUBEntries)
 	default:
@@ -71,8 +88,13 @@ func defaultPreviewBook(ctx context.Context, book Book, objects OriginalObjectSt
 	}
 }
 
-func previewPDFFragment(ctx context.Context, sourcePath, outputDir string, maximumPreviewPages int) (string, error) {
-	if maximumPreviewPages <= 0 {
+func previewPDFFragment(ctx context.Context, sourcePath, outputDir string, maximumPreviewBytes, maximumPreviewPages int) (string, error) {
+	if maximumPreviewBytes <= 0 || maximumPreviewPages <= 0 {
+		return "", errors.New("invalid preview configuration")
+	}
+	const dataURIPrefix = "data:application/pdf;base64,"
+	maximumFragmentBytes := maximumBase64SourceBytes(maximumPreviewBytes, len(dataURIPrefix))
+	if maximumFragmentBytes <= 0 {
 		return "", errors.New("invalid preview configuration")
 	}
 	outputPattern := filepath.Join(outputDir, "catalog-preview-page-%03d.pdf")
@@ -95,17 +117,30 @@ func previewPDFFragment(ctx context.Context, sourcePath, outputDir string, maxim
 	if err := previewSandboxCommand(ctx, "/usr/bin/pdfunite", append(pagePaths, fragmentPath)...); err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(fragmentPath) // #nosec G304 -- path is derived from exclusive temp-directory output.
+	fragment, err := os.Open(fragmentPath) // #nosec G304 -- path is derived from exclusive temp-directory output.
 	if err != nil {
 		return "", err
+	}
+	defer func() { _ = fragment.Close() }()
+	data, err := io.ReadAll(io.LimitReader(fragment, int64(maximumFragmentBytes)+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > maximumFragmentBytes {
+		return "", errors.New("PDF preview too large")
 	}
 	if len(data) == 0 {
 		return "", errors.New("empty PDF preview")
 	}
-	return "data:application/pdf;base64," + base64.StdEncoding.EncodeToString(data), nil
+	return encodeDataURI(dataURIPrefix, data, maximumPreviewBytes)
 }
 
 func previewEPUBFragment(sourcePath string, maximumPreviewBytes, maximumPreviewPages, maximumPreviewEPUBEntries int) (string, error) {
+	const dataURIPrefix = "data:text/html;base64,"
+	maximumHTMLBytes := maximumBase64SourceBytes(maximumPreviewBytes, len(dataURIPrefix))
+	if maximumHTMLBytes <= 0 {
+		return "", errors.New("invalid preview configuration")
+	}
 	pages, err := extractEPUBPreviewPages(sourcePath, maximumPreviewBytes, maximumPreviewPages, maximumPreviewEPUBEntries)
 	if err != nil {
 		return "", err
@@ -113,22 +148,130 @@ func previewEPUBFragment(sourcePath string, maximumPreviewBytes, maximumPreviewP
 	if len(pages) == 0 {
 		return "", errors.New("empty EPUB preview")
 	}
-	var html strings.Builder
-	html.Grow(1024)
-	html.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><style>")
-	html.WriteString("body{margin:0;padding:16px;background:#f8fafc;color:#0f172a;font:14px/1.5 system-ui,sans-serif}")
-	html.WriteString(".page{margin:0 0 16px;border:1px solid #cbd5e1;border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 1px 2px rgba(15,23,42,.08)}")
-	html.WriteString(".page iframe{width:100%;height:70vh;border:0;display:block;background:#fff}")
-	html.WriteString("</style></head><body>")
-	for index, page := range pages {
-		html.WriteString("<section class=\"page\"><iframe sandbox=\"\" title=\"Page ")
-		html.WriteString(strconv.Itoa(index + 1))
-		html.WriteString("\" srcdoc=\"")
-		html.WriteString(htmlpkg.EscapeString(injectEPUBPreviewCSP(page)))
-		html.WriteString("\"></iframe></section>")
+	html := cappedStringBuilder{
+		remaining: maximumHTMLBytes,
 	}
-	html.WriteString("</body></html>")
-	return "data:text/html;base64," + base64.StdEncoding.EncodeToString([]byte(html.String())), nil
+	if err = html.writeString("<!doctype html><html><head><meta charset=\"utf-8\"><style>"); err != nil {
+		return "", err
+	}
+	if err = html.writeString("body{margin:0;padding:16px;background:#f8fafc;color:#0f172a;font:14px/1.5 system-ui,sans-serif}"); err != nil {
+		return "", err
+	}
+	if err = html.writeString(".page{margin:0 0 16px;border:1px solid #cbd5e1;border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 1px 2px rgba(15,23,42,.08)}"); err != nil {
+		return "", err
+	}
+	if err = html.writeString(".page iframe{width:100%;height:70vh;border:0;display:block;background:#fff}"); err != nil {
+		return "", err
+	}
+	if err = html.writeString("</style></head><body>"); err != nil {
+		return "", err
+	}
+	for index, page := range pages {
+		if err = html.writeString("<section class=\"page\"><iframe sandbox=\"\" title=\"Page "); err != nil {
+			return "", err
+		}
+		if err = html.writeString(strconv.Itoa(index + 1)); err != nil {
+			return "", err
+		}
+		if err = html.writeString("\" srcdoc=\""); err != nil {
+			return "", err
+		}
+		if err = writeEscapedEPUBPreviewPage(&html, page); err != nil {
+			return "", err
+		}
+		if err = html.writeString("\"></iframe></section>"); err != nil {
+			return "", err
+		}
+	}
+	if err = html.writeString("</body></html>"); err != nil {
+		return "", err
+	}
+	return encodeDataURIString(dataURIPrefix, html.builder.String(), maximumPreviewBytes)
+}
+
+type cappedStringBuilder struct {
+	builder   strings.Builder
+	remaining int
+}
+
+func (builder *cappedStringBuilder) writeString(value string) error {
+	if len(value) > builder.remaining {
+		return errors.New("EPUB preview too large")
+	}
+	_, _ = builder.builder.WriteString(value)
+	builder.remaining -= len(value)
+	return nil
+}
+
+func writeEscapedEPUBPreviewPage(output *cappedStringBuilder, page []byte) error {
+	if insertAt := epubPreviewHeadInsertOffset(string(page)); insertAt >= 0 {
+		if err := writeHTMLEscaped(output, page[:insertAt]); err != nil {
+			return err
+		}
+		if err := writeHTMLEscaped(output, []byte(epubPreviewCSP)); err != nil {
+			return err
+		}
+		return writeHTMLEscaped(output, page[insertAt:])
+	}
+	if err := writeHTMLEscaped(output, []byte("<!doctype html><html><head><meta charset=\"utf-8\">"+epubPreviewCSP+"</head><body>")); err != nil {
+		return err
+	}
+	if err := writeHTMLEscaped(output, page); err != nil {
+		return err
+	}
+	return writeHTMLEscaped(output, []byte("</body></html>"))
+}
+
+func writeHTMLEscaped(output *cappedStringBuilder, value []byte) error {
+	const chunkBytes = 4096
+	for len(value) > 0 {
+		size := min(len(value), chunkBytes)
+		if err := output.writeString(htmlpkg.EscapeString(string(value[:size]))); err != nil {
+			return err
+		}
+		value = value[size:]
+	}
+	return nil
+}
+
+func maximumBase64SourceBytes(maximumDataURIBytes, prefixBytes int) int {
+	available := maximumDataURIBytes - prefixBytes
+	if available < 4 {
+		return 0
+	}
+	return available / 4 * 3
+}
+
+func encodeDataURI(prefix string, data []byte, maximumBytes int) (string, error) {
+	return encodeDataURIValue(prefix, maximumBytes, func(encoder io.Writer) error {
+		_, err := encoder.Write(data)
+		return err
+	})
+}
+
+func encodeDataURIString(prefix, data string, maximumBytes int) (string, error) {
+	return encodeDataURIValue(prefix, maximumBytes, func(encoder io.Writer) error {
+		_, err := io.WriteString(encoder, data)
+		return err
+	})
+}
+
+func encodeDataURIValue(prefix string, maximumBytes int, write func(io.Writer) error) (string, error) {
+	var encoded strings.Builder
+	encoded.Grow(maximumBytes)
+	_, _ = encoded.WriteString(prefix)
+	encoder := base64.NewEncoder(base64.StdEncoding, &encoded)
+	if err := write(encoder); err != nil {
+		_ = encoder.Close()
+		return "", err
+	}
+	if err := encoder.Close(); err != nil {
+		return "", err
+	}
+	if encoded.Len() > maximumBytes {
+		return "", errors.New("preview too large")
+	}
+	return encoded.String(), nil
 }
 
 const epubPreviewCSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; media-src 'none'; object-src 'none'; connect-src 'none'; frame-src 'none'; child-src 'none'">`
@@ -228,6 +371,7 @@ func extractEPUBPreviewPages(sourcePath string, maximumPreviewBytes, maximumPrev
 
 	pages := make([][]byte, 0, maximumPreviewPages)
 	seen := make(map[string]struct{}, len(publication.Spine))
+	remainingPreviewBytes := maximumPreviewBytes
 	for _, item := range publication.Spine {
 		reference, found := manifest[item.IDRef]
 		if !found {
@@ -237,11 +381,12 @@ func extractEPUBPreviewPages(sourcePath string, maximumPreviewBytes, maximumPrev
 			return nil, errors.New("duplicate EPUB spine reference")
 		}
 		seen[reference] = struct{}{}
-		pageBytes, pageErr := readEPUBEntry(files[reference], maximumPreviewBytes)
+		pageBytes, pageErr := readEPUBEntry(files[reference], remainingPreviewBytes)
 		if pageErr != nil {
 			return nil, pageErr
 		}
 		pages = append(pages, pageBytes)
+		remainingPreviewBytes -= len(pageBytes)
 		if len(pages) == maximumPreviewPages {
 			break
 		}
@@ -262,9 +407,8 @@ func previewSandboxPath() string {
 
 func runCommand(ctx context.Context, path string, args ...string) error {
 	command := exec.CommandContext(ctx, path, args...) // #nosec G204,G702 -- sandbox path comes from trusted local configuration for the preview wrapper.
-	var stderr bytes.Buffer
 	command.Stdout = io.Discard
-	command.Stderr = &stderr
+	command.Stderr = io.Discard
 	if err := command.Run(); err != nil {
 		return err
 	}
@@ -301,9 +445,12 @@ func readEPUBEntry(file *zip.File, maximumPreviewBytes int) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = reader.Close() }()
-	data, err := io.ReadAll(io.LimitReader(reader, int64(maximumPreviewBytes)))
+	data, err := io.ReadAll(io.LimitReader(reader, int64(maximumPreviewBytes)+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(data) > maximumPreviewBytes {
+		return nil, errors.New("EPUB entry too large")
 	}
 	return data, nil
 }

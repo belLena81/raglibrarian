@@ -77,6 +77,25 @@ func TestDrainPendingClaimsUntilStoreIsEmpty(t *testing.T) {
 	}
 }
 
+func TestDrainPendingBoundsBlockingStoreOperation(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		drainPending(context.Background(), blockingStore{}, &fakePublisher{}, &fakeRecorder{}, time.Now(), Policy{
+			PollInterval:   time.Second,
+			DrainBudget:    20 * time.Millisecond,
+			Lease:          30 * time.Second,
+			PublishTimeout: 5 * time.Second,
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("drain did not cancel a blocking store operation")
+	}
+}
+
 func TestPublicationRouteSeparatesDurableWorkFromDisposableStatus(t *testing.T) {
 	exchange, key, mandatory, err := publicationRoute("catalog.book.uploaded.v1")
 	if err != nil || exchange != contracts.ExchangeEvents || key != "catalog.book.uploaded.v1" || !mandatory {
@@ -133,6 +152,21 @@ type fakeStore struct {
 	markErrors []error
 	markIndex  int
 	marked     []string
+}
+
+type blockingStore struct{}
+
+func (blockingStore) ClaimOutbox(ctx context.Context, _ time.Time, _ time.Duration) ([]repository.PendingOutboxEvent, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (blockingStore) MarkPublished(context.Context, string, time.Time) error {
+	return nil
+}
+
+func (blockingStore) RetryOutbox(context.Context, string, time.Time, int) error {
+	return nil
 }
 
 func (s *fakeStore) ClaimOutbox(_ context.Context, _ time.Time, lease time.Duration) ([]repository.PendingOutboxEvent, error) {

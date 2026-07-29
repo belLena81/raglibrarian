@@ -46,6 +46,81 @@ func TestQdrantSearchUsesBoundedLimitAndReturnsEvidence(t *testing.T) {
 	}
 }
 
+func TestQdrantSearchPreservesNetworkCancellationCause(t *testing.T) {
+	client := &http.Client{Transport: roundTripErrorFunc(func(*http.Request) error {
+		return context.Canceled
+	})}
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
+	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 1}, testSearchRequestPolicy())
+
+	_, err := store.Search(context.Background(), query, make([]float32, domain.EmbeddingDimensions), 1, 0)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Search() error = %v, want context.Canceled cause", err)
+	}
+	if got := err.Error(); got != "vector dependency unavailable" {
+		t.Fatalf("Search() error = %q", got)
+	}
+	var detailed interface{ ReasonDetail() string }
+	if !errors.As(err, &detailed) {
+		t.Fatalf("Search() error detail missing: %v", err)
+	}
+	const wantDetail = `operation chunk_query path /points/query failure_class network_error detail Post "http://qdrant.test/collections/evidence/points/query": context canceled`
+	if got := detailed.ReasonDetail(); got != wantDetail {
+		t.Fatalf("ReasonDetail() = %q, want %q", got, wantDetail)
+	}
+}
+
+func TestQdrantSearchDocumentsPreservesNetworkDeadlineCause(t *testing.T) {
+	client := &http.Client{Transport: roundTripErrorFunc(func(*http.Request) error {
+		return context.DeadlineExceeded
+	})}
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
+	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 1}, testSearchRequestPolicy())
+
+	_, err := store.SearchDocuments(context.Background(), query, make([]float32, domain.EmbeddingDimensions), 1, 0)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("SearchDocuments() error = %v, want context.DeadlineExceeded cause", err)
+	}
+	if got := err.Error(); got != "vector dependency unavailable" {
+		t.Fatalf("SearchDocuments() error = %q", got)
+	}
+	var detailed interface{ ReasonDetail() string }
+	if !errors.As(err, &detailed) {
+		t.Fatalf("SearchDocuments() error detail missing: %v", err)
+	}
+	const wantDetail = `operation document_query path /points/query failure_class network_error detail Post "http://qdrant.test/collections/evidence/points/query": context deadline exceeded`
+	if got := detailed.ReasonDetail(); got != wantDetail {
+		t.Fatalf("ReasonDetail() = %q, want %q", got, wantDetail)
+	}
+}
+
+func TestQdrantSearchEvidenceBatchPreservesNetworkCancellationCause(t *testing.T) {
+	client := &http.Client{Transport: roundTripErrorFunc(func(*http.Request) error {
+		return context.Canceled
+	})}
+	store, _ := NewQdrant("http://qdrant.test", "evidence", client, 0.6)
+	query, _ := domain.NewSearchQuery(domain.SearchQueryInput{Question: "replication", Limit: 1}, testSearchRequestPolicy())
+
+	_, err := store.searchEvidenceBatch(context.Background(), query, make([]float32, domain.EmbeddingDimensions), []string{"job-1"}, 1)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("searchEvidenceBatch() error = %v, want context.Canceled cause", err)
+	}
+	if got := err.Error(); got != "vector dependency unavailable" {
+		t.Fatalf("searchEvidenceBatch() error = %q", got)
+	}
+	var detailed interface{ ReasonDetail() string }
+	if !errors.As(err, &detailed) {
+		t.Fatalf("searchEvidenceBatch() error detail missing: %v", err)
+	}
+	const wantDetail = `operation document_hydration_batch path /points/query/batch failure_class network_error detail Post "http://qdrant.test/collections/evidence/points/query/batch": context canceled`
+	if got := detailed.ReasonDetail(); got != wantDetail {
+		t.Fatalf("ReasonDetail() = %q, want %q", got, wantDetail)
+	}
+}
+
 func TestQdrantSearchDocumentsHydratesStoredChunkEvidence(t *testing.T) {
 	requests := 0
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) *http.Response {
@@ -413,6 +488,12 @@ type roundTripFunc func(*http.Request) *http.Response
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request), nil
+}
+
+type roundTripErrorFunc func(*http.Request) error
+
+func (function roundTripErrorFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return nil, function(request)
 }
 
 func response(status int, body string) *http.Response {

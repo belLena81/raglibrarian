@@ -68,9 +68,10 @@ func RunWithWake(ctx context.Context, store store, publisher publisher, recorder
 }
 
 func drainPending(ctx context.Context, store store, publisher publisher, recorder Recorder, now time.Time, policy Policy) {
-	deadline := time.Now().Add(policy.DrainBudget)
+	drainCtx, cancel := context.WithTimeout(ctx, policy.DrainBudget)
+	defer cancel()
 	for {
-		if !publishPending(ctx, store, publisher, recorder, now, policy) || time.Now().After(deadline) {
+		if drainCtx.Err() != nil || !publishPending(drainCtx, store, publisher, recorder, now, policy) {
 			return
 		}
 		now = time.Now().UTC()
@@ -88,6 +89,9 @@ func publishPending(ctx context.Context, store store, publisher publisher, recor
 		return false
 	}
 	for _, event := range events {
+		if ctx.Err() != nil {
+			return false
+		}
 		exchange, routingKey, mandatory, routeErr := publicationRoute(event.Type)
 		if routeErr != nil {
 			recorder.OutboxPublishFailed()
@@ -98,8 +102,11 @@ func publishPending(ctx context.Context, store store, publisher publisher, recor
 		}
 		publishCtx, cancel := context.WithTimeout(ctx, policy.PublishTimeout)
 		err = publisher.PublishWithContext(publishCtx, exchange, routingKey, mandatory, false, amqp091.Publishing{
-			ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent,
-			MessageId: event.ID, Type: event.Type, Body: event.Payload,
+			ContentType:  "application/x-protobuf",
+			DeliveryMode: amqp091.Persistent,
+			MessageId:    event.ID,
+			Type:         event.Type,
+			Body:         event.Payload,
 		})
 		cancel()
 		if err != nil {

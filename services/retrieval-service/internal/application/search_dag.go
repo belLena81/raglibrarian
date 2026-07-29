@@ -2,7 +2,6 @@ package application
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -39,13 +38,14 @@ type RetrievalPlan struct {
 }
 
 type retrievalDiagnosticError struct {
-	err    error
-	detail string
+	message string
+	cause   error
+	detail  string
 }
 
-func (e *retrievalDiagnosticError) Error() string { return e.err.Error() }
+func (e *retrievalDiagnosticError) Error() string { return e.message }
 
-func (e *retrievalDiagnosticError) Unwrap() error { return e.err }
+func (e *retrievalDiagnosticError) Unwrap() error { return e.cause }
 
 func (e *retrievalDiagnosticError) ReasonDetail() string {
 	return sanitizeRetrievalDiagnosticDetail(e.detail)
@@ -57,16 +57,31 @@ func sanitizeRetrievalDiagnosticDetail(value string) string {
 
 func visibilityFailure(scope string, err error) error {
 	return &retrievalDiagnosticError{
-		err:    errors.New("validate index visibility"),
-		detail: fmt.Sprintf("operation visibility_filter scope %s detail %v", scope, err),
+		message: "validate index visibility",
+		cause:   err,
+		detail:  fmt.Sprintf("operation visibility_filter scope %s detail %v", scope, err),
 	}
 }
 
 func lexicalSearchFailure(err error) error {
 	return &retrievalDiagnosticError{
-		err:    errors.New("search lexical evidence"),
-		detail: fmt.Sprintf("operation lexical_search detail %v", err),
+		message: "search lexical evidence",
+		cause:   err,
+		detail:  fmt.Sprintf("operation lexical_search detail %v", err),
 	}
+}
+
+type searchOperationError struct {
+	message string
+	cause   error
+}
+
+func (e *searchOperationError) Error() string { return e.message }
+
+func (e *searchOperationError) Unwrap() error { return e.cause }
+
+func searchOperationFailure(message string, cause error) error {
+	return &searchOperationError{message: message, cause: cause}
 }
 
 type heuristicQueryAnalyzer struct {
@@ -262,7 +277,7 @@ func (f reciprocalRankFusion) Fuse(_ domain.SearchQuery, chunkCandidates []Evide
 			case left.Score < right.Score:
 				return 1
 			default:
-				return 0
+				return strings.Compare(left.EvidenceID, right.EvidenceID)
 			}
 		}
 	})

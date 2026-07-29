@@ -60,13 +60,19 @@ func NewServer(service *catalog.Service, diagnostics *diagnostic.Recorder, polic
 }
 
 func (s *Server) Check(ctx context.Context, _ *catalogv1.CheckRequest) (*catalogv1.CheckResponse, error) {
-	if ctx.Err() != nil {
-		return nil, status.Error(codes.Canceled, "request cancelled")
+	if err := ctx.Err(); err != nil {
+		return nil, mapError(err)
 	}
 	if s.readiness != nil {
 		probeCtx, cancel := context.WithTimeout(ctx, s.readinessProbeTimeout)
 		defer cancel()
 		if err := s.readiness.CheckReady(probeCtx); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, mapError(err)
+			}
+			if err = probeCtx.Err(); err != nil {
+				return nil, mapError(err)
+			}
 			return nil, status.Error(codes.Unavailable, "catalog unavailable")
 		}
 	}
@@ -76,31 +82,36 @@ func (s *Server) Check(ctx context.Context, _ *catalogv1.CheckRequest) (*catalog
 func (s *Server) UploadBook(stream catalogv1.CatalogService_UploadBookServer) error {
 	ctx, cancel := context.WithTimeout(stream.Context(), s.uploadTimeout)
 	defer cancel()
+	requestID := requestIDFromMetadata(ctx)
+	if requestID == "" {
+		s.diagnostics.OperationRejected("upload_book", "", catalog.Actor{}, "invalid_correlation_id")
+		return status.Error(codes.InvalidArgument, "invalid request metadata")
+	}
 	first, err := stream.Recv()
 	if err != nil {
-		s.diagnostics.OperationRejected("upload_book", requestIDFromMetadata(ctx), catalog.Actor{}, uploadFailureReason(err))
+		s.diagnostics.OperationRejected("upload_book", requestID, catalog.Actor{}, uploadFailureReason(err))
 		return mapError(err)
 	}
 	metadata := first.GetMetadata()
 	if metadata == nil {
-		s.diagnostics.OperationRejected("upload_book", requestIDFromMetadata(ctx), catalog.Actor{}, "invalid_metadata")
+		s.diagnostics.OperationRejected("upload_book", requestID, catalog.Actor{}, "invalid_metadata")
 		return status.Error(codes.InvalidArgument, "invalid upload")
 	}
 	reader := &chunkReader{stream: stream}
 	actor := actorFromProto(metadata.Actor)
 	if !actor.CanUpload() {
-		s.diagnostics.OperationRejected("upload_book", requestIDFromMetadata(ctx), actor, "unauthorized_actor")
+		s.diagnostics.OperationRejected("upload_book", requestID, actor, "unauthorized_actor")
 		return status.Error(codes.PermissionDenied, "actor is not authorized")
 	}
 	book, err := s.service.UploadBook(ctx, catalog.UploadInput{
 		Metadata:  catalog.BookMetadata{Title: metadata.Title, Author: metadata.Author, Year: int(metadata.Year), Tags: append([]string(nil), metadata.Tags...)},
-		MediaType: metadata.MediaType, Actor: actor, CorrelationID: requestIDFromMetadata(ctx), Reader: reader,
+		MediaType: metadata.MediaType, Actor: actor, CorrelationID: requestID, Reader: reader,
 	})
 	if err != nil {
-		s.diagnostics.OperationRejected("upload_book", requestIDFromMetadata(ctx), actor, uploadFailureReason(err))
+		s.diagnostics.OperationRejected("upload_book", requestID, actor, uploadFailureReason(err))
 		return mapError(err)
 	}
-	s.diagnostics.UploadCompleted(requestIDFromMetadata(ctx), actor, book)
+	s.diagnostics.UploadCompleted(requestID, actor, book)
 	return stream.SendAndClose(&catalogv1.UploadBookResponse{Book: bookProto(book)})
 }
 
@@ -188,8 +199,12 @@ func (s *Server) GetBook(ctx context.Context, request *catalogv1.GetBookRequest)
 
 func uploadFailureReason(err error) string {
 	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
 	case errors.Is(err, context.Canceled):
 		return "request_cancelled"
+	case errors.Is(err, catalog.ErrInvalidCorrelationID):
+		return "invalid_correlation_id"
 	case errors.Is(err, catalog.ErrInvalidMetadata):
 		return "invalid_metadata"
 	case errors.Is(err, catalog.ErrUnauthorizedActor):
@@ -251,20 +266,33 @@ func (r *chunkReader) Read(target []byte) (int, error) {
 
 func bookProto(book catalog.Book) *catalogv1.Book {
 	return &catalogv1.Book{
-		Id: book.ID, Title: book.Metadata.Title, Author: book.Metadata.Author, Year: int32(book.Metadata.Year), // #nosec G115 -- Catalog validates years before persistence.
-		Tags: append([]string(nil), book.Metadata.Tags...), ProcessingStatus: string(book.ProcessingStatus),
-		CreatedAt: timestamppb.New(book.CreatedAt), ProcessingStage: string(book.ProcessingStage),
+		Id:                        book.ID,
+		Title:                     book.Metadata.Title,
+		Author:                    book.Metadata.Author,
+		Year:                      int32(book.Metadata.Year), // #nosec G115 -- Catalog validates years before persistence.
+		Tags:                      append([]string(nil), book.Metadata.Tags...),
+		ProcessingStatus:          string(book.ProcessingStatus),
+		CreatedAt:                 timestamppb.New(book.CreatedAt),
+		ProcessingStage:           string(book.ProcessingStage),
 		ProcessingFailureCategory: string(book.ProcessingFailureCategory),
 		ProcessingFailureDetail:   book.ProcessingFailureDetail,
-		ProcessingUpdatedAt:       timestamppb.New(book.ProcessingUpdatedAt), ProcessingVersion: book.ProcessingVersion,
-		MediaType: book.MediaType, LifecycleVersion: book.LifecycleVersion, CanReindex: book.CanReindex(), Preview: book.Preview,
+		ProcessingUpdatedAt:       timestamppb.New(book.ProcessingUpdatedAt),
+		ProcessingVersion:         book.ProcessingVersion,
+		MediaType:                 book.MediaType,
+		LifecycleVersion:          book.LifecycleVersion,
+		CanReindex:                book.CanReindex(),
+		Preview:                   book.Preview,
 	}
 }
 
 func mapError(err error) error {
 	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, "request deadline exceeded")
 	case errors.Is(err, context.Canceled):
 		return status.Error(codes.Canceled, "request cancelled")
+	case errors.Is(err, catalog.ErrInvalidCorrelationID):
+		return status.Error(codes.InvalidArgument, "invalid request metadata")
 	case errors.Is(err, catalog.ErrInvalidPagination):
 		return status.Error(codes.InvalidArgument, "invalid pagination")
 	case errors.Is(err, catalog.ErrInvalidMetadata), errors.Is(err, catalog.ErrInvalidPDF), errors.Is(err, catalog.ErrInvalidStream):
