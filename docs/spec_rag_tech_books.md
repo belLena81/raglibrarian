@@ -30,6 +30,8 @@ decision is maintained in
   sessions, immediate server-side revocation, and live role/status validation.
 - PDF and EPUB ingestion into structure-aware, traceable chunks.
 - Embeddings and vector similarity search through Retrieval-owned Qdrant.
+- Hybrid dense/sparse retrieval through Retrieval-owned vector and PostgreSQL
+  evidence projections.
 - Service-owned PostgreSQL schemas, private object storage, and versioned
   protobuf/event contracts.
 - Asynchronous ingestion from the first upload using RabbitMQ, transactional
@@ -47,7 +49,8 @@ decision is maintained in
 
 ### Could have
 
-- Hybrid keyword/vector search and reranking.
+- Reranking, query rewriting, HyDE, semantic re-chunking, and GraphRAG after a
+  measured product-quality review.
 - Markdown, HTML, and DOCX ingestion adapters.
 - Query history and saved searches, subject to an explicit privacy design.
 - Librarian correction of extracted structure and chunks.
@@ -389,7 +392,8 @@ Events are versioned contracts:
 - `BookProcessingFailedV1`
 - `BookIndexedV1`
 - `BookIndexingFailedV1`
-- Versioned deletion and reindex events when those workflows are introduced.
+- Versioned deletion and reindex events for release-candidate lifecycle
+  workflows.
 
 Delivery is at least once. Producers use transactional outboxes and publisher
 confirms. Consumers use durable queues, inbox/event and business-key

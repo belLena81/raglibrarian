@@ -57,14 +57,15 @@ grows. New product features are added as a service or event consumer, rather
 than first being placed in the public API and extracted later.
 
 ```text
-client -- HTTPS/HTTP --> edge-api -- mTLS gRPC --> identity-service --> Postgres
-                         |
-                         +-- mTLS gRPC --> catalog-service (upload/list/get)
+client -- HTTPS/HTTP --> edge-api
+                         +-- mTLS gRPC --> identity-service --> PostgreSQL
+                         +-- mTLS gRPC --> catalog-service  --> PostgreSQL + MinIO
+                         +-- mTLS gRPC --> retrieval-service --> PostgreSQL + Qdrant
                          +-- mTLS gRPC --> answer-service --> retrieval-service
-                                      |
-                                      +-- RabbitMQ --> ingestion Lambda/worker
-                                      |
-                                      +-- RabbitMQ --> retrieval-service --> Qdrant
+
+catalog-service -- RabbitMQ events --> ingestion Lambda/worker
+ingestion Lambda/worker -- RabbitMQ events --> retrieval Lambda/worker
+retrieval Lambda/worker -- RabbitMQ events --> catalog-service
 ```
 
 - **edge-api** owns public HTTP, request validation, token verification, and
@@ -173,7 +174,8 @@ Never commit either value, local certificates, connection strings, tokens, or
 book content. The signing key is mounted only into Identity; Edge receives only
 the public verification key. Identity database, bootstrap, email-protection,
 and SMTP credentials are also delivered as files rather than environment
-values. See [OPERATIONS.md](OPERATIONS.md) for rotation and migration guidance.
+values. See [OPERATIONS.md](OPERATIONS.md) for local operations, recovery, and
+rotation guidance.
 
 ## Public API
 
@@ -214,10 +216,10 @@ or a mounted private CA.
 ## Repository layout
 
 ```text
-pkg/                 Focused auth/TLS/gRPC/process libraries and protobuf clients
+pkg/                 Focused auth/TLS/gRPC/process/provider/config libraries and protobuf clients
 services/edge-api/   Public HTTP boundary and query routing
 services/identity-service/
-				     Identity domain, gRPC adapter, Postgres repository, schema baseline
+                     Identity domain, gRPC adapter, Postgres repository, schema baseline
 services/catalog-service/
                      Catalog upload, metadata, object storage, processing status, and outbox
 services/ingestion-service/
@@ -227,8 +229,11 @@ services/retrieval-service/
 services/answer-service/
                      Grounded synthesis, provider adapter, and citation validation
 tools/healthcheck/   Operational HTTP/gRPC probe binary
+tools/rabbitmq-topology/
+                     RabbitMQ topology verification utility
 api/proto/           Versioned gRPC source contracts
 tests/e2e/           Black-box HTTP tests
+ui/                  Nested React UI repository and frontend checks
 ```
 
 `go.work` defines the Go workspace; there is intentionally no root `go.mod`.
@@ -260,8 +265,12 @@ make app-test
 
 `make app-bootstrap` is the standard bootstrap and start path for an existing checkout.
 It now covers the complete local product stack rather than a milestone-specific slice.
-`make app-test` runs the current full repository gate set.
+`make app-test` runs the current static, unit/race, UI, IaC, and security gate
+set through `make full-gates`.
 `make local-run` remains the underlying bootstrap command for the Compose stack.
+The local runtime uses the single Compose profile `raglibrarian`. Test-only
+containers use the separate `tests` profile, and CI layers
+`docker-compose.ci.yml` over `docker-compose.yml`.
 The stateful test targets reset the test-only PostgreSQL databases and Qdrant
 collection before they run, so repeated local, e2e, and CI executions start
 from an empty test baseline and never touch real data.
@@ -325,8 +334,28 @@ make m6-answer-quality-test # deterministic grounded-answer safety fixtures
 make m6-e2e     # authenticated answer, degradation, and citation black-box tests
 make ui-check    # UI install, lint, type-check, and production build
 make security-check # secret, Dockerfile, and service-image scans
-make full-gates  # complete local static, test, UI, and security gate
+make full-gates  # local static, unit/race, UI, IaC, and security gate
+make ci-contract # Retrieval/Answer contracts and deterministic Answer fixtures
+make integration-gates # starts Compose and runs contract, MinIO, and M4 integration gates
 ```
+
+`make full-gates` is the local static and security gate: it runs `ci-go`,
+`compose-config`, `m5-mode-policy`, `sam-m5-validate`, `ui-check`, and
+`security-check`. It does not start the live product stack and does not run
+`ci-contract` or `integration-gates`.
+
+GitHub Actions splits the same flow by cost and dependency scope:
+
+- `backend-quality` runs `make ci-go`, then `make ci-iac`.
+- `web-security` runs `make ci-ui`, then `make ci-security`.
+- `integration` runs `make ci-contract`, starts the CI stack through
+  `scripts/ci-compose.sh`, then runs live mTLS, MinIO, combined M4/M5/M6, M5
+  worker-recovery, and database-loss readiness checks.
+- Scheduled `m4-performance` starts an isolated stack and runs `make e2e`,
+  `make m4-performance-smoke`, and `make m4-soak`.
+
+`scripts/ci-compose.sh` always uses `docker compose -f docker-compose.yml -f
+docker-compose.ci.yml --profile raglibrarian`.
 
 The workspace declares Go 1.26.5 as its minimum toolchain. CI and service
 images use the same patched release; update all three together when raising

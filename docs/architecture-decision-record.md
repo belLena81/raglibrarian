@@ -26,7 +26,7 @@ Later capabilities are additive:
 catalog-service --BookUploadedV1--> ingestion Lambda/worker
 ingestion Lambda/worker --BookChunksReadyV1--> retrieval index Lambda/worker
 retrieval index Lambda/worker --BookIndexedV1--> catalog-service
-edge-api -> retrieval-service -> Qdrant
+edge-api -> retrieval-service -> PostgreSQL lexical evidence + Qdrant
 edge-api -> answer-service -> retrieval-service (optional synthesis)
 ```
 
@@ -37,8 +37,13 @@ edge-api -> answer-service -> retrieval-service (optional synthesis)
 - Share versioned protobuf/event contracts and small platform libraries only;
   do not share evolving domain aggregates between services.
 - Shared platform modules remain single-purpose: token cryptography, internal
-  TLS, peer authorization, logging, process primitives, and generated contracts.
-  Runtime configuration and business models remain inside the owning service.
+  TLS, peer authorization, logging, process primitives, provider HTTP helpers,
+  retry helpers, index-profile constants, and generated contracts. Runtime
+  configuration and business models remain inside the owning service.
+- Domain/schema compatibility constants stay with their owning contract.
+  Runtime-tunable policy, including deadlines, result budgets, retry intervals,
+  provider output limits, and concurrency caps, is read from validated
+  configuration and passed inward through narrow ports.
 - Use Buf compatibility checks for gRPC contracts. Introduce additive fields
   and new versions instead of breaking existing consumers.
 - Publish domain events through a transactional outbox. Consumers are
@@ -56,7 +61,8 @@ edge-api -> answer-service -> retrieval-service (optional synthesis)
   Edge does not buffer or parse the file; Catalog owns metadata, the generated
   object key, the original object, and `BookUploadedV1` publication.
 - Ingestion owns processing jobs and derived chunk artifacts. Retrieval alone
-  owns embedding compatibility, evidence projections, and Qdrant access.
+  owns embedding compatibility, evidence projections, PostgreSQL lexical
+  evidence, and Qdrant access.
 - Parser, chunker, embedder, and indexer are application components, not four
   microservices. Extraction/chunking belong to Ingestion; indexing belongs to
   Retrieval.
@@ -106,9 +112,12 @@ and [Lambda quotas](https://docs.aws.amazon.com/lambda/latest/dg/gettingstarted-
 The one-time extraction is complete: Edge, Identity, Catalog, Ingestion,
 Retrieval, and Answer are separate owning contexts/process adapters. Identity
 RBAC, Catalog upload, Retrieval-owned indexing/search, Qdrant evidence
-projection, and optional grounded `/query` answers are implemented in the
-current checkout. Answer is stateless, calls Retrieval over mTLS, and owns its
-provider-neutral synthesis and citation-validation boundary.
+projection, PostgreSQL full-text evidence search, and optional grounded
+`/query` answers are implemented in the current checkout. Retrieval combines
+chunk vectors, document vectors, and lexical evidence with reciprocal-rank
+fusion before returning bounded evidence. Answer is stateless, calls Retrieval
+over mTLS, and owns its provider-neutral synthesis and citation-validation
+boundary.
 
 Milestones 4, 6, and 7 remain release candidates until the controlled local,
 private workers-first, and provider-neutral serverless acceptance sequence

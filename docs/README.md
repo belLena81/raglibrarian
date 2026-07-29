@@ -13,9 +13,10 @@ and `make app-test`; the milestone sections below remain for delivery tracing.
 A feature starts in its owning bounded context; it is never built in Edge and
 extracted later.
 
-Current verification as of July 26, 2026: the Retrieval service package test
-suite passes after the grounded-summary prompt and token-budget update, and
-the touched host-mode shell scripts pass syntax checks.
+Previously verified on July 28, 2026: Ingestion, Retrieval, and Answer service
+tests covered the chapter-aware chunking profile, chunk/document vector recall,
+reciprocal-rank fusion, Retrieval relevance filtering, bounded document-evidence
+hydration, and grounded answer synthesis over validated evidence.
 
 ## Target architecture
 
@@ -40,6 +41,10 @@ Synchronous calls are versioned gRPC over mTLS. Asynchronous delivery uses
 versioned events, transactional outboxes, durable queues, idempotent consumers,
 bounded retries, and dead-letter queues.
 
+Local development and CI use the single runtime Compose profile
+`raglibrarian`. Test-only containers run under the separate `tests` profile,
+and CI uses `docker-compose.yml` plus `docker-compose.ci.yml`.
+
 ## Ownership and dependency rules
 
 | Bounded context | Owns | Does not own |
@@ -55,6 +60,10 @@ bounded retries, and dead-letter queues.
   queues, and indexes. Cross-service data access always uses a contract.
 - Services share only additive protobuf/event contracts and focused platform
   libraries. They never share evolving domain aggregates or runtime config.
+- Contract-owned schema/profile constants remain versioned compatibility
+  decisions. Operational policy such as deadlines, budgets, limits, retry
+  intervals, provider response sizes, and concurrency caps is loaded from
+  validated config and threaded into application constructors.
 - Domain and application code do not depend on HTTP, gRPC, SQL, MinIO,
   RabbitMQ, Qdrant, LLM SDKs, clocks, or UUID generators. Consumer-owned ports
   point outward to adapters; composition happens in `internal/app`.
