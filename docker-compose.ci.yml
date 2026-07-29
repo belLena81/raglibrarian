@@ -4,12 +4,18 @@ services:
       EDGE_INSECURE_REFRESH_COOKIE: "true"
       EDGE_ANSWER_RATE_LIMIT: "${M6_TEST_ANSWER_RATE_LIMIT:-30}"
       EDGE_BOOK_UPLOAD_RATE_LIMIT: "${INTEGRATION_TEST_BOOK_UPLOAD_RATE_LIMIT:-120}"
+      # The CI TEI stub uses token-overlap vectors whose similarity scale is
+      # lower than the production embedding model; keep this test-only.
+      EDGE_MINIMUM_EVIDENCE_SCORE: "${M5_TEST_MINIMUM_SEARCH_SCORE:-0.05}"
 
   edge-api-2:
     environment:
       EDGE_INSECURE_REFRESH_COOKIE: "true"
       EDGE_ANSWER_RATE_LIMIT: "${M6_TEST_ANSWER_RATE_LIMIT:-30}"
       EDGE_BOOK_UPLOAD_RATE_LIMIT: "${INTEGRATION_TEST_BOOK_UPLOAD_RATE_LIMIT:-120}"
+      # The CI TEI stub uses token-overlap vectors whose similarity scale is
+      # lower than the production embedding model; keep this test-only.
+      EDGE_MINIMUM_EVIDENCE_SCORE: "${M5_TEST_MINIMUM_SEARCH_SCORE:-0.05}"
 
   retrieval-service:
     environment:
@@ -44,8 +50,8 @@ services:
 
   answer-service:
     environment:
-      ANSWER_LLM_BASE_URL: "${ANSWER_LLM_BASE_URL:-https://llm-provider-stub:8443}"
-      ANSWER_LLM_MODEL: "${ANSWER_LLM_MODEL:-raglibrarian-deterministic}"
+      ANSWER_LLM_BASE_URL: "https://llm-provider-stub:8443"
+      ANSWER_LLM_MODEL: "raglibrarian-deterministic"
     depends_on:
       llm-provider-stub:
         condition: service_healthy
