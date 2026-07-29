@@ -2,10 +2,10 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/belLena81/raglibrarian/services/ingestion-service/config"
@@ -186,61 +186,39 @@ func TestValidatedCommandAcceptsConfiguredParserPaths(t *testing.T) {
 func TestSeccompDeniesNetworkIOUringAndProcessEscapeSyscalls(t *testing.T) {
 	if os.Getenv("PARSER_SANDBOX_SECCOMP_HELPER") == "1" {
 		if err := applySeccomp(); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "applySeccomp failed: %v\n", err)
 			os.Exit(10)
 		}
-		denied := []struct {
-			systemCall uintptr
-			arguments  [6]uintptr
-		}{
-			{systemCall: unix.SYS_SOCKET},
-			{systemCall: unix.SYS_IO_URING_SETUP},
-			{systemCall: unix.SYS_IO_URING_REGISTER},
-			{systemCall: unix.SYS_IO_URING_ENTER},
-			{systemCall: unix.SYS_CLONE},
-			{systemCall: unix.SYS_CLONE3},
-			{systemCall: unix.SYS_SETSID},
-			{systemCall: unix.SYS_SETPGID},
-			{systemCall: unix.SYS_UNSHARE},
-			{systemCall: unix.SYS_SETNS},
-		}
-		if runtime.GOARCH == "amd64" {
-			denied = append(denied,
-				struct {
-					systemCall uintptr
-					arguments  [6]uintptr
-				}{systemCall: 57},
-				struct {
-					systemCall uintptr
-					arguments  [6]uintptr
-				}{systemCall: 58},
-			)
-		}
-		for index, test := range denied {
-			_, _, errno := unix.Syscall6(
-				test.systemCall,
-				test.arguments[0],
-				test.arguments[1],
-				test.arguments[2],
-				test.arguments[3],
-				test.arguments[4],
-				test.arguments[5],
-			)
-			if errno != unix.EPERM {
-				os.Exit(20 + index)
-			}
-		}
-		if runtime.GOARCH == "amd64" {
-			_, _, errno := unix.Syscall(uintptr(x32SyscallBit)|unix.SYS_GETPID, 0, 0, 0)
-			if errno != unix.EPERM {
-				os.Exit(50)
-			}
-		}
-		_, _, errno := unix.Syscall6(unix.SYS_CLONE, unix.CLONE_THREAD, 0, 0, 0, 0, 0)
-		if errno == unix.EPERM {
-			os.Exit(51)
+		if _, _, errno := unix.Syscall(unix.SYS_GETPID, 0, 0, 0); errno != 0 {
+			_, _ = fmt.Fprintf(os.Stderr, "allowed getpid failed after seccomp load: %v\n", errno)
+			os.Exit(11)
 		}
 		os.Exit(0)
 	}
+
+	architecture, ok := auditArchitecture()
+	if !ok {
+		t.Skip("seccomp is not supported on this architecture")
+	}
+	filter := seccompFilter(architecture)
+	denied := []uint32{
+		unix.SYS_SOCKET,
+		unix.SYS_IO_URING_SETUP,
+		unix.SYS_IO_URING_REGISTER,
+		unix.SYS_IO_URING_ENTER,
+		unix.SYS_CLONE3,
+		unix.SYS_SETSID,
+		unix.SYS_SETPGID,
+		unix.SYS_UNSHARE,
+		unix.SYS_SETNS,
+	}
+	if architecture == unix.AUDIT_ARCH_X86_64 {
+		denied = append(denied, 57, 58)
+	}
+	for _, systemCall := range denied {
+		assertSeccompFilterDeniesSyscall(t, filter, systemCall)
+	}
+	assertSeccompFilterRestrictsProcessClone(t, filter)
 
 	command := exec.Command(os.Args[0], "-test.run=^TestSeccompDeniesNetworkIOUringAndProcessEscapeSyscalls$") // #nosec G204 -- re-executes this fixed test binary only.
 	command.Env = append(os.Environ(),
@@ -250,6 +228,47 @@ func TestSeccompDeniesNetworkIOUringAndProcessEscapeSyscalls(t *testing.T) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("seccomp helper failed: %v: %s", err, output)
 	}
+}
+
+func assertSeccompFilterDeniesSyscall(t *testing.T, filter []unix.SockFilter, systemCall uint32) {
+	t.Helper()
+	wantReject := uint32(unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM))
+	for index := 0; index < len(filter)-1; index++ {
+		jump := filter[index]
+		reject := filter[index+1]
+		if jump.Code == unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K &&
+			jump.K == systemCall &&
+			jump.Jf == 1 &&
+			reject.Code == unix.BPF_RET|unix.BPF_K &&
+			reject.K == wantReject {
+			return
+		}
+	}
+	t.Fatalf("seccomp filter does not deny syscall %d with EPERM", systemCall)
+}
+
+func assertSeccompFilterRestrictsProcessClone(t *testing.T, filter []unix.SockFilter) {
+	t.Helper()
+	wantReject := uint32(unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM))
+	for index := 0; index < len(filter)-3; index++ {
+		cloneCheck := filter[index]
+		flagsLoad := filter[index+1]
+		threadCheck := filter[index+2]
+		reject := filter[index+3]
+		if cloneCheck.Code == unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K &&
+			cloneCheck.K == unix.SYS_CLONE &&
+			cloneCheck.Jf == 3 &&
+			flagsLoad.Code == unix.BPF_LD|unix.BPF_W|unix.BPF_ABS &&
+			flagsLoad.K == 16 &&
+			threadCheck.Code == unix.BPF_JMP|unix.BPF_JSET|unix.BPF_K &&
+			threadCheck.K == unix.CLONE_THREAD &&
+			threadCheck.Jt == 1 &&
+			reject.Code == unix.BPF_RET|unix.BPF_K &&
+			reject.K == wantReject {
+			return
+		}
+	}
+	t.Fatal("seccomp filter does not reject process-style clone with EPERM")
 }
 
 func TestSeccompFilterRejectsX32BeforeSyscallComparisons(t *testing.T) {
