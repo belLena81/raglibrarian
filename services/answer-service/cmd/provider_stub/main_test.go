@@ -33,50 +33,50 @@ func TestParseRunAsUsesDefaultsAndValidatesOverrides(t *testing.T) {
 	}
 }
 
-func TestEnvDurationUsesFallbackForMissingAndInvalidValues(t *testing.T) {
+func TestEnvDurationUsesFallbackOnlyForMissingValue(t *testing.T) {
 	t.Setenv("ANSWER_STUB_READ_TIMEOUT", "")
-	if value := envDuration("ANSWER_STUB_READ_TIMEOUT", 5*time.Second); value != 5*time.Second {
+	if value, err := envDuration("ANSWER_STUB_READ_TIMEOUT", 5*time.Second); err != nil || value != 5*time.Second {
 		t.Fatalf("envDuration() = %v, want fallback", value)
 	}
 
 	t.Setenv("ANSWER_STUB_READ_TIMEOUT", "invalid")
-	if value := envDuration("ANSWER_STUB_READ_TIMEOUT", 5*time.Second); value != 5*time.Second {
-		t.Fatalf("envDuration() invalid = %v, want fallback", value)
+	if _, err := envDuration("ANSWER_STUB_READ_TIMEOUT", 5*time.Second); err == nil {
+		t.Fatal("envDuration() accepted malformed explicit value")
 	}
 
 	t.Setenv("ANSWER_STUB_READ_TIMEOUT", "0s")
-	if value := envDuration("ANSWER_STUB_READ_TIMEOUT", 5*time.Second); value != 5*time.Second {
-		t.Fatalf("envDuration() zero = %v, want fallback", value)
+	if _, err := envDuration("ANSWER_STUB_READ_TIMEOUT", 5*time.Second); err == nil {
+		t.Fatal("envDuration() accepted zero explicit value")
 	}
 }
 
 func TestEnvDurationParsesPositiveDuration(t *testing.T) {
 	t.Setenv("ANSWER_STUB_READ_TIMEOUT", "7s")
-	if value := envDuration("ANSWER_STUB_READ_TIMEOUT", 5*time.Second); value != 7*time.Second {
+	if value, err := envDuration("ANSWER_STUB_READ_TIMEOUT", 5*time.Second); err != nil || value != 7*time.Second {
 		t.Fatalf("envDuration() = %v, want 7s", value)
 	}
 }
 
-func TestEnvInt64UsesFallbackForMissingAndInvalidValues(t *testing.T) {
+func TestEnvInt64UsesFallbackOnlyForMissingValue(t *testing.T) {
 	t.Setenv("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", "")
-	if value := envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128); value != 128 {
+	if value, err := envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128); err != nil || value != 128 {
 		t.Fatalf("envInt64() = %d, want fallback", value)
 	}
 
 	t.Setenv("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", "invalid")
-	if value := envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128); value != 128 {
-		t.Fatalf("envInt64() invalid = %d, want fallback", value)
+	if _, err := envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128); err == nil {
+		t.Fatal("envInt64() accepted malformed explicit value")
 	}
 
 	t.Setenv("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", "0")
-	if value := envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128); value != 128 {
-		t.Fatalf("envInt64() zero = %d, want fallback", value)
+	if _, err := envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128); err == nil {
+		t.Fatal("envInt64() accepted zero explicit value")
 	}
 }
 
 func TestEnvInt64ParsesPositiveValue(t *testing.T) {
 	t.Setenv("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", "512")
-	if value := envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128); value != 512 {
+	if value, err := envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128); err != nil || value != 512 {
 		t.Fatalf("envInt64() = %d, want 512", value)
 	}
 }

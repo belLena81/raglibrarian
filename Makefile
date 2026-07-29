@@ -387,7 +387,7 @@ m6-answer-quality-test-real: _require_root
 	printf '%s\n' "$$effective_environment" | grep -Fxq "ANSWER_LLM_MODEL=$$provider_model" || { echo "Answer provider model was not applied"; exit 1; }; \
 	mounted_key="$$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/run/secrets/answer_llm_api_key"}}{{println .Source}}{{end}}{{end}}' "$$after")"; \
 	test -n "$$mounted_key" && test "$$(readlink -f "$$mounted_key")" = "$$(readlink -f "$$provider_key")" || { echo "Answer provider key mount was not applied"; exit 1; }; \
-	$(MAKE) M6_E2E_PATTERN='^TestM6SearchRemainsCompatibleAndAnswerCitesReturnedEvidence$$' m6-e2e
+		$(MAKE) M6_E2E_PATTERN='^TestM6RealProviderAdversarialGroundingMatrix$$' m6-e2e
 
 m6-e2e: m4-fixtures
 	@$(TEST_RESET_CMD)

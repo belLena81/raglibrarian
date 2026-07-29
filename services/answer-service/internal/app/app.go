@@ -39,6 +39,16 @@ type App struct {
 	shutdownTimeout       time.Duration
 }
 
+type serverRunner struct {
+	name  string
+	serve func() error
+}
+
+type serverResult struct {
+	name string
+	err  error
+}
+
 func New(configuration config.Config) (*App, error) {
 	log, err := sharedlogger.New("answer-service")
 	if err != nil {
@@ -85,10 +95,27 @@ func New(configuration config.Config) (*App, error) {
 		Service: "answer.v1.AnswerService", DNSName: "edge-api",
 	})))
 	answerv1.RegisterAnswerServiceServer(grpcServer, answergrpc.NewServer(service))
-	return &App{grpcServer: grpcServer, httpServer: &http.Server{Handler: metricRecorder.Handler(), ReadTimeout: configuration.MetricsReadTimeout,
-		ReadHeaderTimeout: configuration.MetricsReadHeaderTimeout, WriteTimeout: configuration.MetricsWriteTimeout, IdleTimeout: configuration.MetricsIdleTimeout, MaxHeaderBytes: configuration.MetricsMaxHeaderBytes},
-		grpcListener: grpcListener, httpListener: httpListener, connection: connection, service: service, metrics: metricRecorder, log: log,
-		readinessProbeTimeout: configuration.ReadinessProbeTimeout, readinessPollInterval: configuration.ReadinessPollInterval, shutdownTimeout: configuration.ShutdownTimeout}, nil
+	httpServer := &http.Server{
+		Handler:           metricRecorder.Handler(),
+		ReadTimeout:       configuration.MetricsReadTimeout,
+		ReadHeaderTimeout: configuration.MetricsReadHeaderTimeout,
+		WriteTimeout:      configuration.MetricsWriteTimeout,
+		IdleTimeout:       configuration.MetricsIdleTimeout,
+		MaxHeaderBytes:    configuration.MetricsMaxHeaderBytes,
+	}
+	return &App{
+		grpcServer:            grpcServer,
+		httpServer:            httpServer,
+		grpcListener:          grpcListener,
+		httpListener:          httpListener,
+		connection:            connection,
+		service:               service,
+		metrics:               metricRecorder,
+		log:                   log,
+		readinessProbeTimeout: configuration.ReadinessProbeTimeout,
+		readinessPollInterval: configuration.ReadinessPollInterval,
+		shutdownTimeout:       configuration.ShutdownTimeout,
+	}, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -97,28 +124,66 @@ func (a *App) Run(ctx context.Context) error {
 		_ = a.connection.Close()
 		_ = a.log.Sync()
 	}()
-	a.updateReadiness(ctx)
-	go a.probeReadiness(ctx, a.readinessPollInterval)
-	grpcErrors := make(chan error, 1)
-	httpErrors := make(chan error, 1)
-	go func() { grpcErrors <- a.grpcServer.Serve(a.grpcListener) }()
-	go func() { httpErrors <- a.httpServer.Serve(a.httpListener) }()
+
+	runContext, cancelRun := context.WithCancel(ctx)
+	a.updateReadiness(runContext)
+	readinessDone := make(chan struct{})
+	go func() {
+		defer close(readinessDone)
+		a.probeReadiness(runContext, a.readinessPollInterval)
+	}()
+
+	err := runServerGroup(ctx, []serverRunner{
+		{name: "gRPC", serve: func() error { return a.grpcServer.Serve(a.grpcListener) }},
+		{name: "diagnostics", serve: func() error { return a.httpServer.Serve(a.httpListener) }},
+	}, func() {
+		cancelRun()
+		a.shutdown(context.WithoutCancel(ctx))
+		<-readinessDone
+	}, a.shutdownTimeout)
+	if err == nil {
+		a.log.Info("answer.service.stopped")
+	}
+	return err
+}
+
+func runServerGroup(ctx context.Context, servers []serverRunner, cleanup func(), joinTimeout time.Duration) error {
+	results := make(chan serverResult, len(servers))
+	for _, server := range servers {
+		server := server
+		go func() {
+			results <- serverResult{name: server.name, err: server.serve()}
+		}()
+	}
+
+	var first *serverResult
 	select {
 	case <-ctx.Done():
-		a.shutdown(context.WithoutCancel(ctx))
-		a.log.Info("answer.service.stopped")
-		return nil
-	case err := <-grpcErrors:
-		if err != nil {
-			return errors.New("gRPC listener failed")
+	case result := <-results:
+		first = &result
+	}
+
+	cleanup()
+	remaining := len(servers)
+	if first != nil {
+		remaining--
+	}
+	timer := time.NewTimer(joinTimeout)
+	defer timer.Stop()
+	for range remaining {
+		select {
+		case <-results:
+		case <-timer.C:
+			return errors.New("answer listeners did not stop after cleanup")
 		}
-		return nil
-	case err := <-httpErrors:
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return errors.New("diagnostics listener failed")
-		}
+	}
+	if first == nil {
 		return nil
 	}
+	if first.err == nil || errors.Is(first.err, http.ErrServerClosed) {
+		return errors.New(first.name + " listener stopped unexpectedly")
+	}
+	return errors.New(first.name + " listener failed")
 }
 
 func (a *App) probeReadiness(ctx context.Context, interval time.Duration) {

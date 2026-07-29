@@ -10,13 +10,14 @@ Generate the corpus into a temporary directory:
 go run ./tests/fixtures/ingestion/generate.go -out /tmp/raglibrarian-m4-fixtures
 ```
 
-The corpus covers a minimal text PDF, structured cross-page text, an intentional
-blank middle page, an artifact-confidentiality canary, an image-only page, PDFs
-carrying a Standard encryption dictionary with both empty and non-empty user
-passwords, a truncated malformed PDF, a syntactically valid file larger than
-64 MiB, and a two-item EPUB spine for location citation tests. Generated
-binaries are intentionally not committed; black-box tests receive their
-directory through milestone-specific fixture-directory variables.
+The corpus covers a minimal text PDF, structured cross-page text, a synthetic
+grounded-answer quality matrix, an intentional blank middle page, an
+artifact-confidentiality canary, an image-only page, PDFs carrying a Standard
+encryption dictionary with both empty and non-empty user passwords, a truncated
+malformed PDF, a syntactically valid file larger than 64 MiB, and a two-item
+EPUB spine for location citation tests. Generated binaries are intentionally
+not committed; black-box tests receive their directory through
+milestone-specific fixture-directory variables.
 
 Run the dedicated black-box contract after starting an M4 stack:
 
@@ -107,6 +108,7 @@ Expected processing outcomes:
 | `minimal.pdf` | chunks ready |
 | `canary.pdf` | chunks ready; canary present only in encrypted artifacts |
 | `multipage.pdf` | chunks ready with ordered cross-page citations and carried structure |
+| `answer_quality.pdf` | indexed test-only facts for direct, conflicting, insufficient, and prompt-injection Answer checks |
 | `blank_middle_page.pdf` | chunks ready without a synthetic blank chunk |
 | `image_only.pdf` | failed: no extractable text |
 | `encrypted.pdf` | failed: encrypted PDF |

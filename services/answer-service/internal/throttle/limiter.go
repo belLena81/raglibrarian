@@ -48,6 +48,9 @@ func (l *Limiter) Wait(ctx context.Context) (time.Duration, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	started := time.Now()
 	reservation := &reservation{}
 	l.mu.Lock()
@@ -65,6 +68,13 @@ func (l *Limiter) Wait(ctx context.Context) (time.Duration, error) {
 		}
 		now := time.Now()
 		if index == 0 && !reservation.target.After(now) {
+			if err := ctx.Err(); err != nil {
+				l.waiters = l.waiters[1:]
+				l.rebalanceLocked(now)
+				l.signalLocked()
+				l.mu.Unlock()
+				return time.Since(started), err
+			}
 			l.waiters = l.waiters[1:]
 			l.next = now.Add(l.interval)
 			l.rebalanceLocked(now)
@@ -98,6 +108,13 @@ func (l *Limiter) Wait(ctx context.Context) (time.Duration, error) {
 				l.mu.Unlock()
 				return time.Since(started), nil
 			} else if index == 0 && !reservation.target.After(now) {
+				if err := ctx.Err(); err != nil {
+					l.waiters = append(l.waiters[:index], l.waiters[index+1:]...)
+					l.rebalanceLocked(now)
+					l.signalLocked()
+					l.mu.Unlock()
+					return time.Since(started), err
+				}
 				l.waiters = append(l.waiters[:index], l.waiters[index+1:]...)
 				l.next = now.Add(l.interval)
 				l.rebalanceLocked(now)

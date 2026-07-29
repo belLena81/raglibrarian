@@ -2,27 +2,38 @@ package retrieval
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/answer-service/internal/domain"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	grpcmetadata "google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 type fakeRPC struct {
 	request *retrievalv1.SearchRequest
 	ids     []string
+	check   *retrievalv1.CheckResponse
+	err     error
 }
 
 func (f *fakeRPC) Check(context.Context, *retrievalv1.CheckRequest, ...grpc.CallOption) (*retrievalv1.CheckResponse, error) {
-	return &retrievalv1.CheckResponse{Status: "SERVING"}, nil
+	if f.check == nil {
+		f.check = &retrievalv1.CheckResponse{Status: "SERVING"}
+	}
+	return f.check, f.err
 }
 func (f *fakeRPC) Search(ctx context.Context, request *retrievalv1.SearchRequest, _ ...grpc.CallOption) (*retrievalv1.SearchResponse, error) {
 	f.request = request
 	metadata, _ := grpcmetadata.FromOutgoingContext(ctx)
 	f.ids = metadata.Get("x-request-id")
+	if f.err != nil {
+		return nil, f.err
+	}
 	return &retrievalv1.SearchResponse{
 		Query: request.Question,
 		Results: []*retrievalv1.Evidence{{
@@ -56,5 +67,38 @@ func TestClientForwardsActorCorrelationAndMapsEvidence(t *testing.T) {
 		result.Documents[0].Book.MediaType != "application/epub+zip" || len(result.Documents[0].Evidence) != 1 || result.Documents[0].Evidence[0].Summary != "passage summary" ||
 		result.Documents[0].Evidence[0].Book.MediaType != "application/epub+zip" {
 		t.Fatalf("Search() = %#v, %v; request=%#v ids=%#v", result, err, rpc.request, rpc.ids)
+	}
+}
+
+func TestClientPreservesCancellationAndDeadlineErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{name: "canceled", err: status.Error(codes.Canceled, "remote detail"), want: context.Canceled},
+		{name: "deadline", err: status.Error(codes.DeadlineExceeded, "remote detail"), want: context.DeadlineExceeded},
+		{name: "unavailable", err: status.Error(codes.Unavailable, "remote detail"), want: ErrUnavailable},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := NewClient(&fakeRPC{err: test.err})
+			if _, err := client.Search(context.Background(), domain.SearchRequest{}); !errors.Is(err, test.want) {
+				t.Fatalf("Search() error = %v, want %v", err, test.want)
+			}
+			if err := client.CheckReady(context.Background()); !errors.Is(err, test.want) {
+				t.Fatalf("CheckReady() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestClientPrefersLocalContextError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	client := NewClient(&fakeRPC{err: status.Error(codes.Unavailable, "remote detail")})
+
+	if _, err := client.Search(ctx, domain.SearchRequest{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Search() error = %v, want context canceled", err)
 	}
 }

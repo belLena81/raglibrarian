@@ -86,6 +86,34 @@ func loadConfig() (runtimeConfig, error) {
 	if scenario == "" {
 		scenario = string(providerstub.ScenarioSuccess)
 	}
+	maximumDelay, err := envDuration("ANSWER_STUB_MAX_DELAY", 30*time.Second)
+	if err != nil {
+		return runtimeConfig{}, err
+	}
+	timeoutDelay, err := envDuration("ANSWER_STUB_TIMEOUT_DELAY", 10*time.Second)
+	if err != nil {
+		return runtimeConfig{}, err
+	}
+	maximumRequestBody, err := envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128<<10)
+	if err != nil {
+		return runtimeConfig{}, err
+	}
+	readHeaderTimeout, err := envDuration("ANSWER_STUB_READ_HEADER_TIMEOUT", 2*time.Second)
+	if err != nil {
+		return runtimeConfig{}, err
+	}
+	readTimeout, err := envDuration("ANSWER_STUB_READ_TIMEOUT", 5*time.Second)
+	if err != nil {
+		return runtimeConfig{}, err
+	}
+	writeTimeout, err := envDuration("ANSWER_STUB_WRITE_TIMEOUT", 15*time.Second)
+	if err != nil {
+		return runtimeConfig{}, err
+	}
+	idleTimeout, err := envDuration("ANSWER_STUB_IDLE_TIMEOUT", 30*time.Second)
+	if err != nil {
+		return runtimeConfig{}, err
+	}
 	configuration := runtimeConfig{
 		Address:         os.Getenv("ANSWER_STUB_ADDR"),
 		CertificateFile: os.Getenv("ANSWER_STUB_TLS_CERT_FILE"),
@@ -95,14 +123,14 @@ func loadConfig() (runtimeConfig, error) {
 		Delay:           delay,
 		Scenario:        providerstub.Scenario(scenario),
 		Policy: providerstub.Policy{
-			MaximumDelay:       envDuration("ANSWER_STUB_MAX_DELAY", 30*time.Second),
-			TimeoutDelay:       envDuration("ANSWER_STUB_TIMEOUT_DELAY", 10*time.Second),
-			MaximumRequestBody: envInt64("ANSWER_STUB_MAX_REQUEST_BODY_BYTES", 128<<10),
+			MaximumDelay:       maximumDelay,
+			TimeoutDelay:       timeoutDelay,
+			MaximumRequestBody: maximumRequestBody,
 		},
-		ReadHeaderTimeout: envDuration("ANSWER_STUB_READ_HEADER_TIMEOUT", 2*time.Second),
-		ReadTimeout:       envDuration("ANSWER_STUB_READ_TIMEOUT", 5*time.Second),
-		WriteTimeout:      envDuration("ANSWER_STUB_WRITE_TIMEOUT", 15*time.Second),
-		IdleTimeout:       envDuration("ANSWER_STUB_IDLE_TIMEOUT", 30*time.Second),
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 	if configuration.Address == "" || configuration.CertificateFile == "" || configuration.KeyFile == "" || configuration.APIKeyFile == "" {
 		return runtimeConfig{}, errors.New("missing required configuration")
@@ -110,28 +138,28 @@ func loadConfig() (runtimeConfig, error) {
 	return configuration, nil
 }
 
-func envDuration(key string, fallback time.Duration) time.Duration {
+func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 	value := os.Getenv(key)
 	if value == "" {
-		return fallback
+		return fallback, nil
 	}
 	parsed, err := time.ParseDuration(value)
 	if err != nil || parsed <= 0 {
-		return fallback
+		return 0, errors.New("invalid duration")
 	}
-	return parsed
+	return parsed, nil
 }
 
-func envInt64(key string, fallback int64) int64 {
+func envInt64(key string, fallback int64) (int64, error) {
 	value := os.Getenv(key)
 	if value == "" {
-		return fallback
+		return fallback, nil
 	}
 	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || parsed <= 0 {
-		return fallback
+		return 0, errors.New("invalid integer")
 	}
-	return parsed
+	return parsed, nil
 }
 
 func parseRunAs() (process.Identity, error) {
