@@ -308,25 +308,6 @@ func mergeDocumentMetadata(values []DocumentResult, authoritative []DocumentResu
 	return values
 }
 
-func deduplicateEvidenceByScore(values []Evidence) []Evidence {
-	if len(values) == 0 {
-		return nil
-	}
-	byID := make(map[string]Evidence, len(values))
-	for _, value := range values {
-		current, found := byID[value.EvidenceID]
-		if !found || value.Score > current.Score {
-			byID[value.EvidenceID] = value
-		}
-	}
-	results := make([]Evidence, 0, len(byID))
-	for _, value := range byID {
-		results = append(results, value)
-	}
-	sortEvidenceByScore(results)
-	return results
-}
-
 func deduplicateEvidenceInOrder(values []Evidence) []Evidence {
 	if len(values) == 0 {
 		return nil

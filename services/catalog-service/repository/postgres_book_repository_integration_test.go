@@ -228,13 +228,14 @@ func TestApplyRetrievalTerminalEventIsAtomicAndIdempotent(t *testing.T) {
 	})
 
 	event := catalog.ProcessingEvent{
-		EventID:       eventID,
-		EventType:     "retrieval.book.indexed.v1",
-		BookID:        bookID,
-		SourceSHA256:  sourceChecksum,
-		PayloadSHA256: payloadDigest,
-		CorrelationID: "correlation-" + id,
-		CausationID:   "job-" + id,
+		EventID:          eventID,
+		EventType:        "retrieval.book.indexed.v1",
+		BookID:           bookID,
+		SourceSHA256:     sourceChecksum,
+		PayloadSHA256:    payloadDigest,
+		CorrelationID:    "correlation-" + id,
+		CausationID:      "job-" + id,
+		LifecycleVersion: 1,
 		Fact: catalog.ProcessingFact{
 			Kind:       catalog.ProcessingIndexed,
 			OccurredAt: now,
@@ -254,7 +255,8 @@ func TestApplyRetrievalTerminalEventIsAtomicAndIdempotent(t *testing.T) {
 	var inboxCount, outboxCount int
 	if err = pool.QueryRow(ctx, `SELECT
 		(SELECT COUNT(*) FROM catalog.processing_inbox WHERE event_id=$1),
-		(SELECT COUNT(*) FROM catalog.outbox WHERE aggregate_id=$2 AND sequence=3)`, eventID, bookID).
+		(SELECT COUNT(*) FROM catalog.outbox
+			WHERE aggregate_id=$2 AND event_id=$3 AND event_type='catalog.book.processing-status-changed.v1')`, eventID, bookID, statusEventID).
 		Scan(&inboxCount, &outboxCount); err != nil {
 		t.Fatalf("read terminal projection counts: %v", err)
 	}
@@ -312,6 +314,7 @@ func TestLateChunksReadyPersistsManifestForIndexedBook(t *testing.T) {
 		EventType:         "ingestion.book.chunks-ready.v1",
 		BookID:            bookID,
 		SourceSHA256:      sourceChecksum,
+		LifecycleVersion:  2,
 		ManifestReference: manifestReference,
 		ManifestSHA256:    manifestChecksum,
 		CorrelationID:     "correlation-" + id,

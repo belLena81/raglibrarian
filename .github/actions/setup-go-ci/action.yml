@@ -18,24 +18,49 @@ runs:
       with:
         go-version: '1.26.5'
         cache: true
+        cache-dependency-path: |
+          go.work
+          **/go.sum
 
     - name: Restore pinned Go tool cache
       uses: actions/cache@v4
       with:
         path: ~/.local/share/raglibrarian-ci-go-tools
-        key: raglibrarian-ci-go-tools-${{ runner.os }}-go1.26.5-buf1.71.0-protoc-gen-go1.36.10-protoc-gen-go-grpc1.5.1-govulncheck1.1.4
+        key: raglibrarian-ci-go-tools-${{ runner.os }}-go1.26.5-protoc31.1-buf1.71.0-protoc-gen-go1.36.10-protoc-gen-go-grpc1.5.1-govulncheck1.1.4
+
+    - name: Restore golangci-lint cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/golangci-lint
+        key: golangci-lint-${{ runner.os }}-v2.11.4-${{ hashFiles('**/go.sum', 'go.work', '.golangci.yml') }}
 
     - name: Install protobuf compiler and pinned Go tools
       shell: bash
       run: |
         set -euo pipefail
 
-        sudo apt-get update
-        sudo apt-get install --yes protobuf-compiler
-
-        tool_dir="$HOME/.local/share/raglibrarian-ci-go-tools/bin"
+        tool_root="$HOME/.local/share/raglibrarian-ci-go-tools"
+        tool_dir="$tool_root/bin"
         mkdir -p "$tool_dir"
         echo "$tool_dir" >> "$GITHUB_PATH"
+
+        install_protoc() {
+          local version="31.1"
+          local archive="protoc-${version}-linux-x86_64.zip"
+          local url="https://github.com/protocolbuffers/protobuf/releases/download/v${version}/${archive}"
+
+          if [ ! -x "$tool_dir/protoc" ]; then
+            temp_dir="$(mktemp -d)"
+            trap 'rm -rf "$temp_dir"' EXIT
+            curl -fsSL "$url" -o "$temp_dir/$archive"
+            unzip -q "$temp_dir/$archive" -d "$temp_dir"
+            mkdir -p "$tool_root/include"
+            install -m 0755 "$temp_dir/bin/protoc" "$tool_dir/protoc"
+            cp -R "$temp_dir/include/." "$tool_root/include/"
+            trap - EXIT
+            rm -rf "$temp_dir"
+          fi
+        }
 
         install_go_tool() {
           local binary="$1"
@@ -46,6 +71,7 @@ runs:
           fi
         }
 
+        install_protoc
         install_go_tool protoc-gen-go google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10
         install_go_tool protoc-gen-go-grpc google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
 

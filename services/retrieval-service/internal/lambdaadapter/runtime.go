@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"time"
@@ -31,6 +30,8 @@ import (
 	"github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
 )
+
+const maximumManifestBound = int(^uint32(0))
 
 type Secret struct {
 	PostgresDSN, PublisherRabbitURI, ArtifactBucket, Region, TEIURL, QdrantURL, QdrantAPIKey string
@@ -134,14 +135,10 @@ func NewPlannerRuntime(ctx context.Context) (*Runtime, error) {
 		return nil, err
 	}
 	metadataPolicy := application.MetadataPolicy{MaxTags: policy.MaximumMetadataTags}
-	manifestPolicy := application.ManifestPolicy{
-		MaxPages:              uint32(policy.ManifestMaxPages),
-		MaxShards:             policy.ManifestMaxShards,
-		MaxShardCompressed:    policy.ManifestMaxShardCompressedBytes,
-		MaxShardExpanded:      policy.ManifestMaxShardExpandedBytes,
-		MaxShardChunks:        uint32(policy.ManifestMaxShardChunks),
-		MaxTotalChunks:        uint32(policy.ManifestMaxTotalChunks),
-		MaxExpandedTotalBytes: policy.ManifestMaxExpandedBytes,
+	manifestPolicy, err := boundedManifestPolicy(policy)
+	if err != nil {
+		pool.Close()
+		return nil, err
 	}
 	planner, err := application.NewPlanner(records, randomID, time.Now, metadataPolicy, manifestPolicy)
 	if err != nil {
@@ -231,14 +228,10 @@ func NewIndexerRuntime(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, err
 	}
-	manifestPolicy := application.ManifestPolicy{
-		MaxPages:              uint32(policy.ManifestMaxPages),
-		MaxShards:             policy.ManifestMaxShards,
-		MaxShardCompressed:    policy.ManifestMaxShardCompressedBytes,
-		MaxShardExpanded:      policy.ManifestMaxShardExpandedBytes,
-		MaxShardChunks:        uint32(policy.ManifestMaxShardChunks),
-		MaxTotalChunks:        uint32(policy.ManifestMaxTotalChunks),
-		MaxExpandedTotalBytes: policy.ManifestMaxExpandedBytes,
+	manifestPolicy, err := boundedManifestPolicy(policy)
+	if err != nil {
+		pool.Close()
+		return nil, err
 	}
 	collectionContext, collectionCancel := context.WithTimeout(ctx, policy.CollectionEnsureTimeout)
 	err = index.EnsureCollection(collectionContext)
@@ -454,14 +447,6 @@ func (r *Runtime) Index(ctx context.Context, event RabbitEvent) error {
 	return nil
 }
 
-func optionalEnv(key, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-	return value
-}
-
 func (r *Runtime) failureRecordingContext() (context.Context, context.CancelFunc) {
 	limit := r.failureRecordLimit
 	if limit <= 0 {
@@ -662,14 +647,6 @@ func validatePrivateEndpointWithTimeout(ctx context.Context, value string, resol
 	return nil
 }
 
-func validatePrivateBroker(ctx context.Context, value string) error {
-	policy, err := retrievalconfig.LoadLambdaRuntimePolicy()
-	if err != nil {
-		return err
-	}
-	return validatePrivateBrokerWithTimeout(ctx, value, policy.EndpointResolveTimeout)
-}
-
 func validatePrivateBrokerWithTimeout(ctx context.Context, value string, resolveTimeout time.Duration) error {
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme != "amqps" || parsed.Host == "" || parsed.User == nil || parsed.RawQuery != "" || parsed.Fragment != "" {
@@ -679,6 +656,33 @@ func validatePrivateBrokerWithTimeout(ctx context.Context, value string, resolve
 	return validatePrivateEndpointWithTimeout(ctx, httpsEquivalent, resolveTimeout)
 }
 
-func rejectRedirect(_ *http.Request, _ []*http.Request) error {
-	return http.ErrUseLastResponse
+func boundedManifestPolicy(policy retrievalconfig.LambdaRuntimePolicy) (application.ManifestPolicy, error) {
+	maxPages, err := boundedIntToUint32(policy.ManifestMaxPages, "manifest max pages")
+	if err != nil {
+		return application.ManifestPolicy{}, err
+	}
+	maxShardChunks, err := boundedIntToUint32(policy.ManifestMaxShardChunks, "manifest max shard chunks")
+	if err != nil {
+		return application.ManifestPolicy{}, err
+	}
+	maxTotalChunks, err := boundedIntToUint32(policy.ManifestMaxTotalChunks, "manifest max total chunks")
+	if err != nil {
+		return application.ManifestPolicy{}, err
+	}
+	return application.ManifestPolicy{
+		MaxPages:              maxPages,
+		MaxShards:             policy.ManifestMaxShards,
+		MaxShardCompressed:    policy.ManifestMaxShardCompressedBytes,
+		MaxShardExpanded:      policy.ManifestMaxShardExpandedBytes,
+		MaxShardChunks:        maxShardChunks,
+		MaxTotalChunks:        maxTotalChunks,
+		MaxExpandedTotalBytes: policy.ManifestMaxExpandedBytes,
+	}, nil
+}
+
+func boundedIntToUint32(value int, label string) (uint32, error) {
+	if value < 0 || value > maximumManifestBound {
+		return 0, errors.New(label + " exceeds uint32 range")
+	}
+	return uint32(value), nil // #nosec G115 -- checked above.
 }

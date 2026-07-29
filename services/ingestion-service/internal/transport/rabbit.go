@@ -230,17 +230,6 @@ func deliveryAttempt(headers amqp091.Table, maximumAttempts int) (int, bool) {
 	return int(attempt), true
 }
 
-func (c *Consumer) retryDelay(attempt int) time.Duration {
-	switch {
-	case attempt <= 1:
-		return c.policy.FirstRetryDelay
-	case attempt <= 3:
-		return c.policy.SecondRetryDelay
-	default:
-		return c.policy.SubsequentRetryDelay
-	}
-}
-
 func (p BrokerPolicy) retryRouteForAttempt(eventType string, attempt int) string {
 	switch eventType {
 	case DeletionRoute:
@@ -261,17 +250,6 @@ func (p BrokerPolicy) retryRouteForAttempt(eventType string, attempt int) string
 		default:
 			return p.UploadSubsequentRetryRoute
 		}
-	}
-}
-
-func (p BrokerPolicy) uploadRetryRouteForDelay(delay time.Duration) string {
-	switch {
-	case delay <= p.FirstRetryDelay:
-		return p.UploadFirstRetryRoute
-	case delay <= p.SecondRetryDelay:
-		return p.UploadSecondRetryRoute
-	default:
-		return p.UploadSubsequentRetryRoute
 	}
 }
 

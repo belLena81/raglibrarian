@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  go:
+  backend-quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4.2.2
@@ -32,19 +32,12 @@ jobs:
           install-only: true
       - name: Run Go quality gates
         run: make ci-go
+      - name: Install pinned AWS SAM CLI
+        run: pipx install aws-sam-cli==1.145.2
+      - name: Validate the M4 and M5 SAM/CloudFormation graphs
+        run: make ci-iac
 
-  ui:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.2
-        with:
-          submodules: recursive
-          token: ${{ secrets.UI_SUBMODULE_READ_TOKEN }}
-      - uses: ./.github/actions/setup-ui-ci
-      - name: Build, lint, and type-check UI
-        run: make ci-ui
-
-  security:
+  web-security:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4.2.2
@@ -53,6 +46,8 @@ jobs:
           submodules: recursive
           token: ${{ secrets.UI_SUBMODULE_READ_TOKEN }}
       - uses: ./.github/actions/setup-ui-ci
+      - name: Build, lint, and type-check UI
+        run: make ci-ui
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Restore Trivy vulnerability database cache
@@ -60,19 +55,8 @@ jobs:
         with:
           path: ~/.cache/trivy
           key: trivy-${{ runner.os }}-0.69.2
-      - name: Install UI dependencies for dependency audit
-        run: npm --prefix ui ci
       - name: Scan repository, Dockerfile, and service images
         run: make ci-security
-
-  iac:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.2
-      - name: Install pinned AWS SAM CLI
-        run: pipx install aws-sam-cli==1.145.2
-      - name: Validate the M4 and M5 SAM/CloudFormation graphs
-        run: make ci-iac
 
   integration:
     runs-on: ubuntu-latest

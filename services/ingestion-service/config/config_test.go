@@ -250,6 +250,7 @@ func TestLoadDispatcherRejectsMissingPublisherSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("INGESTION_POSTGRES_DSN_FILE", path)
+	t.Setenv("INGESTION_RABBITMQ_URI_FILE", "")
 	if _, err := LoadDispatcher(); err == nil {
 		t.Fatal("LoadDispatcher() accepted a missing publisher secret")
 	}

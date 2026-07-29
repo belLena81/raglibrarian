@@ -28,6 +28,7 @@ type fakeRPC struct {
 	registerErr      error
 	verifyResetErr   error
 	completeResetErr error
+	listPendingReq   *identityv1.ListPendingLibrariansRequest
 }
 
 func (f *fakeRPC) Register(context.Context, *identityv1.RegisterRequest, ...grpc.CallOption) (*identityv1.RegisterResponse, error) {
@@ -40,6 +41,16 @@ func (f *fakeRPC) VerifyPasswordReset(context.Context, *identityv1.VerifyPasswor
 
 func (f *fakeRPC) CompletePasswordReset(context.Context, *identityv1.CompletePasswordResetRequest, ...grpc.CallOption) (*identityv1.CompletePasswordResetResponse, error) {
 	return &identityv1.CompletePasswordResetResponse{}, f.completeResetErr
+}
+
+func (f *fakeRPC) ListPendingLibrarians(_ context.Context, request *identityv1.ListPendingLibrariansRequest, _ ...grpc.CallOption) (*identityv1.ListPendingLibrariansResponse, error) {
+	f.listPendingReq = request
+	return &identityv1.ListPendingLibrariansResponse{
+		Users: []*identityv1.PendingLibrarian{
+			{UserId: "user-1", Name: "Reader", Email: "reader@example.test", RegisteredAt: "2026-07-29T10:00:00Z"},
+		},
+		NextPageToken: "next-token",
+	}, nil
 }
 
 type fakeHealth struct {
@@ -106,4 +117,23 @@ func TestReadinessRequiresServingHealth(t *testing.T) {
 func TestConstructorRequiresBothClients(t *testing.T) {
 	assert.Panics(t, func() { New(nil, fakeHealth{}, testIdentityPolicy) })
 	assert.Panics(t, func() { New(&fakeRPC{}, fakeHealth{}, Policy{}) })
+}
+
+func TestListPendingUsesConfiguredBoundedPageSize(t *testing.T) {
+	rpc := &fakeRPC{}
+	client := New(rpc, fakeHealth{}, testIdentityPolicy)
+
+	page, err := client.ListPending(context.Background(), authflow.Principal{UserID: "admin-1", SessionID: "session-1"}, 7, "cursor-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rpc.listPendingReq == nil {
+		t.Fatal("ListPendingLibrarians was not called")
+	}
+	assert.Equal(t, int32(7), rpc.listPendingReq.PageSize)
+	assert.Equal(t, "cursor-1", rpc.listPendingReq.PageToken)
+	assert.Equal(t, "next-token", page.NextPageToken)
+	if assert.Len(t, page.Users, 1) {
+		assert.Equal(t, "user-1", page.Users[0].UserID)
+	}
 }

@@ -174,10 +174,13 @@ func (r *Postgres) Accept(ctx context.Context, event application.UploadedEvent, 
 	if err != nil {
 		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: register artifact set: %w", err)
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO ingestion.outbox(event_id,event_type,aggregate_id,aggregate_sequence,payload,occurred_at,next_attempt_at)
+	command, err = tx.Exec(ctx, `INSERT INTO ingestion.outbox(event_id,event_type,aggregate_id,aggregate_sequence,payload,occurred_at,next_attempt_at)
 		VALUES($1,$2,$3,1,$4,$5,$5) ON CONFLICT(aggregate_id,aggregate_sequence) DO NOTHING`, started.ID, started.Type, proposed.ID(), started.Payload, started.OccurredAt)
 	if err != nil {
 		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: insert started outbox: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return proposed, false, fmt.Errorf("ingestion: insert started outbox: aggregate sequence already exists")
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: commit accept: %w", err)

@@ -101,6 +101,7 @@ func Load() (Config, error) {
 	metricsMaxHeaderBytes, metricsMaxHeaderBytesErr := positiveInteger("ANSWER_METRICS_MAX_HEADER_BYTES", 16<<10, 1, 1<<20)
 	metricsWriteTimeout, metricsWriteErr := duration("ANSWER_METRICS_WRITE_TIMEOUT", 5*time.Second, 100*time.Millisecond, time.Minute)
 	metricsIdleTimeout, metricsIdleErr := duration("ANSWER_METRICS_IDLE_TIMEOUT", 30*time.Second, time.Second, 5*time.Minute)
+	maximumResultLimit32 := uint32(maximumResultLimit) // #nosec G115 -- bounded above to 256.
 	configuration := Config{
 		GRPCAddress:      os.Getenv("ANSWER_GRPC_ADDR"),
 		MetricsAddress:   os.Getenv("ANSWER_METRICS_ADDR"),
@@ -124,7 +125,7 @@ func Load() (Config, error) {
 			MaximumFilterTags:         maximumFilterTags,
 			MaximumTagCharacters:      maximumTagCharacters,
 			MaximumAuthorCharacters:   maximumAuthorCharacters,
-			MaximumResultLimit:        uint32(maximumResultLimit),
+			MaximumResultLimit:        maximumResultLimit32,
 		},
 		Limits: application.Limits{MaximumEvidence: maximumEvidence, MaximumContextBytes: maximumContext,
 			MaximumEvidenceBytes: maximumItem, MaximumSegments: maximumSegments, MaximumAnswerBytes: maximumAnswer, MaximumSummaryRunes: maximumSummaryRunes,
@@ -259,11 +260,4 @@ func providerRequestsPerMinute(key string) (int, error) {
 		return parsed, nil
 	}
 	return 0, nil
-}
-
-func optional(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
 }

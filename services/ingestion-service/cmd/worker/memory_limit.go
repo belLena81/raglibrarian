@@ -15,6 +15,8 @@ var cgroupMemoryLimitFiles = []string{
 	"/sys/fs/cgroup/memory/memory.limit_in_bytes",
 }
 
+var cgroupMemoryLimitReader = readKnownMemoryLimitFile
+
 func validateRuntimeMemoryBudget(cfg config.Config) error {
 	required := int64(cfg.WorkConcurrency)*cfg.ParserSandboxMemoryBytes + cfg.ParserRuntimeHeadroomBytes
 	limit, ok, err := effectiveCgroupMemoryLimitBytes(cgroupMemoryLimitFiles)
@@ -32,7 +34,7 @@ func validateRuntimeMemoryBudget(cfg config.Config) error {
 
 func effectiveCgroupMemoryLimitBytes(paths []string) (int64, bool, error) {
 	for _, path := range paths {
-		value, ok, err := readMemoryLimitFile(path)
+		value, ok, err := cgroupMemoryLimitReader(path)
 		if err != nil {
 			return 0, false, err
 		}
@@ -43,14 +45,40 @@ func effectiveCgroupMemoryLimitBytes(paths []string) (int64, bool, error) {
 	return 0, false, nil
 }
 
-func readMemoryLimitFile(path string) (int64, bool, error) {
-	data, err := os.ReadFile(path)
+func readKnownMemoryLimitFile(path string) (int64, bool, error) {
+	switch path {
+	case "/sys/fs/cgroup/memory.max":
+		return readMemoryMaxFile()
+	case "/sys/fs/cgroup/memory/memory.limit_in_bytes":
+		return readMemoryLimitInBytesFile()
+	default:
+		return 0, false, fmt.Errorf("unsupported cgroup memory limit path %s", path)
+	}
+}
+
+func readMemoryMaxFile() (int64, bool, error) {
+	data, err := os.ReadFile("/sys/fs/cgroup/memory.max") // #nosec G304 -- fixed kernel cgroup path.
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return 0, false, nil
 		}
-		return 0, false, fmt.Errorf("read memory limit %s: %w", path, err)
+		return 0, false, fmt.Errorf("read memory limit %s: %w", "/sys/fs/cgroup/memory.max", err)
 	}
+	return parseMemoryLimitFile("/sys/fs/cgroup/memory.max", data)
+}
+
+func readMemoryLimitInBytesFile() (int64, bool, error) {
+	data, err := os.ReadFile("/sys/fs/cgroup/memory/memory.limit_in_bytes") // #nosec G304 -- fixed kernel cgroup path.
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("read memory limit %s: %w", "/sys/fs/cgroup/memory/memory.limit_in_bytes", err)
+	}
+	return parseMemoryLimitFile("/sys/fs/cgroup/memory/memory.limit_in_bytes", data)
+}
+
+func parseMemoryLimitFile(path string, data []byte) (int64, bool, error) {
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" || trimmed == "max" {
 		return 0, false, nil

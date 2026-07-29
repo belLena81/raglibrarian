@@ -30,12 +30,13 @@ import (
 )
 
 const (
-	metadataQueue  = contracts.QueueRetrievalMetadata
-	manifestQueue  = contracts.QueueRetrievalManifest
-	batchQueue     = contracts.QueueRetrievalIndex
-	lifecycleQueue = contracts.QueueRetrievalLifecycle
-	eventExchange  = contracts.ExchangeRetrievalEvents
-	retryExchange  = contracts.ExchangeRetrievalRetry
+	metadataQueue        = contracts.QueueRetrievalMetadata
+	manifestQueue        = contracts.QueueRetrievalManifest
+	batchQueue           = contracts.QueueRetrievalIndex
+	lifecycleQueue       = contracts.QueueRetrievalLifecycle
+	eventExchange        = contracts.ExchangeRetrievalEvents
+	retryExchange        = contracts.ExchangeRetrievalRetry
+	maximumManifestBound = int(^uint32(0))
 )
 
 var errManifestArtifactRead = errors.New("manifest artifact read failed")
@@ -110,14 +111,10 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 	}
 	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: configuration.FinalizationLease})
 	metadataPolicy := application.MetadataPolicy{MaxTags: configuration.MaximumMetadataTags}
-	manifestPolicy := application.ManifestPolicy{
-		MaxPages:              uint32(configuration.ManifestMaxPages),
-		MaxShards:             configuration.ManifestMaxShards,
-		MaxShardCompressed:    configuration.ManifestMaxShardCompressedBytes,
-		MaxShardExpanded:      configuration.ManifestMaxShardExpandedBytes,
-		MaxShardChunks:        uint32(configuration.ManifestMaxShardChunks),
-		MaxTotalChunks:        uint32(configuration.ManifestMaxTotalChunks),
-		MaxExpandedTotalBytes: configuration.ManifestMaxExpandedBytes,
+	manifestPolicy, err := boundedManifestPolicy(configuration)
+	if err != nil {
+		pool.Close()
+		return nil, err
 	}
 	planner, err := application.NewPlanner(records, randomID, time.Now, metadataPolicy, manifestPolicy)
 	if err != nil {
@@ -151,6 +148,37 @@ func New(ctx context.Context, configuration config.WorkerConfig, recorder *diagn
 		return nil, err
 	}
 	return &Runtime{configuration: configuration, pool: pool, repository: records, manifestFails: records, batchFails: records, vectorJobs: records, objects: objects, planner: planner, indexer: indexer, lifecycle: lifecycle, embedder: embedder, vector: index, diagnostic: recorder, log: log}, nil
+}
+
+func boundedManifestPolicy(configuration config.WorkerConfig) (application.ManifestPolicy, error) {
+	maxPages, err := boundedIntToUint32(configuration.ManifestMaxPages, "manifest max pages")
+	if err != nil {
+		return application.ManifestPolicy{}, err
+	}
+	maxShardChunks, err := boundedIntToUint32(configuration.ManifestMaxShardChunks, "manifest max shard chunks")
+	if err != nil {
+		return application.ManifestPolicy{}, err
+	}
+	maxTotalChunks, err := boundedIntToUint32(configuration.ManifestMaxTotalChunks, "manifest max total chunks")
+	if err != nil {
+		return application.ManifestPolicy{}, err
+	}
+	return application.ManifestPolicy{
+		MaxPages:              maxPages,
+		MaxShards:             configuration.ManifestMaxShards,
+		MaxShardCompressed:    configuration.ManifestMaxShardCompressedBytes,
+		MaxShardExpanded:      configuration.ManifestMaxShardExpandedBytes,
+		MaxShardChunks:        maxShardChunks,
+		MaxTotalChunks:        maxTotalChunks,
+		MaxExpandedTotalBytes: configuration.ManifestMaxExpandedBytes,
+	}, nil
+}
+
+func boundedIntToUint32(value int, label string) (uint32, error) {
+	if value < 0 || value > maximumManifestBound {
+		return 0, errors.New(label + " exceeds uint32 range")
+	}
+	return uint32(value), nil // #nosec G115 -- checked above.
 }
 
 // Close releases resources owned by a one-message runtime.

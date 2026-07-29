@@ -69,6 +69,22 @@ func TestValidatePlannerSecretRejectsIncompleteLifecycleConfiguration(t *testing
 	}
 }
 
+func TestBoundedManifestPolicyRejectsOverflow(t *testing.T) {
+	policy := retrievalconfig.LambdaRuntimePolicy{
+		ManifestMaxPages:                maximumManifestBound + 1,
+		ManifestMaxShards:               1,
+		ManifestMaxShardCompressedBytes: 1,
+		ManifestMaxShardExpandedBytes:   1,
+		ManifestMaxShardChunks:          1,
+		ManifestMaxTotalChunks:          1,
+		ManifestMaxExpandedBytes:        1,
+	}
+
+	if _, err := boundedManifestPolicy(policy); err == nil {
+		t.Fatal("boundedManifestPolicy() error = nil")
+	}
+}
+
 func TestPlanReturnsRuntimeErrorForLifecycleWithoutProcessor(t *testing.T) {
 	runtime := &Runtime{}
 

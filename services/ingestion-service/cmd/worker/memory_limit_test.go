@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,13 +10,20 @@ import (
 )
 
 func TestEffectiveCgroupMemoryLimitBytesPrefersFirstPresentBoundedValue(t *testing.T) {
-	dir := t.TempDir()
-	first := filepath.Join(dir, "memory.max")
-	second := filepath.Join(dir, "memory.limit_in_bytes")
-	writeTestFile(t, second, "2147483648\n")
-	writeTestFile(t, first, "1073741824\n")
+	original := cgroupMemoryLimitReader
+	t.Cleanup(func() { cgroupMemoryLimitReader = original })
+	cgroupMemoryLimitReader = func(path string) (int64, bool, error) {
+		switch filepath.Base(path) {
+		case "memory.max":
+			return 1073741824, true, nil
+		case "memory.limit_in_bytes":
+			return 2147483648, true, nil
+		default:
+			return 0, false, nil
+		}
+	}
 
-	value, ok, err := effectiveCgroupMemoryLimitBytes([]string{first, second})
+	value, ok, err := effectiveCgroupMemoryLimitBytes([]string{"/tmp/memory.max", "/tmp/memory.limit_in_bytes"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,11 +33,16 @@ func TestEffectiveCgroupMemoryLimitBytesPrefersFirstPresentBoundedValue(t *testi
 }
 
 func TestEffectiveCgroupMemoryLimitBytesIgnoresUnlimitedOrMissingFiles(t *testing.T) {
-	dir := t.TempDir()
-	first := filepath.Join(dir, "memory.max")
-	writeTestFile(t, first, "max\n")
+	original := cgroupMemoryLimitReader
+	t.Cleanup(func() { cgroupMemoryLimitReader = original })
+	cgroupMemoryLimitReader = func(path string) (int64, bool, error) {
+		if filepath.Base(path) == "memory.max" {
+			return 0, false, nil
+		}
+		return 0, false, nil
+	}
 
-	value, ok, err := effectiveCgroupMemoryLimitBytes([]string{first, filepath.Join(dir, "missing")})
+	value, ok, err := effectiveCgroupMemoryLimitBytes([]string{"/tmp/memory.max", "/tmp/missing"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,23 +52,36 @@ func TestEffectiveCgroupMemoryLimitBytesIgnoresUnlimitedOrMissingFiles(t *testin
 }
 
 func TestEffectiveCgroupMemoryLimitBytesRejectsInvalidContents(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "memory.max")
-	writeTestFile(t, path, "not-a-number\n")
+	original := cgroupMemoryLimitReader
+	t.Cleanup(func() { cgroupMemoryLimitReader = original })
+	cgroupMemoryLimitReader = func(string) (int64, bool, error) {
+		return 0, false, errors.New("parse memory limit /tmp/memory.max: \"not-a-number\"")
+	}
 
-	if _, _, err := effectiveCgroupMemoryLimitBytes([]string{path}); err == nil {
+	if _, _, err := effectiveCgroupMemoryLimitBytes([]string{"/tmp/memory.max"}); err == nil {
 		t.Fatal("expected invalid cgroup limit contents to fail")
 	}
 }
 
-func TestValidateRuntimeMemoryBudgetRejectsInsufficientEffectiveLimit(t *testing.T) {
-	original := cgroupMemoryLimitFiles
-	t.Cleanup(func() { cgroupMemoryLimitFiles = original })
-
+func TestEffectiveCgroupMemoryLimitBytesRejectsUnknownPaths(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "memory.max")
-	writeTestFile(t, path, "1073741824\n")
-	cgroupMemoryLimitFiles = []string{path}
+	path := filepath.Join(dir, "other.limit")
+	writeTestFile(t, path, "1024\n")
+
+	if _, _, err := effectiveCgroupMemoryLimitBytes([]string{path}); err == nil {
+		t.Fatal("expected unknown cgroup path to fail")
+	}
+}
+
+func TestValidateRuntimeMemoryBudgetRejectsInsufficientEffectiveLimit(t *testing.T) {
+	originalFiles := cgroupMemoryLimitFiles
+	originalReader := cgroupMemoryLimitReader
+	t.Cleanup(func() {
+		cgroupMemoryLimitFiles = originalFiles
+		cgroupMemoryLimitReader = originalReader
+	})
+	cgroupMemoryLimitFiles = []string{"/tmp/memory.max"}
+	cgroupMemoryLimitReader = func(string) (int64, bool, error) { return 1073741824, true, nil }
 
 	err := validateRuntimeMemoryBudget(config.Config{
 		WorkConcurrency:            1,
@@ -68,13 +94,14 @@ func TestValidateRuntimeMemoryBudgetRejectsInsufficientEffectiveLimit(t *testing
 }
 
 func TestValidateRuntimeMemoryBudgetAcceptsSufficientEffectiveLimit(t *testing.T) {
-	original := cgroupMemoryLimitFiles
-	t.Cleanup(func() { cgroupMemoryLimitFiles = original })
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "memory.max")
-	writeTestFile(t, path, "2147483648\n")
-	cgroupMemoryLimitFiles = []string{path}
+	originalFiles := cgroupMemoryLimitFiles
+	originalReader := cgroupMemoryLimitReader
+	t.Cleanup(func() {
+		cgroupMemoryLimitFiles = originalFiles
+		cgroupMemoryLimitReader = originalReader
+	})
+	cgroupMemoryLimitFiles = []string{"/tmp/memory.max"}
+	cgroupMemoryLimitReader = func(string) (int64, bool, error) { return 2147483648, true, nil }
 
 	if err := validateRuntimeMemoryBudget(config.Config{
 		WorkConcurrency:            1,

@@ -5,6 +5,7 @@ package outbox
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"os"
 	"strings"
@@ -38,6 +39,7 @@ func TestOutboxPublishesAcceptedUploadAfterBrokerRecovery(t *testing.T) {
 	// its explicit clock to claim and retry the row deterministically.
 	now := time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)
 	payload := []byte("stable integration payload")
+	checksum := sha256.Sum256(payload)
 	book := catalog.Book{
 		ID:                  "book-" + id,
 		Metadata:            catalog.BookMetadata{Title: "Integration", Author: "Contract", Year: 2026, Tags: []string{}},
@@ -45,9 +47,12 @@ func TestOutboxPublishesAcceptedUploadAfterBrokerRecovery(t *testing.T) {
 		ProcessingStage:     catalog.BookStageQueued,
 		ProcessingUpdatedAt: now,
 		ProcessingVersion:   1,
+		LifecycleVersion:    1,
 		CreatedAt:           now,
 		ObjectReference:     "originals/book-" + id + ".pdf",
+		Checksum:            checksum,
 		ByteSize:            5,
+		MediaType:           "application/pdf",
 		ActorID:             "integration-actor",
 	}
 	event := catalog.OutboxEvent{
@@ -73,7 +78,13 @@ func TestOutboxPublishesAcceptedUploadAfterBrokerRecovery(t *testing.T) {
 		Timeout:   5 * time.Second,
 		Heartbeat: 10 * time.Second,
 	})
-	publishPending(ctx, store, unavailable, &fakeRecorder{}, now)
+	policy := Policy{
+		PollInterval:   time.Second,
+		DrainBudget:    time.Second,
+		Lease:          time.Second,
+		PublishTimeout: 5 * time.Second,
+	}
+	publishPending(ctx, store, unavailable, &fakeRecorder{}, now, policy)
 	_ = unavailable.Close()
 	assertOutboxState(t, ctx, pool, event, 1, false)
 
@@ -82,7 +93,7 @@ func TestOutboxPublishesAcceptedUploadAfterBrokerRecovery(t *testing.T) {
 		Heartbeat: 10 * time.Second,
 	})
 	t.Cleanup(func() { _ = recovered.Close() })
-	publishPending(ctx, store, recovered, &fakeRecorder{}, now.Add(2*time.Second))
+	publishPending(ctx, store, recovered, &fakeRecorder{}, now.Add(2*time.Second), policy)
 	assertOutboxState(t, ctx, pool, event, 1, true)
 }
 

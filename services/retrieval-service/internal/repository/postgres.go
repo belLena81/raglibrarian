@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -1508,8 +1509,11 @@ func (r *Postgres) SearchLexical(ctx context.Context, query domain.SearchQuery, 
 		); err != nil {
 			return nil, err
 		}
-		evidence.PageStart = uint32(pageStart)
-		evidence.PageEnd = uint32(pageEnd)
+		if pageStart < 0 || pageStart > math.MaxUint32 || pageEnd < 0 || pageEnd > math.MaxUint32 {
+			return nil, fmt.Errorf("invalid evidence page range %d-%d", pageStart, pageEnd)
+		}
+		evidence.PageStart = uint32(pageStart) // #nosec G115 -- checked above.
+		evidence.PageEnd = uint32(pageEnd)     // #nosec G115 -- checked above.
 		results = append(results, evidence)
 	}
 	if err = rows.Err(); err != nil {

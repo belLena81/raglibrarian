@@ -3,6 +3,7 @@ package identityclient
 
 import (
 	"context"
+	"math"
 	"time"
 
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -40,7 +41,7 @@ func New(rpc identityv1.IdentityServiceClient, health grpc_health_v1.HealthClien
 	if policy.PendingPageMaxSize <= 0 {
 		panic("identityclient: pending page max size must be positive")
 	}
-	return &Client{rpc: rpc, health: health, rpcDeadline: policy.RPCDeadline}
+	return &Client{rpc: rpc, health: health, rpcDeadline: policy.RPCDeadline, policy: policy}
 }
 
 // CheckReady verifies Identity's standard health service with a bounded deadline.
@@ -188,10 +189,14 @@ func (c *Client) ListPending(ctx context.Context, actor authflow.Principal, page
 	if pageSize < 1 || pageSize > c.policy.PendingPageMaxSize {
 		return authflow.PendingPage{}, authflow.ErrInvalidRegistration
 	}
+	if pageSize > math.MaxInt32 {
+		return authflow.PendingPage{}, authflow.ErrInvalidRegistration
+	}
+	pageSize32 := int32(pageSize) // #nosec G115 -- checked above.
 	ctx, cancel := c.rpcContext(ctx)
 	defer cancel()
 	response, err := c.rpc.ListPendingLibrarians(ctx, &identityv1.ListPendingLibrariansRequest{
-		Actor: &identityv1.Actor{UserId: actor.UserID, SessionId: actor.SessionID}, PageSize: int32(pageSize), PageToken: pageToken,
+		Actor: &identityv1.Actor{UserId: actor.UserID, SessionId: actor.SessionID}, PageSize: pageSize32, PageToken: pageToken,
 	})
 	if err != nil {
 		return authflow.PendingPage{}, mapStateError(err)

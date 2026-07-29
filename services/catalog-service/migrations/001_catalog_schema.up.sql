@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS catalog.books (
         (manifest_reference IS NULL AND manifest_sha256 IS NULL)
         OR (manifest_reference IS NOT NULL AND manifest_reference <> '' AND octet_length(manifest_sha256) = 32)
     ),
+    CONSTRAINT books_media_type_check CHECK (
+        media_type IS NULL OR media_type IN ('application/pdf', 'application/epub+zip')
+    ),
     CONSTRAINT books_tombstone_shape_check CHECK (
         (processing_status = 'deleted'
             AND title IS NULL AND author IS NULL AND year IS NULL AND tags IS NULL
@@ -52,25 +55,6 @@ CREATE TABLE IF NOT EXISTS catalog.books (
             AND processing_failure_category IS NOT NULL AND processing_failure_detail IS NOT NULL)
     )
 );
-
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_catalog.pg_constraint c
-        JOIN pg_catalog.pg_class t ON t.oid = c.conrelid
-        JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
-        WHERE n.nspname = 'catalog'
-          AND t.relname = 'books'
-          AND c.conname = 'books_media_type_check'
-          AND c.contype = 'c'
-    ) THEN
-        ALTER TABLE catalog.books
-            ADD CONSTRAINT books_media_type_check CHECK (
-                media_type IN ('application/pdf', 'application/epub+zip')
-            );
-    END IF;
-END $$;
 
 CREATE INDEX IF NOT EXISTS books_created_at_id_idx
     ON catalog.books (created_at, id);
