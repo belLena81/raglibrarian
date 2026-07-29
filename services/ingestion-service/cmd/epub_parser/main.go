@@ -24,13 +24,13 @@ func run(arguments []string, output io.Writer) (code int) {
 		}
 	}()
 	traceEPUBParserEntry(arguments)
-	sourcePath := epubParserSourcePath(arguments)
-	if sourcePath == "" {
+	sourcePath, limits, err := extractor.ParseEPUBParserArguments(arguments)
+	if err != nil {
 		traceEPUBParserInvalidArgs(arguments)
 		_, _ = fmt.Fprintln(os.Stderr, "epub_parser_invalid_args")
 		return 2
 	}
-	pages, err := extractor.ParseEPUBFile(sourcePath, extractor.DefaultEPUBArchiveLimits())
+	pages, err := extractor.ParseEPUBFile(sourcePath, limits)
 	if err != nil {
 		if detail, ok := extractor.EPUBParserFailureDetail(err); ok {
 			_, _ = fmt.Fprintln(os.Stderr, detail) // #nosec G705 -- parser failure detail is bounded and emitted only on the local stderr trace path.
@@ -42,13 +42,6 @@ func run(arguments []string, output io.Writer) (code int) {
 		return extractor.EPUBParserExitInternal
 	}
 	return 0
-}
-
-func epubParserSourcePath(arguments []string) string {
-	if len(arguments) > 0 {
-		return strings.TrimSpace(arguments[len(arguments)-1])
-	}
-	return strings.TrimSpace(os.Getenv("EPUB_PARSER_SOURCE_PATH"))
 }
 
 func traceEPUBParserInvalidArgs(arguments []string) {

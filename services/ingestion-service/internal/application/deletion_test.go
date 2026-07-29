@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -22,6 +23,24 @@ func TestProcessDeletionPersistsFenceBeforeAcknowledgement(t *testing.T) {
 	event := validDeletionEvent()
 	if err := processor.ProcessDeletion(context.Background(), event); err != nil {
 		t.Fatalf("process deletion: %v", err)
+	}
+	if repository.deletionCalls != 1 {
+		t.Fatalf("deletion calls = %d, want 1", repository.deletionCalls)
+	}
+}
+
+func TestProcessDeletionBoundsInitialAcceptanceWithPersistenceTimeout(t *testing.T) {
+	processor, repository, _, _, _, _ := newTestProcessor(t, processorOptions{
+		deletionWait:       true,
+		persistenceTimeout: 5 * time.Millisecond,
+	})
+
+	err := processor.ProcessDeletion(context.Background(), validDeletionEvent())
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ProcessDeletion() error = %v, want persistence deadline", err)
+	}
+	if !errors.Is(repository.deletionCtxErr, context.DeadlineExceeded) {
+		t.Fatalf("AcceptDeletion() context error = %v, want deadline exceeded", repository.deletionCtxErr)
 	}
 	if repository.deletionCalls != 1 {
 		t.Fatalf("deletion calls = %d, want 1", repository.deletionCalls)

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/belLena81/raglibrarian/services/ingestion-service/config"
@@ -102,7 +103,8 @@ func TestValidatedCommandAllowsOnlyFixedPopplerShapeAndRegularTemporarySource(t 
 	if err := os.WriteFile(epubSource, []byte("synthetic"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, _, err := validatedCommand([]string{defaultEPUBParserPath, epubSource}); err != nil {
+	epubArguments := []string{defaultEPUBParserPath, "v1", "2000", "500", "1048576", "8388608", "2097152", epubSource}
+	if _, _, _, _, err := validatedCommand(epubArguments); err != nil {
 		t.Fatalf("EPUB parser command rejected: %v", err)
 	}
 	for _, arguments := range [][]string{
@@ -110,7 +112,18 @@ func TestValidatedCommandAllowsOnlyFixedPopplerShapeAndRegularTemporarySource(t 
 		{defaultPDFInfoPath, "/a/b"},
 		{defaultPDFInfoPath, "/etc/passwd"},
 		{defaultPDFToTextPath, source, "-"},
-		{defaultEPUBParserPath, epubSource, "extra"},
+		{defaultEPUBParserPath, epubSource},
+		{defaultEPUBParserPath, "v2", "2000", "500", "1048576", "8388608", "2097152", epubSource},
+		{defaultEPUBParserPath, "v1", "0", "500", "1048576", "8388608", "2097152", epubSource},
+		{defaultEPUBParserPath, "v1", "2", "2", "1048576", "8388608", "2097152", epubSource},
+		{defaultEPUBParserPath, "v1", "8193", "500", "1048576", "8388608", "2097152", epubSource},
+		{defaultEPUBParserPath, "v1", "2000", "5001", "1048576", "8388608", "2097152", epubSource},
+		{defaultEPUBParserPath, "v1", "2000", "500", "268435457", "536870912", "2097152", epubSource},
+		{defaultEPUBParserPath, "v1", "2000", "500", "1048576", "2147483649", "2097152", epubSource},
+		{defaultEPUBParserPath, "v1", "2000", "500", "1048576", "2147483648", "1073741825", epubSource},
+		{defaultEPUBParserPath, "v1", "2000", "500", "1048576", "524288", "262144", epubSource},
+		{defaultEPUBParserPath, "v1", "2000", "500", "1048576", "8388608", "16777216", epubSource},
+		{defaultEPUBParserPath, "v1", "2000", "500", "1048576", "8388608", "2097152", epubSource, "extra"},
 	} {
 		if _, _, _, _, err := validatedCommand(arguments); err == nil {
 			t.Fatalf("unsafe command accepted: %q", arguments)
@@ -165,8 +178,106 @@ func TestValidatedCommandAcceptsConfiguredParserPaths(t *testing.T) {
 	if err := os.WriteFile(epubSource, []byte("synthetic"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, _, err := validatedCommand([]string{"/work/bin/epub-parser", epubSource}); err != nil {
+	if _, _, _, _, err := validatedCommand([]string{"/work/bin/epub-parser", "v1", "2000", "500", "1048576", "8388608", "2097152", epubSource}); err != nil {
 		t.Fatalf("configured EPUB parser command rejected: %v", err)
+	}
+}
+
+func TestSeccompDeniesNetworkIOUringAndProcessEscapeSyscalls(t *testing.T) {
+	if os.Getenv("PARSER_SANDBOX_SECCOMP_HELPER") == "1" {
+		if err := applySeccomp(); err != nil {
+			os.Exit(10)
+		}
+		denied := []struct {
+			systemCall uintptr
+			arguments  [6]uintptr
+		}{
+			{systemCall: unix.SYS_SOCKET},
+			{systemCall: unix.SYS_IO_URING_SETUP},
+			{systemCall: unix.SYS_IO_URING_REGISTER},
+			{systemCall: unix.SYS_IO_URING_ENTER},
+			{systemCall: unix.SYS_CLONE},
+			{systemCall: unix.SYS_CLONE3},
+			{systemCall: unix.SYS_SETSID},
+			{systemCall: unix.SYS_SETPGID},
+			{systemCall: unix.SYS_UNSHARE},
+			{systemCall: unix.SYS_SETNS},
+		}
+		if runtime.GOARCH == "amd64" {
+			denied = append(denied,
+				struct {
+					systemCall uintptr
+					arguments  [6]uintptr
+				}{systemCall: 57},
+				struct {
+					systemCall uintptr
+					arguments  [6]uintptr
+				}{systemCall: 58},
+			)
+		}
+		for index, test := range denied {
+			_, _, errno := unix.Syscall6(
+				test.systemCall,
+				test.arguments[0],
+				test.arguments[1],
+				test.arguments[2],
+				test.arguments[3],
+				test.arguments[4],
+				test.arguments[5],
+			)
+			if errno != unix.EPERM {
+				os.Exit(20 + index)
+			}
+		}
+		if runtime.GOARCH == "amd64" {
+			_, _, errno := unix.Syscall(uintptr(x32SyscallBit)|unix.SYS_GETPID, 0, 0, 0)
+			if errno != unix.EPERM {
+				os.Exit(50)
+			}
+		}
+		_, _, errno := unix.Syscall6(unix.SYS_CLONE, unix.CLONE_THREAD, 0, 0, 0, 0, 0)
+		if errno == unix.EPERM {
+			os.Exit(51)
+		}
+		os.Exit(0)
+	}
+
+	command := exec.Command(os.Args[0], "-test.run=^TestSeccompDeniesNetworkIOUringAndProcessEscapeSyscalls$") // #nosec G204 -- re-executes this fixed test binary only.
+	command.Env = append(os.Environ(),
+		"PARSER_SANDBOX_SECCOMP_HELPER=1",
+		"GOMAXPROCS=1",
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("seccomp helper failed: %v: %s", err, output)
+	}
+}
+
+func TestSeccompFilterRejectsX32BeforeSyscallComparisons(t *testing.T) {
+	filter := seccompFilter(unix.AUDIT_ARCH_X86_64)
+	if len(filter) < 7 {
+		t.Fatalf("seccomp filter length = %d", len(filter))
+	}
+	loadNumber := filter[3]
+	if loadNumber.Code != unix.BPF_LD|unix.BPF_W|unix.BPF_ABS || loadNumber.K != 0 {
+		t.Fatalf("seccomp filter does not load syscall number first: %#v", loadNumber)
+	}
+	x32Check := filter[4]
+	if x32Check.Code != unix.BPF_JMP|unix.BPF_JSET|unix.BPF_K ||
+		x32Check.K != x32SyscallBit ||
+		x32Check.Jf != 1 {
+		t.Fatalf("seccomp filter x32 guard is invalid: %#v", x32Check)
+	}
+	x32Reject := filter[5]
+	wantReject := uint32(unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM))
+	if x32Reject.Code != unix.BPF_RET|unix.BPF_K || x32Reject.K != wantReject {
+		t.Fatalf("seccomp filter x32 disposition is invalid: %#v", x32Reject)
+	}
+
+	arm64Filter := seccompFilter(unix.AUDIT_ARCH_AARCH64)
+	for _, instruction := range arm64Filter {
+		if instruction.Code == unix.BPF_JMP|unix.BPF_JSET|unix.BPF_K && instruction.K == x32SyscallBit {
+			t.Fatal("arm64 seccomp filter unexpectedly contains an x32 guard")
+		}
 	}
 }
 

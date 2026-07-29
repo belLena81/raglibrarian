@@ -20,6 +20,7 @@ import (
 const landlockPreflightArgument = "--landlock-preflight"
 
 const (
+	x32SyscallBit          = uint32(0x40000000)
 	defaultPDFInfoPath     = "/usr/bin/pdfinfo"
 	defaultPDFToTextPath   = "/usr/bin/pdftotext"
 	defaultPDFSeparatePath = "/usr/bin/pdfseparate"
@@ -112,10 +113,10 @@ func validatedCommand(arguments []string) (string, []string, string, string, err
 			return "", nil, "", "", errors.New("invalid pdfunite command")
 		}
 	case parserSandboxEPUBParserPath():
-		if len(commandArguments) != 1 {
+		if err := validateEPUBParserArguments(commandArguments); err != nil {
 			return "", nil, "", "", errors.New("invalid EPUB parser command")
 		}
-		sourcePath = commandArguments[0]
+		sourcePath = commandArguments[len(commandArguments)-1]
 	default:
 		return "", nil, "", "", errors.New("parser executable is not allowlisted")
 	}
@@ -128,6 +129,31 @@ func validatedCommand(arguments []string) (string, []string, string, string, err
 		return "", nil, "", "", errors.New("parser source is not a regular file")
 	}
 	return path, commandArguments, cleaned, workspaceDir, nil
+}
+
+func validateEPUBParserArguments(arguments []string) error {
+	if len(arguments) != 7 || arguments[0] != "v1" {
+		return errors.New("invalid EPUB parser command")
+	}
+	values := make([]uint64, 5)
+	for index, argument := range arguments[1:6] {
+		value, err := strconv.ParseUint(argument, 10, 63)
+		if err != nil || value == 0 {
+			return errors.New("invalid EPUB parser command")
+		}
+		values[index] = value
+	}
+	if values[0] < 3 ||
+		values[0] > uint64(defaults.EPUBMaximumEntriesLimit) ||
+		values[1] > uint64(defaults.EPUBMaximumSpineItemsLimit) ||
+		values[2] > uint64(defaults.EPUBMaximumEntryBytesLimit) ||
+		values[3] > uint64(defaults.EPUBMaximumExpandedBytesLimit) ||
+		values[4] > uint64(defaults.EPUBMaximumTextBytesLimit) ||
+		values[3] < values[2] ||
+		values[4] > values[3] {
+		return errors.New("invalid EPUB parser command")
+	}
+	return nil
 }
 
 func validatedParserSandboxInputPath(value, directory string) (string, error) {
@@ -191,7 +217,7 @@ func traceParserSandboxExec(path string, arguments []string, sourcePath string) 
 		return
 	}
 	_, _ = fmt.Fprintln(os.Stderr, "parser_sandbox_exec_trace")
-	_, _ = fmt.Fprintf(os.Stderr, "path=%s argc=%d source=%s env_source=%t\n", path, len(arguments), sourcePath, strings.TrimSpace(sourcePath) != "") // #nosec G705 -- trace-only diagnostics are gated by explicit opt-in env.
+	_, _ = fmt.Fprintf(os.Stderr, "command=%s argc=%d env_source=%t\n", filepath.Base(path), len(arguments), strings.TrimSpace(sourcePath) != "") // #nosec G705 -- trace-only diagnostics are gated by explicit opt-in env.
 }
 
 func traceParserSandboxValidationFailure(arguments []string, err error) {
@@ -415,11 +441,28 @@ func applySeccomp() error {
 	if !ok {
 		return errors.New("unsupported parser architecture")
 	}
+	filter := seccompFilter(architecture)
+	program := unix.SockFprog{Len: uint16(len(filter)), Filter: &filter[0]} // #nosec G115 -- fixed filter is well below uint16.
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		return err
+	}
+	return unix.Prctl(unix.PR_SET_SECCOMP, unix.SECCOMP_MODE_FILTER, uintptr(unsafe.Pointer(&program)), 0, 0) // #nosec G103 -- audited kernel SockFprog pointer with fixed in-process filter lifetime.
+}
+
+func seccompFilter(architecture uint32) []unix.SockFilter {
 	filter := []unix.SockFilter{
 		{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 4},
 		{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 1, K: architecture},
 		{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_KILL_PROCESS},
 		{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0},
+	}
+	if architecture == unix.AUDIT_ARCH_X86_64 {
+		// x32 shares AUDIT_ARCH_X86_64 but tags syscall numbers with this bit.
+		// Reject it before native-number comparisons so it cannot bypass policy.
+		filter = append(filter,
+			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JSET | unix.BPF_K, Jf: 1, K: x32SyscallBit},
+			unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)},
+		)
 	}
 	denied := []uint32{
 		unix.SYS_SOCKET, unix.SYS_SOCKETPAIR, unix.SYS_CONNECT, unix.SYS_BIND, unix.SYS_LISTEN,
@@ -428,6 +471,13 @@ func applySeccomp() error {
 		unix.SYS_PIVOT_ROOT, unix.SYS_KEXEC_LOAD, unix.SYS_INIT_MODULE, unix.SYS_FINIT_MODULE,
 		unix.SYS_DELETE_MODULE, unix.SYS_BPF, unix.SYS_USERFAULTFD, unix.SYS_PERF_EVENT_OPEN,
 		unix.SYS_KEYCTL, unix.SYS_ADD_KEY, unix.SYS_REQUEST_KEY,
+		unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_REGISTER, unix.SYS_IO_URING_ENTER,
+		unix.SYS_CLONE3, unix.SYS_SETSID, unix.SYS_SETPGID,
+		unix.SYS_UNSHARE, unix.SYS_SETNS,
+	}
+	if runtime.GOARCH == "amd64" {
+		// arm64 does not expose the legacy fork/vfork syscalls.
+		denied = append(denied, 57, 58)
 	}
 	for _, systemCall := range denied {
 		filter = append(filter,
@@ -435,12 +485,16 @@ func applySeccomp() error {
 			unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)},
 		)
 	}
+	filter = append(filter,
+		// The Go runtime needs clone(CLONE_THREAD) to create OS threads. Reject
+		// every process-style clone while preserving that runtime operation.
+		unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 3, K: unix.SYS_CLONE},
+		unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 16},
+		unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JSET | unix.BPF_K, Jt: 1, K: unix.CLONE_THREAD},
+		unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)},
+	)
 	filter = append(filter, unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW})
-	program := unix.SockFprog{Len: uint16(len(filter)), Filter: &filter[0]} // #nosec G115 -- fixed filter is well below uint16.
-	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
-		return err
-	}
-	return unix.Prctl(unix.PR_SET_SECCOMP, unix.SECCOMP_MODE_FILTER, uintptr(unsafe.Pointer(&program)), 0, 0) // #nosec G103 -- audited kernel SockFprog pointer with fixed in-process filter lifetime.
+	return filter
 }
 
 func auditArchitecture() (uint32, bool) {

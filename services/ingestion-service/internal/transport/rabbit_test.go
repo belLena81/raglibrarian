@@ -315,7 +315,7 @@ func TestNewConsumerRejectsMissingMaximumAttempts(t *testing.T) {
 	}
 }
 
-func TestConsumerDeadLettersWhenRetryPublishFailsWhileActive(t *testing.T) {
+func TestConsumerRequeuesWhenRetryPublishFailsWhileActive(t *testing.T) {
 	payload, err := proto.Marshal(validUploadMessage())
 	if err != nil {
 		t.Fatal(err)
@@ -328,8 +328,8 @@ func TestConsumerDeadLettersWhenRetryPublishFailsWhileActive(t *testing.T) {
 		now:       time.Now,
 	}
 	consumer.handle(context.Background(), amqp091.Delivery{Acknowledger: acknowledger, ContentType: "application/x-protobuf", Type: UploadRoute, MessageId: validUploadMessage().EventId, Body: payload})
-	if !acknowledger.nacked || acknowledger.requeued || acknowledger.acked {
-		t.Fatalf("failed retry publish must dead-letter: %#v", acknowledger)
+	if !acknowledger.nacked || !acknowledger.requeued || acknowledger.acked {
+		t.Fatalf("failed retry publish must requeue: %#v", acknowledger)
 	}
 }
 

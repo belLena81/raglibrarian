@@ -695,17 +695,37 @@ func traceCommandFailure(path string, args []string, stderr []byte, err error) {
 	if !traceableCommandFailure(path, stderr, err) {
 		return
 	}
-	_, _ = fmt.Fprintln(os.Stderr, "ingestion command failure trace")
-	_, _ = fmt.Fprintf(os.Stderr, "command=%s argc=%d stderr_detail=%s\n", filepathBase(path), len(args), traceCommandFailureDetail(stderr, err))
-	if len(stderr) > 0 {
-		_, _ = fmt.Fprintln(os.Stderr, "command stderr begin")
-		_, _ = os.Stderr.Write(boundTrace(stderr, 4<<10))
-		if len(stderr) > 4<<10 {
-			_, _ = fmt.Fprintln(os.Stderr, "command stderr truncated")
-		}
-		_, _ = fmt.Fprintln(os.Stderr, "command stderr end")
+	traceCommandFailureTo(os.Stderr, path, args, stderr, err, debug.Stack())
+}
+
+func traceCommandFailureTo(output io.Writer, path string, args []string, stderr []byte, err error, stack []byte) {
+	sum := sha256.Sum256(stderr)
+	exitCode, signal := commandExitStatus(err)
+	_, _ = fmt.Fprintln(output, "ingestion command failure trace")
+	_, _ = fmt.Fprintf(
+		output,
+		"command=%s argc=%d reason=%s exit_code=%s signal=%s stderr_bytes=%d stderr_sha256=%s\n",
+		filepathBase(path),
+		len(args),
+		traceCommandFailureDetail(stderr, err),
+		exitCode,
+		signal,
+		len(stderr),
+		hex.EncodeToString(sum[:])[:16],
+	)
+	_, _ = output.Write(boundStackTrace(stack, 4<<10))
+}
+
+func commandExitStatus(err error) (string, string) {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return "none", "none"
 	}
-	_, _ = os.Stderr.Write(boundStackTrace(debug.Stack(), 4<<10))
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	if ok && status.Signaled() {
+		return strconv.Itoa(exitErr.ExitCode()), status.Signal().String()
+	}
+	return strconv.Itoa(exitErr.ExitCode()), "none"
 }
 
 func traceableCommandFailure(path string, stderr []byte, err error) bool {
@@ -741,13 +761,6 @@ func boundStackTrace(stack []byte, maximum int) []byte {
 		return stack
 	}
 	return append(stack[:maximum], '\n')
-}
-
-func boundTrace(value []byte, maximum int) []byte {
-	if len(value) <= maximum {
-		return value
-	}
-	return append(value[:maximum], '\n')
 }
 
 func filepathBase(path string) string {

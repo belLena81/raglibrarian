@@ -31,15 +31,15 @@ const (
 	DefaultParserSandboxMemoryBytes = defaults.ParserSandboxMemoryBytesMin
 	MaximumParserSandboxMemoryBytes = defaults.ParserSandboxMemoryBytesMax
 	DefaultEPUBMaximumEntries       = defaults.EPUBMaximumEntries
-	MaximumEPUBMaximumEntries       = 8192
+	MaximumEPUBMaximumEntries       = defaults.EPUBMaximumEntriesLimit
 	DefaultEPUBMaximumSpineItems    = int64(defaults.EPUBMaximumSpineItems)
-	MaximumEPUBMaximumSpineItems    = int64(5000)
+	MaximumEPUBMaximumSpineItems    = int64(defaults.EPUBMaximumSpineItemsLimit)
 	DefaultEPUBMaximumEntryBytes    = defaults.EPUBMaximumEntryBytes
-	MaximumEPUBMaximumEntryBytes    = int64(256 << 20)
+	MaximumEPUBMaximumEntryBytes    = defaults.EPUBMaximumEntryBytesLimit
 	DefaultEPUBMaximumExpandedBytes = defaults.EPUBMaximumExpandedBytes
-	MaximumEPUBMaximumExpandedBytes = int64(2 << 30)
+	MaximumEPUBMaximumExpandedBytes = defaults.EPUBMaximumExpandedBytesLimit
 	DefaultEPUBMaximumTextBytes     = defaults.EPUBMaximumTextBytes
-	MaximumEPUBMaximumTextBytes     = int64(1 << 30)
+	MaximumEPUBMaximumTextBytes     = defaults.EPUBMaximumTextBytesLimit
 	DefaultCommandStderrBytes       = defaults.CommandStderrBytes
 )
 

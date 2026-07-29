@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -344,6 +345,12 @@ func TestEPUBAdapterMapsParserOutputAndSanitizesFailure(t *testing.T) {
 		MaximumPages:          8,
 		MaximumPageBytes:      1024,
 		MaximumExtractedBytes: 4096,
+	}, EPUBArchiveLimits{
+		MaximumEntries:       16,
+		MaximumSpineItems:    8,
+		MaximumEntryBytes:    1 << 20,
+		MaximumExpandedBytes: 2 << 20,
+		MaximumTextBytes:     1 << 20,
 	}, runner)
 	var pages []Page
 	info, err := adapter.Extract(context.Background(), "/tmp/source.epub", func(page Page) error {
@@ -353,7 +360,8 @@ func TestEPUBAdapterMapsParserOutputAndSanitizesFailure(t *testing.T) {
 	if err != nil || info.PageCount != 2 || len(pages) != 2 || pages[1].Number != 2 {
 		t.Fatalf("Extract() = (%+v, %#v, %v)", info, pages, err)
 	}
-	if runner.path != "/usr/local/bin/epub-parser" || len(runner.args) != 1 || runner.args[0] != "/tmp/source.epub" {
+	wantArguments := []string{"v1", "16", "8", "1048576", "2097152", "1048576", "/tmp/source.epub"}
+	if runner.path != "/usr/local/bin/epub-parser" || !slices.Equal(runner.args, wantArguments) {
 		t.Fatalf("runner call = %q %#v", runner.path, runner.args)
 	}
 
@@ -364,6 +372,40 @@ func TestEPUBAdapterMapsParserOutputAndSanitizesFailure(t *testing.T) {
 	}
 	if detail, ok := FailureDetail(err); !ok || detail != "epub_parser_internal_private_epub_parser_diagnostic" {
 		t.Fatalf("FailureDetail() = %q, %t", detail, ok)
+	}
+}
+
+func TestEPUBParserArgumentsRoundTripAndRejectInvalidLimits(t *testing.T) {
+	limits := EPUBArchiveLimits{
+		MaximumEntries:       16,
+		MaximumSpineItems:    8,
+		MaximumEntryBytes:    1024,
+		MaximumExpandedBytes: 4096,
+		MaximumTextBytes:     2048,
+	}
+	arguments, err := EPUBParserArguments("/tmp/source.epub", limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourcePath, parsed, err := ParseEPUBParserArguments(arguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sourcePath != "/tmp/source.epub" || parsed != limits {
+		t.Fatalf("ParseEPUBParserArguments() = %q %#v", sourcePath, parsed)
+	}
+
+	for _, invalid := range [][]string{
+		nil,
+		{"v2", "16", "8", "1024", "4096", "2048", "/tmp/source.epub"},
+		{"v1", "invalid", "8", "1024", "4096", "2048", "/tmp/source.epub"},
+		{"v1", "16", "8", "4096", "1024", "512", "/tmp/source.epub"},
+		{"v1", "16", "8", "1024", "4096", "8192", "/tmp/source.epub"},
+		{"v1", "16", "8", "1024", "4096", "2048", " /tmp/source.epub"},
+	} {
+		if _, _, err = ParseEPUBParserArguments(invalid); err == nil {
+			t.Fatalf("invalid parser arguments accepted: %#v", invalid)
+		}
 	}
 }
 

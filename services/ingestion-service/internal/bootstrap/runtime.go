@@ -279,6 +279,13 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 			MaximumPageBytes:      cfg.MaximumPageBytes,
 			MaximumExtractedBytes: cfg.MaximumExtractedBytes,
 		},
+		extractor.EPUBArchiveLimits{
+			MaximumEntries:       cfg.EPUBMaximumEntries,
+			MaximumSpineItems:    cfg.EPUBMaximumSpineItems,
+			MaximumEntryBytes:    cfg.EPUBMaximumEntryBytes,
+			MaximumExpandedBytes: cfg.EPUBMaximumExpandedBytes,
+			MaximumTextBytes:     cfg.EPUBMaximumTextBytes,
+		},
 		nil,
 	)
 	extractors, err := application.NewFormatExtractors(

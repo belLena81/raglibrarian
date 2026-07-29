@@ -18,28 +18,42 @@ import (
 )
 
 type processorRepository struct {
-	accepted      bool
-	acceptErr     error
-	completeErr   error
-	retryErr      error
-	failErr       error
-	accepts       int
-	deletionCalls int
-	completes     int
-	retries       int
-	fails         int
-	failedJob     domain.ProcessingJob
-	retryCtxErr   error
-	failCtxErr    error
+	accepted       bool
+	acceptErr      error
+	acceptWait     bool
+	completeErr    error
+	retryErr       error
+	failErr        error
+	deletionWait   bool
+	accepts        int
+	deletionCalls  int
+	completes      int
+	retries        int
+	fails          int
+	failedJob      domain.ProcessingJob
+	acceptCtxErr   error
+	deletionCtxErr error
+	retryCtxErr    error
+	failCtxErr     error
 }
 
-func (r *processorRepository) Accept(_ context.Context, _ UploadedEvent, _ [32]byte, job domain.ProcessingJob, _ OutboxEvent) (domain.ProcessingJob, bool, error) {
+func (r *processorRepository) Accept(ctx context.Context, _ UploadedEvent, _ [32]byte, job domain.ProcessingJob, _ OutboxEvent) (domain.ProcessingJob, bool, error) {
 	r.accepts++
+	if r.acceptWait {
+		<-ctx.Done()
+		r.acceptCtxErr = ctx.Err()
+		return job, false, ctx.Err()
+	}
 	return job, r.accepted, r.acceptErr
 }
 
-func (r *processorRepository) AcceptDeletion(_ context.Context, _ DeletionEvent, _ [32]byte, _ OutboxEvent, _ time.Time) error {
+func (r *processorRepository) AcceptDeletion(ctx context.Context, _ DeletionEvent, _ [32]byte, _ OutboxEvent, _ time.Time) error {
 	r.deletionCalls++
+	if r.deletionWait {
+		<-ctx.Done()
+		r.deletionCtxErr = ctx.Err()
+		return ctx.Err()
+	}
 	return nil
 }
 
@@ -235,6 +249,24 @@ func TestProcessorCompletesAndTreatsDuplicateAsDurableSuccess(t *testing.T) {
 	}
 	if duplicateRepository.accepts != 1 || duplicateRepository.completes != 0 || duplicateWriter.adds != 0 {
 		t.Fatalf("duplicate was processed: repo=%#v writer=%#v", duplicateRepository, duplicateWriter)
+	}
+}
+
+func TestProcessorBoundsInitialAcceptanceWithPersistenceTimeout(t *testing.T) {
+	processor, repository, writer, events, _, _ := newTestProcessor(t, processorOptions{
+		acceptWait:         true,
+		persistenceTimeout: 5 * time.Millisecond,
+	})
+
+	err := processor.Process(context.Background(), validProcessorEvent())
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Process() error = %v, want persistence deadline", err)
+	}
+	if !errors.Is(repository.acceptCtxErr, context.DeadlineExceeded) {
+		t.Fatalf("Accept() context error = %v, want deadline exceeded", repository.acceptCtxErr)
+	}
+	if repository.accepts != 1 || writer.adds != 0 || events.ready != 0 {
+		t.Fatalf("unexpected downstream processing: repository=%#v writer=%#v events=%#v", repository, writer, events)
 	}
 }
 
@@ -455,16 +487,19 @@ func TestClassifyRetriesInternalExtractorAndProcessingFailures(t *testing.T) {
 }
 
 type processorOptions struct {
-	accepted        *bool
-	sourceErr       error
-	extractErr      error
-	waitForContext  bool
-	maximumAttempts int
-	completeErr     error
-	readyErr        error
-	addErr          error
-	finalizeErr     error
-	chunker         Chunker
+	accepted           *bool
+	acceptWait         bool
+	deletionWait       bool
+	sourceErr          error
+	extractErr         error
+	waitForContext     bool
+	maximumAttempts    int
+	completeErr        error
+	readyErr           error
+	addErr             error
+	finalizeErr        error
+	chunker            Chunker
+	persistenceTimeout time.Duration
 }
 
 func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *processorRepository, *processorWriter, *processorEvents, *processorDiagnostics, *processorExtractor) {
@@ -478,7 +513,12 @@ func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *proc
 		maximumAttempts = 4
 	}
 	contents := []byte("%PDF-1.7\nsynthetic")
-	repository := &processorRepository{accepted: accepted, completeErr: options.completeErr}
+	repository := &processorRepository{
+		accepted:     accepted,
+		acceptWait:   options.acceptWait,
+		completeErr:  options.completeErr,
+		deletionWait: options.deletionWait,
+	}
 	writer := &processorWriter{
 		result:      artifact.Result{ManifestReference: "books/book-1/source/profile/manifest.pb", ManifestSHA256: sha256.Sum256([]byte("manifest")), ManifestByteSize: 8, PageCount: 1, ChunkCount: 1},
 		addErr:      options.addErr,
@@ -497,6 +537,10 @@ func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *proc
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	persistenceTimeout := options.persistenceTimeout
+	if persistenceTimeout == 0 {
+		persistenceTimeout = 10 * time.Second
+	}
 	processor, err := NewProcessor(
 		repository,
 		processorSource{contents: contents, size: int64(len(contents)), err: options.sourceErr},
@@ -511,7 +555,7 @@ func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *proc
 			MaximumTemporaryBytes: 25 << 20,
 			TemporaryDirectory:    t.TempDir(),
 			ProcessingTimeout:     10 * time.Millisecond,
-			PersistenceTimeout:    10 * time.Second,
+			PersistenceTimeout:    persistenceTimeout,
 			ArtifactAbortTimeout:  10 * time.Second,
 			JobLease:              31 * time.Second,
 			MaximumAttempts:       maximumAttempts,
