@@ -30,13 +30,13 @@ import (
 )
 
 const (
-	metadataQueue            = contracts.QueueRetrievalMetadata
-	manifestQueue            = contracts.QueueRetrievalManifest
-	batchQueue               = contracts.QueueRetrievalIndex
-	lifecycleQueue           = contracts.QueueRetrievalLifecycle
-	eventExchange            = contracts.ExchangeRetrievalEvents
-	retryExchange            = contracts.ExchangeRetrievalRetry
-	maximumManifestBound int = 0
+	metadataQueue        = contracts.QueueRetrievalMetadata
+	manifestQueue        = contracts.QueueRetrievalManifest
+	batchQueue           = contracts.QueueRetrievalIndex
+	lifecycleQueue       = contracts.QueueRetrievalLifecycle
+	eventExchange        = contracts.ExchangeRetrievalEvents
+	retryExchange        = contracts.ExchangeRetrievalRetry
+	maximumManifestBound = int(^uint32(0))
 )
 
 var errManifestArtifactRead = errors.New("manifest artifact read failed")

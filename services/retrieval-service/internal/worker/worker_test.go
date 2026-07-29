@@ -6,10 +6,53 @@ import (
 	"testing"
 	"time"
 
+	"github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 	"github.com/rabbitmq/amqp091-go"
 )
+
+func TestBoundedManifestPolicyAcceptsConfiguredWorkerDefaults(t *testing.T) {
+	configuration := config.WorkerConfig{
+		ManifestMaxPages:                1000,
+		ManifestMaxShards:               1024,
+		ManifestMaxShardCompressedBytes: 128 << 20,
+		ManifestMaxShardExpandedBytes:   256 << 20,
+		ManifestMaxShardChunks:          1024,
+		ManifestMaxTotalChunks:          200000,
+		ManifestMaxExpandedBytes:        8 << 30,
+	}
+
+	policy, err := boundedManifestPolicy(configuration)
+	if err != nil {
+		t.Fatalf("boundedManifestPolicy() error = %v", err)
+	}
+	if policy.MaxPages != uint32(configuration.ManifestMaxPages) {
+		t.Fatalf("MaxPages = %d, want %d", policy.MaxPages, configuration.ManifestMaxPages)
+	}
+	if policy.MaxShardChunks != uint32(configuration.ManifestMaxShardChunks) {
+		t.Fatalf("MaxShardChunks = %d, want %d", policy.MaxShardChunks, configuration.ManifestMaxShardChunks)
+	}
+	if policy.MaxTotalChunks != uint32(configuration.ManifestMaxTotalChunks) {
+		t.Fatalf("MaxTotalChunks = %d, want %d", policy.MaxTotalChunks, configuration.ManifestMaxTotalChunks)
+	}
+}
+
+func TestBoundedManifestPolicyRejectsUint32Overflow(t *testing.T) {
+	configuration := config.WorkerConfig{
+		ManifestMaxPages:                maximumManifestBound + 1,
+		ManifestMaxShards:               1,
+		ManifestMaxShardCompressedBytes: 1,
+		ManifestMaxShardExpandedBytes:   1,
+		ManifestMaxShardChunks:          1,
+		ManifestMaxTotalChunks:          1,
+		ManifestMaxExpandedBytes:        1,
+	}
+
+	if _, err := boundedManifestPolicy(configuration); err == nil {
+		t.Fatal("boundedManifestPolicy() error = nil")
+	}
+}
 
 func TestProcessOneRejectsUnknownQueueBeforeUsingRuntimeDependencies(t *testing.T) {
 	runtime := &Runtime{}
