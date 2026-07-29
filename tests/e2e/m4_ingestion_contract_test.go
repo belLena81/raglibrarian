@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/indexprofile"
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
 	ingestionv1 "github.com/belLena81/raglibrarian/pkg/proto/ingestion/v1"
 	"github.com/jackc/pgx/v5"
@@ -156,9 +157,9 @@ func TestM4MaximumSourceBytesReachesAStableTerminalProjection(t *testing.T) {
 	writeM4MaximumSourceFixture(t, fixtureDir)
 	book := uploadM4Fixture(t, environment.edgeURLs[0], environment.accessToken, fixtureDir, "maximum_source_bytes.pdf")
 	book = waitForM4Status(t, environment, environment.edgeURLs[0], book.ID, func(current m4Book) bool {
-		return current.ProcessingStage == "chunks_ready"
+		return current.ProcessingStage == "chunks_ready" || current.ProcessingStage == "indexed"
 	})
-	assert.Equal(t, "processing", book.ProcessingStatus)
+	assert.Contains(t, []string{"processing", "indexed"}, book.ProcessingStatus)
 	assert.Empty(t, book.ProcessingFailureCategory)
 }
 
@@ -1237,8 +1238,8 @@ func decodeM4Manifest(t *testing.T, contents []byte, bookID string) *ingestionv1
 	assert.NotEmpty(t, manifest.TokenizerVersion)
 	assert.NotEmpty(t, manifest.ChunkingVersion)
 	assert.NotEmpty(t, manifest.StructureVersion)
-	assert.Equal(t, uint32(800), manifest.MaximumTokens)
-	assert.Equal(t, uint32(120), manifest.OverlapTokens)
+	assert.Equal(t, uint32(indexprofile.MaximumTokens), manifest.MaximumTokens)
+	assert.Equal(t, uint32(indexprofile.OverlapTokens), manifest.OverlapTokens)
 	assert.Positive(t, manifest.PageCount)
 	assert.Positive(t, manifest.ChunkCount)
 	require.NotNil(t, manifest.GeneratedAt)
@@ -1415,6 +1416,7 @@ func waitForM4ReadyEvent(t *testing.T, stream *m4EventStream, bookID string) (m4
 			"book_id": true, "processing_status": true, "processing_stage": true,
 			"processing_failure_category": true, "processing_version": true,
 			"updated_at": true, "schema_version": true,
+			"lifecycle_version": true, "can_reindex": true,
 		}
 		for key := range raw {
 			assert.True(t, allowed[key], "SSE payload exposed unexpected field %q", key)

@@ -395,8 +395,8 @@ m4-integration-test: _require_root
 	chmod 700 "$$token_dir"; \
 	trap 'rm -f "$$token_dir/access" "$$token_dir/revocable"; rmdir "$$token_dir"' EXIT; \
 	E2E_M4_ACCESS_TOKEN_OUT="$$token_dir/access" E2E_M4_REVOCABLE_TOKEN_OUT="$$token_dir/revocable" $(MAKE) e2e; \
-	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE="$$token_dir/revocable" $(MAKE) m4-e2e; \
-	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" $(MAKE) m4-worker-recovery-test
+	TEST_RESET_STATE=false M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE="$$token_dir/revocable" $(MAKE) m4-e2e; \
+	TEST_RESET_STATE=false M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" $(MAKE) m4-worker-recovery-test
 
 # The combined gate bootstraps Identity once, keeps all session material in one
 # owner-only temporary directory, and exercises both M4 production and M5
@@ -408,9 +408,9 @@ m4-m5-integration-test: _require_root
 	trap 'rm -f "$$token_dir/access" "$$token_dir/revocable" "$$token_dir/reader" "$$token_dir/librarian" "$$token_dir/admin"; rmdir "$$token_dir"' EXIT; \
 	E2E_M4_ACCESS_TOKEN_OUT="$$token_dir/access" E2E_M4_REVOCABLE_TOKEN_OUT="$$token_dir/revocable" \
 	E2E_M5_READER_TOKEN_OUT="$$token_dir/reader" E2E_M5_LIBRARIAN_TOKEN_OUT="$$token_dir/librarian" E2E_M5_ADMIN_TOKEN_OUT="$$token_dir/admin" $(MAKE) e2e; \
-	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE="$$token_dir/revocable" $(MAKE) m4-e2e; \
-	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" $(MAKE) m4-worker-recovery-test; \
-	M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" M5_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" M5_E2E_ADMIN_TOKEN_FILE="$$token_dir/admin" $(MAKE) m5-e2e
+	TEST_RESET_STATE=false M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE="$$token_dir/revocable" $(MAKE) m4-e2e; \
+	TEST_RESET_STATE=false M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" $(MAKE) m4-worker-recovery-test; \
+	TEST_RESET_STATE=false M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" M5_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" M5_E2E_ADMIN_TOKEN_FILE="$$token_dir/admin" $(MAKE) m5-e2e
 
 m4-m5-m6-integration-test: _require_root
 	@set -eu; \
@@ -419,11 +419,11 @@ m4-m5-m6-integration-test: _require_root
 	trap 'rm -f "$$token_dir/access" "$$token_dir/revocable" "$$token_dir/reader" "$$token_dir/librarian" "$$token_dir/admin"; rmdir "$$token_dir"' EXIT; \
 	E2E_M4_ACCESS_TOKEN_OUT="$$token_dir/access" E2E_M4_REVOCABLE_TOKEN_OUT="$$token_dir/revocable" \
 	E2E_M5_READER_TOKEN_OUT="$$token_dir/reader" E2E_M5_LIBRARIAN_TOKEN_OUT="$$token_dir/librarian" E2E_M5_ADMIN_TOKEN_OUT="$$token_dir/admin" $(MAKE) e2e; \
-	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE="$$token_dir/revocable" $(MAKE) m4-e2e; \
-	M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" $(MAKE) m4-worker-recovery-test; \
-	M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" M5_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" M5_E2E_ADMIN_TOKEN_FILE="$$token_dir/admin" $(MAKE) m5-e2e; \
-	M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" M5_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" M5_E2E_ADMIN_TOKEN_FILE="$$token_dir/admin" $(MAKE) m6-e2e; \
-	M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" $(MAKE) m6-performance-smoke
+	TEST_RESET_STATE=false M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" M4_E2E_REVOCABLE_ACCESS_TOKEN_FILE="$$token_dir/revocable" $(MAKE) m4-e2e; \
+	TEST_RESET_STATE=false M4_E2E_ACCESS_TOKEN_FILE="$$token_dir/access" $(MAKE) m4-worker-recovery-test; \
+	TEST_RESET_STATE=false M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" M5_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" M5_E2E_ADMIN_TOKEN_FILE="$$token_dir/admin" $(MAKE) m5-e2e; \
+	TEST_RESET_STATE=false M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" M5_E2E_LIBRARIAN_TOKEN_FILE="$$token_dir/librarian" M5_E2E_ADMIN_TOKEN_FILE="$$token_dir/admin" $(MAKE) m6-e2e; \
+	TEST_RESET_STATE=false M5_E2E_READER_TOKEN_FILE="$$token_dir/reader" $(MAKE) m6-performance-smoke
 
 # release-local-test is the release-candidate local proof. It deliberately
 # preserves short-lived sessions in one owner-only directory so M4, M6, and M7
