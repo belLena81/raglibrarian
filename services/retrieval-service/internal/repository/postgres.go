@@ -1563,9 +1563,10 @@ func (r *Postgres) CorpusSnapshot(ctx context.Context) (string, error) {
 func (r *Postgres) Lookup(ctx context.Context, lookup application.AssessmentCacheLookup) (application.EvidenceAssessment, application.AssessmentCacheOutcome, error) {
 	var assessment application.EvidenceAssessment
 	var summary string
-	err := r.pool.QueryRow(ctx, `SELECT relevant,summary
-		FROM retrieval.summary_assessment_cache
-		WHERE provider_profile=$1 AND question_hash=$2 AND passage_hash=$3 AND expires_at>$4`,
+	err := r.pool.QueryRow(ctx, `UPDATE retrieval.summary_assessment_cache
+		SET last_accessed_at=$4, hit_count=hit_count+1
+		WHERE provider_profile=$1 AND question_hash=$2 AND passage_hash=$3 AND expires_at>$4
+		RETURNING relevant,summary`,
 		lookup.ProviderProfile, lookup.QuestionHash, lookup.PassageHash, lookup.Now).Scan(&assessment.Relevant, &summary)
 	if err == nil {
 		assessment.Summary = summary
@@ -1577,24 +1578,30 @@ func (r *Postgres) Lookup(ctx context.Context, lookup application.AssessmentCach
 	if !lookup.NegativeReuse {
 		return application.EvidenceAssessment{}, application.AssessmentCacheOutcomeMiss, nil
 	}
-	rows, err := r.pool.Query(ctx, `SELECT topic_tokens,guard_tokens,query_embedding
+	rows, err := r.pool.Query(ctx, `SELECT question_hash,query_embedding
 		FROM retrieval.summary_assessment_cache
-		WHERE provider_profile=$1 AND passage_hash=$2 AND relevant=false AND expires_at>$3`,
-		lookup.ProviderProfile, lookup.PassageHash, lookup.Now)
+		WHERE provider_profile=$1 AND passage_hash=$2 AND topic_hash=$3 AND guard_hash=$4
+			AND relevant=false AND query_embedding IS NOT NULL AND expires_at>$5
+		ORDER BY last_accessed_at DESC
+		LIMIT $6`,
+		lookup.ProviderProfile, lookup.PassageHash, lookup.TopicHash, lookup.GuardHash, lookup.Now, lookup.NegativeCandidateLimit)
 	if err != nil {
 		return application.EvidenceAssessment{}, application.AssessmentCacheOutcomeLookupError, err
 	}
 	defer rows.Close()
 	outcome := application.AssessmentCacheOutcomeMiss
+	var hitQuestionHash string
 	for rows.Next() {
-		var topicTokens, guardTokens []string
+		var questionHash string
 		var embeddingBytes []byte
-		if err = rows.Scan(&topicTokens, &guardTokens, &embeddingBytes); err != nil {
+		if err = rows.Scan(&questionHash, &embeddingBytes); err != nil {
 			return application.EvidenceAssessment{}, application.AssessmentCacheOutcomeLookupError, err
 		}
-		candidateOutcome := lookup.NegativeCompatible(topicTokens, guardTokens, application.DecodeAssessmentEmbedding(embeddingBytes))
+		candidateOutcome := lookup.NegativeCompatible(lookup.TopicTokens, lookup.GuardTokens, application.DecodeAssessmentEmbedding(embeddingBytes))
 		if candidateOutcome == application.AssessmentCacheOutcomeNegativeHit {
-			return application.EvidenceAssessment{Relevant: false}, candidateOutcome, nil
+			hitQuestionHash = questionHash
+			outcome = candidateOutcome
+			break
 		}
 		if candidateOutcome != application.AssessmentCacheOutcomeMiss {
 			outcome = candidateOutcome
@@ -1603,42 +1610,102 @@ func (r *Postgres) Lookup(ctx context.Context, lookup application.AssessmentCach
 	if err = rows.Err(); err != nil {
 		return application.EvidenceAssessment{}, application.AssessmentCacheOutcomeLookupError, err
 	}
+	rows.Close()
+	if hitQuestionHash != "" {
+		_, _ = r.pool.Exec(ctx, `UPDATE retrieval.summary_assessment_cache
+			SET last_accessed_at=$4,hit_count=hit_count+1
+			WHERE provider_profile=$1 AND question_hash=$2 AND passage_hash=$3 AND expires_at>$4`,
+			lookup.ProviderProfile, hitQuestionHash, lookup.PassageHash, lookup.Now)
+		return application.EvidenceAssessment{Relevant: false}, outcome, nil
+	}
 	return application.EvidenceAssessment{}, outcome, nil
 }
 
 func (r *Postgres) Store(ctx context.Context, entry application.AssessmentCacheEntry) error {
-	_, err := r.pool.Exec(ctx, `INSERT INTO retrieval.summary_assessment_cache
-		(provider_profile,question_hash,passage_hash,topic_tokens,guard_tokens,query_embedding,relevant,summary,expires_at,created_at,updated_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now(),now())
+	var embedding []byte
+	var topicHash, guardHash any
+	if entry.NegativeReuse && !entry.Assessment.Relevant {
+		if entry.TopicHash == "" || entry.GuardHash == "" || len(entry.QueryEmbedding) == 0 {
+			return errors.New("invalid assessment cache semantic metadata")
+		}
+		embedding = application.EncodeAssessmentEmbedding(entry.QueryEmbedding)
+		topicHash = nullableAssessmentFingerprint(entry.TopicHash)
+		guardHash = nullableAssessmentFingerprint(entry.GuardHash)
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(764245031)`); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO retrieval.summary_assessment_cache
+		(provider_profile,question_hash,passage_hash,topic_hash,guard_hash,query_embedding,relevant,summary,expires_at,created_at,updated_at,last_accessed_at,hit_count)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now(),now(),now(),0)
 		ON CONFLICT(provider_profile,question_hash,passage_hash) DO UPDATE SET
-			topic_tokens=EXCLUDED.topic_tokens,
-			guard_tokens=EXCLUDED.guard_tokens,
+			topic_hash=EXCLUDED.topic_hash,
+			guard_hash=EXCLUDED.guard_hash,
 			query_embedding=EXCLUDED.query_embedding,
 			relevant=EXCLUDED.relevant,
 			summary=EXCLUDED.summary,
 			expires_at=EXCLUDED.expires_at,
-			updated_at=now()`,
+			updated_at=now(),
+			last_accessed_at=now()`,
 		entry.ProviderProfile,
 		entry.QuestionHash,
 		entry.PassageHash,
-		postgresTextArray(entry.TopicTokens),
-		postgresTextArray(entry.GuardTokens),
-		application.EncodeAssessmentEmbedding(entry.QueryEmbedding),
+		topicHash,
+		guardHash,
+		embedding,
 		entry.Assessment.Relevant,
 		entry.Assessment.Summary,
 		entry.ExpiresAt,
 	)
-	if err != nil || entry.MaximumEntries <= 0 {
+	if err != nil {
 		return err
 	}
-	_, err = r.pool.Exec(ctx, `DELETE FROM retrieval.summary_assessment_cache
+	if entry.MaximumEntries > 0 {
+		_, err = tx.Exec(ctx, `DELETE FROM retrieval.summary_assessment_cache
 		WHERE (provider_profile,question_hash,passage_hash) IN (
 			SELECT provider_profile,question_hash,passage_hash
 			FROM retrieval.summary_assessment_cache
-			ORDER BY updated_at DESC
+			ORDER BY hit_count DESC,last_accessed_at DESC,updated_at DESC
 			OFFSET $1
 		)`, entry.MaximumEntries)
-	return err
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func nullableAssessmentFingerprint(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func (r *Postgres) DeleteExpiredAssessmentCache(ctx context.Context, batchSize int) (int, error) {
+	if batchSize <= 0 {
+		return 0, errors.New("invalid assessment cache cleanup batch")
+	}
+	var deleted int
+	err := r.pool.QueryRow(ctx, `WITH expired AS (
+			SELECT ctid
+			FROM retrieval.summary_assessment_cache
+			WHERE expires_at<=now()
+			ORDER BY expires_at
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		), removed AS (
+			DELETE FROM retrieval.summary_assessment_cache
+			WHERE ctid IN (SELECT ctid FROM expired)
+			RETURNING 1
+		)
+		SELECT count(*) FROM removed`, batchSize).Scan(&deleted)
+	return deleted, err
 }
 
 func (r *Postgres) FilterIndexed(ctx context.Context, values []application.Evidence) ([]application.Evidence, error) {

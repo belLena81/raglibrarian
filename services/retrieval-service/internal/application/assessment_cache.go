@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
@@ -12,7 +13,7 @@ import (
 	"unicode"
 )
 
-const summaryAssessmentProfileVersion = "retrieval-summary-assessment-v1"
+const summaryAssessmentProfileVersion = "retrieval-summary-assessment-v2"
 
 type AssessmentCache interface {
 	Lookup(context.Context, AssessmentCacheLookup) (EvidenceAssessment, AssessmentCacheOutcome, error)
@@ -20,48 +21,53 @@ type AssessmentCache interface {
 }
 
 type AssessmentCacheObserver interface {
-	AssessmentCacheLookup(AssessmentCacheOutcome)
-	AssessmentCacheStore(AssessmentCacheOutcome)
+	AssessmentCacheSearch(AssessmentCacheStats)
 }
 
 type AssessmentCachePolicy struct {
-	TTL                   time.Duration
-	NegativeReuse         bool
-	NegativeMinimumCosine float64
-	MaximumEntries        int
-	MaximumInputRunes     int
-	ProviderProfile       string
+	TTL                    time.Duration
+	NegativeReuse          bool
+	NegativeMinimumCosine  float64
+	MaximumEntries         int
+	MaximumInputRunes      int
+	NegativeCandidateLimit int
+	ProviderProfile        string
+	HMACKey                []byte
 }
 
 type AssessmentCacheLookup struct {
-	ProviderProfile       string
-	QuestionHash          string
-	PassageHash           string
-	TopicTokens           []string
-	GuardTokens           []string
-	QueryEmbedding        []float32
-	NegativeReuse         bool
-	NegativeMinimumCosine float64
-	Now                   time.Time
+	ProviderProfile        string
+	QuestionHash           string
+	PassageHash            string
+	TopicHash              string
+	GuardHash              string
+	TopicTokens            []string
+	GuardTokens            []string
+	QueryEmbedding         []float32
+	NegativeReuse          bool
+	NegativeMinimumCosine  float64
+	NegativeCandidateLimit int
+	Now                    time.Time
 }
 
 type AssessmentCacheEntry struct {
 	ProviderProfile string
 	QuestionHash    string
 	PassageHash     string
-	TopicTokens     []string
-	GuardTokens     []string
+	TopicHash       string
+	GuardHash       string
 	QueryEmbedding  []float32
 	Assessment      EvidenceAssessment
 	ExpiresAt       time.Time
 	MaximumEntries  int
+	NegativeReuse   bool
 }
 
 func (l AssessmentCacheLookup) NegativeCompatible(tokens, guards []string, embedding []float32) AssessmentCacheOutcome {
 	if !sameAssessmentTokens(l.GuardTokens, guards) {
 		return AssessmentCacheOutcomeGuardMismatch
 	}
-	if !assessmentTopicsCompatible(l.TopicTokens, tokens) {
+	if !sameAssessmentTokens(l.TopicTokens, tokens) {
 		return AssessmentCacheOutcomeMiss
 	}
 	if assessmentCosine(l.QueryEmbedding, embedding) < l.NegativeMinimumCosine {
@@ -91,8 +97,13 @@ const (
 	AssessmentCacheOutcomeStoreError       AssessmentCacheOutcome = "store_error"
 )
 
+type AssessmentCacheStats struct {
+	Hits, NegativeHits, Misses, SemanticMismatches, GuardMismatches  int
+	LookupErrors, Stores, StoreErrors, ProviderCalls, LocalFallbacks int
+}
+
 func newAssessmentCacheLookup(policy AssessmentCachePolicy, question, passage string, embedding []float32, now time.Time) (AssessmentCacheLookup, bool) {
-	if policy.TTL <= 0 || strings.TrimSpace(policy.ProviderProfile) == "" || !validCacheEmbedding(embedding) {
+	if policy.TTL <= 0 || strings.TrimSpace(policy.ProviderProfile) == "" || len(policy.HMACKey) < 32 || !validCacheEmbedding(embedding) {
 		return AssessmentCacheLookup{}, false
 	}
 	normalizedQuestion := normalizeSummaryInput(question, policy.MaximumInputRunes)
@@ -100,54 +111,54 @@ func newAssessmentCacheLookup(policy AssessmentCachePolicy, question, passage st
 	if normalizedQuestion == "" || normalizedPassage == "" {
 		return AssessmentCacheLookup{}, false
 	}
+	topics := assessmentTopicTokens(normalizedQuestion)
+	guards := assessmentGuardTokens(normalizedQuestion)
 	return AssessmentCacheLookup{
-		ProviderProfile:       policy.ProviderProfile,
-		QuestionHash:          digestString(normalizedQuestion),
-		PassageHash:           digestString(normalizedPassage),
-		TopicTokens:           assessmentTopicTokens(normalizedQuestion),
-		GuardTokens:           assessmentGuardTokens(normalizedQuestion),
-		QueryEmbedding:        append([]float32(nil), embedding...),
-		NegativeReuse:         policy.NegativeReuse,
-		NegativeMinimumCosine: policy.NegativeMinimumCosine,
-		Now:                   now,
+		ProviderProfile:        policy.ProviderProfile,
+		QuestionHash:           assessmentHMAC(policy.HMACKey, "question", normalizedQuestion),
+		PassageHash:            assessmentHMAC(policy.HMACKey, "passage", normalizedPassage),
+		TopicHash:              assessmentHMAC(policy.HMACKey, "topics", strings.Join(topics, "\x00")),
+		GuardHash:              assessmentHMAC(policy.HMACKey, "guards", strings.Join(guards, "\x00")),
+		TopicTokens:            topics,
+		GuardTokens:            guards,
+		QueryEmbedding:         append([]float32(nil), embedding...),
+		NegativeReuse:          policy.NegativeReuse,
+		NegativeMinimumCosine:  policy.NegativeMinimumCosine,
+		NegativeCandidateLimit: policy.NegativeCandidateLimit,
+		Now:                    now,
 	}, true
 }
 
 func newAssessmentCacheEntry(lookup AssessmentCacheLookup, assessment EvidenceAssessment, policy AssessmentCachePolicy) AssessmentCacheEntry {
-	return AssessmentCacheEntry{
+	entry := AssessmentCacheEntry{
 		ProviderProfile: lookup.ProviderProfile,
 		QuestionHash:    lookup.QuestionHash,
 		PassageHash:     lookup.PassageHash,
-		TopicTokens:     append([]string(nil), lookup.TopicTokens...),
-		GuardTokens:     append([]string(nil), lookup.GuardTokens...),
-		QueryEmbedding:  append([]float32(nil), lookup.QueryEmbedding...),
 		Assessment:      assessment,
 		ExpiresAt:       lookup.Now.Add(policy.TTL),
 		MaximumEntries:  policy.MaximumEntries,
 	}
+	if policy.NegativeReuse && !assessment.Relevant {
+		entry.TopicHash = lookup.TopicHash
+		entry.GuardHash = lookup.GuardHash
+		entry.QueryEmbedding = append([]float32(nil), lookup.QueryEmbedding...)
+		entry.NegativeReuse = true
+	}
+	return entry
 }
 
-func AssessmentCacheProfile(baseURL, model, outputMode string, maxOutputTokens, maxInputRunes int) string {
+func AssessmentCacheProfile(baseURL, model, outputMode string, maxOutputTokens, maxInputRunes, maxResponseBytes, maxSummaryBytes int) string {
 	hash := sha256.New()
-	_, _ = fmt.Fprintf(hash, "%q%q%q%d%d%q", baseURL, model, outputMode, maxOutputTokens, maxInputRunes, summaryAssessmentProfileVersion)
+	_, _ = fmt.Fprintf(hash, "%q%q%q%d%d%d%d%q", baseURL, model, outputMode, maxOutputTokens, maxInputRunes, maxResponseBytes, maxSummaryBytes, summaryAssessmentProfileVersion)
 	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
-func assessmentTopicsCompatible(left, right []string) bool {
-	if len(left) == 0 || len(right) == 0 {
-		return false
-	}
-	leftSet := make(map[string]struct{}, len(left))
-	for _, value := range left {
-		leftSet[value] = struct{}{}
-	}
-	intersection := 0
-	for _, value := range right {
-		if _, found := leftSet[value]; found {
-			intersection++
-		}
-	}
-	return float64(2*intersection)/float64(len(left)+len(right)) >= 0.8
+func assessmentHMAC(key []byte, namespace, value string) string {
+	hash := hmac.New(sha256.New, key)
+	_, _ = hash.Write([]byte(namespace))
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write([]byte(value))
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 func assessmentTopicTokens(value string) []string {
@@ -230,11 +241,6 @@ func assessmentCosine(left, right []float32) float64 {
 }
 
 func validCacheEmbedding(value []float32) bool { return assessmentCosine(value, value) > 0 }
-
-func digestString(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return fmt.Sprintf("%x", sum[:])
-}
 
 func encodeFloat32Vector(value []float32) []byte {
 	data := make([]byte, len(value)*4)

@@ -508,7 +508,7 @@ func TestAnswerCacheMissesForIncompatibleAnswerMode(t *testing.T) {
 	}
 }
 
-func TestAnswerCacheHitsForSemanticOnlyParaphrase(t *testing.T) {
+func TestAnswerCacheMissesForSemanticOnlyParaphrase(t *testing.T) {
 	retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
 	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
 	service := newCachedTestService(t, retriever, provider)
@@ -524,8 +524,8 @@ func TestAnswerCacheHitsForSemanticOnlyParaphrase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if provider.calls.Load() != 1 {
-		t.Fatalf("provider calls = %d, want semantic-only cache hit", provider.calls.Load())
+	if provider.calls.Load() != 2 {
+		t.Fatalf("provider calls = %d, want semantic-only cache miss", provider.calls.Load())
 	}
 }
 
@@ -550,14 +550,12 @@ func TestAnswerCacheMissesWhenGuardTokensDiffer(t *testing.T) {
 	}
 }
 
-func TestAnswerCacheClassifiesLexicalOverlapAndSemanticOnlyHits(t *testing.T) {
+func TestAnswerCacheDoesNotReuseLexicalOverlapOrSemanticOnlyMatches(t *testing.T) {
 	cache := newTestAnswerCache(t, CachePolicy{
-		Capacity:                   4,
-		TTL:                        time.Minute,
-		MinimumCosine:              0.9,
-		SemanticOnlyMinimumCosine:  0.99,
-		MinimumLexicalTopicOverlap: 0.7,
-		GeneratorProfile:           "generator-v1",
+		Capacity:         4,
+		TTL:              time.Minute,
+		MinimumCosine:    0.9,
+		GeneratorProfile: "generator-v1",
 	})
 	request := validRequest()
 	request.Question = "Node.js concurrency queues"
@@ -569,26 +567,24 @@ func TestAnswerCacheClassifiesLexicalOverlapAndSemanticOnlyHits(t *testing.T) {
 	lexicalRequest := validRequest()
 	lexicalRequest.Question = "Node.js concurrency workers"
 	_, lexicalOutcome := cache.lookup(lexicalRequest, search, evidence)
-	if lexicalOutcome != CacheOutcomeLexicalHit {
-		t.Fatalf("lexical lookup outcome = %q, want %q", lexicalOutcome, CacheOutcomeLexicalHit)
+	if cacheMatchHit(lexicalOutcome) {
+		t.Fatalf("lexical lookup outcome = %q, want near miss", lexicalOutcome)
 	}
 
 	semanticRequest := validRequest()
 	semanticRequest.Question = "Parallel async coordination"
 	_, semanticOutcome := cache.lookup(semanticRequest, search, evidence)
-	if semanticOutcome != CacheOutcomeSemanticOnlyHit {
-		t.Fatalf("semantic lookup outcome = %q, want %q", semanticOutcome, CacheOutcomeSemanticOnlyHit)
+	if cacheMatchHit(semanticOutcome) {
+		t.Fatalf("semantic lookup outcome = %q, want near miss", semanticOutcome)
 	}
 }
 
 func TestAnswerCacheTouchesHitsForLRUEviction(t *testing.T) {
 	cache := newTestAnswerCache(t, CachePolicy{
-		Capacity:                   2,
-		TTL:                        time.Minute,
-		MinimumCosine:              0.9,
-		SemanticOnlyMinimumCosine:  0.99,
-		MinimumLexicalTopicOverlap: 0.8,
-		GeneratorProfile:           "generator-v1",
+		Capacity:         2,
+		TTL:              time.Minute,
+		MinimumCosine:    0.9,
+		GeneratorProfile: "generator-v1",
 	})
 	evidenceSearch := cachedSearch("evidence-1")
 	evidence := selectEvidence(evidenceSearch, testLimits())
@@ -618,12 +614,10 @@ func TestAnswerCacheTouchesHitsForLRUEviction(t *testing.T) {
 
 func TestAnswerCacheReturnsMatchedEntryAfterLRUTouch(t *testing.T) {
 	cache := newTestAnswerCache(t, CachePolicy{
-		Capacity:                   2,
-		TTL:                        time.Minute,
-		MinimumCosine:              0.9,
-		SemanticOnlyMinimumCosine:  0.99,
-		MinimumLexicalTopicOverlap: 0.8,
-		GeneratorProfile:           "generator-v1",
+		Capacity:         2,
+		TTL:              time.Minute,
+		MinimumCosine:    0.9,
+		GeneratorProfile: "generator-v1",
 	})
 	evidenceSearch := cachedSearch("evidence-1")
 	evidence := selectEvidence(evidenceSearch, testLimits())
@@ -645,7 +639,67 @@ func TestAnswerCacheReturnsMatchedEntryAfterLRUTouch(t *testing.T) {
 	}
 }
 
-func TestAnswerCacheHitsWhenCurrentEvidenceAddsUncitedEvidence(t *testing.T) {
+func TestAnswerCacheMissesWhenGeneratorContextChanges(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func([]domain.Evidence) []domain.Evidence
+	}{
+		{
+			name: "add",
+			mutate: func(evidence []domain.Evidence) []domain.Evidence {
+				return append([]domain.Evidence{{EvidenceID: "extra", Passage: "extra trusted evidence", Score: 1}}, evidence...)
+			},
+		},
+		{
+			name: "remove",
+			mutate: func(evidence []domain.Evidence) []domain.Evidence {
+				return evidence[:1]
+			},
+		},
+		{
+			name: "reorder",
+			mutate: func(evidence []domain.Evidence) []domain.Evidence {
+				return []domain.Evidence{evidence[1], evidence[0]}
+			},
+		},
+		{
+			name: "change",
+			mutate: func(evidence []domain.Evidence) []domain.Evidence {
+				evidence[0].Passage = "changed trusted evidence"
+				return evidence
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			initial := cachedSearch("evidence-1")
+			initial.Results = append(initial.Results, domain.Evidence{
+				EvidenceID: "evidence-2",
+				Passage:    "second trusted evidence",
+				Score:      0.9,
+			})
+			retriever := &fakeRetriever{result: initial}
+			provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
+			service := newCachedTestService(t, retriever, provider)
+
+			if _, err := service.Answer(context.Background(), validRequest()); err != nil {
+				t.Fatal(err)
+			}
+			changed := initial
+			changed.Results = test.mutate(append([]domain.Evidence(nil), initial.Results...))
+			retriever.result = changed
+			if _, err := service.Answer(context.Background(), validRequest()); err != nil {
+				t.Fatal(err)
+			}
+
+			if provider.calls.Load() != 2 {
+				t.Fatalf("provider calls = %d, want cache miss", provider.calls.Load())
+			}
+		})
+	}
+}
+
+func TestAnswerCacheIgnoresUnrelatedCorpusSnapshotChanges(t *testing.T) {
 	retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
 	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
 	service := newCachedTestService(t, retriever, provider)
@@ -654,9 +708,7 @@ func TestAnswerCacheHitsWhenCurrentEvidenceAddsUncitedEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	changed := cachedSearch("evidence-1")
-	changed.Results = append([]domain.Evidence{
-		{EvidenceID: "extra", Passage: "extra trusted evidence", Score: 1},
-	}, changed.Results...)
+	changed.CorpusSnapshot = "snapshot-2"
 	retriever.result = changed
 	if _, err := service.Answer(context.Background(), validRequest()); err != nil {
 		t.Fatal(err)
@@ -667,12 +719,128 @@ func TestAnswerCacheHitsWhenCurrentEvidenceAddsUncitedEvidence(t *testing.T) {
 	}
 }
 
+func TestAnswerCacheRequiresCompleteAnswerModeSet(t *testing.T) {
+	retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
+	service := newCachedTestService(t, retriever, provider)
+
+	first := validRequest()
+	first.Question = "Give examples and risks of Node.js concurrency"
+	if _, err := service.Answer(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	second := validRequest()
+	second.Question = "Give examples of Node.js concurrency"
+	if _, err := service.Answer(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	if provider.calls.Load() != 2 {
+		t.Fatalf("provider calls = %d, want cache miss", provider.calls.Load())
+	}
+}
+
+func TestAnswerCacheTreatsNegationAsGuard(t *testing.T) {
+	retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
+	service := newCachedTestService(t, retriever, provider)
+
+	first := validRequest()
+	first.Question = "Use Node.js 18 concurrency"
+	if _, err := service.Answer(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	second := validRequest()
+	second.Question = "Do not use Node.js 18 concurrency"
+	if _, err := service.Answer(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	if provider.calls.Load() != 2 {
+		t.Fatalf("provider calls = %d, want cache miss", provider.calls.Load())
+	}
+}
+
+func TestAnswerRequestsQueryMetadataOnlyWhenCacheEnabled(t *testing.T) {
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
+	disabledRetriever := &fakeRetriever{result: searchResult("evidence-1")}
+	disabled := newTestService(t, disabledRetriever, provider, testLimits())
+	if _, err := disabled.Answer(context.Background(), validRequest()); err != nil {
+		t.Fatal(err)
+	}
+	if disabledRetriever.input.IncludeQueryMatchMetadata {
+		t.Fatal("disabled cache requested query-match metadata")
+	}
+
+	enabledRetriever := &fakeRetriever{result: cachedSearch("evidence-1")}
+	enabled := newCachedTestService(t, enabledRetriever, provider)
+	if _, err := enabled.Answer(context.Background(), validRequest()); err != nil {
+		t.Fatal(err)
+	}
+	if !enabledRetriever.input.IncludeQueryMatchMetadata {
+		t.Fatal("enabled cache did not request query-match metadata")
+	}
+}
+
+func TestGeneratorCacheProfileIncludesVersionAndOutputLimits(t *testing.T) {
+	limits := testLimits()
+	baseline := generatorCacheProfile(answerCacheProfileVersion, "generator-v1", limits)
+	if baseline == generatorCacheProfile("answer-cache-v3", "generator-v1", limits) {
+		t.Fatal("cache profile did not change with profile version")
+	}
+	if baseline == generatorCacheProfile(answerCacheProfileVersion, "generator-v2", limits) {
+		t.Fatal("cache profile did not change with generator profile")
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*Limits)
+	}{
+		{name: "maximum evidence", mutate: func(value *Limits) { value.MaximumEvidence++ }},
+		{name: "maximum context bytes", mutate: func(value *Limits) { value.MaximumContextBytes++ }},
+		{name: "maximum evidence bytes", mutate: func(value *Limits) { value.MaximumEvidenceBytes++ }},
+		{name: "maximum segments", mutate: func(value *Limits) { value.MaximumSegments++ }},
+		{name: "maximum answer bytes", mutate: func(value *Limits) { value.MaximumAnswerBytes++ }},
+		{name: "maximum summary runes", mutate: func(value *Limits) { value.MaximumSummaryRunes++ }},
+		{name: "maximum citations", mutate: func(value *Limits) { value.MaximumCitations++ }},
+		{name: "maximum output tokens", mutate: func(value *Limits) { value.MaximumOutputTokens++ }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			changed := limits
+			test.mutate(&changed)
+			if baseline == generatorCacheProfile(answerCacheProfileVersion, "generator-v1", changed) {
+				t.Fatal("cache profile did not change with output limit")
+			}
+		})
+	}
+}
+
+func TestAnswerCacheTTLUsesInjectedClock(t *testing.T) {
+	cache := newTestAnswerCache(t, CachePolicy{
+		Capacity:         2,
+		TTL:              time.Second,
+		MinimumCosine:    0.9,
+		GeneratorProfile: "generator-v1",
+	})
+	now := time.Date(2026, time.July, 30, 12, 0, 0, 0, time.UTC)
+	cache.now = func() time.Time { return now }
+	request := validRequest()
+	search := cachedSearch("evidence-1")
+	evidence := selectEvidence(search, testLimits())
+	cache.store(request, search, evidence, []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}})
+
+	now = now.Add(time.Second)
+	if _, outcome := cache.lookup(request, search, evidence); outcome != CacheOutcomeStale {
+		t.Fatalf("lookup outcome = %q, want stale", outcome)
+	}
+}
+
 func TestAnswerCacheMissesWhenHardMetadataChanges(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*domain.SearchResult, *domain.SearchRequest)
 	}{
-		{name: "corpus snapshot", mutate: func(search *domain.SearchResult, _ *domain.SearchRequest) { search.CorpusSnapshot = "snapshot-2" }},
 		{name: "selected evidence", mutate: func(search *domain.SearchResult, _ *domain.SearchRequest) {
 			search.Results[0].Passage = "new trusted evidence"
 		}},
@@ -763,6 +931,14 @@ func TestCanonicalFiltersKeepsControlCharacterValuesDistinct(t *testing.T) {
 	}
 }
 
+func TestEvidenceFingerprintKeepsAdjacentNumericFieldsDistinct(t *testing.T) {
+	left := domain.ContextEvidence{EvidenceID: "evidence-1", PageStart: 1, PageEnd: 23}
+	right := domain.ContextEvidence{EvidenceID: "evidence-1", PageStart: 12, PageEnd: 3}
+	if evidenceProjectionFingerprint(left) == evidenceProjectionFingerprint(right) {
+		t.Fatal("distinct page ranges share an evidence fingerprint")
+	}
+}
+
 func newTestService(t *testing.T, retriever Retriever, generator AnswerGenerator, limits Limits) *Service {
 	t.Helper()
 	service, err := NewService(retriever, generator, &fakeObserver{}, limits, testRequestPolicy())
@@ -781,12 +957,10 @@ func newCachedTestService(t *testing.T, retriever Retriever, generator AnswerGen
 		testLimits(),
 		testRequestPolicy(),
 		CachePolicy{
-			Capacity:                   8,
-			TTL:                        time.Minute,
-			MinimumCosine:              0.9,
-			SemanticOnlyMinimumCosine:  0.99,
-			MinimumLexicalTopicOverlap: 0.8,
-			GeneratorProfile:           "generator-v1",
+			Capacity:         8,
+			TTL:              time.Minute,
+			MinimumCosine:    0.9,
+			GeneratorProfile: "generator-v1",
 		},
 	)
 	if err != nil {

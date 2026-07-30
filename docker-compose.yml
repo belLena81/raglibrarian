@@ -549,6 +549,11 @@ services:
       RETRIEVAL_SUMMARY_CACHE_MAX_ENTRIES: "${RETRIEVAL_SUMMARY_CACHE_MAX_ENTRIES:-0}"
       RETRIEVAL_SUMMARY_CACHE_NEGATIVE_REUSE: "${RETRIEVAL_SUMMARY_CACHE_NEGATIVE_REUSE:-false}"
       RETRIEVAL_SUMMARY_CACHE_NEGATIVE_MINIMUM_COSINE: "${RETRIEVAL_SUMMARY_CACHE_NEGATIVE_MINIMUM_COSINE:-0.985}"
+      RETRIEVAL_SUMMARY_CACHE_NEGATIVE_CANDIDATE_LIMIT: "${RETRIEVAL_SUMMARY_CACHE_NEGATIVE_CANDIDATE_LIMIT:-32}"
+      RETRIEVAL_SUMMARY_CACHE_HMAC_KEY_FILE: /run/secrets/retrieval_summary_cache_hmac_key
+      RETRIEVAL_SUMMARY_CACHE_CLEANUP_INTERVAL: "${RETRIEVAL_SUMMARY_CACHE_CLEANUP_INTERVAL:-15m}"
+      RETRIEVAL_SUMMARY_CACHE_CLEANUP_TIMEOUT: "${RETRIEVAL_SUMMARY_CACHE_CLEANUP_TIMEOUT:-30s}"
+      RETRIEVAL_SUMMARY_CACHE_CLEANUP_BATCH_SIZE: "${RETRIEVAL_SUMMARY_CACHE_CLEANUP_BATCH_SIZE:-256}"
       RETRIEVAL_SUMMARY_LLM_REQUESTS_PER_MINUTE: "${RETRIEVAL_SUMMARY_LLM_REQUESTS_PER_MINUTE:-15}"
       RETRIEVAL_RECIPROCAL_RANK_FUSION_K: "${RETRIEVAL_RECIPROCAL_RANK_FUSION_K:-60}"
       RETRIEVAL_QDRANT_DOCUMENT_EVIDENCE_LIMIT: "${RETRIEVAL_QDRANT_DOCUMENT_EVIDENCE_LIMIT:-3}"
@@ -566,6 +571,7 @@ services:
     secrets:
       - retrieval_search_dsn
       - retrieval_qdrant_read_api_key
+      - retrieval_summary_cache_hmac_key
       - answer_llm_api_key
       - internal_ca
       - retrieval_tls_cert
@@ -614,8 +620,6 @@ services:
       ANSWER_CACHE_CAPACITY: "${ANSWER_CACHE_CAPACITY:-0}"
       ANSWER_CACHE_TTL: "${ANSWER_CACHE_TTL:-0s}"
       ANSWER_CACHE_MINIMUM_COSINE: "${ANSWER_CACHE_MINIMUM_COSINE:-0.95}"
-      ANSWER_CACHE_SEMANTIC_ONLY_MINIMUM_COSINE: "${ANSWER_CACHE_SEMANTIC_ONLY_MINIMUM_COSINE:-0.985}"
-      ANSWER_CACHE_MINIMUM_LEXICAL_TOPIC_OVERLAP: "${ANSWER_CACHE_MINIMUM_LEXICAL_TOPIC_OVERLAP:-0.8}"
       ANSWER_TLS_CA_FILE: /run/secrets/internal_ca
       ANSWER_TLS_CERT_FILE: /run/secrets/answer_tls_cert
       ANSWER_TLS_KEY_FILE: /run/secrets/answer_tls_key
@@ -1035,6 +1039,8 @@ secrets:
     file: ${SECRET_DIR:-./.dev/secrets}/retrieval_qdrant_api_key
   retrieval_qdrant_read_api_key:
     file: ${SECRET_DIR:-./.dev/secrets}/retrieval_qdrant_read_api_key
+  retrieval_summary_cache_hmac_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/retrieval_summary_cache_hmac_key
   edge_status_rabbitmq_uri_1:
     file: ${SECRET_DIR:-./.dev/secrets}/edge_status_rabbitmq_uri_1
   edge_status_rabbitmq_uri_2:

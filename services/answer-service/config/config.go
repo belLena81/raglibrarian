@@ -105,8 +105,6 @@ func Load() (Config, error) {
 	cacheCapacity, cacheCapacityErr := nonNegativeInteger("ANSWER_CACHE_CAPACITY", 0, 10000)
 	cacheTTL, cacheTTLErr := nonNegativeDuration("ANSWER_CACHE_TTL", 0, 24*time.Hour)
 	cacheMinimumCosine, cacheMinimumCosineErr := cacheCosine("ANSWER_CACHE_MINIMUM_COSINE", 0.95)
-	cacheSemanticOnlyMinimumCosine, cacheSemanticOnlyMinimumCosineErr := cacheCosine("ANSWER_CACHE_SEMANTIC_ONLY_MINIMUM_COSINE", 0.985)
-	cacheMinimumLexicalTopicOverlap, cacheMinimumLexicalTopicOverlapErr := cacheCosine("ANSWER_CACHE_MINIMUM_LEXICAL_TOPIC_OVERLAP", 0.8)
 	maximumResultLimit32 := uint32(maximumResultLimit) // #nosec G115 -- bounded above to 256.
 	configuration := Config{
 		GRPCAddress:      os.Getenv("ANSWER_GRPC_ADDR"),
@@ -156,11 +154,9 @@ func Load() (Config, error) {
 		MetricsWriteTimeout:      metricsWriteTimeout,
 		MetricsIdleTimeout:       metricsIdleTimeout,
 		Cache: application.CachePolicy{
-			Capacity:                   cacheCapacity,
-			TTL:                        cacheTTL,
-			MinimumCosine:              cacheMinimumCosine,
-			SemanticOnlyMinimumCosine:  cacheSemanticOnlyMinimumCosine,
-			MinimumLexicalTopicOverlap: cacheMinimumLexicalTopicOverlap,
+			Capacity:      cacheCapacity,
+			TTL:           cacheTTL,
+			MinimumCosine: cacheMinimumCosine,
 			GeneratorProfile: strings.Join([]string{
 				os.Getenv("ANSWER_LLM_BASE_URL"), os.Getenv("ANSWER_LLM_MODEL"),
 			}, "\x00"),
@@ -187,7 +183,7 @@ func Load() (Config, error) {
 		requestErr, retrievalErr, providerErr, readinessProbeErr, readinessPollErr, shutdownErr, metricsReadErr,
 		providerHTTPTimeoutErr,
 		metricsReadHeaderErr, metricsMaxHeaderBytesErr, metricsWriteErr, metricsIdleErr,
-		cacheCapacityErr, cacheTTLErr, cacheMinimumCosineErr, cacheSemanticOnlyMinimumCosineErr, cacheMinimumLexicalTopicOverlapErr,
+		cacheCapacityErr, cacheTTLErr, cacheMinimumCosineErr,
 	}
 	for _, err := range errs {
 		if err != nil {
@@ -200,7 +196,6 @@ func Load() (Config, error) {
 		configuration.Generator.APIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		configuration.Generator.MaxCandidateBytes > configuration.Generator.MaxResponseBytes ||
 		(configuration.Cache.Capacity == 0) != (configuration.Cache.TTL == 0) ||
-		configuration.Cache.SemanticOnlyMinimumCosine < configuration.Cache.MinimumCosine ||
 		(configuration.Generator.HTTPClientTimeout > 0 && configuration.Generator.HTTPClientTimeout > configuration.Limits.GeneratorTimeout) ||
 		configuration.Limits.MaximumEvidenceBytes > configuration.Limits.MaximumContextBytes || configuration.Limits.RetrievalTimeout >= configuration.Limits.RequestTimeout ||
 		configuration.Limits.GeneratorTimeout >= configuration.Limits.RequestTimeout {

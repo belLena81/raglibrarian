@@ -18,6 +18,7 @@ files=(
   retrieval_planner_dsn retrieval_planner_host_dsn retrieval_cleanup_dsn retrieval_cleanup_host_dsn
   retrieval_minio_access_key retrieval_minio_secret_key retrieval_consumer_rabbitmq_uri
   retrieval_publisher_rabbitmq_uri catalog_retrieval_rabbitmq_uri retrieval_qdrant_api_key retrieval_qdrant_read_api_key
+  retrieval_summary_cache_hmac_key
 )
 for file in "${files[@]}"; do
   [[ ! -e "$dir/$file" ]] || { echo "refusing to overwrite existing development secret: $dir/$file" >&2; exit 1; }
@@ -57,6 +58,7 @@ printf 'amqp://retrieval_publisher:%s@rabbitmq:5672/\n' "$retrieval_publisher_pa
 printf 'amqp://catalog_retrieval:%s@rabbitmq:5672/\n' "$catalog_retrieval_password" > "$dir/catalog_retrieval_rabbitmq_uri"
 openssl rand -hex 32 > "$dir/retrieval_qdrant_api_key"
 openssl rand -hex 32 > "$dir/retrieval_qdrant_read_api_key"
+openssl rand -hex 32 > "$dir/retrieval_summary_cache_hmac_key"
 
 updated=$(mktemp "$dir/rabbitmq_definitions.XXXXXX")
 trap 'rm -f "$updated"' EXIT

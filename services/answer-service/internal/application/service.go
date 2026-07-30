@@ -98,7 +98,13 @@ func NewService(retriever Retriever, generator AnswerGenerator, observer Observe
 		inflight:      newAnswerInflight(),
 	}
 	if len(cachePolicies) == 1 {
-		cache, err := newAnswerCache(cachePolicies[0])
+		cachePolicy := cachePolicies[0]
+		cachePolicy.GeneratorProfile = generatorCacheProfile(
+			answerCacheProfileVersion,
+			cachePolicy.GeneratorProfile,
+			limits,
+		)
+		cache, err := newAnswerCache(cachePolicy)
 		if err != nil {
 			return nil, errors.New("invalid answer service configuration")
 		}
@@ -156,7 +162,9 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 	ctx, cancel := context.WithTimeout(parent, s.limits.RequestTimeout)
 	defer cancel()
 	retrievalContext, retrievalCancel := context.WithTimeout(ctx, s.limits.RetrievalTimeout)
-	search, err := s.retriever.Search(retrievalContext, normalized)
+	retrievalRequest := normalized
+	retrievalRequest.IncludeQueryMatchMetadata = s.cache != nil
+	search, err := s.retriever.Search(retrievalContext, retrievalRequest)
 	retrievalCancel()
 	if err != nil {
 		s.observer.Failure(OutcomeRetrievalFailure, "retrieval", failureReasonCode(err, "retrieval"), time.Since(started))

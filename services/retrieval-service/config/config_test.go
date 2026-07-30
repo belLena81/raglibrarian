@@ -118,8 +118,15 @@ func TestLoadAcceptsOptionalEvidenceAssessorConfiguration(t *testing.T) {
 	if configuration.EvidenceAssessor.CacheTTL != 0 ||
 		configuration.EvidenceAssessor.CacheMaxEntries != 0 ||
 		configuration.EvidenceAssessor.CacheNegativeReuse ||
-		configuration.EvidenceAssessor.CacheNegativeMinimumCosine != DefaultSummaryCacheNegativeMinimumCosine {
+		configuration.EvidenceAssessor.CacheNegativeMinimumCosine != DefaultSummaryCacheNegativeMinimumCosine ||
+		configuration.EvidenceAssessor.CacheNegativeCandidateLimit != DefaultSummaryCacheNegativeCandidateLimit ||
+		configuration.EvidenceAssessor.CacheHMACKeyFile != "" {
 		t.Fatalf("unexpected summary cache defaults: %#v", configuration.EvidenceAssessor)
+	}
+	if configuration.SummaryCacheCleanupInterval != DefaultSummaryCacheCleanupInterval ||
+		configuration.SummaryCacheCleanupTimeout != DefaultSummaryCacheCleanupTimeout ||
+		configuration.SummaryCacheCleanupBatchSize != DefaultSummaryCacheCleanupBatchSize {
+		t.Fatalf("unexpected summary cache cleanup defaults: %#v", configuration)
 	}
 	if configuration.SearchTimeout != 25*time.Second {
 		t.Fatalf("SearchTimeout = %s, want 25s", configuration.SearchTimeout)
@@ -399,6 +406,11 @@ func TestLoadOverridesEvidenceAssessorSummaryCache(t *testing.T) {
 	t.Setenv("RETRIEVAL_SUMMARY_CACHE_MAX_ENTRIES", "4096")
 	t.Setenv("RETRIEVAL_SUMMARY_CACHE_NEGATIVE_REUSE", "true")
 	t.Setenv("RETRIEVAL_SUMMARY_CACHE_NEGATIVE_MINIMUM_COSINE", "0.99")
+	t.Setenv("RETRIEVAL_SUMMARY_CACHE_NEGATIVE_CANDIDATE_LIMIT", "17")
+	t.Setenv("RETRIEVAL_SUMMARY_CACHE_HMAC_KEY_FILE", "/run/secrets/summary-cache-hmac")
+	t.Setenv("RETRIEVAL_SUMMARY_CACHE_CLEANUP_INTERVAL", "10m")
+	t.Setenv("RETRIEVAL_SUMMARY_CACHE_CLEANUP_TIMEOUT", "20s")
+	t.Setenv("RETRIEVAL_SUMMARY_CACHE_CLEANUP_BATCH_SIZE", "128")
 	t.Setenv("RETRIEVAL_SEARCH_TIMEOUT", "25s")
 
 	configuration, err := Load()
@@ -408,8 +420,15 @@ func TestLoadOverridesEvidenceAssessorSummaryCache(t *testing.T) {
 	if configuration.EvidenceAssessor.CacheTTL != 6*time.Hour ||
 		configuration.EvidenceAssessor.CacheMaxEntries != 4096 ||
 		!configuration.EvidenceAssessor.CacheNegativeReuse ||
-		configuration.EvidenceAssessor.CacheNegativeMinimumCosine != 0.99 {
+		configuration.EvidenceAssessor.CacheNegativeMinimumCosine != 0.99 ||
+		configuration.EvidenceAssessor.CacheNegativeCandidateLimit != 17 ||
+		configuration.EvidenceAssessor.CacheHMACKeyFile != "/run/secrets/summary-cache-hmac" {
 		t.Fatalf("unexpected summary cache configuration: %#v", configuration.EvidenceAssessor)
+	}
+	if configuration.SummaryCacheCleanupInterval != 10*time.Minute ||
+		configuration.SummaryCacheCleanupTimeout != 20*time.Second ||
+		configuration.SummaryCacheCleanupBatchSize != 128 {
+		t.Fatalf("unexpected summary cache cleanup configuration: %#v", configuration)
 	}
 }
 
@@ -440,6 +459,14 @@ func TestLoadRejectsInvalidEvidenceAssessorSummaryCache(t *testing.T) {
 		{key: "RETRIEVAL_SUMMARY_CACHE_NEGATIVE_REUSE", value: "sometimes"},
 		{key: "RETRIEVAL_SUMMARY_CACHE_NEGATIVE_MINIMUM_COSINE", value: "0"},
 		{key: "RETRIEVAL_SUMMARY_CACHE_NEGATIVE_MINIMUM_COSINE", value: "1.01"},
+		{key: "RETRIEVAL_SUMMARY_CACHE_NEGATIVE_CANDIDATE_LIMIT", value: "0"},
+		{key: "RETRIEVAL_SUMMARY_CACHE_NEGATIVE_CANDIDATE_LIMIT", value: "257"},
+		{key: "RETRIEVAL_SUMMARY_CACHE_CLEANUP_INTERVAL", value: "59s"},
+		{key: "RETRIEVAL_SUMMARY_CACHE_CLEANUP_INTERVAL", value: "25h"},
+		{key: "RETRIEVAL_SUMMARY_CACHE_CLEANUP_TIMEOUT", value: "999ms"},
+		{key: "RETRIEVAL_SUMMARY_CACHE_CLEANUP_TIMEOUT", value: "6m"},
+		{key: "RETRIEVAL_SUMMARY_CACHE_CLEANUP_BATCH_SIZE", value: "0"},
+		{key: "RETRIEVAL_SUMMARY_CACHE_CLEANUP_BATCH_SIZE", value: "4097"},
 	}
 	for _, test := range tests {
 		t.Run(test.key+"="+test.value, func(t *testing.T) {
@@ -473,9 +500,28 @@ func TestLoadRejectsEnabledEvidenceAssessorSummaryCacheWithoutRowCap(t *testing.
 	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
 	t.Setenv("RETRIEVAL_SUMMARY_CACHE_TTL", "6h")
 	t.Setenv("RETRIEVAL_SUMMARY_CACHE_MAX_ENTRIES", "0")
+	t.Setenv("RETRIEVAL_SUMMARY_CACHE_HMAC_KEY_FILE", "/run/secrets/summary-cache-hmac")
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() accepted enabled summary cache without a positive row cap")
+	}
+}
+
+func TestLoadRejectsEnabledEvidenceAssessorSummaryCacheWithoutHMACKeyFile(t *testing.T) {
+	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+	t.Setenv("RETRIEVAL_SUMMARY_CACHE_TTL", "6h")
+	t.Setenv("RETRIEVAL_SUMMARY_CACHE_MAX_ENTRIES", "100")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted enabled summary cache without an HMAC key file")
 	}
 }
 

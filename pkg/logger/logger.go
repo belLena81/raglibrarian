@@ -95,6 +95,8 @@ var allowedFieldNames = map[string]struct{}{
 	"stack_fingerprint": {}, "stack_trace": {}, "actor_id": {}, "book_id": {}, "checksum_sha256": {}, "request_url": {}, "request_path": {}, "request_model": {}, "request_body_sha256": {},
 	"request_body_preview": {}, "response_body_sha256": {}, "response_body_preview": {}, "response_body_raw_prefix": {}, "response_body_raw_prefix_bytes": {}, "byte_size": {}, "tag_count": {}, "page_size": {}, "result_count": {}, "role": {}, "account_status": {},
 	"segment_count": {}, "summary_length": {}, "cache_outcome": {},
+	"cache_hits": {}, "cache_negative_hits": {}, "cache_misses": {}, "cache_semantic_mismatches": {}, "cache_guard_mismatches": {},
+	"cache_lookup_errors": {}, "cache_stores": {}, "cache_store_errors": {}, "provider_calls": {}, "local_fallbacks": {},
 }
 
 func safeFieldSuffix(fields []zapcore.Field) string {
@@ -191,7 +193,9 @@ func validDiagnosticField(key string, fieldType zapcore.FieldType, value string)
 		return fieldType == zapcore.StringType && opaqueIDPattern.MatchString(value)
 	case "byte_size", "tag_count", "page_size", "result_count", "response_body_raw_prefix_bytes":
 		return integerField(fieldType) && parseBoundedInt(value, 0, 1<<53-1)
-	case "segment_count", "summary_length":
+	case "segment_count", "summary_length",
+		"cache_hits", "cache_negative_hits", "cache_misses", "cache_semantic_mismatches", "cache_guard_mismatches",
+		"cache_lookup_errors", "cache_stores", "cache_store_errors", "provider_calls", "local_fallbacks":
 		return integerField(fieldType) && parseBoundedInt(value, 0, 1<<53-1)
 	case "role":
 		return fieldType == zapcore.StringType && (value == "admin" || value == "librarian" || value == "reader")

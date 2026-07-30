@@ -142,18 +142,20 @@ and [ephemeral storage](https://docs.aws.amazon.com/lambda/latest/dg/configurati
   still runs before any cache lookup so corpus visibility, filters, and selected
   evidence are current. A reusable cached answer requires matching auth scope,
   filters, limit, minimum evidence score, Retrieval profile, generator profile,
-  Retrieval-owned corpus snapshot, selected cited evidence projection, answer
-  intent, normalized topic compatibility, and query embedding similarity. Logs
-  and metrics expose only fixed cache outcome labels, never raw queries,
-  passages, embeddings, prompts, or cached answer bodies.
+  the complete ordered generator evidence context, answer intent, exact
+  canonical topic and guard-token sets, and, for non-exact normalized queries,
+  query embedding similarity. Broader lexical or semantic matches are measured
+  as near misses and never skip generation. Logs and metrics expose only
+  bounded sanitized cache diagnostics, never raw queries, passages, embeddings,
+  prompts, fingerprints, or cached answer bodies.
 - Retrieval summary assessment caching is separate from the final-answer cache
   and remains disabled unless `RETRIEVAL_SUMMARY_CACHE_TTL` is positive. It
-  stores provider profile, hashed normalized question/passage keys, query-topic
-  tokens, guard tokens, query embedding bytes, relevance, summary, and expiry in
-  Retrieval-owned PostgreSQL state. Similar-query reuse is deliberately limited
-  to negative relevance decisions; positive summaries require an exact
-  question/passage cache key so a summary written for one wording is not reused
-  as grounded content for another.
+  stores provider profile, keyed normalized question/passage fingerprints,
+  relevance, summary, and expiry in Retrieval-owned PostgreSQL state. Query
+  semantic metadata is retained only when optional negative reuse is enabled.
+  Similar-query reuse is deliberately limited to negative relevance decisions;
+  positive summaries require an exact question/passage cache key so a summary
+  written for one wording is not reused as grounded content for another.
 
 ## Milestone 1 — secure service foundation
 
@@ -438,10 +440,20 @@ Implementation:
   conditions.
 - `RETRIEVAL_SUMMARY_CACHE_TTL` enables the optional Retrieval-side
   summary-assessment cache when positive. `RETRIEVAL_SUMMARY_CACHE_MAX_ENTRIES`
-  must also be positive when the cache is enabled and bounds stored rows.
+  must also be positive when the cache is enabled and bounds stored rows. An
+  enabled cache also requires a stable secret at
+  `RETRIEVAL_SUMMARY_CACHE_HMAC_KEY_FILE`; changing it intentionally makes
+  existing keyed entries unreachable until expiry cleanup removes them.
   `RETRIEVAL_SUMMARY_CACHE_NEGATIVE_REUSE` controls similar-query negative
   reuse, and
   `RETRIEVAL_SUMMARY_CACHE_NEGATIVE_MINIMUM_COSINE` gates semantic compatibility.
+  `RETRIEVAL_SUMMARY_CACHE_NEGATIVE_CANDIDATE_LIMIT` bounds the number of
+  negative rows considered for one lookup.
+  `RETRIEVAL_SUMMARY_CACHE_CLEANUP_INTERVAL`,
+  `RETRIEVAL_SUMMARY_CACHE_CLEANUP_TIMEOUT`, and
+  `RETRIEVAL_SUMMARY_CACHE_CLEANUP_BATCH_SIZE` bound the independent expiry
+  cleanup. Cleanup runs at startup and periodically even when cache writes are
+  disabled so TTL remains a retention boundary.
   The default is disabled (`0s`) so retrieval-side LLM behavior remains
   unchanged until explicitly configured.
 - TEI embedding diagnostics always log response byte count and SHA-256 digest.

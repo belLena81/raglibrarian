@@ -19,16 +19,15 @@ import (
 // capacity or TTL disables caching. Profiles distinguish runtime policies that
 // can generate materially different answers from the same evidence.
 type CachePolicy struct {
-	Capacity                   int
-	TTL                        time.Duration
-	MinimumCosine              float64
-	SemanticOnlyMinimumCosine  float64
-	MinimumLexicalTopicOverlap float64
-	GeneratorProfile           string
+	Capacity         int
+	TTL              time.Duration
+	MinimumCosine    float64
+	GeneratorProfile string
 }
 
 type answerCache struct {
 	policy  CachePolicy
+	now     func() time.Time
 	mu      sync.Mutex
 	entries []cacheEntry
 }
@@ -46,31 +45,30 @@ type cacheKey struct {
 	filters              string
 	limit                uint32
 	minimumEvidenceScore float64
-	corpusSnapshot       string
 	retrievalProfile     string
 	generatorProfile     string
+	contextFingerprint   string
 }
 
 type cacheFlightKey struct {
-	key                 cacheKey
-	normalizedQuery     string
-	mode                answerMode
-	evidenceFingerprint string
+	key             cacheKey
+	normalizedQuery string
+	modes           string
 }
 
 type queryMatch struct {
 	normalizedQuery  string
 	topicTokens      []string
 	guardTokens      []string
-	mode             answerMode
+	modes            []answerMode
 	embedding        []float32
 	embeddingProfile string
-	servedModes      map[answerMode]struct{}
 }
 
 type answerMode string
 
 const (
+	answerCacheProfileVersion            = "answer-cache-v2"
 	answerModeOverview        answerMode = "overview"
 	answerModeExamples        answerMode = "examples"
 	answerModeSteps           answerMode = "steps"
@@ -107,12 +105,14 @@ func newAnswerCache(policy CachePolicy) (*answerCache, error) {
 	}
 	if policy.Capacity < 1 || policy.Capacity > 10000 || policy.TTL < time.Second ||
 		policy.MinimumCosine <= 0 || policy.MinimumCosine > 1 ||
-		policy.SemanticOnlyMinimumCosine < policy.MinimumCosine || policy.SemanticOnlyMinimumCosine > 1 ||
-		policy.MinimumLexicalTopicOverlap <= 0 || policy.MinimumLexicalTopicOverlap > 1 ||
 		strings.TrimSpace(policy.GeneratorProfile) == "" {
 		return nil, errInvalidCachePolicy
 	}
-	return &answerCache{policy: policy, entries: make([]cacheEntry, 0, policy.Capacity)}, nil
+	return &answerCache{
+		policy:  policy,
+		now:     time.Now,
+		entries: make([]cacheEntry, 0, policy.Capacity),
+	}, nil
 }
 
 // lookup runs only after the live Retrieval call and evidence selection. This
@@ -123,7 +123,7 @@ func (c *answerCache) lookup(request domain.SearchRequest, search domain.SearchR
 	}
 	key := c.key(request, search, evidence)
 	match := newQueryMatch(request.Question, search)
-	now := time.Now()
+	now := c.now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	outcome := CacheOutcomeMiss
@@ -143,11 +143,8 @@ func (c *answerCache) lookup(request domain.SearchRequest, search domain.SearchR
 			outcome = matchOutcome
 			continue
 		}
-		if _, allowed := entry.match.servedModes[match.mode]; !allowed || !cachedSegmentsMatchEvidence(entry.segments, evidence) {
-			outcome = CacheOutcomeModeMismatch
-			if _, allowed := entry.match.servedModes[match.mode]; allowed {
-				outcome = CacheOutcomeEvidenceMismatch
-			}
+		if !cachedSegmentsMatchEvidence(entry.segments, evidence) {
+			outcome = CacheOutcomeEvidenceMismatch
 			continue
 		}
 		if !cachedEvidenceProjectionMatches(entry.segments, entry.evidenceProjection, evidence) {
@@ -166,7 +163,7 @@ func (c *answerCache) store(request domain.SearchRequest, search domain.SearchRe
 		return
 	}
 	entry := cacheEntry{
-		created:            time.Now(),
+		created:            c.now(),
 		key:                c.key(request, search, evidence),
 		match:              newQueryMatch(request.Question, search),
 		evidenceProjection: evidenceProjectionFingerprints(evidence),
@@ -195,9 +192,9 @@ func (c *answerCache) key(request domain.SearchRequest, search domain.SearchResu
 		filters:              canonicalFilters(request.Filters),
 		limit:                request.Limit,
 		minimumEvidenceScore: request.MinimumEvidenceScore,
-		corpusSnapshot:       search.CorpusSnapshot,
 		retrievalProfile:     search.RetrievalProfile,
 		generatorProfile:     c.policy.GeneratorProfile,
+		contextFingerprint:   evidenceFingerprint(evidence),
 	}
 }
 
@@ -207,60 +204,54 @@ func (c *answerCache) flightKey(request domain.SearchRequest, search domain.Sear
 	}
 	match := newQueryMatch(request.Question, search)
 	return cacheFlightKey{
-		key:                 c.key(request, search, evidence),
-		normalizedQuery:     match.normalizedQuery,
-		mode:                match.mode,
-		evidenceFingerprint: evidenceFingerprint(evidence),
+		key:             c.key(request, search, evidence),
+		normalizedQuery: match.normalizedQuery,
+		modes:           canonicalAnswerModes(match.modes),
 	}, true
 }
 
 func cacheableSearch(search domain.SearchResult) bool {
 	return strings.TrimSpace(search.EmbeddingProfile) != "" &&
 		strings.TrimSpace(search.RetrievalProfile) != "" &&
-		strings.TrimSpace(search.CorpusSnapshot) != "" &&
 		validEmbedding(search.QueryEmbedding)
 }
 
 func newQueryMatch(question string, search domain.SearchResult) queryMatch {
-	mode := detectAnswerMode(question)
 	return queryMatch{
 		normalizedQuery:  normalizeQuery(question),
 		topicTokens:      topicTokens(question),
 		guardTokens:      guardTokens(question),
-		mode:             mode,
+		modes:            detectAnswerModes(question),
 		embedding:        append([]float32(nil), search.QueryEmbedding...),
 		embeddingProfile: search.EmbeddingProfile,
-		servedModes:      map[answerMode]struct{}{mode: {}},
 	}
 }
 
 func cacheMatchHit(outcome CacheOutcome) bool {
-	return outcome == CacheOutcomeHit ||
-		outcome == CacheOutcomeLexicalHit ||
-		outcome == CacheOutcomeSemanticOnlyHit
+	return outcome == CacheOutcomeHit
 }
 
 func queriesMatch(current, cached queryMatch, policy CachePolicy) CacheOutcome {
 	if current.embeddingProfile != cached.embeddingProfile {
 		return CacheOutcomeSemanticMismatch
 	}
+	if current.normalizedQuery == cached.normalizedQuery {
+		return CacheOutcomeHit
+	}
 	if !sameTokens(current.guardTokens, cached.guardTokens) {
 		return CacheOutcomeGuardMismatch
+	}
+	if !sameAnswerModes(current.modes, cached.modes) {
+		return CacheOutcomeModeMismatch
+	}
+	if !sameTokens(current.topicTokens, cached.topicTokens) {
+		return CacheOutcomeTopicMismatch
 	}
 	cosine := cosineSimilarity(current.embedding, cached.embedding)
 	if cosine < policy.MinimumCosine {
 		return CacheOutcomeSemanticMismatch
 	}
-	if current.normalizedQuery == cached.normalizedQuery || topicContains(current.topicTokens, cached.topicTokens) {
-		return CacheOutcomeHit
-	}
-	if topicOverlap(current.topicTokens, cached.topicTokens) >= policy.MinimumLexicalTopicOverlap {
-		return CacheOutcomeLexicalHit
-	}
-	if cosine >= policy.SemanticOnlyMinimumCosine {
-		return CacheOutcomeSemanticOnlyHit
-	}
-	return CacheOutcomeTopicMismatch
+	return CacheOutcomeHit
 }
 
 func normalizeQuery(value string) string {
@@ -269,7 +260,7 @@ func normalizeQuery(value string) string {
 
 func topicTokens(value string) []string {
 	modeWords := map[string]struct{}{
-		"example": {}, "examples": {}, "sample": {}, "samples": {}, "code": {}, "step": {}, "steps": {},
+		"example": {}, "examples": {}, "sample": {}, "samples": {}, "code": {}, "step": {}, "steps": {}, "guide": {}, "tutorial": {},
 		"compare": {}, "comparison": {}, "versus": {}, "vs": {}, "difference": {}, "tradeoff": {}, "tradeoffs": {}, "pros": {}, "cons": {},
 		"troubleshoot": {}, "troubleshooting": {}, "debug": {}, "diagnose": {}, "diagnosis": {}, "fix": {}, "error": {}, "issue": {}, "problem": {},
 		"risk": {}, "risks": {}, "danger": {}, "security": {}, "pitfall": {}, "pitfalls": {},
@@ -308,7 +299,7 @@ func queryWords(value string) []string {
 	return strings.Fields(builder.String())
 }
 
-func detectAnswerMode(question string) answerMode {
+func detectAnswerModes(question string) []answerMode {
 	words := queryWords(question)
 	has := func(values ...string) bool {
 		for _, word := range words {
@@ -320,20 +311,47 @@ func detectAnswerMode(question string) answerMode {
 		}
 		return false
 	}
-	switch {
-	case has("example", "examples", "sample", "samples") || hasPhrase(words, "sample", "code"):
-		return answerModeExamples
-	case has("step", "steps", "guide", "tutorial"):
-		return answerModeSteps
-	case has("compare", "comparison", "versus", "vs", "difference", "tradeoff", "tradeoffs", "pros", "cons"):
-		return answerModeComparison
-	case has("troubleshoot", "troubleshooting", "debug", "diagnose", "diagnosis", "fix", "error", "issue", "problem"):
-		return answerModeTroubleshooting
-	case has("risk", "risks", "danger", "pitfall", "pitfalls"):
-		return answerModeRisks
-	default:
-		return answerModeOverview
+	var modes []answerMode
+	if has("example", "examples", "sample", "samples") || hasPhrase(words, "sample", "code") {
+		modes = append(modes, answerModeExamples)
 	}
+	if has("step", "steps", "guide", "tutorial") {
+		modes = append(modes, answerModeSteps)
+	}
+	if has("compare", "comparison", "versus", "vs", "difference", "tradeoff", "tradeoffs", "pros", "cons") {
+		modes = append(modes, answerModeComparison)
+	}
+	if has("troubleshoot", "troubleshooting", "debug", "diagnose", "diagnosis", "fix", "error", "issue", "problem") {
+		modes = append(modes, answerModeTroubleshooting)
+	}
+	if has("risk", "risks", "danger", "security", "pitfall", "pitfalls") {
+		modes = append(modes, answerModeRisks)
+	}
+	if len(modes) == 0 {
+		return []answerMode{answerModeOverview}
+	}
+	sort.Slice(modes, func(left, right int) bool { return modes[left] < modes[right] })
+	return modes
+}
+
+func sameAnswerModes(left, right []answerMode) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalAnswerModes(modes []answerMode) string {
+	values := make([]string, len(modes))
+	for index, mode := range modes {
+		values[index] = string(mode)
+	}
+	return strings.Join(values, "\x00")
 }
 
 func hasPhrase(words []string, first, second string) bool {
@@ -343,39 +361,6 @@ func hasPhrase(words []string, first, second string) bool {
 		}
 	}
 	return false
-}
-
-func topicContains(left, right []string) bool {
-	if len(left) == 0 || len(right) == 0 {
-		return false
-	}
-	leftSet := make(map[string]struct{}, len(left))
-	for _, value := range left {
-		leftSet[value] = struct{}{}
-	}
-	for _, value := range right {
-		if _, found := leftSet[value]; !found {
-			return false
-		}
-	}
-	return true
-}
-
-func topicOverlap(left, right []string) float64 {
-	if len(left) == 0 || len(right) == 0 {
-		return 0
-	}
-	leftSet := make(map[string]struct{}, len(left))
-	for _, value := range left {
-		leftSet[value] = struct{}{}
-	}
-	intersection := 0
-	for _, value := range right {
-		if _, found := leftSet[value]; found {
-			intersection++
-		}
-	}
-	return float64(2*intersection) / float64(len(left)+len(right))
 }
 
 func guardTokens(value string) []string {
@@ -420,6 +405,10 @@ func guardToken(raw string) bool {
 	word := strings.Trim(raw, "_-/.:")
 	if word == "" {
 		return false
+	}
+	switch strings.ToLower(word) {
+	case "no", "not", "without", "exclude", "excluding", "except", "avoid":
+		return true
 	}
 	hasDigit := false
 	for _, char := range word {
@@ -489,6 +478,21 @@ func authScopeFingerprint(actor domain.Actor) string {
 	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
+func generatorCacheProfile(version, generatorProfile string, limits Limits) string {
+	return fingerprintFields(
+		version,
+		generatorProfile,
+		strconv.Itoa(limits.MaximumEvidence),
+		strconv.Itoa(limits.MaximumContextBytes),
+		strconv.Itoa(limits.MaximumEvidenceBytes),
+		strconv.Itoa(limits.MaximumSegments),
+		strconv.Itoa(limits.MaximumAnswerBytes),
+		strconv.Itoa(limits.MaximumSummaryRunes),
+		strconv.Itoa(limits.MaximumCitations),
+		strconv.Itoa(limits.MaximumOutputTokens),
+	)
+}
+
 func evidenceProjectionFingerprints(evidence []domain.ContextEvidence) map[string]string {
 	result := make(map[string]string, len(evidence))
 	for _, value := range evidence {
@@ -509,19 +513,24 @@ func evidenceFingerprint(evidence []domain.ContextEvidence) string {
 }
 
 func evidenceProjectionFingerprint(value domain.ContextEvidence) string {
-	hash := sha256.New()
-	_, _ = fmt.Fprintf(
-		hash,
-		"%q%q%q%q%q%q%d%d",
+	return fingerprintFields(
 		value.EvidenceID,
 		value.Passage,
 		value.Title,
 		value.Author,
 		value.Chapter,
 		value.Section,
-		value.PageStart,
-		value.PageEnd,
+		strconv.FormatUint(uint64(value.PageStart), 10),
+		strconv.FormatUint(uint64(value.PageEnd), 10),
 	)
+}
+
+func fingerprintFields(values ...string) string {
+	hash := sha256.New()
+	for _, value := range values {
+		_, _ = fmt.Fprintf(hash, "%d:", len(value))
+		_, _ = hash.Write([]byte(value))
+	}
 	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
@@ -568,7 +577,7 @@ func cloneCacheEntry(value cacheEntry) cacheEntry {
 func equivalentCacheEntry(left, right cacheEntry) bool {
 	return left.key == right.key &&
 		left.match.normalizedQuery == right.match.normalizedQuery &&
-		left.match.mode == right.match.mode
+		sameAnswerModes(left.match.modes, right.match.modes)
 }
 
 func (c *answerCache) touch(index int) {

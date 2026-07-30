@@ -71,6 +71,28 @@ func TestRetrievalSummaryCacheMigrationAddsOnlyCacheTableIndexesAndGrant(t *test
 	}
 }
 
+func TestRetrievalSummaryCacheHardeningMigrationAddsAccessAndFingerprintMetadata(t *testing.T) {
+	contents := strings.Join(strings.Fields(readMigration(t, "../../migrations/004_retrieval_summary_cache_hardening.up.sql")), " ")
+
+	for _, fragment := range []string{
+		"ADD COLUMN IF NOT EXISTS topic_hash TEXT",
+		"ADD COLUMN IF NOT EXISTS guard_hash TEXT",
+		"ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT now()",
+		"ADD COLUMN IF NOT EXISTS hit_count BIGINT NOT NULL DEFAULT 0",
+		"ALTER COLUMN query_embedding DROP NOT NULL",
+		"DROP COLUMN topic_tokens",
+		"DROP COLUMN guard_tokens",
+		"DELETE FROM retrieval.summary_assessment_cache",
+		"CHECK (query_embedding IS NULL OR octet_length(query_embedding) > 0)",
+		"CREATE INDEX IF NOT EXISTS retrieval_summary_assessment_cache_negative_v2_idx",
+		"CREATE INDEX IF NOT EXISTS retrieval_summary_assessment_cache_eviction_idx",
+	} {
+		if !strings.Contains(contents, fragment) {
+			t.Fatalf("retrieval summary cache hardening migration is missing %q", fragment)
+		}
+	}
+}
+
 func TestPostgresBootstrapRunsRetrievalLexicalSearchMigration(t *testing.T) {
 	contents := strings.Join(strings.Fields(readMigration(t, "../../../../infra/postgres/bootstrap.sql")), " ")
 
@@ -79,6 +101,7 @@ func TestPostgresBootstrapRunsRetrievalLexicalSearchMigration(t *testing.T) {
 		"\\ir /schema/retrieval/001_retrieval_schema.up.sql",
 		"\\ir /schema/retrieval/002_retrieval_lexical_search.up.sql",
 		"\\ir /schema/retrieval/003_retrieval_summary_cache.up.sql",
+		"\\ir /schema/retrieval/004_retrieval_summary_cache_hardening.up.sql",
 	} {
 		if !strings.Contains(contents, fragment) {
 			t.Fatalf("postgres bootstrap is missing %q", fragment)

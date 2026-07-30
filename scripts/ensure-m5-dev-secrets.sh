@@ -62,6 +62,12 @@ if [[ -n "$existing" ]]; then
   ensure_derived_dsn retrieval_cleanup_dsn "postgres://retrieval_cleanup:$cleanup_password@postgres:5432/retrieval?sslmode=disable"
   ensure_derived_dsn retrieval_cleanup_host_dsn "postgres://retrieval_cleanup:$cleanup_password@127.0.0.1:5432/retrieval?sslmode=disable"
   unset planner_password cleanup_password
+  if [[ ! -e "$dir/retrieval_summary_cache_hmac_key" ]]; then
+    temporary=$(mktemp "$dir/.retrieval-summary-cache-key.XXXXXX")
+    openssl rand -hex 32 > "$temporary"
+    chmod 400 "$temporary"
+    mv -f "$temporary" "$dir/retrieval_summary_cache_hmac_key"
+  fi
   bash ./scripts/check-m5-dev-secrets.sh "$dir" && exit 0
   echo "Incomplete M5 secret set in $dir; refusing an automatic partial overwrite" >&2
   exit 1

@@ -9,12 +9,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/grpcauth"
 	"github.com/belLena81/raglibrarian/pkg/internaltls"
 	"github.com/belLena81/raglibrarian/pkg/logger"
 	"github.com/belLena81/raglibrarian/pkg/process"
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
+	"github.com/belLena81/raglibrarian/pkg/providerhttp"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/config"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
@@ -54,6 +56,14 @@ func main() {
 		log.Print("retrieval server could not read database credentials")
 		os.Exit(1)
 	}
+	var summaryCacheHMACKey []byte
+	if configuration.EvidenceAssessor.CacheTTL > 0 {
+		summaryCacheHMACKey, err = readSummaryCacheHMACKey(configuration.EvidenceAssessor.CacheHMACKeyFile)
+		if err != nil {
+			log.Print("retrieval server could not read summary cache HMAC key")
+			os.Exit(1)
+		}
+	}
 	evidenceAssessor, err := retrievalruntime.NewEvidenceAssessor(configuration.EvidenceAssessor, serviceLogger)
 	if err != nil {
 		log.Print("retrieval server could not configure evidence assessor")
@@ -81,17 +91,21 @@ func main() {
 		AssessmentCallLimit: configuration.EvidenceAssessor.MaxCalls,
 		AssessmentTimeout:   configuration.EvidenceAssessor.Timeout,
 		AssessmentCache: application.AssessmentCachePolicy{
-			TTL:                   configuration.EvidenceAssessor.CacheTTL,
-			NegativeReuse:         configuration.EvidenceAssessor.CacheNegativeReuse,
-			NegativeMinimumCosine: configuration.EvidenceAssessor.CacheNegativeMinimumCosine,
-			MaximumEntries:        configuration.EvidenceAssessor.CacheMaxEntries,
-			MaximumInputRunes:     configuration.EvidenceAssessor.MaxInputRunes,
+			TTL:                    configuration.EvidenceAssessor.CacheTTL,
+			NegativeReuse:          configuration.EvidenceAssessor.CacheNegativeReuse,
+			NegativeMinimumCosine:  configuration.EvidenceAssessor.CacheNegativeMinimumCosine,
+			NegativeCandidateLimit: configuration.EvidenceAssessor.CacheNegativeCandidateLimit,
+			MaximumEntries:         configuration.EvidenceAssessor.CacheMaxEntries,
+			MaximumInputRunes:      configuration.EvidenceAssessor.MaxInputRunes,
+			HMACKey:                summaryCacheHMACKey,
 			ProviderProfile: application.AssessmentCacheProfile(
 				configuration.EvidenceAssessor.BaseURL,
 				configuration.EvidenceAssessor.Model,
 				configuration.EvidenceAssessor.OutputMode,
 				configuration.EvidenceAssessor.MaxOutputTokens,
 				configuration.EvidenceAssessor.MaxInputRunes,
+				configuration.EvidenceAssessor.MaxResponseBytes,
+				configuration.EvidenceAssessor.MaxSummaryBytes,
 			),
 		},
 		CandidatePageMultiplier:     configuration.SearchCandidatePageMultiplier,
@@ -128,6 +142,14 @@ func main() {
 	if configuration.MetricsAddress != "" {
 		go serveReadiness(ctx, configuration, embedder, store, records)
 	}
+	go serveSummaryCacheCleanup(
+		ctx,
+		serviceLogger,
+		records,
+		configuration.SummaryCacheCleanupInterval,
+		configuration.SummaryCacheCleanupTimeout,
+		configuration.SummaryCacheCleanupBatchSize,
+	)
 	go func() {
 		<-ctx.Done()
 		server.GracefulStop()
@@ -140,6 +162,51 @@ func main() {
 
 type readinessDependency interface {
 	CheckReady(context.Context) error
+}
+
+type summaryCacheCleanupStore interface {
+	DeleteExpiredAssessmentCache(context.Context, int) (int, error)
+}
+
+func serveSummaryCacheCleanup(ctx context.Context, log *zap.Logger, store summaryCacheCleanupStore, interval, timeout time.Duration, batchSize int) {
+	run := func() {
+		cleanupContext, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		deleted, err := cleanupExpiredAssessmentCache(cleanupContext, store, batchSize)
+		if log == nil {
+			return
+		}
+		if err != nil {
+			log.Info("retrieval.summary.cache.cleanup", zap.String("outcome", "dependency_unavailable"), zap.Int("result_count", deleted))
+			return
+		}
+		log.Info("retrieval.summary.cache.cleanup", zap.String("outcome", "success"), zap.Int("result_count", deleted))
+	}
+	run()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
+}
+
+func cleanupExpiredAssessmentCache(ctx context.Context, store summaryCacheCleanupStore, batchSize int) (int, error) {
+	total := 0
+	for {
+		deleted, err := store.DeleteExpiredAssessmentCache(ctx, batchSize)
+		total += deleted
+		if err != nil {
+			return total, err
+		}
+		if deleted < batchSize {
+			return total, nil
+		}
+	}
 }
 
 func serveReadiness(ctx context.Context, configuration config.Config, dependencies ...readinessDependency) {
@@ -185,18 +252,32 @@ func readSecret(path string) (string, error) {
 	return secret, nil
 }
 
+func readSummaryCacheHMACKey(path string) ([]byte, error) {
+	value, err := providerhttp.ReadSingleLineSecret(path, 4096)
+	if err != nil || len(value) < 32 {
+		return nil, os.ErrInvalid
+	}
+	return []byte(value), nil
+}
+
 type summaryCacheLogger struct {
 	log *zap.Logger
 }
 
-func (l summaryCacheLogger) AssessmentCacheLookup(outcome application.AssessmentCacheOutcome) {
+func (l summaryCacheLogger) AssessmentCacheSearch(stats application.AssessmentCacheStats) {
 	if l.log != nil {
-		l.log.Info("retrieval.summary.cache.lookup", zap.String("cache_outcome", string(outcome)))
-	}
-}
-
-func (l summaryCacheLogger) AssessmentCacheStore(outcome application.AssessmentCacheOutcome) {
-	if l.log != nil {
-		l.log.Info("retrieval.summary.cache.store", zap.String("cache_outcome", string(outcome)))
+		l.log.Info(
+			"retrieval.summary.cache.search",
+			zap.Int("cache_hits", stats.Hits),
+			zap.Int("cache_negative_hits", stats.NegativeHits),
+			zap.Int("cache_misses", stats.Misses),
+			zap.Int("cache_semantic_mismatches", stats.SemanticMismatches),
+			zap.Int("cache_guard_mismatches", stats.GuardMismatches),
+			zap.Int("cache_lookup_errors", stats.LookupErrors),
+			zap.Int("cache_stores", stats.Stores),
+			zap.Int("cache_store_errors", stats.StoreErrors),
+			zap.Int("provider_calls", stats.ProviderCalls),
+			zap.Int("local_fallbacks", stats.LocalFallbacks),
+		)
 	}
 }

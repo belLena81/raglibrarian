@@ -238,6 +238,26 @@ if ! grep -Fq 'export RETRIEVAL_SUMMARY_CACHE_NEGATIVE_MINIMUM_COSINE="${RETRIEV
   echo "host env renderer does not export retrieval summary cache semantic threshold" >&2
   exit 1
 fi
+if ! grep -Fq 'export RETRIEVAL_SUMMARY_CACHE_NEGATIVE_CANDIDATE_LIMIT="${RETRIEVAL_SUMMARY_CACHE_NEGATIVE_CANDIDATE_LIMIT:-32}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export retrieval summary cache candidate bound" >&2
+  exit 1
+fi
+if ! grep -Fq 'export RETRIEVAL_SUMMARY_CACHE_HMAC_KEY_FILE="$root_dir/$host_secret_dir/retrieval_summary_cache_hmac_key"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export retrieval summary cache HMAC key file" >&2
+  exit 1
+fi
+if ! grep -Fq 'export RETRIEVAL_SUMMARY_CACHE_CLEANUP_INTERVAL="${RETRIEVAL_SUMMARY_CACHE_CLEANUP_INTERVAL:-15m}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export retrieval summary cache cleanup interval" >&2
+  exit 1
+fi
+if ! grep -Fq 'export RETRIEVAL_SUMMARY_CACHE_CLEANUP_TIMEOUT="${RETRIEVAL_SUMMARY_CACHE_CLEANUP_TIMEOUT:-30s}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export retrieval summary cache cleanup timeout" >&2
+  exit 1
+fi
+if ! grep -Fq 'export RETRIEVAL_SUMMARY_CACHE_CLEANUP_BATCH_SIZE="${RETRIEVAL_SUMMARY_CACHE_CLEANUP_BATCH_SIZE:-256}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export retrieval summary cache cleanup batch size" >&2
+  exit 1
+fi
 if ! grep -Fq 'export EDGE_CATALOG_PREVIEW_DEADLINE="${EDGE_CATALOG_PREVIEW_DEADLINE:-6s}"' "$root_dir/scripts/render-local-host-env.sh"; then
   echo "host env renderer does not export the catalog preview deadline" >&2
   exit 1

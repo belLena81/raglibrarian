@@ -304,20 +304,28 @@ it never invents citation IDs from the search context. The recreated service
 remains configured for the real provider after the gate.
 The optional final-answer cache is disabled by default. Enable it only by
 setting both `ANSWER_CACHE_CAPACITY` and `ANSWER_CACHE_TTL`; the remaining
-`ANSWER_CACHE_*` thresholds tune lexical/topic and embedding similarity. A
-cache hit still performs live Retrieval first and reuses an answer only when
-authorization scope, filters, result limit, minimum evidence score, corpus
-snapshot, Retrieval profile, generator profile, selected cited evidence,
-answer intent, topic compatibility, and query embedding similarity all remain
-compatible. Cache logs and metrics use fixed outcome labels and must not include
-raw questions, passages, embeddings, prompts, or cached answer text.
+`ANSWER_CACHE_*` thresholds tune embedding compatibility. A cache hit still
+performs live Retrieval first and reuses an answer only when authorization
+scope, filters, result limit, minimum evidence score, Retrieval profile,
+generator profile, the complete ordered generator evidence context, answer
+intent, guard tokens, and canonical topic tokens remain compatible. Exact
+normalized questions may reuse directly; non-exact questions additionally
+require the configured embedding similarity. Topic containment, partial
+lexical overlap, and semantic-only similarity are near-miss diagnostics rather
+than reusable hits. Cache logs and metrics must not include raw questions,
+passages, embeddings, prompts, fingerprints, or cached answer text.
 Retrieval also has an optional summary-assessment cache for its passage-level
 LLM relevance/summary step. Enable it with `RETRIEVAL_SUMMARY_CACHE_TTL`; exact
 question/passage hits can reuse successful provider assessments. Enabled cache
 configs must also set a positive `RETRIEVAL_SUMMARY_CACHE_MAX_ENTRIES` row cap.
 Similar query reuse is limited to negative relevance decisions and gated by
-topic, guard-token, provider-profile, passage-hash, and embedding compatibility.
-It is disabled by default and logs only fixed cache outcome labels.
+exact topic and guard-token sets, provider profile, keyed passage fingerprint,
+and embedding compatibility. `RETRIEVAL_SUMMARY_CACHE_NEGATIVE_CANDIDATE_LIMIT`
+bounds semantic candidates. A stable file-backed HMAC key is required whenever
+this persistent cache is enabled. Bounded expiry cleanup runs independently at
+startup and on a configured interval, including while cache writes are
+disabled. The cache is disabled by default and emits only sanitized aggregate
+diagnostics.
 Identity and Catalog expose standard gRPC health services inside the private
 Compose network. `make contract-test` verifies both services over mTLS.
 

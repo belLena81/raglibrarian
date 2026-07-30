@@ -71,8 +71,6 @@ func TestLoadOverridesProviderPolicy(t *testing.T) {
 	t.Setenv("ANSWER_CACHE_CAPACITY", "32")
 	t.Setenv("ANSWER_CACHE_TTL", "10m")
 	t.Setenv("ANSWER_CACHE_MINIMUM_COSINE", "0.97")
-	t.Setenv("ANSWER_CACHE_SEMANTIC_ONLY_MINIMUM_COSINE", "0.99")
-	t.Setenv("ANSWER_CACHE_MINIMUM_LEXICAL_TOPIC_OVERLAP", "0.75")
 	configuration, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -97,8 +95,7 @@ func TestLoadOverridesProviderPolicy(t *testing.T) {
 	if configuration.Generator.HTTPClientTimeout != 15*time.Second {
 		t.Fatalf("Provider.HTTPClientTimeout = %s, want 15s", configuration.Generator.HTTPClientTimeout)
 	}
-	if configuration.Cache.Capacity != 32 || configuration.Cache.TTL != 10*time.Minute || configuration.Cache.MinimumCosine != 0.97 ||
-		configuration.Cache.SemanticOnlyMinimumCosine != 0.99 || configuration.Cache.MinimumLexicalTopicOverlap != 0.75 {
+	if configuration.Cache.Capacity != 32 || configuration.Cache.TTL != 10*time.Minute || configuration.Cache.MinimumCosine != 0.97 {
 		t.Fatalf("unexpected cache policy: %#v", configuration.Cache)
 	}
 }
@@ -189,21 +186,6 @@ func TestLoadRejectsInsecureProviderAndInvalidBounds(t *testing.T) {
 	t.Setenv("ANSWER_CACHE_MINIMUM_COSINE", "1.1")
 	if _, err := Load(); err == nil {
 		t.Fatal("out-of-range cache cosine accepted")
-	}
-	setRequiredEnvironment(t)
-	t.Setenv("ANSWER_CACHE_CAPACITY", "1")
-	t.Setenv("ANSWER_CACHE_TTL", "1m")
-	t.Setenv("ANSWER_CACHE_MINIMUM_COSINE", "0.97")
-	t.Setenv("ANSWER_CACHE_SEMANTIC_ONLY_MINIMUM_COSINE", "0.96")
-	if _, err := Load(); err == nil {
-		t.Fatal("semantic-only cache cosine below minimum cosine accepted")
-	}
-	setRequiredEnvironment(t)
-	t.Setenv("ANSWER_CACHE_CAPACITY", "1")
-	t.Setenv("ANSWER_CACHE_TTL", "1m")
-	t.Setenv("ANSWER_CACHE_MINIMUM_LEXICAL_TOPIC_OVERLAP", "0")
-	if _, err := Load(); err == nil {
-		t.Fatal("zero cache lexical overlap accepted")
 	}
 }
 

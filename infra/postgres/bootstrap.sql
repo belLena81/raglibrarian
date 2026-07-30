@@ -105,6 +105,7 @@ SET ROLE retrieval_migrator;
 \ir /schema/retrieval/001_retrieval_schema.up.sql
 \ir /schema/retrieval/002_retrieval_lexical_search.up.sql
 \ir /schema/retrieval/003_retrieval_summary_cache.up.sql
+\ir /schema/retrieval/004_retrieval_summary_cache_hardening.up.sql
 RESET ROLE;
 
 \unset identity_migration_password

@@ -67,13 +67,27 @@ func TestClientForwardsActorCorrelationAndMapsEvidence(t *testing.T) {
 	client := NewClient(rpc)
 	id := strings.Repeat("a", 32)
 	result, err := client.Search(context.Background(), domain.SearchRequest{Question: "question", Limit: 5,
-		Actor: domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, CorrelationID: id})
+		Actor: domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, CorrelationID: id, IncludeQueryMatchMetadata: true})
 	if err != nil || rpc.request.Actor.UserId != "user-1" || rpc.request.CorrelationId != id || !rpc.request.IncludeQueryMatchMetadata || len(rpc.ids) != 1 || rpc.ids[0] != id || result.Results[0].EvidenceID != "e-1" ||
 		result.Results[0].Summary != "passage summary" || result.Results[0].Book.MediaType != "application/epub+zip" || len(result.Documents) != 1 || result.Documents[0].Summary != "document summary" ||
 		result.Documents[0].Book.MediaType != "application/epub+zip" || len(result.Documents[0].Evidence) != 1 || result.Documents[0].Evidence[0].Summary != "passage summary" ||
 		result.Documents[0].Evidence[0].Book.MediaType != "application/epub+zip" || len(result.QueryEmbedding) != 2 ||
 		result.EmbeddingProfile != "embedding-profile" || result.RetrievalProfile != "retrieval-profile" || result.CorpusSnapshot != "snapshot" {
 		t.Fatalf("Search() = %#v, %v; request=%#v ids=%#v", result, err, rpc.request, rpc.ids)
+	}
+}
+
+func TestClientOmitsQueryMatchMetadataWhenNotRequested(t *testing.T) {
+	rpc := &fakeRPC{}
+	client := NewClient(rpc)
+	if _, err := client.Search(context.Background(), domain.SearchRequest{
+		Question:      "question",
+		CorrelationID: strings.Repeat("a", 32),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rpc.request.IncludeQueryMatchMetadata {
+		t.Fatal("query-match metadata requested for disabled cache")
 	}
 }
 

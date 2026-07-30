@@ -259,9 +259,8 @@ func TestSummaryAssessmentCachePersistsExactAndNegativeSemanticHits(t *testing.T
 		ProviderProfile: profile,
 		QuestionHash:    strings.Repeat("a", 64),
 		PassageHash:     strings.Repeat("b", 64),
-		TopicTokens:     []string{"cache", "summary"},
-		GuardTokens:     []string{"18"},
-		QueryEmbedding:  []float32{1, 0},
+		TopicHash:       strings.Repeat("1", 64),
+		GuardHash:       strings.Repeat("2", 64),
 		Assessment:      application.EvidenceAssessment{Relevant: true, Summary: "cached positive summary"},
 		ExpiresAt:       now.Add(time.Hour),
 		MaximumEntries:  100,
@@ -281,37 +280,114 @@ func TestSummaryAssessmentCachePersistsExactAndNegativeSemanticHits(t *testing.T
 	if outcome != application.AssessmentCacheOutcomeHit || !assessment.Relevant || assessment.Summary != "cached positive summary" {
 		t.Fatalf("Lookup() exact = %#v/%q, want positive hit", assessment, outcome)
 	}
+	var positiveHitCount int64
+	var positiveHasEmbedding bool
+	if err = pool.QueryRow(ctx, `SELECT hit_count,query_embedding IS NOT NULL
+		FROM retrieval.summary_assessment_cache
+		WHERE provider_profile=$1 AND question_hash=$2 AND passage_hash=$3`,
+		profile, exactEntry.QuestionHash, exactEntry.PassageHash).Scan(&positiveHitCount, &positiveHasEmbedding); err != nil {
+		t.Fatal(err)
+	}
+	if positiveHitCount != 1 || positiveHasEmbedding {
+		t.Fatalf("positive cache access metadata = hits %d embedding %t, want 1/false", positiveHitCount, positiveHasEmbedding)
+	}
 
 	negativeEntry := application.AssessmentCacheEntry{
 		ProviderProfile: profile,
 		QuestionHash:    strings.Repeat("c", 64),
 		PassageHash:     strings.Repeat("d", 64),
-		TopicTokens:     []string{"concurrency", "js", "node"},
-		GuardTokens:     []string{"18"},
+		TopicHash:       strings.Repeat("3", 64),
+		GuardHash:       strings.Repeat("4", 64),
 		QueryEmbedding:  []float32{1, 0},
 		Assessment:      application.EvidenceAssessment{Relevant: false},
 		ExpiresAt:       now.Add(time.Hour),
 		MaximumEntries:  100,
+		NegativeReuse:   true,
 	}
 	if err = repository.Store(ctx, negativeEntry); err != nil {
 		t.Fatalf("Store() negative error = %v", err)
 	}
 	assessment, outcome, err = repository.Lookup(ctx, application.AssessmentCacheLookup{
-		ProviderProfile:       profile,
-		QuestionHash:          strings.Repeat("e", 64),
-		PassageHash:           negativeEntry.PassageHash,
-		TopicTokens:           []string{"concurrency", "js", "node"},
-		GuardTokens:           []string{"18"},
-		QueryEmbedding:        []float32{0.99, 0.01},
-		NegativeReuse:         true,
-		NegativeMinimumCosine: 0.98,
-		Now:                   now,
+		ProviderProfile:        profile,
+		QuestionHash:           strings.Repeat("e", 64),
+		PassageHash:            negativeEntry.PassageHash,
+		TopicHash:              negativeEntry.TopicHash,
+		GuardHash:              negativeEntry.GuardHash,
+		TopicTokens:            []string{"concurrency", "js", "node"},
+		GuardTokens:            []string{"18"},
+		QueryEmbedding:         []float32{0.99, 0.01},
+		NegativeReuse:          true,
+		NegativeMinimumCosine:  0.98,
+		NegativeCandidateLimit: 8,
+		Now:                    now,
 	})
 	if err != nil {
 		t.Fatalf("Lookup() semantic negative error = %v", err)
 	}
 	if outcome != application.AssessmentCacheOutcomeNegativeHit || assessment.Relevant {
 		t.Fatalf("Lookup() semantic negative = %#v/%q, want negative semantic hit", assessment, outcome)
+	}
+}
+
+func TestSummaryAssessmentCacheEnforcesHardAccessAwareCapAndScheduledExpiryBatch(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
+	profile := "summary-cache-cap-" + randomIntegrationID(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.summary_assessment_cache WHERE provider_profile=$1`, profile)
+	})
+	entry := func(questionByte byte, expiresAt time.Time) application.AssessmentCacheEntry {
+		return application.AssessmentCacheEntry{
+			ProviderProfile: profile,
+			QuestionHash:    strings.Repeat(string(questionByte), 64),
+			PassageHash:     strings.Repeat(string(questionByte+8), 64),
+			TopicHash:       strings.Repeat("1", 64),
+			GuardHash:       strings.Repeat("2", 64),
+			Assessment:      application.EvidenceAssessment{Relevant: true, Summary: "summary"},
+			ExpiresAt:       expiresAt,
+			MaximumEntries:  3,
+		}
+	}
+	var wait sync.WaitGroup
+	for index := 0; index < 8; index++ {
+		index := index
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			if storeErr := repository.Store(ctx, entry(byte('b'+index), now.Add(time.Hour))); storeErr != nil {
+				t.Errorf("Store() concurrent error = %v", storeErr)
+			}
+		}()
+	}
+	wait.Wait()
+	var count int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM retrieval.summary_assessment_cache WHERE provider_profile=$1`, profile).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Fatalf("cache rows = %d, want hard cap 3 after concurrent stores", count)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO retrieval.summary_assessment_cache
+		(provider_profile,question_hash,passage_hash,relevant,summary,expires_at)
+		VALUES($1,$2,$3,true,'expired summary',$4)`,
+		profile, strings.Repeat("e", 64), strings.Repeat("f", 64), now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := repository.DeleteExpiredAssessmentCache(ctx, 1)
+	if err != nil || deleted != 1 {
+		t.Fatalf("DeleteExpiredAssessmentCache() = %d, %v, want 1,nil", deleted, err)
 	}
 }
 

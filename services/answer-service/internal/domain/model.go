@@ -46,6 +46,9 @@ type SearchRequest struct {
 	Actor                Actor
 	CorrelationID        string
 	MinimumEvidenceScore float64
+	// IncludeQueryMatchMetadata is controlled by Answer application policy and
+	// is never accepted from the public Answer transport.
+	IncludeQueryMatchMetadata bool
 }
 
 func (r SearchRequest) Validate(policy RequestPolicy) error {

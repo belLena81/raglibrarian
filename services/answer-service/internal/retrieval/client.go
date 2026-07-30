@@ -74,7 +74,7 @@ func toProto(request domain.SearchRequest) *retrievalv1.SearchRequest {
 		Limit:                     request.Limit,
 		Actor:                     &retrievalv1.Actor{UserId: request.Actor.UserID, Role: request.Actor.Role, Status: request.Actor.Status},
 		CorrelationId:             request.CorrelationID,
-		IncludeQueryMatchMetadata: true,
+		IncludeQueryMatchMetadata: request.IncludeQueryMatchMetadata,
 	}
 }
 

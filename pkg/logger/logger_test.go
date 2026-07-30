@@ -76,6 +76,45 @@ func TestNewWithWriterAllowsKnownCacheOutcomes(t *testing.T) {
 	assert.NotContains(t, output.String(), "cache_outcome=")
 }
 
+func TestNewWithWriterAllowsBoundedCacheSummaryCounts(t *testing.T) {
+	var output bytes.Buffer
+	log, err := logger.NewWithWriter(&output)
+	require.NoError(t, err)
+
+	log.Info("retrieval.summary.cache",
+		zap.Int("cache_hits", 2),
+		zap.Int("cache_negative_hits", 1),
+		zap.Int("cache_misses", 3),
+		zap.Int("cache_semantic_mismatches", 4),
+		zap.Int("cache_guard_mismatches", 5),
+		zap.Int("cache_lookup_errors", 6),
+		zap.Int("cache_stores", 7),
+		zap.Int("cache_store_errors", 8),
+		zap.Int("provider_calls", 9),
+		zap.Int("local_fallbacks", 10),
+	)
+
+	line := output.String()
+	for _, field := range []string{
+		"cache_hits=2",
+		"cache_negative_hits=1",
+		"cache_misses=3",
+		"cache_semantic_mismatches=4",
+		"cache_guard_mismatches=5",
+		"cache_lookup_errors=6",
+		"cache_stores=7",
+		"cache_store_errors=8",
+		"provider_calls=9",
+		"local_fallbacks=10",
+	} {
+		assert.Contains(t, line, field)
+	}
+
+	output.Reset()
+	log.Info("retrieval.summary.cache", zap.Int64("cache_hits", 1<<53))
+	assert.NotContains(t, output.String(), "cache_hits=")
+}
+
 func TestNewWithWriterUsesFixedSingleLineFormat(t *testing.T) {
 	var output bytes.Buffer
 	log, err := logger.NewWithWriter(&output)
