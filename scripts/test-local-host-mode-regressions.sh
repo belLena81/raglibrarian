@@ -226,8 +226,16 @@ if ! grep -Fq 'export RETRIEVAL_SUMMARY_LLM_OUTPUT_MODE="$retrieval_summary_prov
   echo "host env renderer does not export retrieval summary output mode" >&2
   exit 1
 fi
-if ! grep -Fq 'export RETRIEVAL_SUMMARY_LLM_TIMEOUT="${RETRIEVAL_SUMMARY_LLM_TIMEOUT:-90s}"' "$root_dir/scripts/render-local-host-env.sh"; then
+if ! grep -Fq 'export RETRIEVAL_SUMMARY_LLM_TIMEOUT="${RETRIEVAL_SUMMARY_LLM_TIMEOUT:-3m}"' "$root_dir/scripts/render-local-host-env.sh"; then
   echo "host env renderer does not export the retrieval summary timeout" >&2
+  exit 1
+fi
+if ! grep -Fq 'export RETRIEVAL_SUMMARY_CACHE_TTL="${RETRIEVAL_SUMMARY_CACHE_TTL:-0s}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export disabled retrieval summary cache TTL" >&2
+  exit 1
+fi
+if ! grep -Fq 'export RETRIEVAL_SUMMARY_CACHE_NEGATIVE_MINIMUM_COSINE="${RETRIEVAL_SUMMARY_CACHE_NEGATIVE_MINIMUM_COSINE:-0.985}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export retrieval summary cache semantic threshold" >&2
   exit 1
 fi
 if ! grep -Fq 'export EDGE_CATALOG_PREVIEW_DEADLINE="${EDGE_CATALOG_PREVIEW_DEADLINE:-6s}"' "$root_dir/scripts/render-local-host-env.sh"; then

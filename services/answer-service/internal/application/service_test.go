@@ -616,6 +616,35 @@ func TestAnswerCacheTouchesHitsForLRUEviction(t *testing.T) {
 	}
 }
 
+func TestAnswerCacheReturnsMatchedEntryAfterLRUTouch(t *testing.T) {
+	cache := newTestAnswerCache(t, CachePolicy{
+		Capacity:                   2,
+		TTL:                        time.Minute,
+		MinimumCosine:              0.9,
+		SemanticOnlyMinimumCosine:  0.99,
+		MinimumLexicalTopicOverlap: 0.8,
+		GeneratorProfile:           "generator-v1",
+	})
+	evidenceSearch := cachedSearch("evidence-1")
+	evidence := selectEvidence(evidenceSearch, testLimits())
+	alpha := validRequest()
+	alpha.Question = "alpha"
+	beta := validRequest()
+	beta.Question = "beta"
+	searchAlpha := cacheSearchWithEmbedding([]float32{1, 0})
+	searchBeta := cacheSearchWithEmbedding([]float32{0, 1})
+	cache.store(alpha, searchAlpha, evidence, []domain.AnswerSegment{{Text: "alpha answer", EvidenceIDs: []string{"evidence-1"}}})
+	cache.store(beta, searchBeta, evidence, []domain.AnswerSegment{{Text: "beta answer", EvidenceIDs: []string{"evidence-1"}}})
+
+	entry, outcome := cache.lookup(alpha, searchAlpha, evidence)
+	if outcome != CacheOutcomeHit {
+		t.Fatalf("lookup outcome = %q, want hit", outcome)
+	}
+	if len(entry.segments) != 1 || entry.segments[0].Text != "alpha answer" {
+		t.Fatalf("lookup returned segments = %#v, want alpha answer", entry.segments)
+	}
+}
+
 func TestAnswerCacheHitsWhenCurrentEvidenceAddsUncitedEvidence(t *testing.T) {
 	retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
 	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}

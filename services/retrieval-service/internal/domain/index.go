@@ -49,9 +49,10 @@ type SearchFilters struct {
 
 // SearchQueryInput is untrusted input to the SearchQuery value object.
 type SearchQueryInput struct {
-	Question string
-	Filters  SearchFilters
-	Limit    int
+	Question               string
+	Filters                SearchFilters
+	Limit                  int
+	NeedQueryMatchMetadata bool
 }
 
 // SearchQuery is a validated semantic-search request.

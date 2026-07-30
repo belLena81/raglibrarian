@@ -115,6 +115,12 @@ func TestLoadAcceptsOptionalEvidenceAssessorConfiguration(t *testing.T) {
 	if configuration.EvidenceAssessor.OutputMode != "json_or_plain" {
 		t.Fatalf("EvidenceAssessor.OutputMode = %q, want json_or_plain", configuration.EvidenceAssessor.OutputMode)
 	}
+	if configuration.EvidenceAssessor.CacheTTL != 0 ||
+		configuration.EvidenceAssessor.CacheMaxEntries != 0 ||
+		configuration.EvidenceAssessor.CacheNegativeReuse ||
+		configuration.EvidenceAssessor.CacheNegativeMinimumCosine != DefaultSummaryCacheNegativeMinimumCosine {
+		t.Fatalf("unexpected summary cache defaults: %#v", configuration.EvidenceAssessor)
+	}
 	if configuration.SearchTimeout != 25*time.Second {
 		t.Fatalf("SearchTimeout = %s, want 25s", configuration.SearchTimeout)
 	}
@@ -379,6 +385,34 @@ func TestLoadOverridesEvidenceAssessorOutputMode(t *testing.T) {
 	}
 }
 
+func TestLoadOverridesEvidenceAssessorSummaryCache(t *testing.T) {
+	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+	t.Setenv("RETRIEVAL_SUMMARY_CACHE_TTL", "6h")
+	t.Setenv("RETRIEVAL_SUMMARY_CACHE_MAX_ENTRIES", "4096")
+	t.Setenv("RETRIEVAL_SUMMARY_CACHE_NEGATIVE_REUSE", "true")
+	t.Setenv("RETRIEVAL_SUMMARY_CACHE_NEGATIVE_MINIMUM_COSINE", "0.99")
+	t.Setenv("RETRIEVAL_SEARCH_TIMEOUT", "25s")
+
+	configuration, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if configuration.EvidenceAssessor.CacheTTL != 6*time.Hour ||
+		configuration.EvidenceAssessor.CacheMaxEntries != 4096 ||
+		!configuration.EvidenceAssessor.CacheNegativeReuse ||
+		configuration.EvidenceAssessor.CacheNegativeMinimumCosine != 0.99 {
+		t.Fatalf("unexpected summary cache configuration: %#v", configuration.EvidenceAssessor)
+	}
+}
+
 func TestLoadRejectsInvalidEvidenceAssessorOutputMode(t *testing.T) {
 	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
 	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
@@ -393,6 +427,55 @@ func TestLoadRejectsInvalidEvidenceAssessorOutputMode(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() accepted an invalid evidence assessor output mode")
+	}
+}
+
+func TestLoadRejectsInvalidEvidenceAssessorSummaryCache(t *testing.T) {
+	tests := []struct {
+		key   string
+		value string
+	}{
+		{key: "RETRIEVAL_SUMMARY_CACHE_TTL", value: "25h"},
+		{key: "RETRIEVAL_SUMMARY_CACHE_MAX_ENTRIES", value: "1000001"},
+		{key: "RETRIEVAL_SUMMARY_CACHE_NEGATIVE_REUSE", value: "sometimes"},
+		{key: "RETRIEVAL_SUMMARY_CACHE_NEGATIVE_MINIMUM_COSINE", value: "0"},
+		{key: "RETRIEVAL_SUMMARY_CACHE_NEGATIVE_MINIMUM_COSINE", value: "1.01"},
+	}
+	for _, test := range tests {
+		t.Run(test.key+"="+test.value, func(t *testing.T) {
+			t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+			t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+			t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+			t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+			t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+			t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+			t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+			t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+			t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+			t.Setenv(test.key, test.value)
+
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load() accepted invalid summary cache configuration %s=%q", test.key, test.value)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsEnabledEvidenceAssessorSummaryCacheWithoutRowCap(t *testing.T) {
+	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+	t.Setenv("RETRIEVAL_SUMMARY_CACHE_TTL", "6h")
+	t.Setenv("RETRIEVAL_SUMMARY_CACHE_MAX_ENTRIES", "0")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted enabled summary cache without a positive row cap")
 	}
 }
 

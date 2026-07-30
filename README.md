@@ -311,6 +311,13 @@ snapshot, Retrieval profile, generator profile, selected cited evidence,
 answer intent, topic compatibility, and query embedding similarity all remain
 compatible. Cache logs and metrics use fixed outcome labels and must not include
 raw questions, passages, embeddings, prompts, or cached answer text.
+Retrieval also has an optional summary-assessment cache for its passage-level
+LLM relevance/summary step. Enable it with `RETRIEVAL_SUMMARY_CACHE_TTL`; exact
+question/passage hits can reuse successful provider assessments. Enabled cache
+configs must also set a positive `RETRIEVAL_SUMMARY_CACHE_MAX_ENTRIES` row cap.
+Similar query reuse is limited to negative relevance decisions and gated by
+topic, guard-token, provider-profile, passage-hash, and embedding compatibility.
+It is disabled by default and logs only fixed cache outcome labels.
 Identity and Catalog expose standard gRPC health services inside the private
 Compose network. `make contract-test` verifies both services over mTLS.
 

@@ -82,6 +82,8 @@ type IndexVisibility interface {
 type Searcher struct {
 	embedder          QueryEmbedder
 	evidenceAssessor  EvidenceAssessor
+	assessmentCache   AssessmentCache
+	cacheObserver     AssessmentCacheObserver
 	policy            SearchPolicy
 	analyzer          QueryAnalyzer
 	chunkRetriever    ChunkRetriever
@@ -105,10 +107,25 @@ type SearchPolicy struct {
 	MinimumVisibleScore         float64
 	AssessmentCallLimit         int
 	AssessmentTimeout           time.Duration
+	AssessmentCache             AssessmentCachePolicy
 	CandidatePageMultiplier     int
 	ReciprocalRankFusionK       int
 	MaximumAssessmentInputRunes int
 	RequestPolicy               domain.SearchRequestPolicy
+}
+
+type SearcherOption func(*Searcher)
+
+func WithAssessmentCache(cache AssessmentCache) SearcherOption {
+	return func(searcher *Searcher) {
+		searcher.assessmentCache = cache
+	}
+}
+
+func WithAssessmentCacheObserver(observer AssessmentCacheObserver) SearcherOption {
+	return func(searcher *Searcher) {
+		searcher.cacheObserver = observer
+	}
 }
 
 func NewSearcherWithPolicy(embedder QueryEmbedder, store EvidenceStore, visibility IndexVisibility, assessor EvidenceAssessor, policy SearchPolicy) (*Searcher, error) {
@@ -122,6 +139,7 @@ func NewSearcherWithPolicyAndLexical(
 	visibility IndexVisibility,
 	assessor EvidenceAssessor,
 	policy SearchPolicy,
+	options ...SearcherOption,
 ) (*Searcher, error) {
 	if embedder == nil || store == nil || visibility == nil || policy.AssessmentCallLimit < 0 ||
 		policy.CandidatePageMultiplier < 1 || policy.ReciprocalRankFusionK < 1 ||
@@ -149,6 +167,11 @@ func NewSearcherWithPolicyAndLexical(
 	if snapshotter, ok := visibility.(CorpusSnapshotStore); ok {
 		searcher.corpusSnapshotter = snapshotter
 	}
+	for _, option := range options {
+		if option != nil {
+			option(searcher)
+		}
+	}
 	return searcher, nil
 }
 
@@ -156,7 +179,6 @@ func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.
 	if !actor.CanSearch() {
 		return SearchResult{}, ErrSearchForbidden
 	}
-	assessmentCache := newSearchAssessmentCache(s.policy.AssessmentCallLimit, s.policy.AssessmentTimeout, s.policy.MaximumAssessmentInputRunes)
 	query, err := domain.NewSearchQuery(input, s.policy.RequestPolicy)
 	if err != nil {
 		return SearchResult{}, err
@@ -168,6 +190,7 @@ func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.
 	if len(vector) != domain.EmbeddingDimensions {
 		return SearchResult{}, errors.New("invalid embedding dimensions")
 	}
+	assessmentCache := newSearchAssessmentCache(s.policy.AssessmentCallLimit, s.policy.AssessmentTimeout, s.policy.MaximumAssessmentInputRunes, vector, s.policy.AssessmentCache, s.assessmentCache, s.cacheObserver)
 	plan := s.analyzer.Analyze(query)
 	chunkCandidates, documentCandidates, lexicalCandidates, err := s.retrieveCandidates(ctx, query, vector, plan)
 	if err != nil {
@@ -183,7 +206,7 @@ func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.
 	profile := domain.SupportedIndexProfile()
 	profileDigest := fmt.Sprintf("%x", profile.Digest)
 	corpusSnapshot := responseSnapshot(results, documents)
-	if s.corpusSnapshotter != nil {
+	if input.NeedQueryMatchMetadata && s.corpusSnapshotter != nil {
 		corpusSnapshot, err = s.corpusSnapshotter.CorpusSnapshot(ctx)
 		if err != nil {
 			return SearchResult{}, searchOperationFailure("corpus snapshot", err)
@@ -447,6 +470,10 @@ type searchAssessmentCache struct {
 	providerFailed bool
 	summaryTimeout time.Duration
 	maximumRunes   int
+	queryEmbedding []float32
+	cachePolicy    AssessmentCachePolicy
+	cache          AssessmentCache
+	observer       AssessmentCacheObserver
 	entries        map[string]*searchAssessmentEntry
 }
 
@@ -456,12 +483,17 @@ type searchAssessmentEntry struct {
 	ok         bool
 }
 
-func newSearchAssessmentCache(limit int, summaryTimeout time.Duration, maximumRunes int) *searchAssessmentCache {
+func newSearchAssessmentCache(limit int, summaryTimeout time.Duration, maximumRunes int, queryEmbedding []float32, cachePolicy AssessmentCachePolicy, cache AssessmentCache, observer AssessmentCacheObserver) *searchAssessmentCache {
+	cachePolicy.MaximumInputRunes = maximumRunes
 	return &searchAssessmentCache{
 		remaining:      limit,
 		localOnly:      limit == 0,
 		summaryTimeout: summaryTimeout,
 		maximumRunes:   maximumRunes,
+		queryEmbedding: append([]float32(nil), queryEmbedding...),
+		cachePolicy:    cachePolicy,
+		cache:          cache,
+		observer:       observer,
 		entries:        make(map[string]*searchAssessmentEntry),
 	}
 }
@@ -496,6 +528,19 @@ func (c *searchAssessmentCache) assess(ctx context.Context, assessor EvidenceAss
 	}
 	c.mu.Unlock()
 
+	lookup, cacheable := newAssessmentCacheLookup(c.cachePolicy, normalizedQuestion, normalizedPassage, c.queryEmbedding, time.Now())
+	if cacheable && c.cache != nil && assessor != nil {
+		if cached, outcome, err := c.cache.Lookup(ctx, lookup); err == nil {
+			c.observeLookup(outcome)
+			if outcome == AssessmentCacheOutcomeHit || outcome == AssessmentCacheOutcomeNegativeHit {
+				c.completeEntry(entry, cached, true)
+				return cached, true
+			}
+		} else {
+			c.observeLookup(AssessmentCacheOutcomeLookupError)
+		}
+	}
+
 	assessment, ok := localAssessment(normalizedPassage, c.maximumRunes)
 	if !useLocalAssessment && !useProvider {
 		assessment = EvidenceAssessment{}
@@ -513,6 +558,13 @@ func (c *searchAssessmentCache) assess(ctx context.Context, assessor EvidenceAss
 			providerAssessment.Summary = normalizeProviderSummary(providerAssessment.Summary)
 			assessment = providerAssessment
 			ok = true
+			if cacheable && c.cache != nil {
+				if err = c.cache.Store(ctx, newAssessmentCacheEntry(lookup, assessment, c.cachePolicy)); err != nil {
+					c.observeStore(AssessmentCacheOutcomeStoreError)
+				} else {
+					c.observeStore(AssessmentCacheOutcomeStored)
+				}
+			}
 		} else if ctx.Err() == nil {
 			assessment, ok = localAssessment(normalizedPassage, c.maximumRunes)
 			c.mu.Lock()
@@ -521,12 +573,28 @@ func (c *searchAssessmentCache) assess(ctx context.Context, assessor EvidenceAss
 		}
 	}
 
+	c.completeEntry(entry, assessment, ok)
+	return assessment, ok
+}
+
+func (c *searchAssessmentCache) completeEntry(entry *searchAssessmentEntry, assessment EvidenceAssessment, ok bool) {
 	c.mu.Lock()
 	entry.assessment = assessment
 	entry.ok = ok
 	close(entry.ready)
 	c.mu.Unlock()
-	return assessment, ok
+}
+
+func (c *searchAssessmentCache) observeLookup(outcome AssessmentCacheOutcome) {
+	if c.observer != nil {
+		c.observer.AssessmentCacheLookup(outcome)
+	}
+}
+
+func (c *searchAssessmentCache) observeStore(outcome AssessmentCacheOutcome) {
+	if c.observer != nil {
+		c.observer.AssessmentCacheStore(outcome)
+	}
 }
 
 type EvidenceAssessor interface {

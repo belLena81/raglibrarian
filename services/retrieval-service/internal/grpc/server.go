@@ -90,7 +90,13 @@ func (s *Server) Search(parent context.Context, request *retrievalv1.SearchReque
 	}
 	ctx, cancel := context.WithTimeout(parent, s.timeout)
 	defer cancel()
-	results, err := s.search.Search(ctx, actor, domain.SearchQueryInput{Question: request.Question, Filters: filters, Limit: int(request.Limit)})
+	allowQueryMatchMetadata := request.IncludeQueryMatchMetadata && isAnswerServicePeer(parent)
+	results, err := s.search.Search(ctx, actor, domain.SearchQueryInput{
+		Question:               request.Question,
+		Filters:                filters,
+		Limit:                  int(request.Limit),
+		NeedQueryMatchMetadata: allowQueryMatchMetadata,
+	})
 	if err != nil {
 		if s.log != nil {
 			fields := []zap.Field{
@@ -109,7 +115,7 @@ func (s *Server) Search(parent context.Context, request *retrievalv1.SearchReque
 		Results:   make([]*retrievalv1.Evidence, 0, len(results.Evidence)),
 		Documents: make([]*retrievalv1.DocumentResult, 0, len(results.Documents)),
 	}
-	if request.IncludeQueryMatchMetadata && isAnswerServicePeer(parent) {
+	if allowQueryMatchMetadata {
 		response.QueryMatch = &retrievalv1.QueryMatchMetadata{
 			QueryEmbedding:   append([]float32(nil), results.QueryEmbedding...),
 			EmbeddingProfile: results.EmbeddingProfile,

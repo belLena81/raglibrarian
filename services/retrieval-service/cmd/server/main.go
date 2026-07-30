@@ -22,6 +22,7 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/repository"
 	retrievalruntime "github.com/belLena81/raglibrarian/services/retrieval-service/internal/runtime"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )
 
@@ -69,10 +70,30 @@ func main() {
 	}
 	defer pool.Close()
 	records := repository.NewPostgres(pool, repository.Policy{FinalizationLease: configuration.FinalizationLease})
+	searcherOptions := []application.SearcherOption{
+		application.WithAssessmentCacheObserver(summaryCacheLogger{log: serviceLogger}),
+	}
+	if configuration.EvidenceAssessor.CacheTTL > 0 {
+		searcherOptions = append(searcherOptions, application.WithAssessmentCache(records))
+	}
 	searcher, err := application.NewSearcherWithPolicyAndLexical(embedder, store, records, records, evidenceAssessor, application.SearchPolicy{
-		MinimumVisibleScore:         configuration.MinimumSearchScore,
-		AssessmentCallLimit:         configuration.EvidenceAssessor.MaxCalls,
-		AssessmentTimeout:           configuration.EvidenceAssessor.Timeout,
+		MinimumVisibleScore: configuration.MinimumSearchScore,
+		AssessmentCallLimit: configuration.EvidenceAssessor.MaxCalls,
+		AssessmentTimeout:   configuration.EvidenceAssessor.Timeout,
+		AssessmentCache: application.AssessmentCachePolicy{
+			TTL:                   configuration.EvidenceAssessor.CacheTTL,
+			NegativeReuse:         configuration.EvidenceAssessor.CacheNegativeReuse,
+			NegativeMinimumCosine: configuration.EvidenceAssessor.CacheNegativeMinimumCosine,
+			MaximumEntries:        configuration.EvidenceAssessor.CacheMaxEntries,
+			MaximumInputRunes:     configuration.EvidenceAssessor.MaxInputRunes,
+			ProviderProfile: application.AssessmentCacheProfile(
+				configuration.EvidenceAssessor.BaseURL,
+				configuration.EvidenceAssessor.Model,
+				configuration.EvidenceAssessor.OutputMode,
+				configuration.EvidenceAssessor.MaxOutputTokens,
+				configuration.EvidenceAssessor.MaxInputRunes,
+			),
+		},
 		CandidatePageMultiplier:     configuration.SearchCandidatePageMultiplier,
 		ReciprocalRankFusionK:       configuration.ReciprocalRankFusionK,
 		MaximumAssessmentInputRunes: configuration.EvidenceAssessor.MaxInputRunes,
@@ -84,7 +105,7 @@ func main() {
 			DefaultResultLimit:        configuration.SearchRequestPolicy.DefaultResultLimit,
 			MaximumResultLimit:        configuration.SearchRequestPolicy.MaximumResultLimit,
 		},
-	})
+	}, searcherOptions...)
 	if err != nil {
 		log.Print("retrieval server could not configure search")
 		os.Exit(1)
@@ -162,4 +183,20 @@ func readSecret(path string) (string, error) {
 		return "", os.ErrInvalid
 	}
 	return secret, nil
+}
+
+type summaryCacheLogger struct {
+	log *zap.Logger
+}
+
+func (l summaryCacheLogger) AssessmentCacheLookup(outcome application.AssessmentCacheOutcome) {
+	if l.log != nil {
+		l.log.Info("retrieval.summary.cache.lookup", zap.String("cache_outcome", string(outcome)))
+	}
+}
+
+func (l summaryCacheLogger) AssessmentCacheStore(outcome application.AssessmentCacheOutcome) {
+	if l.log != nil {
+		l.log.Info("retrieval.summary.cache.store", zap.String("cache_outcome", string(outcome)))
+	}
 }

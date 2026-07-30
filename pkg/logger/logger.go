@@ -220,7 +220,7 @@ var allowedDiagnosticValues = map[string]map[string]struct{}{
 	},
 	"cache_outcome": {
 		"bypass": {}, "hit": {}, "miss": {}, "stale": {}, "mode_mismatch": {}, "topic_mismatch": {}, "semantic_mismatch": {}, "evidence_mismatch": {},
-		"semantic_only_hit": {}, "lexical_hit": {}, "guard_mismatch": {}, "hard_mismatch": {}, "generation_coalesced": {}, "validation_mismatch": {},
+		"semantic_only_hit": {}, "lexical_hit": {}, "negative_hit": {}, "guard_mismatch": {}, "hard_mismatch": {}, "generation_coalesced": {}, "validation_mismatch": {}, "stored": {}, "lookup_error": {}, "store_error": {},
 	},
 	"operation": {
 		"register": {}, "verify_email": {}, "resend_verification": {}, "password_reset_request": {}, "password_reset_verify": {}, "password_reset_complete": {},

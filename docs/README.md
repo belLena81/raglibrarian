@@ -146,6 +146,14 @@ and [ephemeral storage](https://docs.aws.amazon.com/lambda/latest/dg/configurati
   intent, normalized topic compatibility, and query embedding similarity. Logs
   and metrics expose only fixed cache outcome labels, never raw queries,
   passages, embeddings, prompts, or cached answer bodies.
+- Retrieval summary assessment caching is separate from the final-answer cache
+  and remains disabled unless `RETRIEVAL_SUMMARY_CACHE_TTL` is positive. It
+  stores provider profile, hashed normalized question/passage keys, query-topic
+  tokens, guard tokens, query embedding bytes, relevance, summary, and expiry in
+  Retrieval-owned PostgreSQL state. Similar-query reuse is deliberately limited
+  to negative relevance decisions; positive summaries require an exact
+  question/passage cache key so a summary written for one wording is not reused
+  as grounded content for another.
 
 ## Milestone 1 — secure service foundation
 
@@ -428,6 +436,14 @@ Implementation:
   Its default is sized to cover Retrieval's candidate scan budget so LLM
   exclusions can still backfill to the requested result limit under normal
   conditions.
+- `RETRIEVAL_SUMMARY_CACHE_TTL` enables the optional Retrieval-side
+  summary-assessment cache when positive. `RETRIEVAL_SUMMARY_CACHE_MAX_ENTRIES`
+  must also be positive when the cache is enabled and bounds stored rows.
+  `RETRIEVAL_SUMMARY_CACHE_NEGATIVE_REUSE` controls similar-query negative
+  reuse, and
+  `RETRIEVAL_SUMMARY_CACHE_NEGATIVE_MINIMUM_COSINE` gates semantic compatibility.
+  The default is disabled (`0s`) so retrieval-side LLM behavior remains
+  unchanged until explicitly configured.
 - TEI embedding diagnostics always log response byte count and SHA-256 digest.
   Set `RETRIEVAL_TEI_LOG_RAW_RESPONSE=true` only for local diagnosis when the
   embedding provider response body itself must be inspected; the raw prefix is

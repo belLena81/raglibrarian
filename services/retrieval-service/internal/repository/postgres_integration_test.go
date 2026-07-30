@@ -235,6 +235,86 @@ func TestSearchLexicalReturnsOnlyVisibleFilteredEvidence(t *testing.T) {
 	}
 }
 
+func TestSummaryAssessmentCachePersistsExactAndNegativeSemanticHits(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
+	profile := "summary-profile-" + randomIntegrationID(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.summary_assessment_cache WHERE provider_profile=$1`, profile)
+	})
+
+	exactEntry := application.AssessmentCacheEntry{
+		ProviderProfile: profile,
+		QuestionHash:    strings.Repeat("a", 64),
+		PassageHash:     strings.Repeat("b", 64),
+		TopicTokens:     []string{"cache", "summary"},
+		GuardTokens:     []string{"18"},
+		QueryEmbedding:  []float32{1, 0},
+		Assessment:      application.EvidenceAssessment{Relevant: true, Summary: "cached positive summary"},
+		ExpiresAt:       now.Add(time.Hour),
+		MaximumEntries:  100,
+	}
+	if err = repository.Store(ctx, exactEntry); err != nil {
+		t.Fatalf("Store() exact error = %v", err)
+	}
+	assessment, outcome, err := repository.Lookup(ctx, application.AssessmentCacheLookup{
+		ProviderProfile: profile,
+		QuestionHash:    exactEntry.QuestionHash,
+		PassageHash:     exactEntry.PassageHash,
+		Now:             now,
+	})
+	if err != nil {
+		t.Fatalf("Lookup() exact error = %v", err)
+	}
+	if outcome != application.AssessmentCacheOutcomeHit || !assessment.Relevant || assessment.Summary != "cached positive summary" {
+		t.Fatalf("Lookup() exact = %#v/%q, want positive hit", assessment, outcome)
+	}
+
+	negativeEntry := application.AssessmentCacheEntry{
+		ProviderProfile: profile,
+		QuestionHash:    strings.Repeat("c", 64),
+		PassageHash:     strings.Repeat("d", 64),
+		TopicTokens:     []string{"concurrency", "js", "node"},
+		GuardTokens:     []string{"18"},
+		QueryEmbedding:  []float32{1, 0},
+		Assessment:      application.EvidenceAssessment{Relevant: false},
+		ExpiresAt:       now.Add(time.Hour),
+		MaximumEntries:  100,
+	}
+	if err = repository.Store(ctx, negativeEntry); err != nil {
+		t.Fatalf("Store() negative error = %v", err)
+	}
+	assessment, outcome, err = repository.Lookup(ctx, application.AssessmentCacheLookup{
+		ProviderProfile:       profile,
+		QuestionHash:          strings.Repeat("e", 64),
+		PassageHash:           negativeEntry.PassageHash,
+		TopicTokens:           []string{"concurrency", "js", "node"},
+		GuardTokens:           []string{"18"},
+		QueryEmbedding:        []float32{0.99, 0.01},
+		NegativeReuse:         true,
+		NegativeMinimumCosine: 0.98,
+		Now:                   now,
+	})
+	if err != nil {
+		t.Fatalf("Lookup() semantic negative error = %v", err)
+	}
+	if outcome != application.AssessmentCacheOutcomeNegativeHit || assessment.Relevant {
+		t.Fatalf("Lookup() semantic negative = %#v/%q, want negative semantic hit", assessment, outcome)
+	}
+}
+
 func TestApplyReindexCreatesNewLifecycleGenerationWithoutHidingPriorIndex(t *testing.T) {
 	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
 		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")

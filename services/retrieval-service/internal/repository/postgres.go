@@ -1560,6 +1560,87 @@ func (r *Postgres) CorpusSnapshot(ctx context.Context) (string, error) {
 	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
+func (r *Postgres) Lookup(ctx context.Context, lookup application.AssessmentCacheLookup) (application.EvidenceAssessment, application.AssessmentCacheOutcome, error) {
+	var assessment application.EvidenceAssessment
+	var summary string
+	err := r.pool.QueryRow(ctx, `SELECT relevant,summary
+		FROM retrieval.summary_assessment_cache
+		WHERE provider_profile=$1 AND question_hash=$2 AND passage_hash=$3 AND expires_at>$4`,
+		lookup.ProviderProfile, lookup.QuestionHash, lookup.PassageHash, lookup.Now).Scan(&assessment.Relevant, &summary)
+	if err == nil {
+		assessment.Summary = summary
+		return assessment, application.AssessmentCacheOutcomeHit, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return application.EvidenceAssessment{}, application.AssessmentCacheOutcomeLookupError, err
+	}
+	if !lookup.NegativeReuse {
+		return application.EvidenceAssessment{}, application.AssessmentCacheOutcomeMiss, nil
+	}
+	rows, err := r.pool.Query(ctx, `SELECT topic_tokens,guard_tokens,query_embedding
+		FROM retrieval.summary_assessment_cache
+		WHERE provider_profile=$1 AND passage_hash=$2 AND relevant=false AND expires_at>$3`,
+		lookup.ProviderProfile, lookup.PassageHash, lookup.Now)
+	if err != nil {
+		return application.EvidenceAssessment{}, application.AssessmentCacheOutcomeLookupError, err
+	}
+	defer rows.Close()
+	outcome := application.AssessmentCacheOutcomeMiss
+	for rows.Next() {
+		var topicTokens, guardTokens []string
+		var embeddingBytes []byte
+		if err = rows.Scan(&topicTokens, &guardTokens, &embeddingBytes); err != nil {
+			return application.EvidenceAssessment{}, application.AssessmentCacheOutcomeLookupError, err
+		}
+		candidateOutcome := lookup.NegativeCompatible(topicTokens, guardTokens, application.DecodeAssessmentEmbedding(embeddingBytes))
+		if candidateOutcome == application.AssessmentCacheOutcomeNegativeHit {
+			return application.EvidenceAssessment{Relevant: false}, candidateOutcome, nil
+		}
+		if candidateOutcome != application.AssessmentCacheOutcomeMiss {
+			outcome = candidateOutcome
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return application.EvidenceAssessment{}, application.AssessmentCacheOutcomeLookupError, err
+	}
+	return application.EvidenceAssessment{}, outcome, nil
+}
+
+func (r *Postgres) Store(ctx context.Context, entry application.AssessmentCacheEntry) error {
+	_, err := r.pool.Exec(ctx, `INSERT INTO retrieval.summary_assessment_cache
+		(provider_profile,question_hash,passage_hash,topic_tokens,guard_tokens,query_embedding,relevant,summary,expires_at,created_at,updated_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now(),now())
+		ON CONFLICT(provider_profile,question_hash,passage_hash) DO UPDATE SET
+			topic_tokens=EXCLUDED.topic_tokens,
+			guard_tokens=EXCLUDED.guard_tokens,
+			query_embedding=EXCLUDED.query_embedding,
+			relevant=EXCLUDED.relevant,
+			summary=EXCLUDED.summary,
+			expires_at=EXCLUDED.expires_at,
+			updated_at=now()`,
+		entry.ProviderProfile,
+		entry.QuestionHash,
+		entry.PassageHash,
+		postgresTextArray(entry.TopicTokens),
+		postgresTextArray(entry.GuardTokens),
+		application.EncodeAssessmentEmbedding(entry.QueryEmbedding),
+		entry.Assessment.Relevant,
+		entry.Assessment.Summary,
+		entry.ExpiresAt,
+	)
+	if err != nil || entry.MaximumEntries <= 0 {
+		return err
+	}
+	_, err = r.pool.Exec(ctx, `DELETE FROM retrieval.summary_assessment_cache
+		WHERE (provider_profile,question_hash,passage_hash) IN (
+			SELECT provider_profile,question_hash,passage_hash
+			FROM retrieval.summary_assessment_cache
+			ORDER BY updated_at DESC
+			OFFSET $1
+		)`, entry.MaximumEntries)
+	return err
+}
+
 func (r *Postgres) FilterIndexed(ctx context.Context, values []application.Evidence) ([]application.Evidence, error) {
 	if len(values) == 0 {
 		return values, nil

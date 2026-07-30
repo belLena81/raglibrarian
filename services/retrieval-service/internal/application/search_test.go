@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 )
@@ -42,32 +43,55 @@ func TestResponseSnapshotIsStableAcrossReturnedOrder(t *testing.T) {
 	}
 }
 
-func TestSearcherUsesCorpusSnapshotStoreWhenAvailable(t *testing.T) {
+func TestSearcherSkipsCorpusSnapshotStoreForNormalSearch(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{
 		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Replication keeps copies.", Score: 0.91}},
 	}
-	visibility := snapshotVisibility{snapshot: "active-index-snapshot"}
+	visibility := &snapshotVisibility{snapshot: "active-index-snapshot"}
 	searcher := newTestSearcher(t, embedder, store, visibility, 4)
 
 	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication"})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
-	if result.CorpusSnapshot != "active-index-snapshot" {
+	if result.CorpusSnapshot == "active-index-snapshot" || visibility.calls != 0 {
+		t.Fatalf("CorpusSnapshot = %q calls=%d, want response snapshot without store call", result.CorpusSnapshot, visibility.calls)
+	}
+}
+
+func TestSearcherUsesCorpusSnapshotStoreForQueryMatchMetadata(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{
+		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Replication keeps copies.", Score: 0.91}},
+	}
+	visibility := &snapshotVisibility{snapshot: "active-index-snapshot"}
+	searcher := newTestSearcher(t, embedder, store, visibility, 4)
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{
+		Question:               "replication",
+		NeedQueryMatchMetadata: true,
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if result.CorpusSnapshot != "active-index-snapshot" || visibility.calls != 1 {
 		t.Fatalf("CorpusSnapshot = %q, want repository snapshot", result.CorpusSnapshot)
 	}
 }
 
-func TestSearcherFailsClosedWhenCorpusSnapshotStoreFails(t *testing.T) {
+func TestSearcherFailsClosedWhenMetadataCorpusSnapshotStoreFails(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{
 		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Passage: "Replication keeps copies.", Score: 0.91}},
 	}
-	visibility := snapshotVisibility{err: errors.New("postgres unavailable")}
+	visibility := &snapshotVisibility{err: errors.New("postgres unavailable")}
 	searcher := newTestSearcher(t, embedder, store, visibility, 4)
 
-	_, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication"})
+	_, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{
+		Question:               "replication",
+		NeedQueryMatchMetadata: true,
+	})
 	if err == nil || err.Error() != "corpus snapshot" {
 		t.Fatalf("Search() error = %v, want corpus snapshot", err)
 	}
@@ -465,7 +489,7 @@ func TestSearcherDoesNotFallbackWhenParentContextIsCanceled(t *testing.T) {
 }
 
 func TestSearchAssessmentCacheDoesNotOpenCircuitForCanceledParentContext(t *testing.T) {
-	cache := newSearchAssessmentCache(2, 0, testSearchPolicy(2).MaximumAssessmentInputRunes)
+	cache := newSearchAssessmentCache(2, 0, testSearchPolicy(2).MaximumAssessmentInputRunes, nil, AssessmentCachePolicy{}, nil, nil)
 	assessor := &stubEvidenceAssessor{err: context.Canceled}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -481,6 +505,110 @@ func TestSearchAssessmentCacheDoesNotOpenCircuitForCanceledParentContext(t *test
 	}
 	if assessor.calls() != 1 {
 		t.Fatalf("assessor calls = %d, want 1", assessor.calls())
+	}
+}
+
+func TestSearcherUsesPersistentSummaryAssessmentCache(t *testing.T) {
+	vector := make([]float32, domain.EmbeddingDimensions)
+	vector[0] = 1
+	embedder := &stubEmbedder{vector: vector}
+	store := &stubEvidenceStore{
+		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Passage: "Cached passages avoid repeated summary calls.", Score: 0.91}},
+	}
+	assessor := &stubEvidenceAssessor{}
+	cache := &stubAssessmentCache{
+		lookupAssessment: EvidenceAssessment{Relevant: true, Summary: "cached assessment"},
+		lookupOutcome:    AssessmentCacheOutcomeHit,
+	}
+	policy := testSearchPolicy(4)
+	policy.AssessmentCache = testAssessmentCachePolicy()
+	searcher, err := NewSearcherWithPolicyAndLexical(
+		embedder,
+		store,
+		nil,
+		visibleIndexes{},
+		assessor,
+		policy,
+		WithAssessmentCache(cache),
+	)
+	if err != nil {
+		t.Fatalf("NewSearcherWithPolicyAndLexical() error = %v", err)
+	}
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "cached summary", Limit: 1})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].Summary != "cached assessment" {
+		t.Fatalf("Search() evidence = %#v, want cached assessment", result.Evidence)
+	}
+	if assessor.calls() != 0 {
+		t.Fatalf("assessor calls = %d, want 0", assessor.calls())
+	}
+	if cache.lookups != 1 || cache.stores != 0 {
+		t.Fatalf("cache lookups/stores = %d/%d, want 1/0", cache.lookups, cache.stores)
+	}
+}
+
+func TestSearcherStoresProviderSummaryAssessmentCache(t *testing.T) {
+	vector := make([]float32, domain.EmbeddingDimensions)
+	vector[0] = 1
+	embedder := &stubEmbedder{vector: vector}
+	store := &stubEvidenceStore{
+		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Passage: "Provider summaries should be reusable.", Score: 0.91}},
+	}
+	assessor := &stubEvidenceAssessor{response: func(value SummaryRequest) EvidenceAssessment {
+		return EvidenceAssessment{Relevant: true, Summary: "provider summary"}
+	}}
+	cache := &stubAssessmentCache{lookupOutcome: AssessmentCacheOutcomeMiss}
+	policy := testSearchPolicy(4)
+	policy.AssessmentCache = testAssessmentCachePolicy()
+	searcher, err := NewSearcherWithPolicyAndLexical(
+		embedder,
+		store,
+		nil,
+		visibleIndexes{},
+		assessor,
+		policy,
+		WithAssessmentCache(cache),
+	)
+	if err != nil {
+		t.Fatalf("NewSearcherWithPolicyAndLexical() error = %v", err)
+	}
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "provider summary", Limit: 1})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].Summary != "provider summary" {
+		t.Fatalf("Search() evidence = %#v, want provider summary", result.Evidence)
+	}
+	if assessor.calls() != 1 {
+		t.Fatalf("assessor calls = %d, want 1", assessor.calls())
+	}
+	if cache.lookups != 1 || cache.stores != 1 {
+		t.Fatalf("cache lookups/stores = %d/%d, want 1/1", cache.lookups, cache.stores)
+	}
+	if cache.stored.Assessment.Summary != "provider summary" || !cache.stored.Assessment.Relevant || cache.stored.ExpiresAt.IsZero() {
+		t.Fatalf("stored cache entry = %#v, want provider assessment with expiry", cache.stored)
+	}
+}
+
+func TestAssessmentCacheLookupAllowsOnlyCompatibleNegativeSemanticReuse(t *testing.T) {
+	lookup := AssessmentCacheLookup{
+		TopicTokens:           []string{"concurrency", "js", "node"},
+		GuardTokens:           []string{"18"},
+		QueryEmbedding:        []float32{1, 0},
+		NegativeMinimumCosine: 0.98,
+	}
+	if outcome := lookup.NegativeCompatible([]string{"concurrency", "js", "node"}, []string{"18"}, []float32{0.99, 0.01}); outcome != AssessmentCacheOutcomeNegativeHit {
+		t.Fatalf("NegativeCompatible() = %q, want negative hit", outcome)
+	}
+	if outcome := lookup.NegativeCompatible([]string{"concurrency", "js", "node"}, []string{"20"}, []float32{0.99, 0.01}); outcome != AssessmentCacheOutcomeGuardMismatch {
+		t.Fatalf("NegativeCompatible() = %q, want guard mismatch", outcome)
+	}
+	if outcome := lookup.NegativeCompatible([]string{"concurrency", "js", "node"}, []string{"18"}, []float32{0, 1}); outcome != AssessmentCacheOutcomeSemanticMismatch {
+		t.Fatalf("NegativeCompatible() = %q, want semantic mismatch", outcome)
 	}
 }
 
@@ -1081,9 +1209,11 @@ type snapshotVisibility struct {
 	visibleIndexes
 	snapshot string
 	err      error
+	calls    int
 }
 
-func (v snapshotVisibility) CorpusSnapshot(context.Context) (string, error) {
+func (v *snapshotVisibility) CorpusSnapshot(context.Context) (string, error) {
+	v.calls++
 	return v.snapshot, v.err
 }
 
@@ -1163,4 +1293,36 @@ func (s *stubEvidenceAssessor) calls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.requests)
+}
+
+func testAssessmentCachePolicy() AssessmentCachePolicy {
+	return AssessmentCachePolicy{
+		TTL:                   time.Hour,
+		NegativeReuse:         true,
+		NegativeMinimumCosine: 0.985,
+		MaximumEntries:        128,
+		MaximumInputRunes:     testSearchPolicy(1).MaximumAssessmentInputRunes,
+		ProviderProfile:       "summary-profile",
+	}
+}
+
+type stubAssessmentCache struct {
+	lookupAssessment EvidenceAssessment
+	lookupOutcome    AssessmentCacheOutcome
+	lookupErr        error
+	storeErr         error
+	lookups          int
+	stores           int
+	stored           AssessmentCacheEntry
+}
+
+func (s *stubAssessmentCache) Lookup(_ context.Context, _ AssessmentCacheLookup) (EvidenceAssessment, AssessmentCacheOutcome, error) {
+	s.lookups++
+	return s.lookupAssessment, s.lookupOutcome, s.lookupErr
+}
+
+func (s *stubAssessmentCache) Store(_ context.Context, entry AssessmentCacheEntry) error {
+	s.stores++
+	s.stored = entry
+	return s.storeErr
 }

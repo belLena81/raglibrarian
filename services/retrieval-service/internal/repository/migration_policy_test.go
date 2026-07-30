@@ -49,6 +49,28 @@ func TestRetrievalLexicalSearchMigrationAddsOnlyIndexAndGrant(t *testing.T) {
 	}
 }
 
+func TestRetrievalSummaryCacheMigrationAddsOnlyCacheTableIndexesAndGrant(t *testing.T) {
+	contents := strings.Join(strings.Fields(readMigration(t, "../../migrations/003_retrieval_summary_cache.up.sql")), " ")
+
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS retrieval.summary_assessment_cache",
+		"PRIMARY KEY (provider_profile, question_hash, passage_hash)",
+		"CREATE INDEX IF NOT EXISTS retrieval_summary_assessment_cache_negative_idx",
+		"CREATE INDEX IF NOT EXISTS retrieval_summary_assessment_cache_expiry_idx",
+		"GRANT SELECT, INSERT, UPDATE, DELETE ON retrieval.summary_assessment_cache TO retrieval_search;",
+	} {
+		if !strings.Contains(contents, fragment) {
+			t.Fatalf("retrieval summary cache migration is missing %q", fragment)
+		}
+	}
+
+	for _, forbidden := range []string{"ALTER TABLE", "DROP TABLE", "DROP INDEX", "TRUNCATE"} {
+		if strings.Contains(contents, forbidden) {
+			t.Fatalf("retrieval summary cache migration contains %q", forbidden)
+		}
+	}
+}
+
 func TestPostgresBootstrapRunsRetrievalLexicalSearchMigration(t *testing.T) {
 	contents := strings.Join(strings.Fields(readMigration(t, "../../../../infra/postgres/bootstrap.sql")), " ")
 
@@ -56,6 +78,7 @@ func TestPostgresBootstrapRunsRetrievalLexicalSearchMigration(t *testing.T) {
 		"\\connect retrieval",
 		"\\ir /schema/retrieval/001_retrieval_schema.up.sql",
 		"\\ir /schema/retrieval/002_retrieval_lexical_search.up.sql",
+		"\\ir /schema/retrieval/003_retrieval_summary_cache.up.sql",
 	} {
 		if !strings.Contains(contents, fragment) {
 			t.Fatalf("postgres bootstrap is missing %q", fragment)

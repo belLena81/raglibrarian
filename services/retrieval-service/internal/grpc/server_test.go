@@ -21,14 +21,19 @@ import (
 )
 
 func TestSearchMapsAuthorizedRequestAndEvidence(t *testing.T) {
-	service := &stubSearchService{result: application.SearchResult{
-		QueryEmbedding:   []float32{1, 0},
-		EmbeddingProfile: "embedding-profile",
-		RetrievalProfile: "retrieval-profile",
-		CorpusSnapshot:   "snapshot",
-		Evidence:         []application.Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB, Passage: "Evidence", PageStart: 2, PageEnd: 3, Score: .8, Summary: "Evidence"}},
-		Documents: []application.DocumentResult{{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB,
-			ChunkCount: 2, PageStart: 1, PageEnd: 3, Score: .7, Summary: "Evidence", Evidence: []application.Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB, Passage: "Evidence", Summary: "Evidence"}}}},
+	service := &stubSearchService{search: func(_ context.Context, _ domain.Actor, input domain.SearchQueryInput) (application.SearchResult, error) {
+		if !input.NeedQueryMatchMetadata {
+			t.Fatal("authorized Answer metadata request did not request application metadata")
+		}
+		return application.SearchResult{
+			QueryEmbedding:   []float32{1, 0},
+			EmbeddingProfile: "embedding-profile",
+			RetrievalProfile: "retrieval-profile",
+			CorpusSnapshot:   "snapshot",
+			Evidence:         []application.Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB, Passage: "Evidence", PageStart: 2, PageEnd: 3, Score: .8, Summary: "Evidence"}},
+			Documents: []application.DocumentResult{{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB,
+				ChunkCount: 2, PageStart: 1, PageEnd: 3, Score: .7, Summary: "Evidence", Evidence: []application.Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB, Passage: "Evidence", Summary: "Evidence"}}}},
+		}, nil
 	}}
 	server := NewServer(service, zap.NewNop(), 25*time.Second, 2*time.Second)
 	response, err := server.Search(answerPeerContext(), &retrievalv1.SearchRequest{Question: "replication", Limit: 2, IncludeQueryMatchMetadata: true,
@@ -43,12 +48,18 @@ func TestSearchMapsAuthorizedRequestAndEvidence(t *testing.T) {
 }
 
 func TestSearchDoesNotExposeQueryMatchMetadataToOtherPeers(t *testing.T) {
-	server := NewServer(&stubSearchService{result: application.SearchResult{
-		QueryEmbedding:   []float32{1, 0},
-		EmbeddingProfile: "embedding-profile",
-		RetrievalProfile: "retrieval-profile",
-		CorpusSnapshot:   "snapshot",
-	}}, zap.NewNop(), 25*time.Second, 2*time.Second)
+	service := &stubSearchService{search: func(_ context.Context, _ domain.Actor, input domain.SearchQueryInput) (application.SearchResult, error) {
+		if input.NeedQueryMatchMetadata {
+			t.Fatal("unauthorized peer requested application metadata")
+		}
+		return application.SearchResult{
+			QueryEmbedding:   []float32{1, 0},
+			EmbeddingProfile: "embedding-profile",
+			RetrievalProfile: "retrieval-profile",
+			CorpusSnapshot:   "snapshot",
+		}, nil
+	}}
+	server := NewServer(service, zap.NewNop(), 25*time.Second, 2*time.Second)
 	context := peer.NewContext(context.Background(), &peer.Peer{AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{
 		PeerCertificates: []*x509.Certificate{{DNSNames: []string{"edge-api"}}},
 	}}})

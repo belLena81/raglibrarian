@@ -17,44 +17,45 @@ import (
 )
 
 const (
-	defaultMinimumSearchScore               = 0.6
-	minimumSearchScoreKey                   = "RETRIEVAL_MINIMUM_SEARCH_SCORE"
-	DefaultQdrantCollection                 = "evidence_v2"
-	defaultSearchCandidatePageMultiplier    = 2
-	defaultReciprocalRankFusionK            = 60
-	DefaultQdrantDocumentEvidenceLimit      = 3
-	DefaultLambdaMinimumProcessingTimeout   = time.Minute
-	DefaultLambdaProcessingTimeout          = 13*time.Minute + 30*time.Second
-	DefaultLambdaFailureRecordTimeout       = 10 * time.Second
-	DefaultTEIMaxResponseBytes              = 8 << 20
-	DefaultQdrantMaxResponseBytes           = 4 << 20
-	DefaultQdrantBatchResponseBytes         = 8 << 20
-	MaximumTEIRawResponseLogBytes           = 64 << 10
-	defaultSummaryLLMMaxCalls               = 100
-	defaultSummaryLLMOutputMode             = "json_or_plain"
-	summaryLLMOutputModeStrictJSON          = "strict_json"
-	defaultSearchTimeout                    = 4 * time.Minute
-	defaultSummaryLLMTimeout                = 3 * time.Minute
-	defaultCleanupJobTimeout                = 90 * time.Second
-	defaultCleanupJobBatchSize              = 64
-	defaultTEIBatchSize                     = 8
-	defaultWorkerMaxRetryAttempts           = 4
-	defaultMaximumQuestionCharacters        = 2000
-	defaultMaximumFilterTags                = 20
-	defaultMaximumTagCharacters             = 64
-	defaultMaximumAuthorCharacters          = 256
-	defaultDefaultResultLimit               = 5
-	defaultMaximumResultLimit               = 20
-	DefaultEvidenceAssessorMaxInputRunes    = 4096
-	DefaultEvidenceAssessorMaxResponseBytes = 64 << 10
-	DefaultEvidenceAssessorMaxSummaryBytes  = 16 << 10
-	defaultManifestMaxPages                 = 1000
-	defaultManifestMaxShards                = 2048
-	defaultManifestMaxShardCompressedBytes  = 32 << 20
-	defaultManifestMaxShardExpandedBytes    = 64 << 20
-	defaultManifestMaxShardChunks           = 256
-	defaultManifestMaxTotalChunks           = 50_000
-	defaultManifestMaxExpandedBytes         = 2 << 30
+	defaultMinimumSearchScore                = 0.6
+	minimumSearchScoreKey                    = "RETRIEVAL_MINIMUM_SEARCH_SCORE"
+	DefaultQdrantCollection                  = "evidence_v2"
+	defaultSearchCandidatePageMultiplier     = 2
+	defaultReciprocalRankFusionK             = 60
+	DefaultQdrantDocumentEvidenceLimit       = 3
+	DefaultLambdaMinimumProcessingTimeout    = time.Minute
+	DefaultLambdaProcessingTimeout           = 13*time.Minute + 30*time.Second
+	DefaultLambdaFailureRecordTimeout        = 10 * time.Second
+	DefaultTEIMaxResponseBytes               = 8 << 20
+	DefaultQdrantMaxResponseBytes            = 4 << 20
+	DefaultQdrantBatchResponseBytes          = 8 << 20
+	MaximumTEIRawResponseLogBytes            = 64 << 10
+	defaultSummaryLLMMaxCalls                = 100
+	defaultSummaryLLMOutputMode              = "json_or_plain"
+	summaryLLMOutputModeStrictJSON           = "strict_json"
+	defaultSearchTimeout                     = 4 * time.Minute
+	defaultSummaryLLMTimeout                 = 3 * time.Minute
+	defaultCleanupJobTimeout                 = 90 * time.Second
+	defaultCleanupJobBatchSize               = 64
+	defaultTEIBatchSize                      = 8
+	defaultWorkerMaxRetryAttempts            = 4
+	defaultMaximumQuestionCharacters         = 2000
+	defaultMaximumFilterTags                 = 20
+	defaultMaximumTagCharacters              = 64
+	defaultMaximumAuthorCharacters           = 256
+	defaultDefaultResultLimit                = 5
+	defaultMaximumResultLimit                = 20
+	DefaultEvidenceAssessorMaxInputRunes     = 4096
+	DefaultEvidenceAssessorMaxResponseBytes  = 64 << 10
+	DefaultEvidenceAssessorMaxSummaryBytes   = 16 << 10
+	DefaultSummaryCacheNegativeMinimumCosine = 0.985
+	defaultManifestMaxPages                  = 1000
+	defaultManifestMaxShards                 = 2048
+	defaultManifestMaxShardCompressedBytes   = 32 << 20
+	defaultManifestMaxShardExpandedBytes     = 64 << 20
+	defaultManifestMaxShardChunks            = 256
+	defaultManifestMaxTotalChunks            = 50_000
+	defaultManifestMaxExpandedBytes          = 2 << 30
 )
 
 type Config struct {
@@ -90,18 +91,22 @@ type Config struct {
 }
 
 type EvidenceAssessorConfig struct {
-	BaseURL           string
-	Model             string
-	Timeout           time.Duration
-	MaxOutputTokens   int
-	MaxCalls          int
-	MaxInputRunes     int
-	MaxResponseBytes  int
-	MaxSummaryBytes   int
-	RequestsPerMinute int
-	OutputMode        string
-	APIKeyFile        string
-	CAFile            string
+	BaseURL                    string
+	Model                      string
+	Timeout                    time.Duration
+	MaxOutputTokens            int
+	MaxCalls                   int
+	MaxInputRunes              int
+	MaxResponseBytes           int
+	MaxSummaryBytes            int
+	CacheTTL                   time.Duration
+	CacheMaxEntries            int
+	CacheNegativeReuse         bool
+	CacheNegativeMinimumCosine float64
+	RequestsPerMinute          int
+	OutputMode                 string
+	APIKeyFile                 string
+	CAFile                     string
 }
 
 type SearchRequestPolicy struct {
@@ -258,6 +263,10 @@ func Load() (Config, error) {
 	summaryMaxInputRunes, summaryMaxInputRunesErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_INPUT_RUNES", DefaultEvidenceAssessorMaxInputRunes, 32768)
 	summaryMaxResponseBytes, summaryMaxResponseBytesErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_RESPONSE_BYTES", DefaultEvidenceAssessorMaxResponseBytes, 1<<20)
 	summaryMaxSummaryBytes, summaryMaxSummaryBytesErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_SUMMARY_BYTES", DefaultEvidenceAssessorMaxSummaryBytes, 256<<10)
+	summaryCacheTTL, summaryCacheTTLErr := nonNegativeDuration("RETRIEVAL_SUMMARY_CACHE_TTL", 0, 24*time.Hour)
+	summaryCacheMaxEntries, summaryCacheMaxEntriesErr := boundedNonNegativeInteger("RETRIEVAL_SUMMARY_CACHE_MAX_ENTRIES", 0, 1000000)
+	summaryCacheNegativeReuse, summaryCacheNegativeReuseErr := optionalBool("RETRIEVAL_SUMMARY_CACHE_NEGATIVE_REUSE", false)
+	summaryCacheNegativeMinimumCosine, summaryCacheNegativeMinimumCosineErr := cacheCosine("RETRIEVAL_SUMMARY_CACHE_NEGATIVE_MINIMUM_COSINE", DefaultSummaryCacheNegativeMinimumCosine)
 	readinessProbeTimeout, readinessProbeTimeoutErr := optionalDuration("RETRIEVAL_READY_PROBE_TIMEOUT", 2*time.Second)
 	readinessReadHeaderTimeout, readinessReadHeaderTimeoutErr := optionalDuration("RETRIEVAL_READY_READ_HEADER_TIMEOUT", 2*time.Second)
 	readinessIdleTimeout, readinessIdleTimeoutErr := optionalDuration("RETRIEVAL_READY_IDLE_TIMEOUT", 30*time.Second)
@@ -280,6 +289,10 @@ func Load() (Config, error) {
 	configuration.EvidenceAssessor.MaxInputRunes = summaryMaxInputRunes
 	configuration.EvidenceAssessor.MaxResponseBytes = summaryMaxResponseBytes
 	configuration.EvidenceAssessor.MaxSummaryBytes = summaryMaxSummaryBytes
+	configuration.EvidenceAssessor.CacheTTL = summaryCacheTTL
+	configuration.EvidenceAssessor.CacheMaxEntries = summaryCacheMaxEntries
+	configuration.EvidenceAssessor.CacheNegativeReuse = summaryCacheNegativeReuse
+	configuration.EvidenceAssessor.CacheNegativeMinimumCosine = summaryCacheNegativeMinimumCosine
 	configuration.MinimumSearchScore = minimumSearchScore
 	configuration.EvidenceAssessor.RequestsPerMinute = summaryLLMRequestsPerMinute
 	configuration.EvidenceAssessor.OutputMode = summaryLLMOutputMode
@@ -298,10 +311,11 @@ func Load() (Config, error) {
 	if configuration.GRPCAddress == "" || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
 		configuration.PostgresDSNFile == "" || configuration.QdrantAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || runAsErr != nil || finalizationLeaseErr != nil ||
-		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || maximumQuestionCharactersErr != nil || maximumFilterTagsErr != nil || maximumTagCharactersErr != nil || maximumAuthorCharactersErr != nil || defaultResultLimitErr != nil || maximumResultLimitErr != nil || searchCandidatePageMultiplierErr != nil || reciprocalRankFusionKErr != nil || summaryMaxInputRunesErr != nil || summaryMaxResponseBytesErr != nil || summaryMaxSummaryBytesErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || summaryLLMOutputModeErr != nil || teiRequestsPerSecondErr != nil || teiMaxResponseBytesErr != nil || teiBatchSizeErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || qdrantMaxResponseBytesErr != nil || qdrantBatchResponseBytesErr != nil || qdrantDocumentEvidenceLimitErr != nil ||
+		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || maximumQuestionCharactersErr != nil || maximumFilterTagsErr != nil || maximumTagCharactersErr != nil || maximumAuthorCharactersErr != nil || defaultResultLimitErr != nil || maximumResultLimitErr != nil || searchCandidatePageMultiplierErr != nil || reciprocalRankFusionKErr != nil || summaryMaxInputRunesErr != nil || summaryMaxResponseBytesErr != nil || summaryMaxSummaryBytesErr != nil || summaryCacheTTLErr != nil || summaryCacheMaxEntriesErr != nil || summaryCacheNegativeReuseErr != nil || summaryCacheNegativeMinimumCosineErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || summaryLLMOutputModeErr != nil || teiRequestsPerSecondErr != nil || teiMaxResponseBytesErr != nil || teiBatchSizeErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || qdrantMaxResponseBytesErr != nil || qdrantBatchResponseBytesErr != nil || qdrantDocumentEvidenceLimitErr != nil ||
 		readinessProbeTimeoutErr != nil || readinessReadHeaderTimeoutErr != nil || readinessIdleTimeoutErr != nil || readinessShutdownTimeoutErr != nil ||
 		configuration.SearchRequestPolicy.DefaultResultLimit > configuration.SearchRequestPolicy.MaximumResultLimit ||
 		configuration.EvidenceAssessor.Timeout >= configuration.SearchTimeout ||
+		configuration.EvidenceAssessor.CacheTTL > 0 && configuration.EvidenceAssessor.CacheMaxEntries <= 0 ||
 		configuration.QdrantBatchResponseBytes < configuration.QdrantMaxResponseBytes || configuration.TEILogRawResponseMaxBytes > configuration.TEIMaxResponseBytes ||
 		!validEvidenceAssessorConfiguration(configuration) {
 		return Config{}, errors.New("invalid retrieval configuration")
@@ -361,8 +375,24 @@ func optionalDuration(key string, fallback time.Duration) (time.Duration, error)
 	return parsed, nil
 }
 
+func nonNegativeDuration(key string, fallback, maximum time.Duration) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed < 0 || parsed > maximum {
+		return 0, errors.New("invalid duration")
+	}
+	return parsed, nil
+}
+
 func LoadMinimumSearchScore() (float64, error) {
 	return boundedFloat(minimumSearchScoreKey, defaultMinimumSearchScore, 0, 1)
+}
+
+func cacheCosine(key string, fallback float64) (float64, error) {
+	return boundedFloat(key, fallback, 0, 1)
 }
 
 func boundedFloat(key string, fallback, minimum, maximum float64) (float64, error) {

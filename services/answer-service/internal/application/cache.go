@@ -154,8 +154,9 @@ func (c *answerCache) lookup(request domain.SearchRequest, search domain.SearchR
 			outcome = CacheOutcomeEvidenceMismatch
 			continue
 		}
+		matched := cloneCacheEntry(*entry)
 		c.touch(index)
-		return cloneCacheEntry(*entry), matchOutcome
+		return matched, matchOutcome
 	}
 	return cacheEntry{}, outcome
 }
