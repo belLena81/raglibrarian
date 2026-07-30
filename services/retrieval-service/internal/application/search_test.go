@@ -28,6 +28,54 @@ func testSearchPolicy(summaryCallLimit int) SearchPolicy {
 	}
 }
 
+func TestResponseSnapshotIsStableAcrossReturnedOrder(t *testing.T) {
+	left := responseSnapshot(
+		[]Evidence{{EvidenceID: "evidence-2"}, {EvidenceID: "evidence-1"}},
+		[]DocumentResult{{DocumentID: "document-2", Evidence: []Evidence{{EvidenceID: "doc-evidence-2"}}}, {DocumentID: "document-1", Evidence: []Evidence{{EvidenceID: "doc-evidence-1"}}}},
+	)
+	right := responseSnapshot(
+		[]Evidence{{EvidenceID: "evidence-1"}, {EvidenceID: "evidence-2"}},
+		[]DocumentResult{{DocumentID: "document-1", Evidence: []Evidence{{EvidenceID: "doc-evidence-1"}}}, {DocumentID: "document-2", Evidence: []Evidence{{EvidenceID: "doc-evidence-2"}}}},
+	)
+	if left != right {
+		t.Fatalf("responseSnapshot() = %q and %q, want stable digest", left, right)
+	}
+}
+
+func TestSearcherUsesCorpusSnapshotStoreWhenAvailable(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{
+		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", Passage: "Replication keeps copies.", Score: 0.91}},
+	}
+	visibility := snapshotVisibility{snapshot: "active-index-snapshot"}
+	searcher := newTestSearcher(t, embedder, store, visibility, 4)
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication"})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if result.CorpusSnapshot != "active-index-snapshot" {
+		t.Fatalf("CorpusSnapshot = %q, want repository snapshot", result.CorpusSnapshot)
+	}
+}
+
+func TestSearcherFailsClosedWhenCorpusSnapshotStoreFails(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{
+		results: []Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Passage: "Replication keeps copies.", Score: 0.91}},
+	}
+	visibility := snapshotVisibility{err: errors.New("postgres unavailable")}
+	searcher := newTestSearcher(t, embedder, store, visibility, 4)
+
+	_, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication"})
+	if err == nil || err.Error() != "corpus snapshot" {
+		t.Fatalf("Search() error = %v, want corpus snapshot", err)
+	}
+	if !errors.Is(err, visibility.err) {
+		t.Fatalf("Search() error = %v, want wrapped snapshot cause", err)
+	}
+}
+
 func newTestSearcher(
 	t *testing.T,
 	embedder QueryEmbedder,
@@ -1027,6 +1075,16 @@ func (visibleIndexes) FilterIndexed(_ context.Context, values []Evidence) ([]Evi
 
 func (visibleIndexes) FilterIndexedDocuments(_ context.Context, values []DocumentResult) ([]DocumentResult, error) {
 	return values, nil
+}
+
+type snapshotVisibility struct {
+	visibleIndexes
+	snapshot string
+	err      error
+}
+
+func (v snapshotVisibility) CorpusSnapshot(context.Context) (string, error) {
+	return v.snapshot, v.err
 }
 
 type filteringVisibility struct {

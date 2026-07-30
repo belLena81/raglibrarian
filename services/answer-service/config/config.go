@@ -3,6 +3,7 @@ package config
 
 import (
 	"errors"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -57,6 +58,7 @@ type Config struct {
 	MetricsReadHeaderTimeout time.Duration
 	MetricsWriteTimeout      time.Duration
 	MetricsIdleTimeout       time.Duration
+	Cache                    application.CachePolicy
 }
 
 type GeneratorConfig struct {
@@ -100,6 +102,11 @@ func Load() (Config, error) {
 	metricsMaxHeaderBytes, metricsMaxHeaderBytesErr := positiveInteger("ANSWER_METRICS_MAX_HEADER_BYTES", 16<<10, 1, 1<<20)
 	metricsWriteTimeout, metricsWriteErr := duration("ANSWER_METRICS_WRITE_TIMEOUT", 5*time.Second, 100*time.Millisecond, time.Minute)
 	metricsIdleTimeout, metricsIdleErr := duration("ANSWER_METRICS_IDLE_TIMEOUT", 30*time.Second, time.Second, 5*time.Minute)
+	cacheCapacity, cacheCapacityErr := nonNegativeInteger("ANSWER_CACHE_CAPACITY", 0, 10000)
+	cacheTTL, cacheTTLErr := nonNegativeDuration("ANSWER_CACHE_TTL", 0, 24*time.Hour)
+	cacheMinimumCosine, cacheMinimumCosineErr := cacheCosine("ANSWER_CACHE_MINIMUM_COSINE", 0.95)
+	cacheSemanticOnlyMinimumCosine, cacheSemanticOnlyMinimumCosineErr := cacheCosine("ANSWER_CACHE_SEMANTIC_ONLY_MINIMUM_COSINE", 0.985)
+	cacheMinimumLexicalTopicOverlap, cacheMinimumLexicalTopicOverlapErr := cacheCosine("ANSWER_CACHE_MINIMUM_LEXICAL_TOPIC_OVERLAP", 0.8)
 	maximumResultLimit32 := uint32(maximumResultLimit) // #nosec G115 -- bounded above to 256.
 	configuration := Config{
 		GRPCAddress:      os.Getenv("ANSWER_GRPC_ADDR"),
@@ -148,6 +155,16 @@ func Load() (Config, error) {
 		MetricsReadHeaderTimeout: metricsReadHeaderTimeout,
 		MetricsWriteTimeout:      metricsWriteTimeout,
 		MetricsIdleTimeout:       metricsIdleTimeout,
+		Cache: application.CachePolicy{
+			Capacity:                   cacheCapacity,
+			TTL:                        cacheTTL,
+			MinimumCosine:              cacheMinimumCosine,
+			SemanticOnlyMinimumCosine:  cacheSemanticOnlyMinimumCosine,
+			MinimumLexicalTopicOverlap: cacheMinimumLexicalTopicOverlap,
+			GeneratorProfile: strings.Join([]string{
+				os.Getenv("ANSWER_LLM_BASE_URL"), os.Getenv("ANSWER_LLM_MODEL"),
+			}, "\x00"),
+		},
 	}
 	rpm, rpmErr := providerRequestsPerMinute(configuration.Generator.Model, "ANSWER_PROVIDER_REQUESTS_PER_MINUTE")
 	if rpmErr != nil {
@@ -170,6 +187,7 @@ func Load() (Config, error) {
 		requestErr, retrievalErr, providerErr, readinessProbeErr, readinessPollErr, shutdownErr, metricsReadErr,
 		providerHTTPTimeoutErr,
 		metricsReadHeaderErr, metricsMaxHeaderBytesErr, metricsWriteErr, metricsIdleErr,
+		cacheCapacityErr, cacheTTLErr, cacheMinimumCosineErr, cacheSemanticOnlyMinimumCosineErr, cacheMinimumLexicalTopicOverlapErr,
 	}
 	for _, err := range errs {
 		if err != nil {
@@ -181,12 +199,38 @@ func Load() (Config, error) {
 		!validProviderURL(configuration.Generator.BaseURL) || strings.TrimSpace(configuration.Generator.Model) == "" || len(configuration.Generator.Model) > 256 || strings.ContainsAny(configuration.Generator.Model, "\r\n") ||
 		configuration.Generator.APIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		configuration.Generator.MaxCandidateBytes > configuration.Generator.MaxResponseBytes ||
+		(configuration.Cache.Capacity == 0) != (configuration.Cache.TTL == 0) ||
+		configuration.Cache.SemanticOnlyMinimumCosine < configuration.Cache.MinimumCosine ||
 		(configuration.Generator.HTTPClientTimeout > 0 && configuration.Generator.HTTPClientTimeout > configuration.Limits.GeneratorTimeout) ||
 		configuration.Limits.MaximumEvidenceBytes > configuration.Limits.MaximumContextBytes || configuration.Limits.RetrievalTimeout >= configuration.Limits.RequestTimeout ||
 		configuration.Limits.GeneratorTimeout >= configuration.Limits.RequestTimeout {
 		return Config{}, errors.New("invalid answer configuration")
 	}
 	return configuration, nil
+}
+
+func nonNegativeInteger(key string, fallback, maximum int) (int, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 || parsed > maximum {
+		return 0, errors.New("invalid integer")
+	}
+	return parsed, nil
+}
+
+func cacheCosine(key string, fallback float64) (float64, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed <= 0 || parsed > 1 {
+		return 0, errors.New("invalid cache cosine")
+	}
+	return parsed, nil
 }
 
 func positiveInteger(key string, fallback, minimum, maximum int) (int, error) {

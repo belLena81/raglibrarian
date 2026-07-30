@@ -59,6 +59,23 @@ func TestNewWithWriterAllowsOnlyKnownPasswordResetCleanupStage(t *testing.T) {
 	assert.NotContains(t, output.String(), "stage=")
 }
 
+func TestNewWithWriterAllowsKnownCacheOutcomes(t *testing.T) {
+	var output bytes.Buffer
+	log, err := logger.NewWithWriter(&output)
+	require.NoError(t, err)
+
+	for _, outcome := range []string{"semantic_only_hit", "lexical_hit", "guard_mismatch", "hard_mismatch"} {
+		output.Reset()
+		log.Info("answer.cache.lookup", zap.String("cache_outcome", outcome))
+		assert.Contains(t, output.String(), "answer cache lookup cache_outcome="+outcome)
+	}
+
+	output.Reset()
+	log.Info("answer.cache.lookup", zap.String("cache_outcome", "query_text_leaked"))
+	assert.Contains(t, output.String(), "answer cache lookup")
+	assert.NotContains(t, output.String(), "cache_outcome=")
+}
+
 func TestNewWithWriterUsesFixedSingleLineFormat(t *testing.T) {
 	var output bytes.Buffer
 	log, err := logger.NewWithWriter(&output)

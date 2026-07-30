@@ -75,7 +75,14 @@ func New(configuration config.Config) (*App, error) {
 	}
 	retriever := retrieval.NewClient(retrievalv1.NewRetrievalServiceClient(connection))
 	metricRecorder := &metrics.Recorder{}
-	service, err := application.NewService(retriever, generatorAdapter, diagnostic.New(log, metricRecorder), configuration.Limits, configuration.RequestPolicy)
+	service, err := application.NewService(
+		retriever,
+		generatorAdapter,
+		diagnostic.New(log, metricRecorder),
+		configuration.Limits,
+		configuration.RequestPolicy,
+		configuration.Cache,
+	)
 	if err != nil {
 		_ = connection.Close()
 		return nil, err

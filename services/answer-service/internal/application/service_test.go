@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 )
 
 type fakeRetriever struct {
+	mu     sync.Mutex
 	result domain.SearchResult
 	err    error
 	calls  atomic.Int32
@@ -20,6 +22,8 @@ type fakeRetriever struct {
 
 func (f *fakeRetriever) Search(_ context.Context, input domain.SearchRequest) (domain.SearchResult, error) {
 	f.calls.Add(1)
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.input = input
 	return f.result, f.err
 }
@@ -156,6 +160,7 @@ func (o *fakeObserver) Failure(Outcome, string, string, time.Duration) {}
 func (o *fakeObserver) GeneratorStarted()                              {}
 func (o *fakeObserver) GeneratorResponse(int, int)                     {}
 func (o *fakeObserver) GeneratorFinished()                             {}
+func (o *fakeObserver) CacheLookup(CacheOutcome)                       {}
 
 func TestAnswerReturnsValidatedGroundedSegments(t *testing.T) {
 	retriever := &fakeRetriever{result: searchResult("evidence-1")}
@@ -418,6 +423,317 @@ func TestAnswerRejectsOversizedOrMixedValidityOutput(t *testing.T) {
 	}
 }
 
+func TestAnswerCacheHitsForNormalizedQueryAndKeepsRetrievalLive(t *testing.T) {
+	retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
+	service := newCachedTestService(t, retriever, provider)
+
+	first := validRequest()
+	first.Question = "Concurrency in Node.js"
+	if _, err := service.Answer(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	second := validRequest()
+	second.Question = "  concurrency IN node js! "
+	result, err := service.Answer(context.Background(), second)
+
+	if err != nil || result.Answer == nil || provider.calls.Load() != 1 || retriever.calls.Load() != 2 {
+		t.Fatalf("Answer() = %#v, %v; provider calls=%d retrieval calls=%d", result, err, provider.calls.Load(), retriever.calls.Load())
+	}
+}
+
+func TestAnswerCacheHitsForTopicExpansionWhenModeIsCompatible(t *testing.T) {
+	retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
+	service := newCachedTestService(t, retriever, provider)
+
+	first := validRequest()
+	first.Question = "Concurrency in Node.js"
+	if _, err := service.Answer(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	second := validRequest()
+	second.Question = "Explain handling concurrency in Node.js"
+	if _, err := service.Answer(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	if provider.calls.Load() != 1 {
+		t.Fatalf("provider calls = %d, want cache hit", provider.calls.Load())
+	}
+}
+
+func TestAnswerCacheMissesWhenCachedTopicIsMoreSpecificThanCurrentQuery(t *testing.T) {
+	retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
+	service := newCachedTestService(t, retriever, provider)
+
+	first := validRequest()
+	first.Question = "Node.js event loop concurrency"
+	if _, err := service.Answer(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	second := validRequest()
+	second.Question = "Concurrency in Node.js"
+	changedSearch := cachedSearch("evidence-1")
+	changedSearch.QueryEmbedding = []float32{0.8, 0.6}
+	retriever.result = changedSearch
+	if _, err := service.Answer(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	if provider.calls.Load() != 2 {
+		t.Fatalf("provider calls = %d, want cache miss", provider.calls.Load())
+	}
+}
+
+func TestAnswerCacheMissesForIncompatibleAnswerMode(t *testing.T) {
+	retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
+	service := newCachedTestService(t, retriever, provider)
+
+	first := validRequest()
+	first.Question = "Concurrency in Node.js"
+	if _, err := service.Answer(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	second := validRequest()
+	second.Question = "Give me examples of handling concurrency in Node.js"
+	if _, err := service.Answer(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	if provider.calls.Load() != 2 {
+		t.Fatalf("provider calls = %d, want cache miss", provider.calls.Load())
+	}
+}
+
+func TestAnswerCacheHitsForSemanticOnlyParaphrase(t *testing.T) {
+	retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
+	service := newCachedTestService(t, retriever, provider)
+
+	first := validRequest()
+	first.Question = "Concurrency in Node.js"
+	if _, err := service.Answer(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	second := validRequest()
+	second.Question = "Parallel async coordination"
+	if _, err := service.Answer(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	if provider.calls.Load() != 1 {
+		t.Fatalf("provider calls = %d, want semantic-only cache hit", provider.calls.Load())
+	}
+}
+
+func TestAnswerCacheMissesWhenGuardTokensDiffer(t *testing.T) {
+	retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
+	service := newCachedTestService(t, retriever, provider)
+
+	first := validRequest()
+	first.Question = "Concurrency in Node 18"
+	if _, err := service.Answer(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	second := validRequest()
+	second.Question = "Concurrency in Node 20"
+	if _, err := service.Answer(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	if provider.calls.Load() != 2 {
+		t.Fatalf("provider calls = %d, want guard-token cache miss", provider.calls.Load())
+	}
+}
+
+func TestAnswerCacheClassifiesLexicalOverlapAndSemanticOnlyHits(t *testing.T) {
+	cache := newTestAnswerCache(t, CachePolicy{
+		Capacity:                   4,
+		TTL:                        time.Minute,
+		MinimumCosine:              0.9,
+		SemanticOnlyMinimumCosine:  0.99,
+		MinimumLexicalTopicOverlap: 0.7,
+		GeneratorProfile:           "generator-v1",
+	})
+	request := validRequest()
+	request.Question = "Node.js concurrency queues"
+	search := cachedSearch("evidence-1")
+	evidence := selectEvidence(search, testLimits())
+	segments := []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}
+	cache.store(request, search, evidence, segments)
+
+	lexicalRequest := validRequest()
+	lexicalRequest.Question = "Node.js concurrency workers"
+	_, lexicalOutcome := cache.lookup(lexicalRequest, search, evidence)
+	if lexicalOutcome != CacheOutcomeLexicalHit {
+		t.Fatalf("lexical lookup outcome = %q, want %q", lexicalOutcome, CacheOutcomeLexicalHit)
+	}
+
+	semanticRequest := validRequest()
+	semanticRequest.Question = "Parallel async coordination"
+	_, semanticOutcome := cache.lookup(semanticRequest, search, evidence)
+	if semanticOutcome != CacheOutcomeSemanticOnlyHit {
+		t.Fatalf("semantic lookup outcome = %q, want %q", semanticOutcome, CacheOutcomeSemanticOnlyHit)
+	}
+}
+
+func TestAnswerCacheTouchesHitsForLRUEviction(t *testing.T) {
+	cache := newTestAnswerCache(t, CachePolicy{
+		Capacity:                   2,
+		TTL:                        time.Minute,
+		MinimumCosine:              0.9,
+		SemanticOnlyMinimumCosine:  0.99,
+		MinimumLexicalTopicOverlap: 0.8,
+		GeneratorProfile:           "generator-v1",
+	})
+	evidenceSearch := cachedSearch("evidence-1")
+	evidence := selectEvidence(evidenceSearch, testLimits())
+	segments := []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}
+	a := validRequest()
+	a.Question = "alpha"
+	b := validRequest()
+	b.Question = "beta"
+	c := validRequest()
+	c.Question = "gamma"
+	searchA := cacheSearchWithEmbedding([]float32{1, 0})
+	searchB := cacheSearchWithEmbedding([]float32{0, 1})
+	searchC := cacheSearchWithEmbedding([]float32{-1, 0})
+	cache.store(a, searchA, evidence, segments)
+	cache.store(b, searchB, evidence, segments)
+	if _, outcome := cache.lookup(a, searchA, evidence); outcome != CacheOutcomeHit {
+		t.Fatalf("lookup A outcome = %q, want hit", outcome)
+	}
+	cache.store(c, searchC, evidence, segments)
+	if _, outcome := cache.lookup(b, searchB, evidence); outcome == CacheOutcomeHit {
+		t.Fatal("B was returned after LRU eviction")
+	}
+	if _, outcome := cache.lookup(a, searchA, evidence); outcome != CacheOutcomeHit {
+		t.Fatalf("lookup A after eviction outcome = %q, want hit", outcome)
+	}
+}
+
+func TestAnswerCacheHitsWhenCurrentEvidenceAddsUncitedEvidence(t *testing.T) {
+	retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
+	service := newCachedTestService(t, retriever, provider)
+
+	if _, err := service.Answer(context.Background(), validRequest()); err != nil {
+		t.Fatal(err)
+	}
+	changed := cachedSearch("evidence-1")
+	changed.Results = append([]domain.Evidence{
+		{EvidenceID: "extra", Passage: "extra trusted evidence", Score: 1},
+	}, changed.Results...)
+	retriever.result = changed
+	if _, err := service.Answer(context.Background(), validRequest()); err != nil {
+		t.Fatal(err)
+	}
+
+	if provider.calls.Load() != 1 {
+		t.Fatalf("provider calls = %d, want cache hit", provider.calls.Load())
+	}
+}
+
+func TestAnswerCacheMissesWhenHardMetadataChanges(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*domain.SearchResult, *domain.SearchRequest)
+	}{
+		{name: "corpus snapshot", mutate: func(search *domain.SearchResult, _ *domain.SearchRequest) { search.CorpusSnapshot = "snapshot-2" }},
+		{name: "selected evidence", mutate: func(search *domain.SearchResult, _ *domain.SearchRequest) {
+			search.Results[0].Passage = "new trusted evidence"
+		}},
+		{name: "filters", mutate: func(_ *domain.SearchResult, request *domain.SearchRequest) {
+			request.Filters.Tags = []string{"history"}
+		}},
+		{name: "authorization scope", mutate: func(_ *domain.SearchResult, request *domain.SearchRequest) {
+			request.Actor.UserID = "user-2"
+		}},
+		{name: "minimum evidence score", mutate: func(_ *domain.SearchResult, request *domain.SearchRequest) {
+			request.MinimumEvidenceScore = 0.8
+		}},
+		{name: "retrieval profile", mutate: func(search *domain.SearchResult, _ *domain.SearchRequest) { search.RetrievalProfile = "hybrid-v2" }},
+		{name: "embedding profile", mutate: func(search *domain.SearchResult, _ *domain.SearchRequest) { search.EmbeddingProfile = "embedding-v2" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
+			provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
+			service := newCachedTestService(t, retriever, provider)
+			if _, err := service.Answer(context.Background(), validRequest()); err != nil {
+				t.Fatal(err)
+			}
+			changedRequest := validRequest()
+			changedSearch := cachedSearch("evidence-1")
+			test.mutate(&changedSearch, &changedRequest)
+			retriever.result = changedSearch
+			if _, err := service.Answer(context.Background(), changedRequest); err != nil {
+				t.Fatal(err)
+			}
+			if provider.calls.Load() != 2 {
+				t.Fatalf("provider calls = %d, want cache miss", provider.calls.Load())
+			}
+		})
+	}
+}
+
+func TestAnswerCoalescesConcurrentIdenticalCacheMisses(t *testing.T) {
+	retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
+	block := make(chan struct{})
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}, block: block}
+	service := newCachedTestService(t, retriever, provider)
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			result, err := service.Answer(context.Background(), validRequest())
+			if err == nil && result.Answer == nil {
+				err = errors.New("missing answer")
+			}
+			results <- err
+		}()
+	}
+
+	close(start)
+	deadline := time.Now().Add(time.Second)
+	for provider.calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	close(block)
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if provider.calls.Load() != 1 {
+		t.Fatalf("provider calls = %d, want one coalesced generation", provider.calls.Load())
+	}
+}
+
+func TestCachedSegmentsMatchCurrentSelectedEvidence(t *testing.T) {
+	segments := []domain.AnswerSegment{{Text: "validated", EvidenceIDs: []string{"evidence-1"}}}
+	evidence := []domain.ContextEvidence{{EvidenceID: "evidence-1"}}
+	if !cachedSegmentsMatchEvidence(segments, evidence) {
+		t.Fatal("expected current evidence to validate cached segment")
+	}
+	if cachedSegmentsMatchEvidence(segments, []domain.ContextEvidence{{EvidenceID: "evidence-2"}}) {
+		t.Fatal("cached segment must not be returned without current cited evidence")
+	}
+}
+
+func TestCanonicalFiltersKeepsControlCharacterValuesDistinct(t *testing.T) {
+	left := domain.SearchFilters{Tags: []string{"a\x00b"}, Author: "c"}
+	right := domain.SearchFilters{Tags: []string{"a", "b"}, Author: "c"}
+	if canonicalFilters(left) == canonicalFilters(right) {
+		t.Fatal("distinct filters must not share a cache key")
+	}
+}
+
 func newTestService(t *testing.T, retriever Retriever, generator AnswerGenerator, limits Limits) *Service {
 	t.Helper()
 	service, err := NewService(retriever, generator, &fakeObserver{}, limits, testRequestPolicy())
@@ -425,6 +741,38 @@ func newTestService(t *testing.T, retriever Retriever, generator AnswerGenerator
 		t.Fatal(err)
 	}
 	return service
+}
+
+func newCachedTestService(t *testing.T, retriever Retriever, generator AnswerGenerator) *Service {
+	t.Helper()
+	service, err := NewService(
+		retriever,
+		generator,
+		&fakeObserver{},
+		testLimits(),
+		testRequestPolicy(),
+		CachePolicy{
+			Capacity:                   8,
+			TTL:                        time.Minute,
+			MinimumCosine:              0.9,
+			SemanticOnlyMinimumCosine:  0.99,
+			MinimumLexicalTopicOverlap: 0.8,
+			GeneratorProfile:           "generator-v1",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
+
+func newTestAnswerCache(t *testing.T, policy CachePolicy) *answerCache {
+	t.Helper()
+	cache, err := newAnswerCache(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cache
 }
 
 func testRequestPolicy() domain.RequestPolicy {
@@ -460,4 +808,21 @@ func validRequest() domain.SearchRequest {
 
 func searchResult(id string) domain.SearchResult {
 	return domain.SearchResult{Query: "question", Results: []domain.Evidence{{EvidenceID: id, Passage: "trusted evidence"}}}
+}
+
+func cachedSearch(id string) domain.SearchResult {
+	return domain.SearchResult{
+		Query:            "question",
+		QueryEmbedding:   []float32{0.6, 0.8},
+		EmbeddingProfile: "embedding-v1",
+		RetrievalProfile: "hybrid-v1",
+		CorpusSnapshot:   "snapshot-1",
+		Results:          []domain.Evidence{{EvidenceID: id, Passage: "trusted evidence", Score: 1}},
+	}
+}
+
+func cacheSearchWithEmbedding(embedding []float32) domain.SearchResult {
+	search := cachedSearch("evidence-1")
+	search.QueryEmbedding = embedding
+	return search
 }

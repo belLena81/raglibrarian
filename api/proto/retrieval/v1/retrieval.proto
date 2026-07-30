@@ -38,12 +38,26 @@ message SearchRequest {
   uint32 limit = 3;
   Actor actor = 4;
   string correlation_id = 5;
+  // Only Answer may request transient embedding metadata for its local cache.
+  // Retrieval additionally verifies the mTLS peer SAN before returning it.
+  bool include_query_match_metadata = 6;
 }
 
 message SearchResponse {
   string query = 1;
   repeated Evidence results = 2;
   repeated DocumentResult documents = 3;
+  QueryMatchMetadata query_match = 4;
+}
+
+// QueryMatchMetadata is an authorized, transient projection used by Answer to
+// decide whether a grounded response can be reused after fresh Retrieval.
+// It must not be logged or placed in events.
+message QueryMatchMetadata {
+  repeated float query_embedding = 1;
+  string embedding_profile = 2;
+  string retrieval_profile = 3;
+  string corpus_snapshot = 4;
 }
 
 message BookMetadata {

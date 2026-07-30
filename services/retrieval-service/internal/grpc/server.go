@@ -12,6 +12,8 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
 
@@ -102,7 +104,19 @@ func (s *Server) Search(parent context.Context, request *retrievalv1.SearchReque
 		}
 		return nil, mapError(err)
 	}
-	response := &retrievalv1.SearchResponse{Query: request.Question, Results: make([]*retrievalv1.Evidence, 0, len(results.Evidence)), Documents: make([]*retrievalv1.DocumentResult, 0, len(results.Documents))}
+	response := &retrievalv1.SearchResponse{
+		Query:     request.Question,
+		Results:   make([]*retrievalv1.Evidence, 0, len(results.Evidence)),
+		Documents: make([]*retrievalv1.DocumentResult, 0, len(results.Documents)),
+	}
+	if request.IncludeQueryMatchMetadata && isAnswerServicePeer(parent) {
+		response.QueryMatch = &retrievalv1.QueryMatchMetadata{
+			QueryEmbedding:   append([]float32(nil), results.QueryEmbedding...),
+			EmbeddingProfile: results.EmbeddingProfile,
+			RetrievalProfile: results.RetrievalProfile,
+			CorpusSnapshot:   results.CorpusSnapshot,
+		}
+	}
 	for _, result := range results.Evidence {
 		evidence, mapErr := evidenceToProto(result)
 		if mapErr != nil {
@@ -134,6 +148,23 @@ func (s *Server) Search(parent context.Context, request *retrievalv1.SearchReque
 		)
 	}
 	return response, nil
+}
+
+func isAnswerServicePeer(ctx context.Context) bool {
+	peerInfo, ok := peer.FromContext(ctx)
+	if !ok {
+		return false
+	}
+	tlsInfo, ok := peerInfo.AuthInfo.(credentials.TLSInfo)
+	if !ok || len(tlsInfo.State.PeerCertificates) == 0 {
+		return false
+	}
+	for _, dnsName := range tlsInfo.State.PeerCertificates[0].DNSNames {
+		if dnsName == "answer-service" {
+			return true
+		}
+	}
+	return false
 }
 
 func actorRole(actor *retrievalv1.Actor) string {

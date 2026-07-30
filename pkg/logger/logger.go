@@ -94,7 +94,7 @@ var allowedFieldNames = map[string]struct{}{
 	"request_bytes": {}, "response_bytes": {}, "operation": {}, "queue": {}, "event_type": {}, "content_type": {}, "code": {}, "grpc_code": {}, "stage": {}, "reason": {}, "reason_code": {}, "reason_detail": {}, "error_code": {},
 	"stack_fingerprint": {}, "stack_trace": {}, "actor_id": {}, "book_id": {}, "checksum_sha256": {}, "request_url": {}, "request_path": {}, "request_model": {}, "request_body_sha256": {},
 	"request_body_preview": {}, "response_body_sha256": {}, "response_body_preview": {}, "response_body_raw_prefix": {}, "response_body_raw_prefix_bytes": {}, "byte_size": {}, "tag_count": {}, "page_size": {}, "result_count": {}, "role": {}, "account_status": {},
-	"segment_count": {}, "summary_length": {},
+	"segment_count": {}, "summary_length": {}, "cache_outcome": {},
 }
 
 func safeFieldSuffix(fields []zapcore.Field) string {
@@ -197,7 +197,7 @@ func validDiagnosticField(key string, fieldType zapcore.FieldType, value string)
 		return fieldType == zapcore.StringType && (value == "admin" || value == "librarian" || value == "reader")
 	case "account_status":
 		return fieldType == zapcore.StringType && (value == "active" || value == "pending" || value == "rejected")
-	case "outcome", "operation", "stage", "reason", "reason_code", "error_code":
+	case "outcome", "operation", "stage", "reason", "reason_code", "error_code", "cache_outcome":
 		if fieldType != zapcore.StringType {
 			return false
 		}
@@ -217,6 +217,10 @@ var allowedDiagnosticValues = map[string]map[string]struct{}{
 		"success": {}, "client_error": {}, "server_error": {}, "response_aborted": {}, "not_implemented": {}, "invalid_token": {},
 		"invalid_registration": {}, "invalid_credentials": {}, "dependency_unavailable": {},
 		"answered": {}, "empty_evidence": {}, "retrieval_failure": {}, "provider_failure": {}, "invalid_output": {}, "capacity_exhausted": {},
+	},
+	"cache_outcome": {
+		"bypass": {}, "hit": {}, "miss": {}, "stale": {}, "mode_mismatch": {}, "topic_mismatch": {}, "semantic_mismatch": {}, "evidence_mismatch": {},
+		"semantic_only_hit": {}, "lexical_hit": {}, "guard_mismatch": {}, "hard_mismatch": {}, "generation_coalesced": {}, "validation_mismatch": {},
 	},
 	"operation": {
 		"register": {}, "verify_email": {}, "resend_verification": {}, "password_reset_request": {}, "password_reset_verify": {}, "password_reset_complete": {},

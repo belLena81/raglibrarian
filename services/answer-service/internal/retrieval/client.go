@@ -68,12 +68,24 @@ func mapRPCError(ctx context.Context, err error) error {
 func toProto(request domain.SearchRequest) *retrievalv1.SearchRequest {
 	filters := &retrievalv1.SearchFilters{Tags: append([]string(nil), request.Filters.Tags...), Author: request.Filters.Author,
 		YearFrom: request.Filters.YearFrom, YearTo: request.Filters.YearTo}
-	return &retrievalv1.SearchRequest{Question: request.Question, Filters: filters, Limit: request.Limit,
-		Actor: &retrievalv1.Actor{UserId: request.Actor.UserID, Role: request.Actor.Role, Status: request.Actor.Status}, CorrelationId: request.CorrelationID}
+	return &retrievalv1.SearchRequest{
+		Question:                  request.Question,
+		Filters:                   filters,
+		Limit:                     request.Limit,
+		Actor:                     &retrievalv1.Actor{UserId: request.Actor.UserID, Role: request.Actor.Role, Status: request.Actor.Status},
+		CorrelationId:             request.CorrelationID,
+		IncludeQueryMatchMetadata: true,
+	}
 }
 
 func fromProto(response *retrievalv1.SearchResponse) domain.SearchResult {
 	result := domain.SearchResult{Query: response.Query, Results: make([]domain.Evidence, 0, len(response.Results)), Documents: make([]domain.DocumentResult, 0, len(response.Documents))}
+	if metadata := response.GetQueryMatch(); metadata != nil {
+		result.QueryEmbedding = append([]float32(nil), metadata.GetQueryEmbedding()...)
+		result.EmbeddingProfile = metadata.GetEmbeddingProfile()
+		result.RetrievalProfile = metadata.GetRetrievalProfile()
+		result.CorpusSnapshot = metadata.GetCorpusSnapshot()
+	}
 	for _, value := range response.Results {
 		if value != nil {
 			result.Results = append(result.Results, evidenceFromProto(value))

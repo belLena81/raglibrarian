@@ -1522,6 +1522,44 @@ func (r *Postgres) SearchLexical(ctx context.Context, query domain.SearchQuery, 
 	return results, nil
 }
 
+func (r *Postgres) CorpusSnapshot(ctx context.Context) (string, error) {
+	rows, err := r.pool.Query(ctx, `SELECT l.book_id,l.lifecycle_version,l.active_job_id,j.source_sha256,j.manifest_sha256,j.profile_digest
+		FROM retrieval.book_lifecycle l
+		JOIN retrieval.index_jobs j ON j.id=l.active_job_id
+		WHERE l.state IN ('active','reindexing') AND j.state='indexed'
+		ORDER BY l.book_id`)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	hash := sha256.New()
+	var count int
+	for rows.Next() {
+		var bookID, activeJobID string
+		var lifecycleVersion int64
+		var sourceSHA256, manifestSHA256, profileDigest []byte
+		if err = rows.Scan(&bookID, &lifecycleVersion, &activeJobID, &sourceSHA256, &manifestSHA256, &profileDigest); err != nil {
+			return "", err
+		}
+		_, _ = fmt.Fprintf(
+			hash,
+			"%q%d%q%x%x%x",
+			bookID,
+			lifecycleVersion,
+			activeJobID,
+			sourceSHA256,
+			manifestSHA256,
+			profileDigest,
+		)
+		count++
+	}
+	if err = rows.Err(); err != nil {
+		return "", err
+	}
+	_, _ = fmt.Fprintf(hash, "%d", count)
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
+}
+
 func (r *Postgres) FilterIndexed(ctx context.Context, values []application.Evidence) ([]application.Evidence, error) {
 	if len(values) == 0 {
 		return values, nil

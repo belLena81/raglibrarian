@@ -138,6 +138,14 @@ and [ephemeral storage](https://docs.aws.amazon.com/lambda/latest/dg/configurati
   verified actor received from the authenticated Edge peer.
 - Every external call has a deadline. Public errors are stable and sanitized.
 - Uploaded documents, passages, prompts, tokens, and secrets are never logged.
+- Answer final-answer caching is optional and disabled by default. Retrieval
+  still runs before any cache lookup so corpus visibility, filters, and selected
+  evidence are current. A reusable cached answer requires matching auth scope,
+  filters, limit, minimum evidence score, Retrieval profile, generator profile,
+  Retrieval-owned corpus snapshot, selected cited evidence projection, answer
+  intent, normalized topic compatibility, and query embedding similarity. Logs
+  and metrics expose only fixed cache outcome labels, never raw queries,
+  passages, embeddings, prompts, or cached answer bodies.
 
 ## Milestone 1 — secure service foundation
 

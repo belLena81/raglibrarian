@@ -2,7 +2,10 @@ package application
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -46,8 +49,12 @@ type DocumentPage struct {
 
 // SearchResult contains Retrieval-owned search projections.
 type SearchResult struct {
-	Evidence  []Evidence
-	Documents []DocumentResult
+	Evidence         []Evidence
+	Documents        []DocumentResult
+	QueryEmbedding   []float32
+	EmbeddingProfile string
+	RetrievalProfile string
+	CorpusSnapshot   string
 }
 
 type QueryEmbedder interface {
@@ -61,6 +68,10 @@ type EvidenceStore interface {
 
 type LexicalEvidenceStore interface {
 	SearchLexical(context.Context, domain.SearchQuery, int, int) ([]Evidence, error)
+}
+
+type CorpusSnapshotStore interface {
+	CorpusSnapshot(context.Context) (string, error)
 }
 
 type IndexVisibility interface {
@@ -77,6 +88,7 @@ type Searcher struct {
 	documentRetriever DocumentRetriever
 	lexicalRetriever  LexicalRetriever
 	fusion            CandidateFusion
+	corpusSnapshotter CorpusSnapshotStore
 }
 
 type SummaryRequest struct {
@@ -124,7 +136,7 @@ func NewSearcherWithPolicyAndLexical(
 	if lexicalStore != nil {
 		lexicalRetriever = storeLexicalRetriever{store: lexicalStore, visibility: visibility}
 	}
-	return &Searcher{
+	searcher := &Searcher{
 		embedder:          embedder,
 		evidenceAssessor:  assessor,
 		policy:            policy,
@@ -133,7 +145,11 @@ func NewSearcherWithPolicyAndLexical(
 		documentRetriever: storeDocumentRetriever{store: store, visibility: visibility, policy: policy},
 		lexicalRetriever:  lexicalRetriever,
 		fusion:            reciprocalRankFusion{k: policy.ReciprocalRankFusionK},
-	}, nil
+	}
+	if snapshotter, ok := visibility.(CorpusSnapshotStore); ok {
+		searcher.corpusSnapshotter = snapshotter
+	}
+	return searcher, nil
 }
 
 func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.SearchQueryInput) (SearchResult, error) {
@@ -164,7 +180,26 @@ func (s *Searcher) Search(ctx context.Context, actor domain.Actor, input domain.
 	documents := documentsFromEvidence(results)
 	documents = mergeDocumentMetadata(documents, documentCandidates)
 	documents = trimDocuments(documents, query.Limit())
-	return SearchResult{Evidence: results, Documents: documents}, nil
+	profile := domain.SupportedIndexProfile()
+	profileDigest := fmt.Sprintf("%x", profile.Digest)
+	corpusSnapshot := responseSnapshot(results, documents)
+	if s.corpusSnapshotter != nil {
+		corpusSnapshot, err = s.corpusSnapshotter.CorpusSnapshot(ctx)
+		if err != nil {
+			return SearchResult{}, searchOperationFailure("corpus snapshot", err)
+		}
+		if strings.TrimSpace(corpusSnapshot) == "" {
+			return SearchResult{}, errors.New("invalid corpus snapshot")
+		}
+	}
+	return SearchResult{
+		Evidence:         results,
+		Documents:        documents,
+		QueryEmbedding:   append([]float32(nil), vector...),
+		EmbeddingProfile: profile.Name + ":" + profileDigest,
+		RetrievalProfile: profileDigest,
+		CorpusSnapshot:   corpusSnapshot,
+	}, nil
 }
 
 func (s *Searcher) retrieveCandidates(
@@ -256,6 +291,28 @@ func sortDocumentsByScore(values []DocumentResult) {
 			return 0
 		}
 	})
+}
+
+// responseSnapshot identifies the current visibility-filtered Retrieval
+// projection without retaining document text. Answer combines it with its own
+// selected-evidence fingerprint before reusing a generated response.
+func responseSnapshot(evidence []Evidence, documents []DocumentResult) string {
+	values := make([]string, 0, len(evidence)+len(documents))
+	hash := sha256.New()
+	for _, value := range evidence {
+		values = append(values, "e:"+value.EvidenceID)
+	}
+	for _, value := range documents {
+		values = append(values, "d:"+value.DocumentID)
+		for _, item := range value.Evidence {
+			values = append(values, "de:"+value.DocumentID+":"+item.EvidenceID)
+		}
+	}
+	slices.Sort(values)
+	for _, value := range values {
+		_, _ = hash.Write([]byte(value + "\n"))
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func (s *Searcher) assessEvidence(ctx context.Context, question string, value Evidence, assessmentCache *searchAssessmentCache) (EvidenceAssessment, bool) {

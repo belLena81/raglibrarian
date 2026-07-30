@@ -4,6 +4,7 @@ package application
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -43,6 +44,7 @@ type Observer interface {
 	GeneratorStarted()
 	GeneratorResponse(segmentCount, summaryLength int)
 	GeneratorFinished()
+	CacheLookup(CacheOutcome)
 }
 
 type codedReason interface {
@@ -71,24 +73,38 @@ type Service struct {
 	limits        Limits
 	requestPolicy domain.RequestPolicy
 	permits       chan struct{}
+	cache         *answerCache
+	inflight      *answerInflight
 }
 
-func NewService(retriever Retriever, generator AnswerGenerator, observer Observer, limits Limits, requestPolicy domain.RequestPolicy) (*Service, error) {
+// NewService constructs an Answer service. A missing cache policy keeps the
+// final-answer cache disabled, preserving the previous runtime behaviour.
+func NewService(retriever Retriever, generator AnswerGenerator, observer Observer, limits Limits, requestPolicy domain.RequestPolicy, cachePolicies ...CachePolicy) (*Service, error) {
 	if retriever == nil ||
 		generator == nil ||
 		observer == nil ||
 		!validLimits(limits) ||
-		!validRequestPolicy(requestPolicy) {
+		!validRequestPolicy(requestPolicy) ||
+		len(cachePolicies) > 1 {
 		return nil, errors.New("invalid answer service configuration")
 	}
-	return &Service{
+	service := &Service{
 		retriever:     retriever,
 		generator:     generator,
 		observer:      observer,
 		limits:        limits,
 		requestPolicy: requestPolicy,
 		permits:       make(chan struct{}, limits.GeneratorConcurrency),
-	}, nil
+		inflight:      newAnswerInflight(),
+	}
+	if len(cachePolicies) == 1 {
+		cache, err := newAnswerCache(cachePolicies[0])
+		if err != nil {
+			return nil, errors.New("invalid answer service configuration")
+		}
+		service.cache = cache
+	}
+	return service, nil
 }
 
 func validLimits(l Limits) bool {
@@ -153,6 +169,42 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 		s.observer.Observe(OutcomeEmptyEvidence, time.Since(started))
 		return result, nil
 	}
+	if cached, outcome := s.cache.lookup(normalized, search, evidence); cacheMatchHit(outcome) {
+		validated, validationErr := validateSegments(cached.segments, evidence, s.limits)
+		if validationErr == nil {
+			summary := summarizeSegments(validated, s.limits.MaximumSummaryRunes)
+			result.Answer = &domain.GroundedAnswer{Segments: validated}
+			result.Summary = summary
+			s.observer.CacheLookup(outcome)
+			s.observer.GeneratorResponse(len(validated), utf8.RuneCountInString(summary))
+			s.observer.Observe(OutcomeAnswered, time.Since(started))
+			return result, nil
+		}
+		s.observer.CacheLookup(CacheOutcomeValidationMismatch)
+	} else {
+		s.observer.CacheLookup(outcome)
+	}
+	flightKey, coalesce := s.cache.flightKey(normalized, search, evidence)
+	if coalesce {
+		if segments, ok, waited, waitErr := s.inflight.wait(ctx, flightKey); waitErr != nil {
+			return result, waitErr
+		} else if waited && ok {
+			validated, validationErr := validateSegments(segments, evidence, s.limits)
+			if validationErr == nil {
+				summary := summarizeSegments(validated, s.limits.MaximumSummaryRunes)
+				result.Answer = &domain.GroundedAnswer{Segments: validated}
+				result.Summary = summary
+				s.observer.CacheLookup(CacheOutcomeGenerationCoalesced)
+				s.observer.GeneratorResponse(len(validated), utf8.RuneCountInString(summary))
+				s.observer.Observe(OutcomeAnswered, time.Since(started))
+				return result, nil
+			}
+			s.observer.CacheLookup(CacheOutcomeValidationMismatch)
+		} else if waited {
+			return result, nil
+		}
+		defer s.inflight.done(flightKey)()
+	}
 	select {
 	case s.permits <- struct{}{}:
 	default:
@@ -174,6 +226,9 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 	generatorCancel()
 	if err != nil {
 		s.observer.Failure(OutcomeGeneratorFailure, "generator", failureReasonCode(err, "generator"), time.Since(started))
+		if coalesce {
+			s.inflight.complete(flightKey, nil, false)
+		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return result, ctxErr
 		}
@@ -182,12 +237,80 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 	validated, err := validateSegments(segments, evidence, s.limits)
 	if err != nil {
 		s.observer.Failure(OutcomeInvalidOutput, "validation", failureReasonCode(err, "validation"), time.Since(started))
+		if coalesce {
+			s.inflight.complete(flightKey, nil, false)
+		}
 		return result, nil
 	}
 	summary := summarizeSegments(validated, s.limits.MaximumSummaryRunes)
 	result.Answer = &domain.GroundedAnswer{Segments: validated}
 	result.Summary = summary
+	s.cache.store(normalized, search, evidence, segments)
+	if coalesce {
+		s.inflight.complete(flightKey, segments, true)
+	}
 	s.observer.GeneratorResponse(len(validated), utf8.RuneCountInString(summary))
 	s.observer.Observe(OutcomeAnswered, time.Since(started))
 	return result, nil
+}
+
+type answerInflight struct {
+	mu    sync.Mutex
+	calls map[cacheFlightKey]*answerInflightCall
+}
+
+type answerInflightCall struct {
+	ready    chan struct{}
+	segments []domain.AnswerSegment
+	ok       bool
+}
+
+func newAnswerInflight() *answerInflight {
+	return &answerInflight{calls: make(map[cacheFlightKey]*answerInflightCall)}
+}
+
+func (i *answerInflight) wait(ctx context.Context, key cacheFlightKey) ([]domain.AnswerSegment, bool, bool, error) {
+	i.mu.Lock()
+	if call, found := i.calls[key]; found {
+		ready := call.ready
+		i.mu.Unlock()
+		select {
+		case <-ready:
+			return cloneSegments(call.segments), call.ok, true, nil
+		case <-ctx.Done():
+			return nil, false, true, ctx.Err()
+		}
+	}
+	i.calls[key] = &answerInflightCall{ready: make(chan struct{})}
+	i.mu.Unlock()
+	return nil, false, false, nil
+}
+
+func (i *answerInflight) complete(key cacheFlightKey, segments []domain.AnswerSegment, ok bool) {
+	i.mu.Lock()
+	call, found := i.calls[key]
+	if found {
+		call.segments = cloneSegments(segments)
+		call.ok = ok
+	}
+	i.mu.Unlock()
+	if found {
+		close(call.ready)
+	}
+}
+
+func (i *answerInflight) done(key cacheFlightKey) func() {
+	return func() {
+		i.mu.Lock()
+		call, found := i.calls[key]
+		if found {
+			select {
+			case <-call.ready:
+			default:
+				close(call.ready)
+			}
+			delete(i.calls, key)
+		}
+		i.mu.Unlock()
+	}
 }

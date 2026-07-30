@@ -3,6 +3,8 @@ package retrievalgrpc
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"strings"
 	"testing"
 	"time"
@@ -13,23 +15,55 @@ import (
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
 
 func TestSearchMapsAuthorizedRequestAndEvidence(t *testing.T) {
 	service := &stubSearchService{result: application.SearchResult{
-		Evidence: []application.Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB, Passage: "Evidence", PageStart: 2, PageEnd: 3, Score: .8, Summary: "Evidence"}},
+		QueryEmbedding:   []float32{1, 0},
+		EmbeddingProfile: "embedding-profile",
+		RetrievalProfile: "retrieval-profile",
+		CorpusSnapshot:   "snapshot",
+		Evidence:         []application.Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB, Passage: "Evidence", PageStart: 2, PageEnd: 3, Score: .8, Summary: "Evidence"}},
 		Documents: []application.DocumentResult{{DocumentID: "document-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB,
 			ChunkCount: 2, PageStart: 1, PageEnd: 3, Score: .7, Summary: "Evidence", Evidence: []application.Evidence{{EvidenceID: "evidence-1", JobID: "job-1", BookID: "book-1", Title: "Systems", MediaType: domain.MediaTypeEPUB, Passage: "Evidence", Summary: "Evidence"}}}},
 	}}
 	server := NewServer(service, zap.NewNop(), 25*time.Second, 2*time.Second)
-	response, err := server.Search(context.Background(), &retrievalv1.SearchRequest{Question: "replication", Limit: 2,
+	response, err := server.Search(answerPeerContext(), &retrievalv1.SearchRequest{Question: "replication", Limit: 2, IncludeQueryMatchMetadata: true,
 		Actor: &retrievalv1.Actor{UserId: "user-1", Role: "reader", Status: "active"}})
 	if err != nil || len(response.Results) != 1 || response.Results[0].Book.BookId != "book-1" ||
 		response.Results[0].Book.MediaType != domain.MediaTypeEPUB || response.Results[0].Summary != "Evidence" || len(response.Documents) != 1 ||
-		response.Documents[0].DocumentId != "document-1" || response.Documents[0].Book.MediaType != domain.MediaTypeEPUB || response.Documents[0].Summary != "Evidence" {
+		response.Documents[0].DocumentId != "document-1" || response.Documents[0].Book.MediaType != domain.MediaTypeEPUB || response.Documents[0].Summary != "Evidence" ||
+		response.QueryMatch == nil || len(response.QueryMatch.QueryEmbedding) != 2 || response.QueryMatch.EmbeddingProfile != "embedding-profile" ||
+		response.QueryMatch.RetrievalProfile != "retrieval-profile" || response.QueryMatch.CorpusSnapshot != "snapshot" {
 		t.Fatalf("Search() = %#v, %v", response, err)
 	}
+}
+
+func TestSearchDoesNotExposeQueryMatchMetadataToOtherPeers(t *testing.T) {
+	server := NewServer(&stubSearchService{result: application.SearchResult{
+		QueryEmbedding:   []float32{1, 0},
+		EmbeddingProfile: "embedding-profile",
+		RetrievalProfile: "retrieval-profile",
+		CorpusSnapshot:   "snapshot",
+	}}, zap.NewNop(), 25*time.Second, 2*time.Second)
+	context := peer.NewContext(context.Background(), &peer.Peer{AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{{DNSNames: []string{"edge-api"}}},
+	}}})
+
+	response, err := server.Search(context, &retrievalv1.SearchRequest{Question: "replication", IncludeQueryMatchMetadata: true})
+
+	if err != nil || response.QueryMatch != nil {
+		t.Fatalf("Search() = %#v, %v", response, err)
+	}
+}
+
+func answerPeerContext() context.Context {
+	return peer.NewContext(context.Background(), &peer.Peer{AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{{DNSNames: []string{"answer-service"}}},
+	}}})
 }
 
 func TestSearchSanitizesAuthorizationFailure(t *testing.T) {

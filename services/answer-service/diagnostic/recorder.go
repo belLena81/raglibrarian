@@ -59,3 +59,10 @@ func (r *Recorder) GeneratorResponse(segmentCount, summaryLength int) {
 func (r *Recorder) GeneratorFinished() {
 	r.metrics.GeneratorFinished()
 }
+
+func (r *Recorder) CacheLookup(outcome application.CacheOutcome) {
+	r.metrics.CacheLookup(outcome)
+	r.log.Info("answer.cache.lookup",
+		zap.String("cache_outcome", string(outcome)),
+	)
+}

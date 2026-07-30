@@ -1993,6 +1993,75 @@ func exerciseCompleteDeletionRole(t *testing.T, ctx context.Context, runtimePool
 	}
 }
 
+func TestCorpusSnapshotReflectsActiveIndexedLifecycleState(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	repository := NewPostgres(pool, Policy{FinalizationLease: 15 * time.Minute})
+	suffix := randomIntegrationID(t)
+	bookID, firstJobID, secondJobID := "book-"+suffix, "job-"+suffix+"-1", "job-"+suffix+"-2"
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sourceSHA256 := integrationDigest(61)
+	manifestSHA256 := integrationDigest(62)
+	profileDigest := domain.SupportedIndexProfile().Digest
+	payloadDigest := integrationDigest(63)
+
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.metadata_facts(book_id,event_id,payload_digest,source_sha256,title,author,publication_year,tags,correlation_id,causation_id,occurred_at)
+		VALUES($1,$2,$3,$4,'Synthetic systems','RAGLibrarian QA',2026,'{}',$5,$6,$7)`,
+		bookID, "metadata-"+suffix, payloadDigest[:], sourceSHA256[:], "correlation-"+suffix, "cause-"+suffix, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.index_jobs(id,book_id,source_sha256,manifest_sha256,profile_digest,state,expected_batches,correlation_id,created_at,updated_at,lifecycle_version)
+		VALUES($1,$3,$4,$5,$6,'indexed',1,$7,$8,$8,1),($2,$3,$4,$5,$6,'pending',1,$7,$8,$8,2)`,
+		firstJobID, secondJobID, bookID, sourceSHA256[:], manifestSHA256[:], profileDigest[:], "correlation-"+suffix, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO retrieval.book_lifecycle(book_id,lifecycle_version,state,active_job_id,event_id,event_type,payload_digest,correlation_id,updated_at)
+		VALUES($1,1,'active',$2,$3,'retrieval.indexed.v1',$4,$5,$6)`,
+		bookID, firstJobID, "lifecycle-"+suffix, payloadDigest[:], "correlation-"+suffix, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.book_lifecycle WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.index_jobs WHERE book_id=$1`, bookID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM retrieval.metadata_facts WHERE book_id=$1`, bookID)
+	})
+
+	firstSnapshot, err := repository.CorpusSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPayloadDigest := integrationDigest(64)
+	_, err = pool.Exec(ctx, `UPDATE retrieval.index_jobs SET state='indexed', updated_at=$2 WHERE id=$1`, secondJobID, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `UPDATE retrieval.book_lifecycle SET lifecycle_version=2, state='active', active_job_id=$2, event_id=$3, payload_digest=$4, updated_at=$5 WHERE book_id=$1`,
+		bookID, secondJobID, "lifecycle-"+suffix+"-2", secondPayloadDigest[:], now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSnapshot, err := repository.CorpusSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstSnapshot == "" || secondSnapshot == "" || firstSnapshot == secondSnapshot {
+		t.Fatalf("snapshots first=%q second=%q, want non-empty changed digest", firstSnapshot, secondSnapshot)
+	}
+}
+
 func readIntegrationDSN(t *testing.T) string {
 	t.Helper()
 	return readDSNFile(t, os.Getenv("RETRIEVAL_POSTGRES_DSN_FILE"))

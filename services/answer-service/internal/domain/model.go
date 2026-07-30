@@ -157,9 +157,13 @@ type DocumentResult struct {
 }
 
 type SearchResult struct {
-	Query     string
-	Results   []Evidence
-	Documents []DocumentResult
+	Query            string
+	QueryEmbedding   []float32
+	EmbeddingProfile string
+	RetrievalProfile string
+	CorpusSnapshot   string
+	Results          []Evidence
+	Documents        []DocumentResult
 }
 
 type ContextEvidence struct {

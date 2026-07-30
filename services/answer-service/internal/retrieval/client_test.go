@@ -36,6 +36,12 @@ func (f *fakeRPC) Search(ctx context.Context, request *retrievalv1.SearchRequest
 	}
 	return &retrievalv1.SearchResponse{
 		Query: request.Question,
+		QueryMatch: &retrievalv1.QueryMatchMetadata{
+			QueryEmbedding:   []float32{1, 0},
+			EmbeddingProfile: "embedding-profile",
+			RetrievalProfile: "retrieval-profile",
+			CorpusSnapshot:   "snapshot",
+		},
 		Results: []*retrievalv1.Evidence{{
 			EvidenceId: "e-1", Passage: "passage", Summary: "passage summary",
 			Book: &retrievalv1.BookMetadata{BookId: "book-1", Title: "Book", Author: "Author", Year: 2024, MediaType: "application/epub+zip"},
@@ -62,10 +68,11 @@ func TestClientForwardsActorCorrelationAndMapsEvidence(t *testing.T) {
 	id := strings.Repeat("a", 32)
 	result, err := client.Search(context.Background(), domain.SearchRequest{Question: "question", Limit: 5,
 		Actor: domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, CorrelationID: id})
-	if err != nil || rpc.request.Actor.UserId != "user-1" || rpc.request.CorrelationId != id || len(rpc.ids) != 1 || rpc.ids[0] != id || result.Results[0].EvidenceID != "e-1" ||
+	if err != nil || rpc.request.Actor.UserId != "user-1" || rpc.request.CorrelationId != id || !rpc.request.IncludeQueryMatchMetadata || len(rpc.ids) != 1 || rpc.ids[0] != id || result.Results[0].EvidenceID != "e-1" ||
 		result.Results[0].Summary != "passage summary" || result.Results[0].Book.MediaType != "application/epub+zip" || len(result.Documents) != 1 || result.Documents[0].Summary != "document summary" ||
 		result.Documents[0].Book.MediaType != "application/epub+zip" || len(result.Documents[0].Evidence) != 1 || result.Documents[0].Evidence[0].Summary != "passage summary" ||
-		result.Documents[0].Evidence[0].Book.MediaType != "application/epub+zip" {
+		result.Documents[0].Evidence[0].Book.MediaType != "application/epub+zip" || len(result.QueryEmbedding) != 2 ||
+		result.EmbeddingProfile != "embedding-profile" || result.RetrievalProfile != "retrieval-profile" || result.CorpusSnapshot != "snapshot" {
 		t.Fatalf("Search() = %#v, %v; request=%#v ids=%#v", result, err, rpc.request, rpc.ids)
 	}
 }

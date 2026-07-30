@@ -302,6 +302,15 @@ provider path first asks for JSON and then falls back to a plain-text response
 that must include a model-authored `Citations:` preamble plus the answer body;
 it never invents citation IDs from the search context. The recreated service
 remains configured for the real provider after the gate.
+The optional final-answer cache is disabled by default. Enable it only by
+setting both `ANSWER_CACHE_CAPACITY` and `ANSWER_CACHE_TTL`; the remaining
+`ANSWER_CACHE_*` thresholds tune lexical/topic and embedding similarity. A
+cache hit still performs live Retrieval first and reuses an answer only when
+authorization scope, filters, result limit, minimum evidence score, corpus
+snapshot, Retrieval profile, generator profile, selected cited evidence,
+answer intent, topic compatibility, and query embedding similarity all remain
+compatible. Cache logs and metrics use fixed outcome labels and must not include
+raw questions, passages, embeddings, prompts, or cached answer text.
 Identity and Catalog expose standard gRPC health services inside the private
 Compose network. `make contract-test` verifies both services over mTLS.
 
