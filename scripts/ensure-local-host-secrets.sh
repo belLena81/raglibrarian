@@ -69,6 +69,29 @@ ensure_file() {
   mv -f "$tmp_file" "$path"
 }
 
+ensure_secret_file() {
+  local file="$1"
+  local source_path="$secret_dir/$file"
+  local path="$host_dir/$file"
+  local tmp_file
+
+  [[ -f "$source_path" && ! -L "$source_path" && -r "$source_path" ]] || {
+    echo "Missing safe readable secret: $source_path" >&2
+    exit 1
+  }
+  if [[ -e "$path" ]]; then
+    [[ -f "$path" && ! -L "$path" && "$(stat -c '%a' "$path")" == 400 ]] || {
+      echo "Host secret file has unsafe metadata: $path" >&2
+      exit 1
+    }
+    cmp -s "$source_path" "$path" && return
+  fi
+  tmp_file="$(mktemp "$host_dir/.secret.XXXXXX")"
+  cp "$source_path" "$tmp_file"
+  chmod 400 "$tmp_file"
+  mv -f "$tmp_file" "$path"
+}
+
 main() {
   secret_dir="${1:-${SECRET_DIR:-.dev/secrets}}"
   host_dir="${2:-${HOST_SECRET_DIR:-.dev/host-secrets}}"
@@ -95,6 +118,7 @@ main() {
   ensure_file ingestion_cleanup_dsn "postgres://ingestion_cleanup:${ingestion_cleanup_password}@${postgres_host}/ingestion?sslmode=disable"
   ensure_file retrieval_runtime_dsn "postgres://retrieval_runtime:${retrieval_runtime_password}@${postgres_host}/retrieval?sslmode=disable"
   ensure_file retrieval_search_dsn "postgres://retrieval_search:${retrieval_search_password}@${postgres_host}/retrieval?sslmode=disable"
+  ensure_secret_file retrieval_summary_cache_hmac_key
 
 derive_rabbit_host_uri() {
   local file="$1"

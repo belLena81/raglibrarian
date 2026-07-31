@@ -463,6 +463,27 @@ func TestSearcherFallsBackToLocalAssessmentAfterProviderBudgetIsExhausted(t *tes
 	}
 }
 
+func TestSearcherLimitsPhysicalProviderAttemptsAcrossRetries(t *testing.T) {
+	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
+	store := &stubEvidenceStore{results: []Evidence{
+		{EvidenceID: "first", JobID: "job-1", BookID: "book-1", Passage: "first locally assessed passage", Score: 0.91},
+		{EvidenceID: "second", JobID: "job-2", BookID: "book-2", Passage: "second locally assessed passage", Score: 0.90},
+	}}
+	assessor := &retryingBudgetEvidenceAssessor{maximumAttempts: 2}
+	searcher := newTestSearcherWithAssessor(t, embedder, store, visibleIndexes{}, assessor, 2)
+
+	result, err := searcher.Search(context.Background(), domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}, domain.SearchQueryInput{Question: "replication", Limit: 2})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Evidence) != 2 {
+		t.Fatalf("Search() evidence = %#v, want local fallback evidence", result.Evidence)
+	}
+	if assessor.physicalAttempts != 2 || assessor.maximumRequestAttempts != 2 {
+		t.Fatalf("provider attempts = %d, maximum request attempts = %d, want strict budget of 2", assessor.physicalAttempts, assessor.maximumRequestAttempts)
+	}
+}
+
 func TestSearcherDoesNotFallbackWhenParentContextIsCanceled(t *testing.T) {
 	embedder := &stubEmbedder{vector: make([]float32, domain.EmbeddingDimensions)}
 	store := &stubEvidenceStore{results: []Evidence{{
@@ -1427,6 +1448,25 @@ type stubEvidenceAssessor struct {
 	requests []SummaryRequest
 	response func(SummaryRequest) EvidenceAssessment
 	err      error
+}
+
+type retryingBudgetEvidenceAssessor struct {
+	maximumAttempts        int
+	maximumRequestAttempts int
+	physicalAttempts       int
+}
+
+func (s *retryingBudgetEvidenceAssessor) MaximumAttemptsPerAssessment() int {
+	return s.maximumAttempts
+}
+
+func (s *retryingBudgetEvidenceAssessor) Assess(_ context.Context, request SummaryRequest) (EvidenceAssessment, error) {
+	s.maximumRequestAttempts = request.MaximumAttempts
+	for attempt := 0; attempt < request.MaximumAttempts; attempt++ {
+		request.RecordAttempt()
+		s.physicalAttempts++
+	}
+	return EvidenceAssessment{}, errors.New("provider retries exhausted")
 }
 
 func (s *stubEvidenceAssessor) Assess(_ context.Context, value SummaryRequest) (EvidenceAssessment, error) {

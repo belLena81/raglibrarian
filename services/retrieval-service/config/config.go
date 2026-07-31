@@ -31,6 +31,9 @@ const (
 	DefaultQdrantBatchResponseBytes           = 8 << 20
 	MaximumTEIRawResponseLogBytes             = 64 << 10
 	defaultSummaryLLMMaxCalls                 = 100
+	defaultSummaryLLMRetryAttempts            = 1
+	defaultSummaryLLMRetryInitialBackoff      = time.Second
+	defaultSummaryLLMRetryMaximumBackoff      = 10 * time.Second
 	defaultSummaryLLMOutputMode               = "json_or_plain"
 	summaryLLMOutputModeStrictJSON            = "strict_json"
 	defaultSearchTimeout                      = 4 * time.Minute
@@ -103,6 +106,9 @@ type EvidenceAssessorConfig struct {
 	Timeout                     time.Duration
 	MaxOutputTokens             int
 	MaxCalls                    int
+	RetryAttempts               int
+	RetryInitialBackoff         time.Duration
+	RetryMaximumBackoff         time.Duration
 	MaxInputRunes               int
 	MaxResponseBytes            int
 	MaxSummaryBytes             int
@@ -251,6 +257,9 @@ func Load() (Config, error) {
 	summaryTimeout, summaryTimeoutErr := optionalDuration("RETRIEVAL_SUMMARY_LLM_TIMEOUT", summaryTimeoutDefault)
 	summaryMaxOutputTokens, summaryMaxOutputTokensErr := boundedPositiveInteger("RETRIEVAL_SUMMARY_LLM_MAX_OUTPUT_TOKENS", 64, 256)
 	summaryMaxCalls, summaryMaxCallsErr := boundedNonNegativeInteger("RETRIEVAL_SUMMARY_LLM_MAX_CALLS", defaultSummaryLLMMaxCalls, 1000)
+	summaryRetryAttempts, summaryRetryAttemptsErr := boundedNonNegativeInteger("RETRIEVAL_SUMMARY_LLM_RETRY_ATTEMPTS", defaultSummaryLLMRetryAttempts, 3)
+	summaryRetryInitialBackoff, summaryRetryInitialBackoffErr := boundedPositiveDuration("RETRIEVAL_SUMMARY_LLM_RETRY_INITIAL_BACKOFF", defaultSummaryLLMRetryInitialBackoff, 10*time.Millisecond, time.Minute)
+	summaryRetryMaximumBackoff, summaryRetryMaximumBackoffErr := boundedPositiveDuration("RETRIEVAL_SUMMARY_LLM_RETRY_MAXIMUM_BACKOFF", defaultSummaryLLMRetryMaximumBackoff, 10*time.Millisecond, time.Minute)
 	maximumQuestionCharacters, maximumQuestionCharactersErr := boundedPositiveInteger("RETRIEVAL_MAX_QUESTION_CHARACTERS", defaultMaximumQuestionCharacters, 1<<20)
 	maximumFilterTags, maximumFilterTagsErr := boundedPositiveInteger("RETRIEVAL_MAX_FILTER_TAGS", defaultMaximumFilterTags, 256)
 	maximumTagCharacters, maximumTagCharactersErr := boundedPositiveInteger("RETRIEVAL_MAX_TAG_CHARACTERS", defaultMaximumTagCharacters, 1<<20)
@@ -298,6 +307,9 @@ func Load() (Config, error) {
 	configuration.EvidenceAssessor.Timeout = summaryTimeout
 	configuration.EvidenceAssessor.MaxOutputTokens = summaryMaxOutputTokens
 	configuration.EvidenceAssessor.MaxCalls = summaryMaxCalls
+	configuration.EvidenceAssessor.RetryAttempts = summaryRetryAttempts
+	configuration.EvidenceAssessor.RetryInitialBackoff = summaryRetryInitialBackoff
+	configuration.EvidenceAssessor.RetryMaximumBackoff = summaryRetryMaximumBackoff
 	configuration.SearchCandidatePageMultiplier = searchCandidatePageMultiplier
 	configuration.ReciprocalRankFusionK = reciprocalRankFusionK
 	configuration.EvidenceAssessor.MaxInputRunes = summaryMaxInputRunes
@@ -329,10 +341,11 @@ func Load() (Config, error) {
 	if configuration.GRPCAddress == "" || configuration.QdrantCollection == "" || strings.ContainsAny(configuration.QdrantCollection, "/?#") ||
 		configuration.PostgresDSNFile == "" || configuration.QdrantAPIKeyFile == "" || configuration.TLS.CA == "" || configuration.TLS.Certificate == "" || configuration.TLS.Key == "" ||
 		!privateServiceURL(configuration.TEIURL) || !privateServiceURL(configuration.QdrantURL) || runAsErr != nil || finalizationLeaseErr != nil ||
-		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || maximumQuestionCharactersErr != nil || maximumFilterTagsErr != nil || maximumTagCharactersErr != nil || maximumAuthorCharactersErr != nil || defaultResultLimitErr != nil || maximumResultLimitErr != nil || searchCandidatePageMultiplierErr != nil || reciprocalRankFusionKErr != nil || summaryMaxInputRunesErr != nil || summaryMaxResponseBytesErr != nil || summaryMaxSummaryBytesErr != nil || summaryCacheTTLErr != nil || summaryCacheMaxEntriesErr != nil || summaryCacheNegativeReuseErr != nil || summaryCacheNegativeMinimumCosineErr != nil || summaryCacheNegativeCandidateLimitErr != nil || summaryCacheCleanupIntervalErr != nil || summaryCacheCleanupTimeoutErr != nil || summaryCacheCleanupBatchSizeErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || summaryLLMOutputModeErr != nil || teiRequestsPerSecondErr != nil || teiMaxResponseBytesErr != nil || teiBatchSizeErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || qdrantMaxResponseBytesErr != nil || qdrantBatchResponseBytesErr != nil || qdrantDocumentEvidenceLimitErr != nil ||
+		searchTimeoutErr != nil || dependencyTimeoutErr != nil || summaryTimeoutErr != nil || summaryMaxOutputTokensErr != nil || summaryMaxCallsErr != nil || summaryRetryAttemptsErr != nil || summaryRetryInitialBackoffErr != nil || summaryRetryMaximumBackoffErr != nil || maximumQuestionCharactersErr != nil || maximumFilterTagsErr != nil || maximumTagCharactersErr != nil || maximumAuthorCharactersErr != nil || defaultResultLimitErr != nil || maximumResultLimitErr != nil || searchCandidatePageMultiplierErr != nil || reciprocalRankFusionKErr != nil || summaryMaxInputRunesErr != nil || summaryMaxResponseBytesErr != nil || summaryMaxSummaryBytesErr != nil || summaryCacheTTLErr != nil || summaryCacheMaxEntriesErr != nil || summaryCacheNegativeReuseErr != nil || summaryCacheNegativeMinimumCosineErr != nil || summaryCacheNegativeCandidateLimitErr != nil || summaryCacheCleanupIntervalErr != nil || summaryCacheCleanupTimeoutErr != nil || summaryCacheCleanupBatchSizeErr != nil || minimumSearchScoreErr != nil || summaryLLMRequestsPerMinuteErr != nil || summaryLLMOutputModeErr != nil || teiRequestsPerSecondErr != nil || teiMaxResponseBytesErr != nil || teiBatchSizeErr != nil || teiLogRawResponseErr != nil || teiLogRawResponseMaxBytesErr != nil || qdrantMaxResponseBytesErr != nil || qdrantBatchResponseBytesErr != nil || qdrantDocumentEvidenceLimitErr != nil ||
 		readinessProbeTimeoutErr != nil || readinessReadHeaderTimeoutErr != nil || readinessIdleTimeoutErr != nil || readinessShutdownTimeoutErr != nil ||
 		configuration.SearchRequestPolicy.DefaultResultLimit > configuration.SearchRequestPolicy.MaximumResultLimit ||
 		configuration.EvidenceAssessor.Timeout >= configuration.SearchTimeout ||
+		configuration.EvidenceAssessor.RetryInitialBackoff > configuration.EvidenceAssessor.RetryMaximumBackoff ||
 		configuration.EvidenceAssessor.CacheTTL > 0 && configuration.EvidenceAssessor.CacheMaxEntries <= 0 ||
 		configuration.EvidenceAssessor.CacheTTL > 0 && configuration.EvidenceAssessor.CacheHMACKeyFile == "" ||
 		configuration.QdrantBatchResponseBytes < configuration.QdrantMaxResponseBytes || configuration.TEILogRawResponseMaxBytes > configuration.TEIMaxResponseBytes ||

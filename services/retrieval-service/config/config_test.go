@@ -100,6 +100,11 @@ func TestLoadAcceptsOptionalEvidenceAssessorConfiguration(t *testing.T) {
 	if configuration.EvidenceAssessor.MaxCalls != 100 {
 		t.Fatalf("EvidenceAssessor.MaxCalls = %d, want 100", configuration.EvidenceAssessor.MaxCalls)
 	}
+	if configuration.EvidenceAssessor.RetryAttempts != 1 ||
+		configuration.EvidenceAssessor.RetryInitialBackoff != time.Second ||
+		configuration.EvidenceAssessor.RetryMaximumBackoff != 10*time.Second {
+		t.Fatalf("unexpected evidence assessor retry defaults: %#v", configuration.EvidenceAssessor)
+	}
 	if configuration.SearchCandidatePageMultiplier != 2 {
 		t.Fatalf("SearchCandidatePageMultiplier = %d, want 2", configuration.SearchCandidatePageMultiplier)
 	}
@@ -136,6 +141,33 @@ func TestLoadAcceptsOptionalEvidenceAssessorConfiguration(t *testing.T) {
 	}
 	if configuration.EvidenceAssessor.Timeout <= 0 || configuration.EvidenceAssessor.Timeout >= configuration.SearchTimeout {
 		t.Fatalf("EvidenceAssessor.Timeout = %s, want a positive timeout below SearchTimeout", configuration.EvidenceAssessor.Timeout)
+	}
+}
+
+func TestLoadEvidenceAssessorRetryPolicyOverridesAndRejectsInvalidBounds(t *testing.T) {
+	setRetrievalRuntimeEnvironment(t)
+	t.Setenv("RETRIEVAL_SUMMARY_LLM_RETRY_ATTEMPTS", "2")
+	t.Setenv("RETRIEVAL_SUMMARY_LLM_RETRY_INITIAL_BACKOFF", "25ms")
+	t.Setenv("RETRIEVAL_SUMMARY_LLM_RETRY_MAXIMUM_BACKOFF", "250ms")
+
+	configuration, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if configuration.EvidenceAssessor.RetryAttempts != 2 ||
+		configuration.EvidenceAssessor.RetryInitialBackoff != 25*time.Millisecond ||
+		configuration.EvidenceAssessor.RetryMaximumBackoff != 250*time.Millisecond {
+		t.Fatalf("unexpected evidence assessor retry overrides: %#v", configuration.EvidenceAssessor)
+	}
+
+	t.Setenv("RETRIEVAL_SUMMARY_LLM_RETRY_ATTEMPTS", "4")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted retry attempts above bound")
+	}
+	t.Setenv("RETRIEVAL_SUMMARY_LLM_RETRY_ATTEMPTS", "1")
+	t.Setenv("RETRIEVAL_SUMMARY_LLM_RETRY_INITIAL_BACKOFF", "300ms")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted retry initial backoff above maximum backoff")
 	}
 }
 
@@ -1006,4 +1038,18 @@ func setWorkerEnvironment(t *testing.T) {
 	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
 	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
 	t.Setenv("RETRIEVAL_METRICS_ADDR", "127.0.0.1:9094")
+}
+
+func setRetrievalRuntimeEnvironment(t *testing.T) {
+	t.Helper()
+	t.Setenv("RETRIEVAL_GRPC_ADDRESS", ":8083")
+	t.Setenv("RETRIEVAL_TEI_URL", "http://tei:80")
+	t.Setenv("RETRIEVAL_QDRANT_URL", "http://qdrant:6333")
+	t.Setenv("RETRIEVAL_QDRANT_COLLECTION", "evidence_v2")
+	t.Setenv("RETRIEVAL_POSTGRES_DSN_FILE", "/run/secrets/dsn")
+	t.Setenv("RETRIEVAL_QDRANT_API_KEY_FILE", "/run/secrets/qdrant")
+	t.Setenv("RETRIEVAL_TLS_CA_FILE", "/run/secrets/ca")
+	t.Setenv("RETRIEVAL_TLS_CERT_FILE", "/run/secrets/cert")
+	t.Setenv("RETRIEVAL_TLS_KEY_FILE", "/run/secrets/key")
+	t.Setenv("RETRIEVAL_SEARCH_TIMEOUT", "25s")
 }

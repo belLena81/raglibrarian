@@ -126,6 +126,11 @@ func NewEvidenceAssessor(configuration config.EvidenceAssessorConfig, serviceLog
 			MaximumSummaryBytes:  configuration.MaxSummaryBytes,
 			MaximumInputRunes:    configuration.MaxInputRunes,
 		},
+		Retry: provider.RetryPolicy{
+			Attempts:       configuration.RetryAttempts,
+			InitialBackoff: configuration.RetryInitialBackoff,
+			MaximumBackoff: configuration.RetryMaximumBackoff,
+		},
 	})
 	if err != nil {
 		return disableEvidenceAssessor(serviceLogger, "configuration_invalid"), nil

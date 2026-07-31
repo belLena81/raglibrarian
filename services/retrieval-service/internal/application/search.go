@@ -89,8 +89,10 @@ type Searcher struct {
 }
 
 type SummaryRequest struct {
-	Question string
-	Passage  string
+	Question        string
+	Passage         string
+	MaximumAttempts int
+	RecordAttempt   func()
 }
 
 type EvidenceAssessment struct {
@@ -524,9 +526,26 @@ func (c *searchAssessmentCache) assess(ctx context.Context, assessor EvidenceAss
 	c.mu.Lock()
 	useProvider := assessor != nil && !c.providerFailed && c.remaining > 0
 	useLocalAssessment := assessor == nil || c.localOnly || c.providerFailed || c.remaining == 0
+	reservedAttempts := 0
+	physicalAttemptLimit := 0
 	if useProvider {
-		c.remaining--
-		c.stats.ProviderCalls++
+		reservedAttempts = 1
+		if limited, ok := assessor.(attemptBudgetEvidenceAssessor); ok {
+			maximumAttempts := limited.MaximumAttemptsPerAssessment()
+			if maximumAttempts < 1 {
+				useProvider = false
+				useLocalAssessment = true
+			} else {
+				reservedAttempts = min(c.remaining, maximumAttempts)
+				physicalAttemptLimit = reservedAttempts
+			}
+		}
+		if useProvider {
+			c.remaining -= reservedAttempts
+			if physicalAttemptLimit == 0 {
+				c.stats.ProviderCalls++
+			}
+		}
 	}
 	c.mu.Unlock()
 
@@ -542,13 +561,27 @@ func (c *searchAssessmentCache) assess(ctx context.Context, assessor EvidenceAss
 	} else if useProvider {
 		assessment = EvidenceAssessment{}
 		ok = false
+		attempts := 0
 		assessmentContext := ctx
 		cancel := func() {}
 		if c.summaryTimeout > 0 {
 			assessmentContext, cancel = context.WithTimeout(ctx, c.summaryTimeout)
 		}
 		defer cancel()
-		if providerAssessment, err := assessor.Assess(assessmentContext, SummaryRequest{Question: normalizedQuestion, Passage: normalizedPassage}); err == nil {
+		providerRequest := SummaryRequest{Question: normalizedQuestion, Passage: normalizedPassage, MaximumAttempts: physicalAttemptLimit}
+		if physicalAttemptLimit > 0 {
+			providerRequest.RecordAttempt = func() {
+				attempts++
+			}
+		}
+		providerAssessment, err := assessor.Assess(assessmentContext, providerRequest)
+		if physicalAttemptLimit > 0 {
+			c.mu.Lock()
+			c.remaining += reservedAttempts - attempts
+			c.stats.ProviderCalls += attempts
+			c.mu.Unlock()
+		}
+		if err == nil {
 			providerAssessment.Summary = normalizeProviderSummary(providerAssessment.Summary)
 			assessment = providerAssessment
 			ok = true
@@ -621,4 +654,8 @@ func (c *searchAssessmentCache) report() {
 
 type EvidenceAssessor interface {
 	Assess(context.Context, SummaryRequest) (EvidenceAssessment, error)
+}
+
+type attemptBudgetEvidenceAssessor interface {
+	MaximumAttemptsPerAssessment() int
 }

@@ -9,9 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -31,20 +33,32 @@ type Policy struct {
 }
 
 type Options struct {
-	OutputMode SummaryOutputMode
-	Policy     Policy
+	OutputMode   SummaryOutputMode
+	Policy       Policy
+	Retry        RetryPolicy
+	WaitForRetry func(context.Context, time.Duration) error
+	Random       func() float64
+}
+
+type RetryPolicy struct {
+	Attempts       int
+	InitialBackoff time.Duration
+	MaximumBackoff time.Duration
 }
 
 type OpenAI struct {
-	endpoint   *url.URL
-	model      string
-	apiKey     string
-	client     *http.Client
-	log        *zap.Logger
-	limit      *throttle.Limiter
-	maxTokens  int
-	outputMode SummaryOutputMode
-	policy     Policy
+	endpoint    *url.URL
+	model       string
+	apiKey      string
+	client      *http.Client
+	log         *zap.Logger
+	limit       *throttle.Limiter
+	maxTokens   int
+	outputMode  SummaryOutputMode
+	policy      Policy
+	retry       RetryPolicy
+	retryWait   func(context.Context, time.Duration) error
+	retryRandom func() float64
 }
 
 type SummaryOutputMode string
@@ -84,6 +98,10 @@ func NewOpenAIWithOptions(baseURL, model, apiKey string, client *http.Client, lo
 		outputMode = SummaryOutputModeJSONOrPlain
 	}
 	policy := options.Policy
+	retry := options.Retry
+	if retry.Attempts < 0 || retry.Attempts > 0 && (retry.InitialBackoff <= 0 || retry.MaximumBackoff < retry.InitialBackoff) {
+		return nil, errors.New("invalid evidence assessor configuration")
+	}
 	endpoint, err := providerhttp.OpenAIChatCompletionsURL(baseURL)
 	if err != nil ||
 		strings.TrimSpace(model) == "" || len(model) > 256 || strings.ContainsAny(model, "\r\n") || strings.TrimSpace(apiKey) == "" || strings.ContainsAny(apiKey, "\r\n") || client == nil ||
@@ -92,15 +110,18 @@ func NewOpenAIWithOptions(baseURL, model, apiKey string, client *http.Client, lo
 		return nil, errors.New("invalid evidence assessor configuration")
 	}
 	return &OpenAI{
-		endpoint:   endpoint,
-		model:      model,
-		apiKey:     apiKey,
-		client:     client,
-		log:        log,
-		limit:      limit,
-		maxTokens:  maxTokens,
-		outputMode: outputMode,
-		policy:     policy,
+		endpoint:    endpoint,
+		model:       model,
+		apiKey:      apiKey,
+		client:      client,
+		log:         log,
+		limit:       limit,
+		maxTokens:   maxTokens,
+		outputMode:  outputMode,
+		policy:      policy,
+		retry:       retry,
+		retryWait:   options.WaitForRetry,
+		retryRandom: options.Random,
 	}, nil
 }
 
@@ -132,11 +153,25 @@ type summaryCandidate struct {
 }
 
 type chatResponse struct {
+	Error   *providerErrorEnvelope `json:"error"`
 	Choices []struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
+}
+
+type providerErrorEnvelope struct {
+	Type     string                 `json:"type"`
+	Code     json.RawMessage        `json:"code"`
+	Status   json.RawMessage        `json:"status"`
+	Metadata *providerErrorMetadata `json:"metadata"`
+}
+
+type providerErrorMetadata struct {
+	ErrorType    string          `json:"error_type"`
+	Code         json.RawMessage `json:"code"`
+	ProviderCode json.RawMessage `json:"provider_code"`
 }
 
 type providerError struct {
@@ -174,11 +209,6 @@ func (p *OpenAI) Assess(ctx context.Context, request application.SummaryRequest)
 	if normalizedQuestion == "" {
 		normalizedQuestion = request.Question
 	}
-	if wait, err := p.wait(ctx); err != nil {
-		return application.EvidenceAssessment{}, p.failure("provider_rate_limited", "throttle", providerhttp.SanitizeDetail(wait.String()), err)
-	} else if wait > 0 && p.log != nil {
-		p.log.Info("retrieval.summary.provider.throttled", zap.Int64("wait_ms", wait.Milliseconds()))
-	}
 	userJSON, err := json.Marshal(summaryPayload{Question: normalizedQuestion, Passage: normalizedPassage})
 	if err != nil {
 		return application.EvidenceAssessment{}, p.failure("provider_request_encode_failed", "provider", providerhttp.SanitizeDetail(err.Error()), errors.New("encode provider request"),
@@ -195,25 +225,74 @@ func (p *OpenAI) Assess(ctx context.Context, request application.SummaryRequest)
 		return application.EvidenceAssessment{}, p.failure("provider_request_encode_failed", "provider", providerhttp.SanitizeDetail(err.Error()), errors.New("encode provider request"),
 			zap.String("request_model", p.model), zap.String("request_url", p.endpoint.String()), zap.String("request_path", p.endpoint.Path))
 	}
+	maximumAttempts := request.MaximumAttempts
+	if maximumAttempts <= 0 {
+		maximumAttempts = 1 + p.retry.Attempts
+	}
+	for attempt := 0; attempt < maximumAttempts; attempt++ {
+		assessment, failure := p.assessAttempt(ctx, payload, request.RecordAttempt)
+		if failure == nil {
+			return assessment, nil
+		}
+		if !failure.retryable || attempt+1 >= maximumAttempts || attempt >= p.retry.Attempts {
+			return application.EvidenceAssessment{}, p.failure(failure.code, failure.stage, failure.detail, failure.err, failure.diagnostics.fields()...)
+		}
+		delay, eligible := p.retryDelay(attempt, failure.retryAfter)
+		if !eligible {
+			return application.EvidenceAssessment{}, p.failure(failure.code, failure.stage, failure.detail, failure.err, failure.diagnostics.fields()...)
+		}
+		if p.log != nil {
+			p.log.Info("retrieval.summary.provider.retrying",
+				zap.Int("retry_attempt", attempt+1),
+				zap.Int64("delay_ms", delay.Milliseconds()),
+				zap.String("reason_code", failure.code),
+			)
+		}
+		if err := p.waitForRetry(ctx, delay); err != nil {
+			return application.EvidenceAssessment{}, p.failure("provider_retry_interrupted", "retry", "retry_wait_interrupted", err, failure.diagnostics.fields()...)
+		}
+	}
+	return application.EvidenceAssessment{}, p.failure("provider_attempt_limit_reached", "retry", "attempt_limit_reached", errors.New("provider attempt limit reached"))
+}
+
+func (p *OpenAI) MaximumAttemptsPerAssessment() int {
+	return 1 + p.retry.Attempts
+}
+
+type attemptFailure struct {
+	code        string
+	stage       string
+	detail      string
+	err         error
+	diagnostics requestDiagnostics
+	retryable   bool
+	retryAfter  time.Duration
+}
+
+func (p *OpenAI) assessAttempt(ctx context.Context, payload []byte, recordAttempt func()) (application.EvidenceAssessment, *attemptFailure) {
+	if wait, err := p.wait(ctx); err != nil {
+		return application.EvidenceAssessment{}, &attemptFailure{code: "provider_rate_limited", stage: "throttle", detail: providerhttp.SanitizeDetail(wait.String()), err: err}
+	} else if wait > 0 && p.log != nil {
+		p.log.Info("retrieval.summary.provider.throttled", zap.Int64("wait_ms", wait.Milliseconds()))
+	}
 	diagnostics := newRequestDiagnostics(p.endpoint, p.model, payload)
 	if p.log != nil {
 		p.log.Info("retrieval.summary.provider.request",
-			zap.String("request_model", diagnostics.requestModel),
-			zap.String("request_url", diagnostics.requestURL),
-			zap.String("request_path", diagnostics.requestPath),
-			zap.Int("request_bytes", diagnostics.requestBytes),
-			zap.String("request_body_sha256", diagnostics.requestDigest),
-		)
+			zap.String("request_model", diagnostics.requestModel), zap.String("request_url", diagnostics.requestURL), zap.String("request_path", diagnostics.requestPath),
+			zap.Int("request_bytes", diagnostics.requestBytes), zap.String("request_body_sha256", diagnostics.requestDigest))
 	}
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint.String(), bytes.NewReader(payload))
 	if err != nil {
-		return application.EvidenceAssessment{}, p.failure("provider_request_create_failed", "provider", providerhttp.SanitizeDetail(err.Error()), err, diagnostics.fields()...)
+		return application.EvidenceAssessment{}, &attemptFailure{code: "provider_request_create_failed", stage: "provider", detail: providerhttp.SanitizeDetail(err.Error()), err: err, diagnostics: diagnostics}
 	}
 	httpRequest.Header.Set("Authorization", "Bearer "+p.apiKey)
 	httpRequest.Header.Set("Content-Type", "application/json")
+	if recordAttempt != nil {
+		recordAttempt()
+	}
 	response, err := p.client.Do(httpRequest) // #nosec G704 -- the HTTPS endpoint is operator-configured, startup-validated, and never derived from public input.
 	if err != nil {
-		return application.EvidenceAssessment{}, p.failure(providerhttp.ClassifyRequestError(err), "provider", providerhttp.SanitizeDetail(err.Error()), err, diagnostics.fields()...)
+		return application.EvidenceAssessment{}, &attemptFailure{code: providerhttp.ClassifyRequestError(err), stage: "provider", detail: providerhttp.SanitizeDetail(err.Error()), err: err, diagnostics: diagnostics, retryable: true}
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
@@ -221,39 +300,43 @@ func (p *OpenAI) Assess(ctx context.Context, request application.SummaryRequest)
 		diagnostics.responseStatus = response.StatusCode
 		diagnostics.responseBytes = len(body)
 		diagnostics.responseDigest = digestHex(body)
-		return application.EvidenceAssessment{}, p.failure(fmt.Sprintf("provider_http_status_%d", response.StatusCode), "provider", "provider_http_status", fmt.Errorf("provider returned HTTP status %d", response.StatusCode), diagnostics.fields()...)
+		return application.EvidenceAssessment{}, &attemptFailure{code: fmt.Sprintf("provider_http_status_%d", response.StatusCode), stage: "provider", detail: "provider_http_status", err: fmt.Errorf("provider returned HTTP status %d", response.StatusCode), diagnostics: diagnostics, retryable: response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= http.StatusInternalServerError, retryAfter: retryAfter(response.Header)}
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, int64(p.policy.MaximumResponseBytes)+1))
 	diagnostics.responseBytes = len(body)
 	diagnostics.responseDigest = digestHex(body)
 	if err != nil {
-		return application.EvidenceAssessment{}, p.failure("invalid_provider_response", "validation", "response_read_failed", errors.New("invalid provider response"), diagnostics.fields()...)
+		return application.EvidenceAssessment{}, &attemptFailure{code: "invalid_provider_response", stage: "validation", detail: "response_read_failed", err: errors.New("invalid provider response"), diagnostics: diagnostics}
 	}
 	if len(body) > p.policy.MaximumResponseBytes {
-		return application.EvidenceAssessment{}, p.failure("invalid_provider_response", "validation", "response_too_large", errors.New("invalid provider response"), diagnostics.fields()...)
+		return application.EvidenceAssessment{}, &attemptFailure{code: "invalid_provider_response", stage: "validation", detail: "response_too_large", err: errors.New("invalid provider response"), diagnostics: diagnostics}
 	}
 	if !utf8.Valid(body) {
-		return application.EvidenceAssessment{}, p.failure("invalid_provider_response", "validation", "response_not_utf8", errors.New("invalid provider response"), diagnostics.fields()...)
+		return application.EvidenceAssessment{}, &attemptFailure{code: "invalid_provider_response", stage: "validation", detail: "response_not_utf8", err: errors.New("invalid provider response"), diagnostics: diagnostics}
 	}
 	if err = rejectDuplicateObjectFields(body); err != nil {
-		return application.EvidenceAssessment{}, p.failure("invalid_provider_response", "validation", "duplicate_object_fields", err, diagnostics.fields()...)
+		return application.EvidenceAssessment{}, &attemptFailure{code: "invalid_provider_response", stage: "validation", detail: "duplicate_object_fields", err: err, diagnostics: diagnostics}
 	}
 	var envelope chatResponse
 	if err = decodeOne(body, &envelope, false); err != nil {
-		return application.EvidenceAssessment{}, p.failure("invalid_provider_response", "validation", "response_decode_failed", errors.New("invalid provider response"), diagnostics.fields()...)
+		return application.EvidenceAssessment{}, &attemptFailure{code: "invalid_provider_response", stage: "validation", detail: "response_decode_failed", err: errors.New("invalid provider response"), diagnostics: diagnostics}
+	}
+	if envelope.Error != nil {
+		detail, transient := classifyProviderError(*envelope.Error)
+		return application.EvidenceAssessment{}, &attemptFailure{code: "provider_response_error", stage: "provider", detail: detail, err: errors.New("provider response error"), diagnostics: diagnostics, retryable: transient, retryAfter: retryAfter(response.Header)}
 	}
 	if len(envelope.Choices) != 1 {
-		return application.EvidenceAssessment{}, p.failure("invalid_provider_response", "validation", fmt.Sprintf("unexpected_choices_count_%d", len(envelope.Choices)), errors.New("invalid provider response"), diagnostics.fields()...)
+		return application.EvidenceAssessment{}, &attemptFailure{code: "invalid_provider_response", stage: "validation", detail: fmt.Sprintf("unexpected_choices_count_%d", len(envelope.Choices)), err: errors.New("invalid provider response"), diagnostics: diagnostics, retryable: len(envelope.Choices) == 0}
 	}
 	if len(envelope.Choices[0].Message.Content) > p.policy.MaximumSummaryBytes {
-		return application.EvidenceAssessment{}, p.failure("invalid_provider_response", "validation", "candidate_too_large", errors.New("invalid provider response"), diagnostics.fields()...)
+		return application.EvidenceAssessment{}, &attemptFailure{code: "invalid_provider_response", stage: "validation", detail: "candidate_too_large", err: errors.New("invalid provider response"), diagnostics: diagnostics}
 	}
 	if strings.ContainsRune(envelope.Choices[0].Message.Content, utf8.RuneError) {
-		return application.EvidenceAssessment{}, p.failure("invalid_provider_response", "validation", "candidate_invalid_utf8", errors.New("invalid provider response"), diagnostics.fields()...)
+		return application.EvidenceAssessment{}, &attemptFailure{code: "invalid_provider_response", stage: "validation", detail: "candidate_invalid_utf8", err: errors.New("invalid provider response"), diagnostics: diagnostics}
 	}
 	assessment, detail, err := parseCandidateAssessment([]byte(envelope.Choices[0].Message.Content), p.outputMode)
 	if err != nil {
-		return application.EvidenceAssessment{}, p.failure("invalid_provider_response", "validation", detail, err, diagnostics.fields()...)
+		return application.EvidenceAssessment{}, &attemptFailure{code: "invalid_provider_response", stage: "validation", detail: detail, err: err, diagnostics: diagnostics}
 	}
 	if p.log != nil {
 		p.log.Info("retrieval.summary.provider.response",
@@ -263,6 +346,148 @@ func (p *OpenAI) Assess(ctx context.Context, request application.SummaryRequest)
 		)
 	}
 	return assessment, nil
+}
+
+func (p *OpenAI) retryDelay(attempt int, providerDelay time.Duration) (time.Duration, bool) {
+	if providerDelay > 0 {
+		if providerDelay > p.retry.MaximumBackoff {
+			return 0, false
+		}
+		return providerDelay, true
+	}
+	delay := p.retry.InitialBackoff
+	for index := 0; index < attempt && delay < p.retry.MaximumBackoff; index++ {
+		delay *= 2
+		if delay > p.retry.MaximumBackoff {
+			delay = p.retry.MaximumBackoff
+		}
+	}
+	if p.retryRandom != nil {
+		delay = time.Duration(float64(delay) * clampUnitInterval(p.retryRandom()))
+	} else {
+		delay = time.Duration(float64(delay) * rand.Float64())
+	}
+	return delay, true
+}
+
+func clampUnitInterval(value float64) float64 {
+	if value <= 0 {
+		return 0
+	}
+	if value >= 1 {
+		return 1
+	}
+	return value
+}
+
+func (p *OpenAI) waitForRetry(ctx context.Context, delay time.Duration) error {
+	if p.retryWait != nil {
+		return p.retryWait(ctx, delay)
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func retryAfter(header http.Header) time.Duration {
+	value := strings.TrimSpace(header.Get("Retry-After"))
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
+		if seconds > int64((time.Duration(1<<63-1))/time.Second) {
+			return time.Duration(1<<63 - 1)
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	if retryAt, err := http.ParseTime(value); err == nil {
+		if delay := time.Until(retryAt); delay > 0 {
+			return delay
+		}
+	}
+	return 0
+}
+
+func classifyProviderError(envelope providerErrorEnvelope) (string, bool) {
+	errorType := safeProviderErrorValue(envelope.Type)
+	code := safeProviderErrorCode(envelope.Code)
+	status := safeProviderErrorCode(envelope.Status)
+	if envelope.Metadata != nil {
+		if metadataType := safeProviderErrorValue(envelope.Metadata.ErrorType); metadataType != "" {
+			errorType = metadataType
+		}
+		if code == "" {
+			code = safeProviderErrorCode(envelope.Metadata.ProviderCode)
+		}
+		if code == "" {
+			code = safeProviderErrorCode(envelope.Metadata.Code)
+		}
+	}
+	details := make([]string, 0, 3)
+	if errorType != "" {
+		details = append(details, "type="+errorType)
+	}
+	if code != "" {
+		details = append(details, "code="+code)
+	}
+	if status != "" {
+		details = append(details, "status="+status)
+	}
+	if len(details) == 0 {
+		details = append(details, "unclassified")
+	}
+	return strings.Join(details, " "), transientProviderError(errorType, code) || transientProviderStatus(code) || transientProviderStatus(status)
+}
+
+func safeProviderErrorValue(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" || len(value) > 64 {
+		return ""
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '_' || character == '-' || character == '.' {
+			continue
+		}
+		return ""
+	}
+	return value
+}
+
+func safeProviderErrorCode(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err == nil {
+		return safeProviderErrorValue(value)
+	}
+	var numeric json.Number
+	if err := json.Unmarshal(raw, &numeric); err == nil {
+		return safeProviderErrorValue(numeric.String())
+	}
+	return ""
+}
+
+func transientProviderError(errorType, code string) bool {
+	if transientProviderStatus(code) {
+		return true
+	}
+	switch errorType {
+	case "rate_limit_exceeded", "rate_limited", "overloaded", "service_unavailable", "temporarily_unavailable", "timeout", "server_error", "internal_error":
+		return true
+	default:
+		return false
+	}
+}
+
+func transientProviderStatus(value string) bool {
+	status, err := strconv.Atoi(value)
+	if err != nil {
+		return false
+	}
+	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= http.StatusInternalServerError
 }
 
 func (p *OpenAI) wait(ctx context.Context) (time.Duration, error) {

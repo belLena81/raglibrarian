@@ -175,6 +175,12 @@ fi
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
+secret_dir="$tmp_dir/secrets"
+mkdir -p "$secret_dir"
+chmod 700 "$secret_dir"
+printf 'test-summary-cache-key-material' > "$secret_dir/retrieval_summary_cache_hmac_key"
+chmod 400 "$secret_dir/retrieval_summary_cache_hmac_key"
+
 host_dir="$tmp_dir/host-secrets"
 mkdir -p "$host_dir"
 chmod 700 "$host_dir"
@@ -185,6 +191,19 @@ ensure_file identity_runtime_dsn "fresh-value"
 
 if [[ "$(cat "$host_dir/identity_runtime_dsn")" != "fresh-value" ]]; then
   echo "host secret overlay was not refreshed when stale contents were present" >&2
+  exit 1
+fi
+
+printf 'stale-summary-cache-key' > "$host_dir/retrieval_summary_cache_hmac_key"
+chmod 400 "$host_dir/retrieval_summary_cache_hmac_key"
+ensure_secret_file retrieval_summary_cache_hmac_key
+
+if ! cmp -s "$secret_dir/retrieval_summary_cache_hmac_key" "$host_dir/retrieval_summary_cache_hmac_key"; then
+  echo "retrieval summary cache HMAC key was not copied to the host overlay" >&2
+  exit 1
+fi
+if [[ "$(stat -c '%a' "$host_dir/retrieval_summary_cache_hmac_key")" != "400" ]]; then
+  echo "retrieval summary cache HMAC key overlay has unsafe permissions" >&2
   exit 1
 fi
 
@@ -216,6 +235,18 @@ if ! grep -Fq 'retrieval_summary_provider_max_output_tokens="${RETRIEVAL_SUMMARY
 fi
 if ! grep -Fq 'export RETRIEVAL_SUMMARY_LLM_MAX_CALLS="${RETRIEVAL_SUMMARY_LLM_MAX_CALLS:-100}"' "$root_dir/scripts/render-local-host-env.sh"; then
   echo "host env renderer does not export retrieval summary max calls" >&2
+  exit 1
+fi
+if ! grep -Fq 'export RETRIEVAL_SUMMARY_LLM_RETRY_ATTEMPTS="${RETRIEVAL_SUMMARY_LLM_RETRY_ATTEMPTS:-1}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export retrieval summary retry attempts" >&2
+  exit 1
+fi
+if ! grep -Fq 'export RETRIEVAL_SUMMARY_LLM_RETRY_INITIAL_BACKOFF="${RETRIEVAL_SUMMARY_LLM_RETRY_INITIAL_BACKOFF:-1s}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export retrieval summary retry initial backoff" >&2
+  exit 1
+fi
+if ! grep -Fq 'export RETRIEVAL_SUMMARY_LLM_RETRY_MAXIMUM_BACKOFF="${RETRIEVAL_SUMMARY_LLM_RETRY_MAXIMUM_BACKOFF:-10s}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export retrieval summary retry maximum backoff" >&2
   exit 1
 fi
 if ! grep -Fq 'retrieval_summary_provider_output_mode="${RETRIEVAL_SUMMARY_LLM_OUTPUT_MODE:-json_or_plain}"' "$root_dir/scripts/render-local-host-env.sh"; then

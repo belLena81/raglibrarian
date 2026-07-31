@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/belLena81/raglibrarian/pkg/logger"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
@@ -343,6 +344,174 @@ func TestOpenAIAcceptsFlexibleAssessmentSummaryLength(t *testing.T) {
 	}
 	if !assessment.Relevant || assessment.Summary != longSummary {
 		t.Fatalf("Assess() = %#v, want full long summary", assessment)
+	}
+}
+
+func TestOpenAIClassifiesHTTP200ProviderErrorEnvelopeSafely(t *testing.T) {
+	var attempts int
+	adapter, err := NewOpenAIWithOptions("https://openrouter.ai/", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		attempts++
+		return httpResponse(http.StatusOK, `{"error":{"type":"invalid_request_error","code":"invalid_parameter","message":"do not expose this provider message"}}`), nil
+	})}, zap.NewNop(), nil, 64, Options{
+		OutputMode: SummaryOutputModeJSONOrPlain,
+		Policy:     defaultPolicy(),
+		Retry:      RetryPolicy{Attempts: 1, InitialBackoff: time.Millisecond, MaximumBackoff: time.Millisecond},
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIWithOptions() error = %v", err)
+	}
+
+	_, err = adapter.Assess(context.Background(), application.SummaryRequest{Question: "How do retries help?", Passage: "Deterministic retries keep search stable."})
+	if err == nil {
+		t.Fatal("Assess() error = nil, want provider error")
+	}
+	var providerErr *providerError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("Assess() error = %T, want *providerError", err)
+	}
+	if providerErr.ReasonCode() != "provider_response_error" || providerErr.ReasonDetail() != "type=invalid_request_error code=invalid_parameter" {
+		t.Fatalf("provider error = (%q, %q), want safe provider error classification", providerErr.ReasonCode(), providerErr.ReasonDetail())
+	}
+	if strings.Contains(providerErr.ReasonDetail(), "do not expose") {
+		t.Fatalf("provider error detail exposes provider message: %q", providerErr.ReasonDetail())
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 for non-transient provider error", attempts)
+	}
+}
+
+func TestOpenAIRetriesTransientEmptyChoicesThenSucceeds(t *testing.T) {
+	var attempts int
+	var delays []time.Duration
+	adapter, err := NewOpenAIWithOptions("https://openrouter.ai/", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return httpResponse(http.StatusOK, `{"choices":[]}`), nil
+		}
+		return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":"{\"relevant\":true,\"summary\":\"Retries recovered the transient provider failure.\"}"}}]}`), nil
+	})}, zap.NewNop(), nil, 64, Options{
+		OutputMode: SummaryOutputModeJSONOrPlain,
+		Policy:     defaultPolicy(),
+		Retry:      RetryPolicy{Attempts: 1, InitialBackoff: 25 * time.Millisecond, MaximumBackoff: time.Second},
+		Random:     func() float64 { return 1 },
+		WaitForRetry: func(_ context.Context, delay time.Duration) error {
+			delays = append(delays, delay)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIWithOptions() error = %v", err)
+	}
+
+	assessment, err := adapter.Assess(context.Background(), application.SummaryRequest{Question: "How do retries help?", Passage: "Deterministic retries keep search stable."})
+	if err != nil {
+		t.Fatalf("Assess() error = %v", err)
+	}
+	if !assessment.Relevant || assessment.Summary != "Retries recovered the transient provider failure." {
+		t.Fatalf("Assess() = %#v, want successful retry assessment", assessment)
+	}
+	if attempts != 2 || len(delays) != 1 || delays[0] != 25*time.Millisecond {
+		t.Fatalf("retry = attempts %d delays %#v, want 2 attempts and one 25ms delay", attempts, delays)
+	}
+}
+
+func TestOpenAIDoesNotRetryInvalidCandidate(t *testing.T) {
+	var attempts int
+	adapter, err := NewOpenAIWithOptions("https://openrouter.ai/", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		attempts++
+		return httpResponse(http.StatusOK, `{"choices":[{"message":{"content":"{\"relevant\":true}"}}]}`), nil
+	})}, zap.NewNop(), nil, 64, Options{
+		OutputMode: SummaryOutputModeJSONOrPlain,
+		Policy:     defaultPolicy(),
+		Retry:      RetryPolicy{Attempts: 1, InitialBackoff: time.Millisecond, MaximumBackoff: time.Millisecond},
+		WaitForRetry: func(context.Context, time.Duration) error {
+			t.Fatal("WaitForRetry() called for invalid candidate")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIWithOptions() error = %v", err)
+	}
+
+	_, err = adapter.Assess(context.Background(), application.SummaryRequest{Question: "How do retries help?", Passage: "Deterministic retries keep search stable."})
+	if err == nil {
+		t.Fatal("Assess() error = nil, want invalid provider response")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+func TestOpenAIRetryExhaustionPreservesFinalFailureReason(t *testing.T) {
+	var attempts int
+	var delays []time.Duration
+	adapter, err := NewOpenAIWithOptions("https://openrouter.ai/", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		attempts++
+		return httpResponse(http.StatusOK, `{"choices":[]}`), nil
+	})}, zap.NewNop(), nil, 64, Options{
+		OutputMode: SummaryOutputModeJSONOrPlain,
+		Policy:     defaultPolicy(),
+		Retry:      RetryPolicy{Attempts: 2, InitialBackoff: 10 * time.Millisecond, MaximumBackoff: 15 * time.Millisecond},
+		Random:     func() float64 { return 1 },
+		WaitForRetry: func(_ context.Context, delay time.Duration) error {
+			delays = append(delays, delay)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIWithOptions() error = %v", err)
+	}
+
+	_, err = adapter.Assess(context.Background(), application.SummaryRequest{Question: "How do retries help?", Passage: "Deterministic retries keep search stable."})
+	if err == nil {
+		t.Fatal("Assess() error = nil, want exhausted retry failure")
+	}
+	var providerErr *providerError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("Assess() error = %T, want *providerError", err)
+	}
+	if providerErr.ReasonCode() != "invalid_provider_response" || providerErr.ReasonDetail() != "unexpected_choices_count_0" {
+		t.Fatalf("provider error = (%q, %q), want final empty-choice failure", providerErr.ReasonCode(), providerErr.ReasonDetail())
+	}
+	if attempts != 3 || len(delays) != 2 || delays[0] != 10*time.Millisecond || delays[1] != 15*time.Millisecond {
+		t.Fatalf("retry = attempts %d delays %#v, want 3 attempts with capped exponential backoff", attempts, delays)
+	}
+}
+
+func TestOpenAIDoesNotRetryWhenRetryAfterExceedsConfiguredMaximum(t *testing.T) {
+	var attempts int
+	adapter, err := NewOpenAIWithOptions("https://openrouter.ai/", "test-model", "synthetic-key", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		attempts++
+		response := httpResponse(http.StatusTooManyRequests, `{"error":{"type":"rate_limit_exceeded"}}`)
+		response.Header.Set("Retry-After", "2")
+		return response, nil
+	})}, zap.NewNop(), nil, 64, Options{
+		OutputMode: SummaryOutputModeJSONOrPlain,
+		Policy:     defaultPolicy(),
+		Retry:      RetryPolicy{Attempts: 1, InitialBackoff: 10 * time.Millisecond, MaximumBackoff: time.Second},
+		Random:     func() float64 { return 1 },
+		WaitForRetry: func(context.Context, time.Duration) error {
+			t.Fatal("WaitForRetry() called despite Retry-After exceeding configured maximum")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIWithOptions() error = %v", err)
+	}
+
+	_, err = adapter.Assess(context.Background(), application.SummaryRequest{Question: "How do retries help?", Passage: "Deterministic retries keep search stable."})
+	if err == nil {
+		t.Fatal("Assess() error = nil, want provider throttling failure")
+	}
+	var providerErr *providerError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("Assess() error = %T, want *providerError", err)
+	}
+	if providerErr.ReasonCode() != "provider_http_status_429" || providerErr.ReasonDetail() != "provider_http_status" {
+		t.Fatalf("provider error = (%q, %q), want original throttling failure", providerErr.ReasonCode(), providerErr.ReasonDetail())
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
 	}
 }
 
