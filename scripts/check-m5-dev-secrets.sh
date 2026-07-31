@@ -9,7 +9,7 @@ dir="${1:-${SECRET_DIR:-.dev/secrets}}"
 
 files=(
   retrieval_migration_password retrieval_runtime_password retrieval_search_password retrieval_planner_password retrieval_indexer_password retrieval_dispatcher_password retrieval_cleanup_password
-  retrieval_migration_pgpass retrieval_runtime_dsn retrieval_runtime_host_dsn retrieval_search_dsn
+  retrieval_migration_pgpass retrieval_migration_host_pgpass retrieval_runtime_dsn retrieval_runtime_host_dsn retrieval_search_dsn
   retrieval_planner_dsn retrieval_planner_host_dsn retrieval_cleanup_dsn retrieval_cleanup_host_dsn
   retrieval_minio_access_key retrieval_minio_secret_key retrieval_consumer_rabbitmq_uri
   retrieval_publisher_rabbitmq_uri catalog_retrieval_rabbitmq_uri retrieval_qdrant_api_key retrieval_qdrant_read_api_key
@@ -38,11 +38,17 @@ check_dsn() {
 
 IFS= read -r planner_password < "$dir/retrieval_planner_password"
 IFS= read -r cleanup_password < "$dir/retrieval_cleanup_password"
+IFS= read -r migration_password < "$dir/retrieval_migration_password"
+IFS= read -r migration_host_pgpass < "$dir/retrieval_migration_host_pgpass"
+[[ "$migration_host_pgpass" == "127.0.0.1:5432:retrieval:retrieval_migrator:$migration_password" ]] || {
+  echo "M5 migration host pgpass does not match its role password or host boundary: $dir/retrieval_migration_host_pgpass" >&2
+  exit 1
+}
 check_dsn retrieval_planner_dsn retrieval_planner postgres "$planner_password"
 check_dsn retrieval_planner_host_dsn retrieval_planner 127.0.0.1 "$planner_password"
 check_dsn retrieval_cleanup_dsn retrieval_cleanup postgres "$cleanup_password"
 check_dsn retrieval_cleanup_host_dsn retrieval_cleanup 127.0.0.1 "$cleanup_password"
-unset planner_password cleanup_password
+unset planner_password cleanup_password migration_password migration_host_pgpass
 
 definitions="$dir/rabbitmq_definitions.json"
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }

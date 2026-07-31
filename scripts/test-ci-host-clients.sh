@@ -23,6 +23,7 @@ write_secret() {
 }
 
 write_secret retrieval_runtime_host_dsn "postgres://retrieval_runtime:runtime-password@127.0.0.1:5432/retrieval?sslmode=disable"
+write_secret retrieval_migration_host_pgpass "127.0.0.1:5432:retrieval:retrieval_migrator:migration-password"
 write_secret retrieval_planner_host_dsn "postgres://retrieval_planner:planner-password@127.0.0.1:5432/retrieval?sslmode=disable"
 write_secret retrieval_cleanup_host_dsn "postgres://retrieval_cleanup:cleanup-password@127.0.0.1:5432/retrieval?sslmode=disable"
 
@@ -45,5 +46,14 @@ assert_rewritten() {
 assert_rewritten retrieval_runtime_host_dsn retrieval_runtime
 assert_rewritten retrieval_planner_host_dsn retrieval_planner
 assert_rewritten retrieval_cleanup_host_dsn retrieval_cleanup
+
+if ! grep -Eq '^172\.26\.0\.2:5432:retrieval:retrieval_migrator:migration-password$' "$secret_dir/retrieval_migration_host_pgpass"; then
+  echo "CI host client migration pgpass was not rewritten" >&2
+  exit 1
+fi
+if [[ "$(stat -c '%a' "$secret_dir/retrieval_migration_host_pgpass")" != 400 ]]; then
+  echo "rewritten migration pgpass permissions are not 0400" >&2
+  exit 1
+fi
 
 echo "CI host-client DSN rewrite regressions passed"

@@ -324,6 +324,7 @@ m5-worker-recovery-test: _require_root
 	cd services/retrieval-service && \
 	RETRIEVAL_POSTGRES_INTEGRATION=true \
 	RETRIEVAL_POSTGRES_DSN_FILE="$$secret_dir/retrieval_runtime_host_dsn" \
+	RETRIEVAL_MIGRATION_PGPASS_FILE="$$secret_dir/retrieval_migration_host_pgpass" \
 	RETRIEVAL_PLANNER_POSTGRES_DSN_FILE="$$secret_dir/retrieval_planner_host_dsn" \
 	RETRIEVAL_CLEANUP_POSTGRES_DSN_FILE="$$secret_dir/retrieval_cleanup_host_dsn" \
 	go test -count=1 -v -tags=integration -run 'Replay|Recovery|TerminalFailure|Visibility|Manifest|FailBatch|CompleteBatch|Lifecycle|Deletion|RolePrivileges' ./internal/repository

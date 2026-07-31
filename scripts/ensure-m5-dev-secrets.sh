@@ -26,26 +26,27 @@ if [[ -n "$existing" ]]; then
     }
   done
 
+  IFS= read -r migration_password < "$dir/retrieval_migration_password"
   IFS= read -r planner_password < "$dir/retrieval_planner_password"
   IFS= read -r cleanup_password < "$dir/retrieval_cleanup_password"
-  [[ -n "$planner_password" && -n "$cleanup_password" ]] || {
+  [[ -n "$migration_password" && -n "$planner_password" && -n "$cleanup_password" ]] || {
     echo "Legacy M5 role passwords are invalid; refusing DSN upgrade" >&2
     exit 1
   }
 
-  ensure_derived_dsn() {
+  ensure_derived_secret() {
     local file=$1
     local value=$2
     local path="$dir/$file"
     if [[ -e "$path" ]]; then
       [[ -f "$path" && ! -L "$path" && "$(stat -c '%a' "$path")" == 400 ]] || {
-        echo "Derived M5 DSN has unsafe file metadata: $path" >&2
+        echo "Derived M5 secret has unsafe file metadata: $path" >&2
         exit 1
       }
       local existing_value
       IFS= read -r existing_value < "$path"
       [[ "$existing_value" == "$value" ]] || {
-        echo "Derived M5 DSN conflicts with the existing role password: $path" >&2
+        echo "Derived M5 secret conflicts with the existing role password: $path" >&2
         exit 1
       }
       return
@@ -57,11 +58,12 @@ if [[ -n "$existing" ]]; then
       mv -f "$temporary" "$path"
   }
 
-  ensure_derived_dsn retrieval_planner_dsn "postgres://retrieval_planner:$planner_password@postgres:5432/retrieval?sslmode=disable"
-  ensure_derived_dsn retrieval_planner_host_dsn "postgres://retrieval_planner:$planner_password@127.0.0.1:5432/retrieval?sslmode=disable"
-  ensure_derived_dsn retrieval_cleanup_dsn "postgres://retrieval_cleanup:$cleanup_password@postgres:5432/retrieval?sslmode=disable"
-  ensure_derived_dsn retrieval_cleanup_host_dsn "postgres://retrieval_cleanup:$cleanup_password@127.0.0.1:5432/retrieval?sslmode=disable"
-  unset planner_password cleanup_password
+  ensure_derived_secret retrieval_migration_host_pgpass "127.0.0.1:5432:retrieval:retrieval_migrator:$migration_password"
+  ensure_derived_secret retrieval_planner_dsn "postgres://retrieval_planner:$planner_password@postgres:5432/retrieval?sslmode=disable"
+  ensure_derived_secret retrieval_planner_host_dsn "postgres://retrieval_planner:$planner_password@127.0.0.1:5432/retrieval?sslmode=disable"
+  ensure_derived_secret retrieval_cleanup_dsn "postgres://retrieval_cleanup:$cleanup_password@postgres:5432/retrieval?sslmode=disable"
+  ensure_derived_secret retrieval_cleanup_host_dsn "postgres://retrieval_cleanup:$cleanup_password@127.0.0.1:5432/retrieval?sslmode=disable"
+  unset migration_password planner_password cleanup_password
   if [[ ! -e "$dir/retrieval_summary_cache_hmac_key" ]]; then
     temporary=$(mktemp "$dir/.retrieval-summary-cache-key.XXXXXX")
     openssl rand -hex 32 > "$temporary"

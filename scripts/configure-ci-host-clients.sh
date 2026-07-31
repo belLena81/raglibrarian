@@ -60,6 +60,7 @@ rewrite_postgres_host_dsns() {
   local postgres_ip="$2"
 
   rewrite_endpoint "$secret_dir/retrieval_runtime_host_dsn" 5432 "$postgres_ip"
+  rewrite_endpoint "$secret_dir/retrieval_migration_host_pgpass" 5432 "$postgres_ip"
   rewrite_endpoint "$secret_dir/retrieval_planner_host_dsn" 5432 "$postgres_ip"
   rewrite_endpoint "$secret_dir/retrieval_cleanup_host_dsn" 5432 "$postgres_ip"
 }
