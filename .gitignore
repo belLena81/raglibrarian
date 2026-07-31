@@ -43,6 +43,7 @@ pkg/proto/**/*.pb.go
 /docs/*
 !/docs/README.md
 !/docs/architecture-decision-record.md
+!/docs/feature-text-preprocessing.md
 !/docs/spec_rag_tech_books.md
 **/AGENTS.md
 **/AGENTIC_*.md

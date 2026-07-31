@@ -6,6 +6,12 @@ binding service-boundary decision lives in
 [architecture-decision-record.md](architecture-decision-record.md). Historical
 plans are not active implementation guidance.
 
+Proposed feature designs:
+
+- [Text preprocessing before embedding](feature-text-preprocessing.md) compares
+  conservative, structure-aware, document-wide, layout-aware, and learned
+  approaches for excluding non-answer book content before chunking.
+
 The roadmap uses vertical slices: every delivery slice ends with a demonstrable
 user or operator outcome, deployable service health, and automated acceptance
 coverage. The active bootstrap/test path is app-level, via `make app-bootstrap`
