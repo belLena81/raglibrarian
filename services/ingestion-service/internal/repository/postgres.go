@@ -3,6 +3,7 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -292,6 +293,9 @@ func completeDeletionIfReady(ctx context.Context, tx pgx.Tx, eventID string, now
 }
 
 func existingJobDecision(job domain.ProcessingJob, now time.Time) (bool, error) {
+	if job.State() == domain.JobAwaitingSelection {
+		return false, nil
+	}
 	if job.State() == domain.JobRetrying && now.Before(job.NextAttemptAt()) {
 		return false, application.NewDeferredError(job.NextAttemptAt())
 	}
@@ -302,6 +306,244 @@ func existingJobDecision(job domain.ProcessingJob, now time.Time) (bool, error) 
 		return false, nil
 	}
 	return true, nil
+}
+
+func (r *Postgres) AwaitSelection(ctx context.Context, job domain.ProcessingJob, claim application.ClaimToken, request application.OutboxEvent) error {
+	if job.State() != domain.JobAwaitingSelection || !validPersistenceID(request.ID) || request.Type != "ingestion.book.content-selection-requested.v1" ||
+		len(request.Payload) == 0 || len(request.Payload) > 262144 || request.OccurredAt.IsZero() {
+		return domain.ErrInvalidJob
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("ingestion: begin awaiting content selection: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	command, err := tx.Exec(ctx, `UPDATE ingestion.jobs
+		SET state='awaiting_selection',lease_owner=NULL,lease_expires_at=NULL,updated_at=$2
+		WHERE id=$1 AND state='processing' AND lease_owner=$3 AND attempts=$4
+			AND lease_expires_at=$5 AND lease_expires_at >= $2`,
+		job.ID(), job.UpdatedAt(), claim.Owner, claim.Attempt, claim.ExpiresAt)
+	if err != nil {
+		return fmt.Errorf("ingestion: persist awaiting content selection: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return domain.ErrLeaseNotOwned
+	}
+	command, err = tx.Exec(ctx, `INSERT INTO ingestion.outbox
+		(event_id,event_type,aggregate_id,aggregate_sequence,payload,occurred_at,next_attempt_at)
+		VALUES($1,$2,$3,2,$4,$5,$5) ON CONFLICT(aggregate_id,aggregate_sequence) DO NOTHING`,
+		request.ID, request.Type, job.ID(), request.Payload, request.OccurredAt)
+	if err != nil {
+		return fmt.Errorf("ingestion: insert content selection request: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		var eventID string
+		var payload []byte
+		if err = tx.QueryRow(ctx, `SELECT event_id,payload FROM ingestion.outbox
+			WHERE aggregate_id=$1 AND aggregate_sequence=2 FOR UPDATE`, job.ID()).Scan(&eventID, &payload); err != nil {
+			return fmt.Errorf("ingestion: inspect content selection request: %w", err)
+		}
+		if eventID != request.ID || !constantEqual(payload, request.Payload) {
+			return application.ErrConflictingEvent
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("ingestion: commit awaiting content selection: %w", err)
+	}
+	r.notify()
+	return nil
+}
+
+func (r *Postgres) AcceptContentSelection(ctx context.Context, record application.ContentSelectionRecord, owner string, now time.Time, lease time.Duration) (domain.ProcessingJob, bool, error) {
+	if !validContentSelectionRecord(record) || !validPersistenceID(owner) || now.IsZero() || lease <= 0 {
+		return domain.ProcessingJob{}, false, application.ErrInvalidEvent
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: begin content selection result: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var bookID string
+	var jobLifecycleVersion, fencedLifecycleVersion int64
+	var sourceSHA256, processingDigest []byte
+	var deleted bool
+	err = tx.QueryRow(ctx, `SELECT j.book_id,j.lifecycle_version,j.source_sha256,j.processing_config_digest,
+		f.lifecycle_version,f.deleted FROM ingestion.jobs j
+		JOIN ingestion.lifecycle_fences f ON f.book_id=j.book_id
+		WHERE j.id=$1 FOR UPDATE OF j,f`, record.JobID).Scan(
+		&bookID, &jobLifecycleVersion, &sourceSHA256, &processingDigest, &fencedLifecycleVersion, &deleted)
+	if err != nil {
+		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: inspect content selection job: %w", err)
+	}
+	job, err := loadJobByIDForUpdate(ctx, tx, record.JobID, r.profile)
+	if err != nil {
+		return domain.ProcessingJob{}, false, err
+	}
+	if bookID != record.BookID || jobLifecycleVersion != record.LifecycleVersion ||
+		!constantEqual(sourceSHA256, record.SourceSHA256[:]) || !constantEqual(processingDigest, record.ProcessingProfileDigest[:]) {
+		return domain.ProcessingJob{}, false, application.ErrConflictingEvent
+	}
+	if fencedLifecycleVersion > record.LifecycleVersion || (deleted && fencedLifecycleVersion >= record.LifecycleVersion) {
+		return job, false, tx.Commit(ctx)
+	}
+	var requestAggregateID string
+	if err = tx.QueryRow(ctx, `SELECT aggregate_id FROM ingestion.outbox
+		WHERE event_id=$1 AND aggregate_sequence=2 FOR UPDATE`, record.RequestID).Scan(&requestAggregateID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ProcessingJob{}, false, application.ErrConflictingEvent
+		}
+		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: inspect content selection request identity: %w", err)
+	}
+	if requestAggregateID != record.JobID {
+		return domain.ProcessingJob{}, false, application.ErrConflictingEvent
+	}
+
+	command, err := tx.Exec(ctx, `INSERT INTO ingestion.content_selection_inbox
+		(event_id,request_id,job_id,book_id,lifecycle_version,payload_digest,payload,source_sha256,processing_profile_digest,received_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING`,
+		record.EventID, record.RequestID, record.JobID, record.BookID, record.LifecycleVersion,
+		record.PayloadDigest[:], record.Payload, record.SourceSHA256[:], record.ProcessingProfileDigest[:], record.ReceivedAt)
+	if err != nil {
+		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: insert content selection result: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		var eventID, requestID, jobID string
+		var payloadDigest []byte
+		err = tx.QueryRow(ctx, `SELECT event_id,request_id,job_id,payload_digest
+			FROM ingestion.content_selection_inbox
+			WHERE event_id=$1 OR request_id=$2 OR job_id=$3 FOR UPDATE`,
+			record.EventID, record.RequestID, record.JobID).Scan(&eventID, &requestID, &jobID, &payloadDigest)
+		if err != nil {
+			return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: inspect content selection duplicate: %w", err)
+		}
+		if eventID != record.EventID || requestID != record.RequestID || jobID != record.JobID ||
+			!constantEqual(payloadDigest, record.PayloadDigest[:]) {
+			return domain.ProcessingJob{}, false, application.ErrConflictingEvent
+		}
+		if job.State() != domain.JobAwaitingSelection {
+			return job, false, tx.Commit(ctx)
+		}
+	}
+	if job.State() != domain.JobAwaitingSelection {
+		return domain.ProcessingJob{}, false, application.ErrConflictingEvent
+	}
+	if err = job.ResumeAfterContentSelection(owner, now, lease); err != nil {
+		return domain.ProcessingJob{}, false, err
+	}
+	command, err = tx.Exec(ctx, `UPDATE ingestion.jobs
+		SET state='processing',lease_owner=$2,lease_expires_at=$3,updated_at=$4
+		WHERE id=$1 AND state='awaiting_selection'`, job.ID(), job.LeaseOwner(), job.LeaseExpiresAt(), job.UpdatedAt())
+	if err != nil {
+		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: claim content-selected job: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return domain.ProcessingJob{}, false, domain.ErrLeaseNotOwned
+	}
+	_, err = tx.Exec(ctx, `UPDATE ingestion.content_selection_inbox SET accepted_at=$2
+		WHERE job_id=$1 AND accepted_at IS NULL`, job.ID(), now.UTC())
+	if err != nil {
+		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: mark content selection accepted: %w", err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: commit content selection result: %w", err)
+	}
+	return job, true, nil
+}
+
+func (r *Postgres) LoadContentSelection(ctx context.Context, jobID string) (application.ContentSelectionRecord, error) {
+	var record application.ContentSelectionRecord
+	var payloadDigest, sourceSHA256, processingDigest []byte
+	var acceptedAt *time.Time
+	err := r.pool.QueryRow(ctx, `SELECT event_id,request_id,job_id,book_id,payload_digest,payload,
+		source_sha256,processing_profile_digest,lifecycle_version,received_at,accepted_at
+		FROM ingestion.content_selection_inbox WHERE job_id=$1`, jobID).Scan(
+		&record.EventID, &record.RequestID, &record.JobID, &record.BookID, &payloadDigest, &record.Payload,
+		&sourceSHA256, &processingDigest, &record.LifecycleVersion, &record.ReceivedAt, &acceptedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return application.ContentSelectionRecord{}, application.ErrContentSelectionNotFound
+		}
+		return application.ContentSelectionRecord{}, fmt.Errorf("ingestion: load content selection: %w", err)
+	}
+	copy(record.PayloadDigest[:], payloadDigest)
+	copy(record.SourceSHA256[:], sourceSHA256)
+	copy(record.ProcessingProfileDigest[:], processingDigest)
+	if acceptedAt != nil {
+		record.AcceptedAt = *acceptedAt
+	}
+	return record, nil
+}
+
+func (r *Postgres) LoadUploadedPayload(ctx context.Context, jobID string) ([]byte, error) {
+	var payload []byte
+	err := r.pool.QueryRow(ctx, `SELECT i.payload FROM ingestion.jobs j
+		JOIN ingestion.inbox i ON i.business_key=j.book_id
+			AND i.source_sha256=j.source_sha256
+			AND i.processing_config_digest=j.processing_config_digest
+			AND i.lifecycle_version=j.lifecycle_version
+		WHERE j.id=$1`, jobID).Scan(&payload)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, application.ErrContentSelectionNotFound
+		}
+		return nil, fmt.Errorf("ingestion: load uploaded payload: %w", err)
+	}
+	if len(payload) == 0 || len(payload) > 262144 {
+		return nil, errors.New("ingestion: invalid stored upload payload")
+	}
+	return append([]byte(nil), payload...), nil
+}
+
+func validContentSelectionRecord(record application.ContentSelectionRecord) bool {
+	payloadDigest := sha256.Sum256(record.Payload)
+	return validPersistenceID(record.EventID) && validPersistenceID(record.RequestID) &&
+		validPersistenceID(record.JobID) && validPersistenceID(record.BookID) &&
+		len(record.Payload) > 0 && len(record.Payload) <= 262144 && record.LifecycleVersion > 0 &&
+		!record.ReceivedAt.IsZero() && constantEqual(payloadDigest[:], record.PayloadDigest[:])
+}
+
+func validPersistenceID(value string) bool {
+	return strings.TrimSpace(value) == value && value != "" && len(value) <= 128
+}
+
+func loadJobByIDForUpdate(ctx context.Context, tx pgx.Tx, jobID string, profile chunking.Policy) (domain.ProcessingJob, error) {
+	var id, bookID, state, leaseOwner, failure, manifestReference string
+	var source, manifestSHA, persistedDigest []byte
+	var attempts int
+	var structureVersion string
+	var maximumTokens, overlapTokens int
+	var leaseExpiresAt, nextAttemptAt *time.Time
+	var manifestSize *int64
+	var createdAt, updatedAt time.Time
+	err := tx.QueryRow(ctx, `SELECT id,book_id,state,attempts,COALESCE(lease_owner,''),lease_expires_at,next_attempt_at,
+		COALESCE(failure_category,''),COALESCE(manifest_reference,''),manifest_sha256,manifest_byte_size,created_at,updated_at,
+		source_sha256,processing_config_digest,structure_version,maximum_tokens,overlap_tokens
+		FROM ingestion.jobs WHERE id=$1 FOR UPDATE`, jobID).Scan(
+		&id, &bookID, &state, &attempts, &leaseOwner, &leaseExpiresAt, &nextAttemptAt, &failure, &manifestReference,
+		&manifestSHA, &manifestSize, &createdAt, &updatedAt, &source, &persistedDigest, &structureVersion, &maximumTokens, &overlapTokens)
+	if err != nil {
+		return domain.ProcessingJob{}, err
+	}
+	if structureVersion != chunking.StructureVersion || maximumTokens != profile.MaximumTokens || overlapTokens != profile.OverlapTokens {
+		return domain.ProcessingJob{}, application.ErrUnsupportedProcessingProfile
+	}
+	var sourceSum, manifestSum [32]byte
+	copy(sourceSum[:], source)
+	copy(manifestSum[:], manifestSHA)
+	var leaseTime, nextTime time.Time
+	if leaseExpiresAt != nil {
+		leaseTime = *leaseExpiresAt
+	}
+	if nextAttemptAt != nil {
+		nextTime = *nextAttemptAt
+	}
+	var size int64
+	if manifestSize != nil {
+		size = *manifestSize
+	}
+	return domain.RestoreProcessingJob(id, bookID, sourceSum, hex.EncodeToString(persistedDigest), domain.JobState(state), attempts,
+		leaseOwner, leaseTime, nextTime, domain.FailureCategory(failure), manifestReference, manifestSum, size, createdAt, updatedAt)
 }
 
 func recoveryDispatchTime(err error) (time.Time, bool) {
@@ -474,7 +716,7 @@ func (r *Postgres) Retry(ctx context.Context, job domain.ProcessingJob, claim ap
 
 func (r *Postgres) insertTerminalOutbox(ctx context.Context, tx pgx.Tx, jobID string, event application.OutboxEvent) error {
 	_, err := tx.Exec(ctx, `INSERT INTO ingestion.outbox(event_id,event_type,aggregate_id,aggregate_sequence,payload,occurred_at,next_attempt_at)
-        VALUES($1,$2,$3,2,$4,$5,$5) ON CONFLICT(aggregate_id,aggregate_sequence) DO NOTHING`, event.ID, event.Type, jobID, event.Payload, event.OccurredAt)
+		VALUES($1,$2,$3,3,$4,$5,$5) ON CONFLICT(aggregate_id,aggregate_sequence) DO NOTHING`, event.ID, event.Type, jobID, event.Payload, event.OccurredAt)
 	if err != nil {
 		return fmt.Errorf("ingestion: insert terminal outbox: %w", err)
 	}

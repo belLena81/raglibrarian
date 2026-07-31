@@ -13,6 +13,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/indexprofile"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/config"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/diagnostic"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/application"
@@ -230,7 +231,27 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		MaximumPages:  cfg.ChunkMaximumPages,
 		MaximumChunks: cfg.MaximumChunks,
 	}
-	processingFactory, err := application.NewProcessingFactory(
+	selectionProfile := application.ContentSelectionProfile{Mode: application.ContentSelectionDisabled}
+	if cfg.RuntimeBackend == "local" {
+		selectionProfile = application.ContentSelectionProfile{
+			Mode:                 application.ContentSelectionMode(cfg.ContentSelectionMode),
+			PolicyVersion:        cfg.ContentSelectionPolicyVersion,
+			ParserVersion:        cfg.ContentSelectionParserVersion,
+			ModelSHA256:          cfg.ContentSelectionModelDigest,
+			MinimumSignals:       cfg.ContentSelectionMinimumSignals,
+			MaximumRanges:        cfg.ContentSelectionMaximumRanges,
+			MaximumExcludedRatio: cfg.ContentSelectionMaximumExcludedRatio,
+		}
+	}
+	if err = selectionProfile.Validate(); err != nil {
+		cleanup()
+		return nil, err
+	}
+	if selectionProfile.Mode != application.ContentSelectionDisabled {
+		selectionDigest := selectionProfile.Digest()
+		chunkPolicy.IdentityProfile = hex.EncodeToString(selectionDigest[:])
+	}
+	processingFactory, err := application.NewProcessingFactoryWithSelection(
 		tokenizer,
 		artifactStore,
 		chunkPolicy,
@@ -239,12 +260,13 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 			MaximumShardBytes:    int(cfg.ArtifactMaximumShardBytes),
 			MaximumManifestBytes: int(cfg.MaximumManifestBytes),
 		},
+		selectionProfile,
 	)
 	if err != nil {
 		cleanup()
 		return nil, err
 	}
-	events, err := transport.NewProtoEventFactoryWithProfile(newID, chunkPolicy)
+	events, err := transport.NewProtoEventFactoryWithSelection(newID, chunkPolicy, selectionProfile)
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -288,17 +310,23 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		},
 		nil,
 	)
+	pdfExtractionVersion := extractor.ExtractionVersion
+	epubExtractionVersion := extractor.EPUBExtractionVersion
+	if selectionProfile.Mode != application.ContentSelectionDisabled {
+		pdfExtractionVersion = indexprofile.ExtractionPDFFiltered
+		epubExtractionVersion = indexprofile.ExtractionEPUBFiltered
+	}
 	extractors, err := application.NewFormatExtractors(
 		application.ExtractionAdapter{
 			MediaType: application.MediaTypePDF,
 			Extension: ".pdf",
-			Version:   extractor.ExtractionVersion,
+			Version:   pdfExtractionVersion,
 			Extractor: pdfExtractor,
 		},
 		application.ExtractionAdapter{
 			MediaType: application.MediaTypeEPUB,
 			Extension: ".epub",
-			Version:   extractor.EPUBExtractionVersion,
+			Version:   epubExtractionVersion,
 			Extractor: epubExtractor,
 		},
 	)
@@ -316,19 +344,21 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		time.Now,
 		workerID,
 		application.Config{
-			MaximumSourceBytes:    cfg.MaximumSourceBytes,
-			MaximumTemporaryBytes: cfg.MaximumTemporaryBytes,
-			TemporaryDirectory:    cfg.TemporaryDirectory,
-			ProcessingTimeout:     cfg.ProcessingTimeout,
-			PersistenceTimeout:    cfg.PersistenceTimeout,
-			ArtifactAbortTimeout:  cfg.ArtifactAbortTimeout,
-			JobLease:              cfg.JobLease,
-			MaximumAttempts:       cfg.MaximumAttempts,
-			FirstRetryDelay:       cfg.FirstRetryDelay,
-			SecondRetryDelay:      cfg.SecondRetryDelay,
-			SubsequentRetryDelay:  cfg.SubsequentRetryDelay,
-			Observer:              recorder,
-			Diagnostics:           diagnosticsLogger,
+			MaximumSourceBytes:     cfg.MaximumSourceBytes,
+			MaximumTemporaryBytes:  cfg.MaximumTemporaryBytes,
+			TemporaryDirectory:     cfg.TemporaryDirectory,
+			ProcessingTimeout:      cfg.ProcessingTimeout,
+			PersistenceTimeout:     cfg.PersistenceTimeout,
+			ArtifactAbortTimeout:   cfg.ArtifactAbortTimeout,
+			JobLease:               cfg.JobLease,
+			MaximumAttempts:        cfg.MaximumAttempts,
+			FirstRetryDelay:        cfg.FirstRetryDelay,
+			SecondRetryDelay:       cfg.SecondRetryDelay,
+			SubsequentRetryDelay:   cfg.SubsequentRetryDelay,
+			Observer:               recorder,
+			Diagnostics:            diagnosticsLogger,
+			DecodeUploaded:         transport.DecodeUploaded,
+			DecodeContentSelection: transport.DecodeContentSelectionCompleted,
 		},
 	)
 	if err != nil {
@@ -434,6 +464,10 @@ func (r *Runtime) ProcessDeletion(ctx context.Context, event application.Deletio
 	}
 	r.Cleaner.WakeDeletionCleanup()
 	return nil
+}
+
+func (r *Runtime) ProcessContentSelection(ctx context.Context, event application.ContentSelectionResult) error {
+	return r.Processor.ProcessContentSelection(ctx, event)
 }
 
 func newID() (string, error) {

@@ -161,6 +161,10 @@ type OutboxEvent struct {
 
 type Repository interface {
 	Accept(context.Context, UploadedEvent, [32]byte, domain.ProcessingJob, OutboxEvent) (domain.ProcessingJob, bool, error)
+	AwaitSelection(context.Context, domain.ProcessingJob, ClaimToken, OutboxEvent) error
+	AcceptContentSelection(context.Context, ContentSelectionRecord, string, time.Time, time.Duration) (domain.ProcessingJob, bool, error)
+	LoadContentSelection(context.Context, string) (ContentSelectionRecord, error)
+	LoadUploadedPayload(context.Context, string) ([]byte, error)
 	AcceptDeletion(context.Context, DeletionEvent, [32]byte, OutboxEvent, time.Time) error
 	Complete(context.Context, domain.ProcessingJob, ClaimToken, artifact.Result, OutboxEvent) error
 	Fail(context.Context, domain.ProcessingJob, ClaimToken, OutboxEvent) error
@@ -183,12 +187,13 @@ type Extractor interface {
 
 type Chunker interface {
 	AddPage(string, chunking.Page) ([]domain.Chunk, error)
+	Boundary(string) ([]domain.Chunk, error)
 	Finish(string) ([]domain.Chunk, error)
 }
 
 type ArtifactWriter interface {
 	Add(context.Context, domain.Chunk) error
-	Finalize(context.Context, uint32) (artifact.Result, error)
+	Finalize(context.Context, uint32, *artifact.ContentSelection) (artifact.Result, error)
 	Abort(context.Context) error
 }
 
@@ -196,10 +201,12 @@ type Factory interface {
 	NewChunker() (Chunker, error)
 	NewArtifactWriter(UploadedEvent, time.Time) (ArtifactWriter, error)
 	ConfigDigest(string) ([32]byte, error)
+	ContentSelectionProfile() ContentSelectionProfile
 }
 
 type EventFactory interface {
 	Started(UploadedEvent, domain.ProcessingJob, time.Time) (OutboxEvent, error)
+	ContentSelectionRequested(UploadedEvent, domain.ProcessingJob, time.Time) (OutboxEvent, error)
 	Ready(UploadedEvent, domain.ProcessingJob, artifact.Result, time.Time) (OutboxEvent, error)
 	Failed(UploadedEvent, domain.ProcessingJob, domain.FailureCategory, string, time.Time) (OutboxEvent, error)
 	ArtifactsDeleted(DeletionEvent, time.Time) (OutboxEvent, error)
@@ -209,19 +216,21 @@ type IDGenerator func() (string, error)
 type Clock func() time.Time
 
 type Config struct {
-	MaximumSourceBytes    int64
-	MaximumTemporaryBytes int64
-	TemporaryDirectory    string
-	ProcessingTimeout     time.Duration
-	PersistenceTimeout    time.Duration
-	ArtifactAbortTimeout  time.Duration
-	JobLease              time.Duration
-	MaximumAttempts       int
-	FirstRetryDelay       time.Duration
-	SecondRetryDelay      time.Duration
-	SubsequentRetryDelay  time.Duration
-	Observer              PhaseObserver
-	Diagnostics           ProcessorDiagnostics
+	MaximumSourceBytes     int64
+	MaximumTemporaryBytes  int64
+	TemporaryDirectory     string
+	ProcessingTimeout      time.Duration
+	PersistenceTimeout     time.Duration
+	ArtifactAbortTimeout   time.Duration
+	JobLease               time.Duration
+	MaximumAttempts        int
+	FirstRetryDelay        time.Duration
+	SecondRetryDelay       time.Duration
+	SubsequentRetryDelay   time.Duration
+	Observer               PhaseObserver
+	Diagnostics            ProcessorDiagnostics
+	DecodeUploaded         UploadDecoder
+	DecodeContentSelection ContentSelectionDecoder
 }
 
 type ProcessingPhase uint8
@@ -256,17 +265,20 @@ func (noopDiagnostics) CompletionPersistenceFailed(string, string, string, strin
 func (noopDiagnostics) FailurePersisted(string, string, string, string, string)    {}
 
 type Processor struct {
-	repository  Repository
-	sources     SourceReader
-	extractors  ExtractorSelector
-	factory     Factory
-	events      EventFactory
-	newID       IDGenerator
-	now         Clock
-	workerID    string
-	config      Config
-	observer    PhaseObserver
-	diagnostics ProcessorDiagnostics
+	repository      Repository
+	sources         SourceReader
+	extractors      ExtractorSelector
+	factory         Factory
+	events          EventFactory
+	newID           IDGenerator
+	now             Clock
+	workerID        string
+	config          Config
+	observer        PhaseObserver
+	diagnostics     ProcessorDiagnostics
+	selection       ContentSelectionProfile
+	decodeUpload    UploadDecoder
+	decodeSelection ContentSelectionDecoder
 }
 
 type stagedError struct {
@@ -285,7 +297,11 @@ func stage(detail string, cause error) error {
 }
 
 func NewProcessor(repository Repository, sources SourceReader, extractors ExtractorSelector, factory Factory, events EventFactory, newID IDGenerator, now Clock, workerID string, config Config) (*Processor, error) {
-	if repository == nil || sources == nil || extractors == nil || factory == nil || events == nil || newID == nil || now == nil || !safeID(workerID) || config.MaximumSourceBytes < 1 || config.MaximumTemporaryBytes < config.MaximumSourceBytes || config.ProcessingTimeout <= 0 || config.PersistenceTimeout <= 0 || config.ArtifactAbortTimeout <= 0 || config.JobLease < config.ProcessingTimeout+30*time.Second || config.MaximumAttempts < 1 || config.FirstRetryDelay <= 0 || config.SecondRetryDelay <= 0 || config.SubsequentRetryDelay <= 0 || config.TemporaryDirectory == "" {
+	if factory == nil {
+		return nil, errors.New("invalid processor configuration")
+	}
+	selectionProfile := factory.ContentSelectionProfile()
+	if repository == nil || sources == nil || extractors == nil || events == nil || newID == nil || now == nil || !safeID(workerID) || config.MaximumSourceBytes < 1 || config.MaximumTemporaryBytes < config.MaximumSourceBytes || config.ProcessingTimeout <= 0 || config.PersistenceTimeout <= 0 || config.ArtifactAbortTimeout <= 0 || config.JobLease < config.ProcessingTimeout+30*time.Second || config.MaximumAttempts < 1 || config.FirstRetryDelay <= 0 || config.SecondRetryDelay <= 0 || config.SubsequentRetryDelay <= 0 || config.TemporaryDirectory == "" || selectionProfile.Validate() != nil || (selectionProfile.Mode != ContentSelectionDisabled && (config.DecodeUploaded == nil || config.DecodeContentSelection == nil)) {
 		return nil, errors.New("invalid processor configuration")
 	}
 	observer := config.Observer
@@ -296,7 +312,7 @@ func NewProcessor(repository Repository, sources SourceReader, extractors Extrac
 	if diagnostics == nil {
 		diagnostics = noopDiagnostics{}
 	}
-	return &Processor{repository: repository, sources: sources, extractors: extractors, factory: factory, events: events, newID: newID, now: now, workerID: workerID, config: config, observer: observer, diagnostics: diagnostics}, nil
+	return &Processor{repository: repository, sources: sources, extractors: extractors, factory: factory, events: events, newID: newID, now: now, workerID: workerID, config: config, observer: observer, diagnostics: diagnostics, selection: selectionProfile, decodeUpload: config.DecodeUploaded, decodeSelection: config.DecodeContentSelection}, nil
 }
 
 func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
@@ -341,9 +357,87 @@ func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
 	if !accepted {
 		return nil
 	}
+	if p.selection.Mode != ContentSelectionDisabled {
+		loadCtx, loadCancel := context.WithTimeout(parent, p.config.PersistenceTimeout)
+		selectionResult, loadErr := decodeStoredSelection(loadCtx, p.repository, p.decodeSelection, job.ID(), p.selection.MaximumRanges)
+		loadCancel()
+		switch {
+		case loadErr == nil:
+			if err = p.validateSelectionForJob(event, job, selectionResult); err != nil {
+				return err
+			}
+			return p.processAccepted(parent, event, adapter, job, &selectionResult)
+		case !errors.Is(loadErr, ErrContentSelectionNotFound):
+			return operational("selection_load_failed", loadErr)
+		}
+		return p.awaitSelection(parent, event, &job)
+	}
+	return p.processAccepted(parent, event, adapter, job, nil)
+}
+
+func (p *Processor) awaitSelection(parent context.Context, event UploadedEvent, job *domain.ProcessingJob) error {
+	now := p.now().UTC()
+	request, err := p.events.ContentSelectionRequested(event, *job, now)
+	if err != nil {
+		return operational("selection_request_failed", err)
+	}
+	claim := ClaimToken{Owner: job.LeaseOwner(), Attempt: job.Attempts(), ExpiresAt: job.LeaseExpiresAt()}
+	if err = job.AwaitContentSelection(p.workerID, now); err != nil {
+		return err
+	}
+	persistCtx, persistCancel := p.persistenceContext(parent)
+	defer persistCancel()
+	if err = p.repository.AwaitSelection(persistCtx, *job, claim, request); err != nil {
+		return operational("selection_await_failed", err)
+	}
+	return nil
+}
+
+// ProcessContentSelection durably accepts a selection result and resumes its
+// waiting job using the original upload envelope stored by Ingestion.
+func (p *Processor) ProcessContentSelection(parent context.Context, selectionResult ContentSelectionResult) error {
+	if err := selectionResult.Validate(p.selection); err != nil {
+		return err
+	}
+	loadCtx, loadCancel := context.WithTimeout(parent, p.config.PersistenceTimeout)
+	payload, err := p.repository.LoadUploadedPayload(loadCtx, selectionResult.JobID)
+	loadCancel()
+	if err != nil {
+		return operational("upload_load_failed", err)
+	}
+	event, err := p.decodeUpload(payload)
+	if err != nil || event.Validate(p.config.MaximumSourceBytes) != nil {
+		return ErrInvalidEvent
+	}
+	if err = validateSelectionForEvent(event, selectionResult); err != nil {
+		return err
+	}
+	now := p.now().UTC()
+	acceptCtx, acceptCancel := context.WithTimeout(parent, p.config.PersistenceTimeout)
+	job, accepted, err := p.repository.AcceptContentSelection(acceptCtx, selectionResult.record(now), p.workerID, now, p.config.JobLease)
+	acceptCancel()
+	if err != nil {
+		return operational("selection_accept_failed", err)
+	}
+	if !accepted {
+		return nil
+	}
+	adapter, err := p.extractors.Select(event.MediaType)
+	if err != nil {
+		return err
+	}
+	event.ExtractionVersion = adapter.Version
+	if err = p.validateSelectionForJob(event, job, selectionResult); err != nil {
+		return err
+	}
+	return p.processAccepted(parent, event, adapter, job, &selectionResult)
+}
+
+func (p *Processor) processAccepted(parent context.Context, event UploadedEvent, adapter ExtractionAdapter, job domain.ProcessingJob, selectionResult *ContentSelectionResult) error {
+	var err error
 	ctx, cancel := context.WithTimeout(parent, p.config.ProcessingTimeout)
 	defer cancel()
-	result, processErr := p.processClaimed(ctx, event, adapter, job.CreatedAt())
+	result, processErr := p.processClaimed(ctx, event, adapter, job.CreatedAt(), selectionResult)
 	claim := ClaimToken{Owner: job.LeaseOwner(), Attempt: job.Attempts(), ExpiresAt: job.LeaseExpiresAt()}
 	if processErr == nil {
 		ready, readyErr := p.events.Ready(event, job, result, p.now().UTC())
@@ -391,7 +485,7 @@ func (p *Processor) persistenceContext(parent context.Context) (context.Context,
 	return context.WithTimeout(parent, p.config.PersistenceTimeout)
 }
 
-func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, adapter ExtractionAdapter, generatedAt time.Time) (artifact.Result, error) {
+func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, adapter ExtractionAdapter, generatedAt time.Time, selectionResult *ContentSelectionResult) (artifact.Result, error) {
 	if err := ensureTemporaryCapacity(p.config.TemporaryDirectory, p.config.MaximumTemporaryBytes); err != nil {
 		return artifact.Result{}, stage("temporary_capacity_unavailable", categorized(domain.FailureResourceLimitExceeded))
 	}
@@ -407,6 +501,21 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, ada
 	p.observer.ObservePhase(PhaseDownload, p.now().Sub(downloadStarted))
 	if err != nil {
 		return artifact.Result{}, err
+	}
+	effectiveSelection := selectionResult
+	if selectionResult != nil && p.selection.Mode == ContentSelectionEnforcement && selectionResult.FallbackReason == "none" {
+		preflight, preflightErr := adapter.Extractor.Extract(ctx, sourcePath, func(extractor.Page) error { return nil })
+		if preflightErr != nil {
+			return artifact.Result{}, stage(extractorFailureDetail(preflightErr), preflightErr)
+		}
+		if preflight.PageCount != selectionResult.OriginalLocationCount {
+			fallback := *selectionResult
+			fallback.FallbackReason = "ambiguous_mapping"
+			fallback.FallbackUnfiltered = true
+			fallback.OriginalLocationCount = preflight.PageCount
+			fallback.Ranges = nil
+			effectiveSelection = &fallback
+		}
 	}
 	chunker, err := p.factory.NewChunker()
 	if err != nil {
@@ -452,7 +561,30 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, ada
 		return nil
 	}
 	extractStarted := p.now()
+	var rangeIndex int
+	inExcludedRange := false
 	info, err := adapter.Extractor.Extract(ctx, sourcePath, func(page extractor.Page) error {
+		if effectiveSelection != nil && p.selection.Mode == ContentSelectionEnforcement && effectiveSelection.FallbackReason == "none" {
+			for rangeIndex < len(effectiveSelection.Ranges) && page.Number > effectiveSelection.Ranges[rangeIndex].End {
+				rangeIndex++
+				inExcludedRange = false
+			}
+			if rangeIndex < len(effectiveSelection.Ranges) && page.Number >= effectiveSelection.Ranges[rangeIndex].Start && page.Number <= effectiveSelection.Ranges[rangeIndex].End {
+				if !inExcludedRange {
+					chunks, boundaryErr := chunker.Boundary(event.BookID)
+					if boundaryErr != nil {
+						return stage("chunk_boundary_failed", boundaryErr)
+					}
+					for _, value := range chunks {
+						if boundaryErr = validateAndAddChunk(value); boundaryErr != nil {
+							return boundaryErr
+						}
+					}
+					inExcludedRange = true
+				}
+				return nil
+			}
+		}
 		chunks, chunkErr := chunker.AddPage(event.BookID, chunking.Page{Number: page.Number, Text: page.Text})
 		if chunkErr != nil {
 			return stage("chunk_page_failed", chunkErr)
@@ -468,6 +600,9 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, ada
 		p.observer.ObservePhase(PhaseExtractChunk, p.now().Sub(extractStarted))
 		return artifact.Result{}, stage(extractorFailureDetail(err), err)
 	}
+	if effectiveSelection != nil && effectiveSelection.OriginalLocationCount != 0 && info.PageCount != effectiveSelection.OriginalLocationCount {
+		return artifact.Result{}, stage("content_selection_ordinal_mismatch", categorized(domain.FailureInternalProcessing))
+	}
 	remaining, err := chunker.Finish(event.BookID)
 	if err != nil {
 		return artifact.Result{}, stage("chunk_finalize_failed", err)
@@ -482,7 +617,7 @@ func (p *Processor) processClaimed(ctx context.Context, event UploadedEvent, ada
 		return artifact.Result{}, stage("no_extractable_text", categorized(domain.FailureNoExtractableText))
 	}
 	finalizeStarted := p.now()
-	result, err := writer.Finalize(ctx, info.PageCount)
+	result, err := writer.Finalize(ctx, info.PageCount, p.selectionAudit(effectiveSelection, info.PageCount))
 	p.observer.ObservePhase(PhaseArtifactFinalize, p.now().Sub(finalizeStarted))
 	if err == nil {
 		committed = true

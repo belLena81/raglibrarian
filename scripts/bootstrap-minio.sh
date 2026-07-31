@@ -6,6 +6,8 @@ access_key=$(cat /run/secrets/catalog_minio_access_key)
 secret_key=$(cat /run/secrets/catalog_minio_secret_key)
 ingestion_access_key=$(cat /run/secrets/ingestion_minio_access_key)
 ingestion_secret_key=$(cat /run/secrets/ingestion_minio_secret_key)
+layout_access_key=$(cat /run/secrets/layout_minio_access_key)
+layout_secret_key=$(cat /run/secrets/layout_minio_secret_key)
 cleanup_access_key=$(cat /run/secrets/ingestion_cleanup_minio_access_key)
 cleanup_secret_key=$(cat /run/secrets/ingestion_cleanup_minio_secret_key)
 e2e_access_key=$(cat /run/secrets/ingestion_e2e_minio_access_key)
@@ -46,6 +48,21 @@ if mc admin user info local "$ingestion_access_key" >/dev/null 2>&1; then
 fi
 mc admin user add local "$ingestion_access_key" "$ingestion_secret_key"
 mc admin policy attach local ingestion-processing --user "$ingestion_access_key"
+
+# The layout worker can inspect controlled originals, but it cannot create,
+# overwrite, or delete either source objects or Ingestion artifacts.
+if mc admin user info local "$layout_access_key" >/dev/null 2>&1; then
+  mc admin policy detach local layout-source-read --user "$layout_access_key" >/dev/null 2>&1 || true
+fi
+if mc admin policy info local layout-source-read >/dev/null 2>&1; then
+  mc admin policy remove local layout-source-read
+fi
+mc admin policy create local layout-source-read /bootstrap/layout-source-read-policy.json
+if mc admin user info local "$layout_access_key" >/dev/null 2>&1; then
+  mc admin user remove local "$layout_access_key"
+fi
+mc admin user add local "$layout_access_key" "$layout_secret_key"
+mc admin policy attach local layout-source-read --user "$layout_access_key"
 
 printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:DeleteObject"],"Resource":["arn:aws:s3:::ingestion-artifacts/books/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::ingestion-artifacts"],"Condition":{"StringLike":{"s3:prefix":["books/*"]}}},{"Effect":"Allow","Action":["s3:GetBucketLocation"],"Resource":["arn:aws:s3:::ingestion-artifacts"]}]}' > "$policy"
 if mc admin user info local "$cleanup_access_key" >/dev/null 2>&1; then

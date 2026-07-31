@@ -46,4 +46,7 @@ if [[ "$database_complete" == false ]]; then
 fi
 
 bash ./scripts/upgrade-m7-ingestion-topology.sh "$dir"
+bash ./scripts/upgrade-content-selection-topology.sh "$dir"
+bash ./scripts/ensure-layout-worker-dev-secrets.sh "$dir"
+bash ./scripts/ensure-layout-worker-rabbitmq.sh "$dir"
 bash ./scripts/check-m4-dev-secrets.sh "$dir"

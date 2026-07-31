@@ -62,6 +62,18 @@ type countingProcessor struct {
 	err   error
 }
 
+type countingContentSelectionProcessor struct {
+	calls  int
+	result application.ContentSelectionResult
+	err    error
+}
+
+func (p *countingContentSelectionProcessor) ProcessContentSelection(_ context.Context, result application.ContentSelectionResult) error {
+	p.calls++
+	p.result = result
+	return p.err
+}
+
 func (p *countingProcessor) Process(context.Context, application.UploadedEvent) error {
 	p.calls++
 	return p.err
@@ -88,6 +100,75 @@ func testBrokerPolicy() BrokerPolicy {
 		FirstRetryDelay:              5 * time.Second,
 		SecondRetryDelay:             30 * time.Second,
 		SubsequentRetryDelay:         2 * time.Minute,
+	}
+}
+
+func testContentSelectionBrokerPolicy() ContentSelectionBrokerPolicy {
+	return ContentSelectionBrokerPolicy{
+		MaximumAttempts:      5,
+		MaximumRanges:        256,
+		RetryExchange:        "raglibrarian.ingestion.retry.v1",
+		FirstRetryRoute:      "ingestion.selection.retry.5s",
+		SecondRetryRoute:     "ingestion.selection.retry.30s",
+		SubsequentRetryRoute: "ingestion.selection.retry.2m",
+		PublishTimeout:       10 * time.Second,
+	}
+}
+
+func TestContentSelectionConsumerStrictlyDispatchesAndAcknowledgesResult(t *testing.T) {
+	message := validContentSelectionCompletedMessage()
+	payload := mustMarshal(t, message)
+	processor := &countingContentSelectionProcessor{}
+	acknowledger := &recordingAcknowledger{}
+	consumer := &ContentSelectionConsumer{processor: processor, policy: testContentSelectionBrokerPolicy(), now: time.Now}
+	consumer.handle(context.Background(), amqp091.Delivery{
+		Acknowledger: acknowledger, ContentType: "application/x-protobuf", Type: ContentSelectionCompletedRoute,
+		MessageId: message.EventId, Body: payload,
+	})
+	if !acknowledger.acked || acknowledger.rejected || acknowledger.nacked || processor.calls != 1 || processor.result.RequestID != message.RequestId {
+		t.Fatalf("delivery = %#v processor=%#v", acknowledger, processor)
+	}
+}
+
+func TestContentSelectionConsumerRejectsInvalidEnvelopeBeforeProcessing(t *testing.T) {
+	message := validContentSelectionCompletedMessage()
+	payload := mustMarshal(t, message)
+	for _, delivery := range []amqp091.Delivery{
+		{ContentType: "application/json", Type: ContentSelectionCompletedRoute, MessageId: message.EventId, Body: payload},
+		{ContentType: "application/x-protobuf", Type: UploadRoute, MessageId: message.EventId, Body: payload},
+		{ContentType: "application/x-protobuf", Type: ContentSelectionCompletedRoute, MessageId: "other", Body: payload},
+	} {
+		acknowledger := &recordingAcknowledger{}
+		delivery.Acknowledger = acknowledger
+		processor := &countingContentSelectionProcessor{}
+		consumer := &ContentSelectionConsumer{processor: processor, policy: testContentSelectionBrokerPolicy(), now: time.Now}
+		consumer.handle(context.Background(), delivery)
+		if !acknowledger.rejected || acknowledger.requeued || processor.calls != 0 {
+			t.Fatalf("invalid result delivery = %#v calls=%d", acknowledger, processor.calls)
+		}
+	}
+}
+
+func TestContentSelectionConsumerRepublishesTransientFailureWithSanitizedEnvelope(t *testing.T) {
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	message := validContentSelectionCompletedMessage()
+	payload := mustMarshal(t, message)
+	acknowledger := &recordingAcknowledger{}
+	publisher := &recordingPublisher{}
+	consumer := &ContentSelectionConsumer{
+		processor: &countingContentSelectionProcessor{err: errors.New("database unavailable")},
+		publisher: publisher, policy: testContentSelectionBrokerPolicy(), now: func() time.Time { return now },
+	}
+	consumer.handle(context.Background(), amqp091.Delivery{
+		Acknowledger: acknowledger, Headers: amqp091.Table{"x-death": []any{"untrusted"}},
+		ContentType: "application/x-protobuf", Type: ContentSelectionCompletedRoute, MessageId: message.EventId, Body: payload,
+	})
+	if !acknowledger.acked || publisher.exchange != testContentSelectionBrokerPolicy().RetryExchange || publisher.key != testContentSelectionBrokerPolicy().FirstRetryRoute {
+		t.Fatalf("delivery = %#v publish=%#v", acknowledger, publisher)
+	}
+	if len(publisher.message.Headers) != 1 || publisher.message.Headers[applicationDeliveryCountHeader] != int64(1) ||
+		publisher.message.MessageId != message.EventId || publisher.message.Type != ContentSelectionCompletedRoute || !publisher.message.Timestamp.Equal(now) {
+		t.Fatalf("retry envelope = %#v", publisher.message)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/indexprofile"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/artifact"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/chunking"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/extractor"
@@ -16,20 +17,38 @@ type ProcessingFactory struct {
 	policy    chunking.Policy
 	limits    artifact.Limits
 	digests   map[string][32]byte
+	selection ContentSelectionProfile
 }
 
 func NewProcessingFactory(tokenizer chunking.Tokenizer, store artifact.Store, policy chunking.Policy, limits artifact.Limits) (*ProcessingFactory, error) {
+	return NewProcessingFactoryWithSelection(tokenizer, store, policy, limits, ContentSelectionProfile{Mode: ContentSelectionDisabled})
+}
+
+func NewProcessingFactoryWithSelection(tokenizer chunking.Tokenizer, store artifact.Store, policy chunking.Policy, limits artifact.Limits, selection ContentSelectionProfile) (*ProcessingFactory, error) {
 	if tokenizer == nil || store == nil {
 		return nil, fmt.Errorf("processing factory dependencies are required")
 	}
-	digests := make(map[string][32]byte, 2)
-	for mediaType, extractionVersion := range map[string]string{
+	if err := selection.Validate(); err != nil {
+		return nil, err
+	}
+	extractionVersions := map[string]string{
 		MediaTypePDF:  extractor.ExtractionVersion,
 		MediaTypeEPUB: extractor.EPUBExtractionVersion,
-	} {
-		digests[mediaType] = sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d", extractionVersion, chunking.NormalizationVersion, chunking.TokenizerVersion, chunking.ChunkingVersion, chunking.StructureVersion, policy.MaximumTokens, policy.OverlapTokens, policy.TargetPages, policy.MaximumPages, policy.MaximumChunks, limits.ChunksPerShard, limits.MaximumShardBytes)))
 	}
-	return &ProcessingFactory{tokenizer: tokenizer, store: store, policy: policy, limits: limits, digests: digests}, nil
+	if selection.Mode != ContentSelectionDisabled {
+		extractionVersions[MediaTypePDF] = indexprofile.ExtractionPDFFiltered
+		extractionVersions[MediaTypeEPUB] = indexprofile.ExtractionEPUBFiltered
+	}
+	digests := make(map[string][32]byte, 2)
+	for mediaType, extractionVersion := range extractionVersions {
+		profile := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d", extractionVersion, chunking.NormalizationVersion, chunking.TokenizerVersion, chunking.ChunkingVersion, chunking.StructureVersion, policy.MaximumTokens, policy.OverlapTokens, policy.TargetPages, policy.MaximumPages, policy.MaximumChunks, limits.ChunksPerShard, limits.MaximumShardBytes)
+		if selection.Mode != ContentSelectionDisabled {
+			selectionDigest := selection.Digest()
+			profile = fmt.Sprintf("%s\x00%x", profile, selectionDigest)
+		}
+		digests[mediaType] = sha256.Sum256([]byte(profile))
+	}
+	return &ProcessingFactory{tokenizer: tokenizer, store: store, policy: policy, limits: limits, digests: digests, selection: selection}, nil
 }
 
 func (f *ProcessingFactory) NewChunker() (Chunker, error) {
@@ -50,4 +69,8 @@ func (f *ProcessingFactory) ConfigDigest(mediaType string) ([32]byte, error) {
 		return [32]byte{}, ErrUnsupportedProcessingProfile
 	}
 	return digest, nil
+}
+
+func (f *ProcessingFactory) ContentSelectionProfile() ContentSelectionProfile {
+	return f.selection
 }

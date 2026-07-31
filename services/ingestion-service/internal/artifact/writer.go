@@ -33,6 +33,22 @@ type ProcessingProfile struct {
 	MaximumTokens int
 	OverlapTokens int
 }
+type ContentSelectionRange struct {
+	Start  uint32
+	End    uint32
+	Reason string
+}
+type ContentSelection struct {
+	Mode                    string
+	SelectorVersion         string
+	ParserVersion           string
+	ModelDigest             [sha256.Size]byte
+	PolicyDigest            [sha256.Size]byte
+	ProcessingProfileDigest [sha256.Size]byte
+	FallbackReason          string
+	OriginalLocationCount   uint32
+	Ranges                  []ContentSelectionRange
+}
 type Metadata struct {
 	BookID           string
 	SourceSHA256     [32]byte
@@ -111,14 +127,18 @@ func (w *Writer) Add(ctx context.Context, value domain.Chunk) error {
 	return nil
 }
 
-func (w *Writer) Finalize(ctx context.Context, pageCount uint32) (Result, error) {
+func (w *Writer) Finalize(ctx context.Context, pageCount uint32, contentSelection *ContentSelection) (Result, error) {
 	if w.finalized || pageCount == 0 || w.chunkCount == 0 {
 		return Result{}, errors.New("cannot finalize artifacts")
 	}
 	if err := w.flush(ctx); err != nil {
 		return Result{}, err
 	}
-	manifest := &ingestionv1.ChunkManifestV1{SchemaVersion: "v1", BookId: w.metadata.BookID, SourceSha256: append([]byte(nil), w.metadata.SourceSHA256[:]...), ProcessingConfigDigest: append([]byte(nil), w.metadata.ConfigDigest[:]...), ExtractionVersion: w.versions.Extraction, NormalizationVersion: w.versions.Normalization, TokenizerVersion: w.versions.Tokenizer, ChunkingVersion: w.versions.Chunking, StructureVersion: w.versions.Structure, MaximumTokens: uint32(w.profile.MaximumTokens), OverlapTokens: uint32(w.profile.OverlapTokens), PageCount: pageCount, ChunkCount: w.chunkCount, GeneratedAt: timestamppb.New(w.metadata.GeneratedAt), Shards: w.descriptors, LifecycleVersion: w.metadata.LifecycleVersion} // #nosec G115 -- validated positive processing bounds.
+	selectionMessage, err := encodeContentSelection(contentSelection, pageCount, w.metadata.ConfigDigest)
+	if err != nil {
+		return Result{}, err
+	}
+	manifest := &ingestionv1.ChunkManifestV1{SchemaVersion: "v1", BookId: w.metadata.BookID, SourceSha256: append([]byte(nil), w.metadata.SourceSHA256[:]...), ProcessingConfigDigest: append([]byte(nil), w.metadata.ConfigDigest[:]...), ExtractionVersion: w.versions.Extraction, NormalizationVersion: w.versions.Normalization, TokenizerVersion: w.versions.Tokenizer, ChunkingVersion: w.versions.Chunking, StructureVersion: w.versions.Structure, MaximumTokens: uint32(w.profile.MaximumTokens), OverlapTokens: uint32(w.profile.OverlapTokens), PageCount: pageCount, ChunkCount: w.chunkCount, GeneratedAt: timestamppb.New(w.metadata.GeneratedAt), Shards: w.descriptors, LifecycleVersion: w.metadata.LifecycleVersion, ContentSelection: selectionMessage} // #nosec G115 -- validated positive processing bounds.
 	contents, err := proto.MarshalOptions{Deterministic: true}.Marshal(manifest)
 	if err != nil || len(contents) > w.limits.MaximumManifestBytes {
 		return Result{}, ErrArtifactLimit
@@ -134,6 +154,109 @@ func (w *Writer) Finalize(ctx context.Context, pageCount uint32) (Result, error)
 	}
 	w.finalized = true
 	return Result{ManifestReference: reference, ManifestSHA256: sum, ManifestByteSize: int64(len(contents)), PageCount: pageCount, ChunkCount: w.chunkCount}, nil
+}
+
+func encodeContentSelection(value *ContentSelection, pageCount uint32, configDigest [sha256.Size]byte) (*ingestionv1.ContentSelectionV1, error) {
+	if value == nil {
+		return nil, nil
+	}
+	mode, modeOK := contentSelectionMode(value.Mode)
+	fallback, fallbackOK := contentSelectionFallback(value.FallbackReason)
+	if !modeOK || !fallbackOK || !safeAuditValue(value.SelectorVersion) || !safeAuditValue(value.ParserVersion) ||
+		value.ModelDigest == ([sha256.Size]byte{}) || value.PolicyDigest == ([sha256.Size]byte{}) ||
+		value.ProcessingProfileDigest != configDigest {
+		return nil, errors.New("invalid content selection audit")
+	}
+	originalLocationCount := value.OriginalLocationCount
+	if originalLocationCount == 0 && fallback != ingestionv1.ContentSelectionFallbackReason_CONTENT_SELECTION_FALLBACK_REASON_NONE && len(value.Ranges) == 0 {
+		originalLocationCount = pageCount
+	}
+	if originalLocationCount != pageCount {
+		return nil, errors.New("invalid content selection ordinal count")
+	}
+	if (fallback != ingestionv1.ContentSelectionFallbackReason_CONTENT_SELECTION_FALLBACK_REASON_NONE && len(value.Ranges) != 0) ||
+		(mode == ingestionv1.ContentSelectionMode_CONTENT_SELECTION_MODE_OBSERVATION && fallback != ingestionv1.ContentSelectionFallbackReason_CONTENT_SELECTION_FALLBACK_REASON_OBSERVATION) {
+		return nil, errors.New("invalid content selection fallback audit")
+	}
+	ranges := make([]*ingestionv1.ExcludedRangeV1, 0, len(value.Ranges))
+	var excluded uint64
+	var previousEnd uint32
+	for index, item := range value.Ranges {
+		reason, ok := contentSelectionReason(item.Reason)
+		if !ok || item.Start == 0 || item.End < item.Start || item.End > pageCount || (index > 0 && item.Start <= previousEnd) {
+			return nil, errors.New("invalid content selection audit range")
+		}
+		excluded += uint64(item.End) - uint64(item.Start) + 1
+		previousEnd = item.End
+		ranges = append(ranges, &ingestionv1.ExcludedRangeV1{StartOrdinal: item.Start, EndOrdinal: item.End, Reason: reason})
+	}
+	if excluded > uint64(pageCount) {
+		return nil, errors.New("invalid content selection audit count")
+	}
+	excludedCount := uint32(excluded) // #nosec G115 -- excluded locations are bounded by pageCount.
+	return &ingestionv1.ContentSelectionV1{
+		Mode: mode, SelectorVersion: value.SelectorVersion, ParserVersion: value.ParserVersion,
+		ModelDigest: append([]byte(nil), value.ModelDigest[:]...), PolicyDigest: append([]byte(nil), value.PolicyDigest[:]...),
+		FallbackReason: fallback, OriginalOrdinalCount: pageCount, RetainedOrdinalCount: pageCount - excludedCount,
+		ExcludedOrdinalCount: excludedCount, ExcludedRatio: float64(excludedCount) / float64(pageCount),
+		ExcludedRanges: ranges, ProcessingProfileDigest: append([]byte(nil), configDigest[:]...),
+	}, nil
+}
+
+func contentSelectionMode(value string) (ingestionv1.ContentSelectionMode, bool) {
+	switch value {
+	case "observation":
+		return ingestionv1.ContentSelectionMode_CONTENT_SELECTION_MODE_OBSERVATION, true
+	case "enforcement":
+		return ingestionv1.ContentSelectionMode_CONTENT_SELECTION_MODE_ENFORCEMENT, true
+	default:
+		return ingestionv1.ContentSelectionMode_CONTENT_SELECTION_MODE_UNSPECIFIED, false
+	}
+}
+
+func contentSelectionFallback(value string) (ingestionv1.ContentSelectionFallbackReason, bool) {
+	values := map[string]ingestionv1.ContentSelectionFallbackReason{
+		"none":                ingestionv1.ContentSelectionFallbackReason_CONTENT_SELECTION_FALLBACK_REASON_NONE,
+		"observation":         ingestionv1.ContentSelectionFallbackReason_CONTENT_SELECTION_FALLBACK_REASON_OBSERVATION,
+		"unsupported_layout":  ingestionv1.ContentSelectionFallbackReason_CONTENT_SELECTION_FALLBACK_REASON_UNSUPPORTED_LAYOUT,
+		"processing_timeout":  ingestionv1.ContentSelectionFallbackReason_CONTENT_SELECTION_FALLBACK_REASON_PROCESSING_TIMEOUT,
+		"invalid_output":      ingestionv1.ContentSelectionFallbackReason_CONTENT_SELECTION_FALLBACK_REASON_INVALID_OUTPUT,
+		"ambiguous_mapping":   ingestionv1.ContentSelectionFallbackReason_CONTENT_SELECTION_FALLBACK_REASON_AMBIGUOUS_MAPPING,
+		"resource_limit":      ingestionv1.ContentSelectionFallbackReason_CONTENT_SELECTION_FALLBACK_REASON_RESOURCE_LIMIT,
+		"excessive_exclusion": ingestionv1.ContentSelectionFallbackReason_CONTENT_SELECTION_FALLBACK_REASON_EXCESSIVE_EXCLUSION,
+		"internal_error":      ingestionv1.ContentSelectionFallbackReason_CONTENT_SELECTION_FALLBACK_REASON_INTERNAL_ERROR,
+	}
+	result, ok := values[value]
+	return result, ok
+}
+
+func contentSelectionReason(value string) (ingestionv1.ContentExclusionReason, bool) {
+	values := map[string]ingestionv1.ContentExclusionReason{
+		"title":                         ingestionv1.ContentExclusionReason_CONTENT_EXCLUSION_REASON_TITLE_PAGE,
+		"copyright_imprint":             ingestionv1.ContentExclusionReason_CONTENT_EXCLUSION_REASON_COPYRIGHT_OR_IMPRINT,
+		"dedication_ornamental":         ingestionv1.ContentExclusionReason_CONTENT_EXCLUSION_REASON_DEDICATION_OR_ORNAMENTAL_BLANK,
+		"table_of_contents":             ingestionv1.ContentExclusionReason_CONTENT_EXCLUSION_REASON_TABLE_OR_LIST,
+		"list_of_figures_tables":        ingestionv1.ContentExclusionReason_CONTENT_EXCLUSION_REASON_TABLE_OR_LIST,
+		"table_or_list":                 ingestionv1.ContentExclusionReason_CONTENT_EXCLUSION_REASON_TABLE_OR_LIST,
+		"index":                         ingestionv1.ContentExclusionReason_CONTENT_EXCLUSION_REASON_INDEX,
+		"publisher_catalog_advertising": ingestionv1.ContentExclusionReason_CONTENT_EXCLUSION_REASON_PUBLISHER_CATALOG_OR_ADVERTISING,
+		"also_by":                       ingestionv1.ContentExclusionReason_CONTENT_EXCLUSION_REASON_ALSO_BY,
+		"colophon":                      ingestionv1.ContentExclusionReason_CONTENT_EXCLUSION_REASON_COLOPHON,
+	}
+	result, ok := values[value]
+	return result, ok
+}
+
+func safeAuditValue(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if char <= 0x20 || char > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *Writer) flush(ctx context.Context) error {

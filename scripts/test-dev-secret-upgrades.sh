@@ -11,6 +11,18 @@ for command in go jq openssl stat; do
   }
 done
 
+jq -e '
+  ([.Statement[].Action[]] | sort) == (["s3:GetBucketLocation", "s3:GetObject"] | sort) and
+  all(.Statement[]; .Effect == "Allow") and
+  all(.Statement[].Resource[];
+    . == "arn:aws:s3:::original-books" or
+    . == "arn:aws:s3:::original-books/originals/*"
+  )
+' infra/minio/layout-source-read-policy.json >/dev/null || {
+  echo "Layout worker policy must remain read-only and source-bucket scoped" >&2
+  exit 1
+}
+
 test_root=$(mktemp -d /tmp/raglibrarian-secret-tests.XXXXXX)
 trap 'rm -rf "$test_root"' EXIT
 
@@ -18,8 +30,10 @@ m4_runtime_files=(
   ingestion_migration_password ingestion_runtime_password ingestion_cleanup_password
   ingestion_migration_pgpass ingestion_runtime_dsn ingestion_cleanup_dsn
   ingestion_minio_access_key ingestion_minio_secret_key
+  layout_minio_access_key layout_minio_secret_key
   ingestion_cleanup_minio_access_key ingestion_cleanup_minio_secret_key
   catalog_ingestion_rabbitmq_uri ingestion_rabbitmq_uri
+  layout_rabbitmq_uri
   edge_status_rabbitmq_uri_1 edge_status_rabbitmq_uri_2
   rabbitmq_definitions.json rabbitmq.conf
 )
@@ -82,6 +96,26 @@ fresh_dir="$test_root/fresh"
 bash ./scripts/generate-dev-secrets.sh "$fresh_dir" >/dev/null
 ensure_test_secrets "$fresh_dir"
 assert_runtime_and_private "$fresh_dir"
+
+# Existing complete installations gain only the new layout-worker identity.
+legacy_layout_dir="$test_root/legacy-layout"
+cp -a "$fresh_dir" "$legacy_layout_dir"
+ingestion_access_before=$(<"$legacy_layout_dir/ingestion_minio_access_key")
+ingestion_secret_before=$(<"$legacy_layout_dir/ingestion_minio_secret_key")
+ingestion_rabbit_before=$(<"$legacy_layout_dir/ingestion_rabbitmq_uri")
+rm "$legacy_layout_dir/layout_minio_access_key" \
+  "$legacy_layout_dir/layout_minio_secret_key" \
+  "$legacy_layout_dir/layout_rabbitmq_uri"
+bash ./scripts/ensure-m4-dev-secrets.sh "$legacy_layout_dir" >/dev/null
+[[ "$(<"$legacy_layout_dir/ingestion_minio_access_key")" == "$ingestion_access_before" &&
+   "$(<"$legacy_layout_dir/ingestion_minio_secret_key")" == "$ingestion_secret_before" &&
+   "$(<"$legacy_layout_dir/ingestion_rabbitmq_uri")" == "$ingestion_rabbit_before" &&
+   "$(<"$legacy_layout_dir/layout_minio_access_key")" == layout-parser-worker ]] || {
+  echo "Layout worker additive upgrade modified existing Ingestion credentials" >&2
+  exit 1
+}
+assert_runtime_and_private "$legacy_layout_dir"
+unset ingestion_access_before ingestion_secret_before ingestion_rabbit_before
 bash ./scripts/ensure-test-dev-secrets.sh "$fresh_dir" >/dev/null
 assert_runtime_and_private "$fresh_dir"
 
@@ -203,6 +237,35 @@ if bash ./scripts/ensure-m4-dev-secrets.sh "$partial_m4_dir" >/dev/null 2>&1; th
 fi
 [[ "$(cat "$partial_m4_dir/ingestion_minio_access_key")" == sentinel ]] || {
   echo "existing M4 non-database secret was modified" >&2
+  exit 1
+}
+
+partial_layout_dir="$test_root/partial-layout"
+mkdir -p "$partial_layout_dir"
+chmod 700 "$partial_layout_dir"
+printf '%s\n' sentinel > "$partial_layout_dir/layout_minio_access_key"
+chmod 400 "$partial_layout_dir/layout_minio_access_key"
+if bash ./scripts/ensure-layout-worker-dev-secrets.sh "$partial_layout_dir" >/dev/null 2>&1; then
+  echo "partial layout worker secret set was unexpectedly accepted" >&2
+  exit 1
+fi
+[[ "$(<"$partial_layout_dir/layout_minio_access_key")" == sentinel &&
+   ! -e "$partial_layout_dir/layout_minio_secret_key" ]] || {
+  echo "partial layout worker secret set was modified" >&2
+  exit 1
+}
+
+invalid_layout_rabbit_dir="$test_root/invalid-layout-rabbit"
+cp -a "$fresh_dir" "$invalid_layout_rabbit_dir"
+chmod 600 "$invalid_layout_rabbit_dir/layout_rabbitmq_uri"
+printf '%s\n' sentinel > "$invalid_layout_rabbit_dir/layout_rabbitmq_uri"
+chmod 400 "$invalid_layout_rabbit_dir/layout_rabbitmq_uri"
+if bash ./scripts/ensure-layout-worker-rabbitmq.sh "$invalid_layout_rabbit_dir" >/dev/null 2>&1; then
+  echo "invalid existing layout worker RabbitMQ URI was unexpectedly accepted" >&2
+  exit 1
+fi
+[[ "$(<"$invalid_layout_rabbit_dir/layout_rabbitmq_uri")" == sentinel ]] || {
+  echo "invalid existing layout worker RabbitMQ URI was modified" >&2
   exit 1
 }
 

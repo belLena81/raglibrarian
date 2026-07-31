@@ -69,7 +69,7 @@ GRANT CONNECT ON DATABASE ingestion TO ingestion_e2e;
 
 \connect ingestion
 SET ROLE ingestion_migrator;
-\ir /schema/ingestion/001_ingestion_schema.up.sql
+\ir /schema/ingestion/bootstrap.sql
 RESET ROLE;
 
 \connect raglibrarian_platform

@@ -88,8 +88,8 @@ func (r *Postgres) ApplyReindex(ctx context.Context, event application.Lifecycle
 	if err != nil {
 		return false, application.ErrConflictingEvent
 	}
-	profile, ok := domain.SupportedIndexProfileForMediaType(mediaType)
-	if !ok || profile.ExtractionVersion != manifest.ExtractionVersion {
+	profile, ok := domain.SupportedIndexProfileForExtraction(manifest.ExtractionVersion)
+	if !ok || !repositoryProfileMatchesMediaType(profile, mediaType) {
 		return false, application.ErrUnsupportedIndexProfile
 	}
 	manifestEvent := application.ManifestEvent{
@@ -156,6 +156,18 @@ func (r *Postgres) ApplyReindex(ctx context.Context, event application.Lifecycle
 		}
 	}
 	return true, tx.Commit(ctx)
+}
+
+func repositoryProfileMatchesMediaType(profile domain.IndexProfile, mediaType string) bool {
+	base, ok := domain.SupportedIndexProfileForMediaType(mediaType)
+	if !ok {
+		return false
+	}
+	if profile.ExtractionVersion == base.ExtractionVersion {
+		return true
+	}
+	filtered, ok := domain.SupportedIndexProfileForExtraction(base.ExtractionVersion + "+layout-selector-v1")
+	return ok && profile.ExtractionVersion == filtered.ExtractionVersion
 }
 
 func (r *Postgres) prepareReindexJob(ctx context.Context, tx pgx.Tx, event application.LifecycleEvent, profileDigest [sha256.Size]byte, jobID string, expectedBatches int, now time.Time) (string, error) {
@@ -637,6 +649,30 @@ func encodeManifest(value application.Manifest) ([]byte, error) {
 		message.Shards[index] = &ingestionv1.ChunkShardDescriptorV1{Reference: shard.Reference, Sha256: shard.SHA256[:], CompressedByteSize: shard.CompressedBytes, UncompressedByteSize: shard.UncompressedBytes,
 			ChunkCount: shard.ChunkCount, FirstChunkOrder: shard.FirstChunkOrder, LastChunkOrder: shard.LastChunkOrder}
 	}
+	if value.ContentSelection != nil {
+		selection := value.ContentSelection
+		message.ContentSelection = &ingestionv1.ContentSelectionV1{
+			Mode:                    encodeContentSelectionMode(selection.Mode),
+			SelectorVersion:         selection.SelectorVersion,
+			ParserVersion:           selection.ParserVersion,
+			ModelDigest:             selection.ModelDigest[:],
+			PolicyDigest:            selection.PolicyDigest[:],
+			FallbackReason:          encodeContentSelectionFallback(selection.FallbackReason),
+			OriginalOrdinalCount:    selection.OriginalCount,
+			RetainedOrdinalCount:    selection.RetainedCount,
+			ExcludedOrdinalCount:    selection.ExcludedCount,
+			ExcludedRatio:           selection.ExcludedRatio,
+			ProcessingProfileDigest: selection.ProcessingProfileDigest[:],
+			ExcludedRanges:          make([]*ingestionv1.ExcludedRangeV1, len(selection.Ranges)),
+		}
+		for index, value := range selection.Ranges {
+			message.ContentSelection.ExcludedRanges[index] = &ingestionv1.ExcludedRangeV1{
+				StartOrdinal: value.Start,
+				EndOrdinal:   value.End,
+				Reason:       encodeExclusionReason(value.Reason),
+			}
+		}
+	}
 	return proto.MarshalOptions{Deterministic: true}.Marshal(message)
 }
 
@@ -661,7 +697,87 @@ func decodeManifest(payload []byte, digest [32]byte) (application.Manifest, erro
 			ChunkCount: shard.ChunkCount, FirstChunkOrder: shard.FirstChunkOrder, LastChunkOrder: shard.LastChunkOrder}
 		copy(value.Shards[index].SHA256[:], shard.Sha256)
 	}
+	if message.ContentSelection != nil {
+		selection := message.ContentSelection
+		if len(selection.ModelDigest) != 32 || len(selection.PolicyDigest) != 32 || len(selection.ProcessingProfileDigest) != 32 {
+			return application.Manifest{}, application.ErrInvalidEvent
+		}
+		value.ContentSelection = &application.ContentSelection{
+			Mode:                    decodeContentSelectionMode(selection.Mode),
+			SelectorVersion:         selection.SelectorVersion,
+			ParserVersion:           selection.ParserVersion,
+			FallbackReason:          decodeContentSelectionFallback(selection.FallbackReason),
+			ModelDigest:             digestBytes(selection.ModelDigest),
+			PolicyDigest:            digestBytes(selection.PolicyDigest),
+			ProcessingProfileDigest: digestBytes(selection.ProcessingProfileDigest),
+			OriginalCount:           selection.OriginalOrdinalCount,
+			RetainedCount:           selection.RetainedOrdinalCount,
+			ExcludedCount:           selection.ExcludedOrdinalCount,
+			ExcludedRatio:           selection.ExcludedRatio,
+			Ranges:                  make([]application.ContentSelectionRange, len(selection.ExcludedRanges)),
+		}
+		for index, item := range selection.ExcludedRanges {
+			if item == nil {
+				return application.Manifest{}, application.ErrInvalidEvent
+			}
+			value.ContentSelection.Ranges[index] = application.ContentSelectionRange{
+				Start:  item.StartOrdinal,
+				End:    item.EndOrdinal,
+				Reason: decodeExclusionReason(item.Reason),
+			}
+		}
+	}
 	return value, nil
+}
+
+func encodeContentSelectionMode(value string) ingestionv1.ContentSelectionMode {
+	switch value {
+	case "disabled":
+		return ingestionv1.ContentSelectionMode_CONTENT_SELECTION_MODE_DISABLED
+	case "observation":
+		return ingestionv1.ContentSelectionMode_CONTENT_SELECTION_MODE_OBSERVATION
+	case "enforcement":
+		return ingestionv1.ContentSelectionMode_CONTENT_SELECTION_MODE_ENFORCEMENT
+	default:
+		return ingestionv1.ContentSelectionMode_CONTENT_SELECTION_MODE_UNSPECIFIED
+	}
+}
+
+func decodeContentSelectionMode(value ingestionv1.ContentSelectionMode) string {
+	switch value {
+	case ingestionv1.ContentSelectionMode_CONTENT_SELECTION_MODE_DISABLED:
+		return "disabled"
+	case ingestionv1.ContentSelectionMode_CONTENT_SELECTION_MODE_OBSERVATION:
+		return "observation"
+	case ingestionv1.ContentSelectionMode_CONTENT_SELECTION_MODE_ENFORCEMENT:
+		return "enforcement"
+	default:
+		return ""
+	}
+}
+
+func encodeContentSelectionFallback(value string) ingestionv1.ContentSelectionFallbackReason {
+	name := "CONTENT_SELECTION_FALLBACK_REASON_" + strings.ToUpper(value)
+	if enumValue, found := ingestionv1.ContentSelectionFallbackReason_value[name]; found {
+		return ingestionv1.ContentSelectionFallbackReason(enumValue)
+	}
+	return ingestionv1.ContentSelectionFallbackReason_CONTENT_SELECTION_FALLBACK_REASON_UNSPECIFIED
+}
+
+func decodeContentSelectionFallback(value ingestionv1.ContentSelectionFallbackReason) string {
+	return strings.ToLower(strings.TrimPrefix(value.String(), "CONTENT_SELECTION_FALLBACK_REASON_"))
+}
+
+func encodeExclusionReason(value string) ingestionv1.ContentExclusionReason {
+	name := "CONTENT_EXCLUSION_REASON_" + strings.ToUpper(value)
+	if enumValue, found := ingestionv1.ContentExclusionReason_value[name]; found {
+		return ingestionv1.ContentExclusionReason(enumValue)
+	}
+	return ingestionv1.ContentExclusionReason_CONTENT_EXCLUSION_REASON_UNSPECIFIED
+}
+
+func decodeExclusionReason(value ingestionv1.ContentExclusionReason) string {
+	return strings.ToLower(strings.TrimPrefix(value.String(), "CONTENT_EXCLUSION_REASON_"))
 }
 
 func equalDigest(value []byte, expected [32]byte) bool {

@@ -103,6 +103,19 @@ COPY --from=builder /bin/healthcheck /healthcheck
 USER root:root
 ENTRYPOINT ["/service"]
 
+FROM alpine:3.22 AS layout-worker-runtime
+# The layout worker reuses the same pinned Alpine/Poppler and fail-closed parser
+# sandbox as the primary ingestion worker; no separate language runtime is
+# required.
+# hadolint ignore=DL3018
+RUN apk add --no-cache ca-certificates poppler-utils
+COPY --from=builder /bin/service /service
+COPY --from=builder /bin/healthcheck /healthcheck
+COPY --from=ingestion-sandbox-builder /bin/parser-sandbox /parser-sandbox
+COPY --from=ingestion-sandbox-builder /bin/epub-parser /usr/local/bin/epub-parser
+USER root:root
+ENTRYPOINT ["/service"]
+
 FROM gcr.io/distroless/static:nonroot
 COPY --from=builder /bin/service /service
 COPY --from=builder /bin/healthcheck /healthcheck

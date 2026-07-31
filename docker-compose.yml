@@ -145,6 +145,8 @@ services:
       - catalog_minio_secret_key
       - ingestion_minio_access_key
       - ingestion_minio_secret_key
+      - layout_minio_access_key
+      - layout_minio_secret_key
       - ingestion_cleanup_minio_access_key
       - ingestion_cleanup_minio_secret_key
       - ingestion_e2e_minio_access_key
@@ -153,6 +155,7 @@ services:
       - retrieval_minio_secret_key
     volumes:
       - ./scripts/bootstrap-minio.sh:/usr/local/bin/bootstrap-minio:ro
+      - ./infra/minio/layout-source-read-policy.json:/bootstrap/layout-source-read-policy.json:ro
     networks:
       - catalog-storage
     depends_on:
@@ -364,6 +367,14 @@ services:
       INGESTION_MINIO_SECRET_KEY_FILE: /run/secrets/ingestion_minio_secret_key
       INGESTION_SOURCE_BUCKET: original-books
       INGESTION_ARTIFACT_BUCKET: ingestion-artifacts
+      INGESTION_CONTENT_SELECTION_MODE: "${INGESTION_CONTENT_SELECTION_MODE:-enforcement}"
+      INGESTION_CONTENT_SELECTION_QUEUE: ingestion.content-selection-results.v1
+      INGESTION_CONTENT_SELECTION_POLICY_VERSION: layout-selector-v1
+      INGESTION_CONTENT_SELECTION_PARSER_VERSION: poppler-bbox-layout-v1
+      INGESTION_CONTENT_SELECTION_MODEL_SHA256: 55b474c59ef72485c1f1238bf2793c563c49dfa28f7cec3dd298ebacd202d012
+      INGESTION_CONTENT_SELECTION_FIRST_RETRY_ROUTE: ingestion.content-selection.retry.5s
+      INGESTION_CONTENT_SELECTION_SECOND_RETRY_ROUTE: ingestion.content-selection.retry.30s
+      INGESTION_CONTENT_SELECTION_SUBSEQUENT_RETRY_ROUTE: ingestion.content-selection.retry.2m
       INGESTION_TOKENIZER_FILE: /opt/raglibrarian/cl100k_base.tiktoken
       INGESTION_DEBUG_DUMP_PDFTEXT_DIR: "${INGESTION_DEBUG_DUMP_PDFTEXT_DIR:-}"
       INGESTION_METRICS_ADDR: "0.0.0.0:9093"
@@ -412,6 +423,64 @@ services:
       timeout: 4s
       retries: 12
       start_period: 10s
+
+  layout-parser-worker:
+    <<: *service-hardening
+    profiles: ["raglibrarian"]
+    build:
+      context: .
+      target: layout-worker-runtime
+      args:
+        SERVICE: ingestion-service
+        SERVICE_COMMAND: cmd/layout_worker
+    environment:
+      LAYOUT_RABBITMQ_URI_FILE: /run/secrets/layout_rabbitmq_uri
+      INGESTION_MINIO_ENDPOINT: minio:9000
+      INGESTION_MINIO_INSECURE: "true"
+      LAYOUT_MINIO_ACCESS_KEY_FILE: /run/secrets/layout_minio_access_key
+      LAYOUT_MINIO_SECRET_KEY_FILE: /run/secrets/layout_minio_secret_key
+      INGESTION_SOURCE_BUCKET: original-books
+      INGESTION_CONTENT_SELECTION_POLICY_VERSION: layout-selector-v1
+      INGESTION_CONTENT_SELECTION_PARSER_VERSION: poppler-bbox-layout-v1
+      INGESTION_CONTENT_SELECTION_MODEL_SHA256: 55b474c59ef72485c1f1238bf2793c563c49dfa28f7cec3dd298ebacd202d012
+      LAYOUT_REQUEST_QUEUE: ingestion.content-selection-requests.v1
+      LAYOUT_RESULT_EXCHANGE: raglibrarian.ingestion.content-selection-results.v1
+      INGESTION_PDFTOTEXT_PATH: /usr/bin/pdftotext
+      INGESTION_EPUB_PARSER_PATH: /usr/local/bin/epub-parser
+      PARSER_SANDBOX_PATH: /parser-sandbox
+      PARSER_SANDBOX_PDFTOTEXT_PATH: /usr/bin/pdftotext
+      PARSER_SANDBOX_EPUB_PARSER_PATH: /usr/local/bin/epub-parser
+      INGESTION_PARSER_SANDBOX_MEMORY_BYTES: "${LAYOUT_PARSER_SANDBOX_MEMORY_BYTES:-1610612736}"
+      INGESTION_PARSER_RUNTIME_HEADROOM_BYTES: "${LAYOUT_PARSER_RUNTIME_HEADROOM_BYTES:-268435456}"
+      LAYOUT_MEMORY_LIMIT_BYTES: "${LAYOUT_WORKER_MEMORY_LIMIT_BYTES:-2147483648}"
+      LAYOUT_MAX_ITEMS_PER_LOCATION: "2048"
+      LAYOUT_MAX_ITEM_TEXT_BYTES: "65536"
+      LAYOUT_MAX_XML_TOKENS: "2000000"
+      LAYOUT_MAX_XML_DEPTH: "32"
+      LAYOUT_PARSER_TIMEOUT: 10m
+      RUN_AS_UID: "${RUN_AS_UID:-65532}"
+      RUN_AS_GID: "${RUN_AS_GID:-65532}"
+    secrets:
+      - layout_rabbitmq_uri
+      - layout_minio_access_key
+      - layout_minio_secret_key
+    networks:
+      - catalog-storage
+      - catalog-broker
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m
+    mem_limit: "${LAYOUT_WORKER_MEMORY_LIMIT_BYTES:-2147483648}"
+    cpus: "${LAYOUT_WORKER_CPU_LIMIT:-1.0}"
+    pids_limit: 128
+    ulimits:
+      nofile:
+        soft: 1024
+        hard: 1024
+    depends_on:
+      minio-bootstrap:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
 
   qdrant:
     profiles: ["raglibrarian"]
@@ -1014,6 +1083,10 @@ secrets:
     file: ${SECRET_DIR:-./.dev/secrets}/ingestion_minio_access_key
   ingestion_minio_secret_key:
     file: ${SECRET_DIR:-./.dev/secrets}/ingestion_minio_secret_key
+  layout_minio_access_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/layout_minio_access_key
+  layout_minio_secret_key:
+    file: ${SECRET_DIR:-./.dev/secrets}/layout_minio_secret_key
   ingestion_cleanup_minio_access_key:
     file: ${SECRET_DIR:-./.dev/secrets}/ingestion_cleanup_minio_access_key
   ingestion_cleanup_minio_secret_key:
@@ -1032,6 +1105,8 @@ secrets:
     file: ${SECRET_DIR:-./.dev/secrets}/catalog_ingestion_rabbitmq_uri
   ingestion_rabbitmq_uri:
     file: ${SECRET_DIR:-./.dev/secrets}/ingestion_rabbitmq_uri
+  layout_rabbitmq_uri:
+    file: ${SECRET_DIR:-./.dev/secrets}/layout_rabbitmq_uri
   ingestion_e2e_rabbitmq_container_uri:
     file: ${SECRET_DIR:-./.dev/secrets}/ingestion_e2e_rabbitmq_container_uri
   retrieval_consumer_rabbitmq_uri:

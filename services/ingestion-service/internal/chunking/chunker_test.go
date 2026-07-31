@@ -554,9 +554,112 @@ func TestChunkerDoesNotCarrySeparatorAcrossHeadingFlush(t *testing.T) {
 	}
 }
 
+func TestChunkerBoundaryFlushesAndClearsOverlapAndStructure(t *testing.T) {
+	chunker, err := New(textPreservingTokenizer{}, Policy{MaximumTokens: 15, OverlapTokens: 2, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitted, err := chunker.AddPage("book-1", Page{Number: 1, Text: "Chapter I\nabcdefghi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundary, err := chunker.Boundary("book-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitted = append(emitted, boundary...)
+	if len(emitted) != 2 {
+		t.Fatalf("boundary chunks = %d, want 2", len(emitted))
+	}
+
+	consecutive, err := chunker.Boundary("book-1")
+	if err != nil || len(consecutive) != 0 {
+		t.Fatalf("consecutive boundary = %#v, %v", consecutive, err)
+	}
+	if _, err = chunker.AddPage("book-1", Page{Number: 3, Text: "new"}); err != nil {
+		t.Fatal(err)
+	}
+	final, err := chunker.Finish("book-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(final) != 1 {
+		t.Fatalf("final chunks = %d, want 1", len(final))
+	}
+	if final[0].Text() != "new" || final[0].PageStart() != 3 || final[0].Chapter() != "" || final[0].Section() != "" {
+		t.Fatalf("post-boundary chunk = text=%q pages=%d-%d chapter=%q section=%q", final[0].Text(), final[0].PageStart(), final[0].PageEnd(), final[0].Chapter(), final[0].Section())
+	}
+	if final[0].TokenStart() != emitted[len(emitted)-1].TokenEnd() {
+		t.Fatalf("token gap across boundary: previous end=%d next start=%d", emitted[len(emitted)-1].TokenEnd(), final[0].TokenStart())
+	}
+}
+
+func TestChunkerBoundaryValidatesStateAndBookID(t *testing.T) {
+	chunker, err := New(textPreservingTokenizer{}, Policy{MaximumTokens: 10, OverlapTokens: 2, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = chunker.Boundary(" "); err == nil {
+		t.Fatal("empty book ID was accepted")
+	}
+	if _, err = chunker.Finish("book-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = chunker.Boundary("book-1"); err == nil {
+		t.Fatal("boundary after finish was accepted")
+	}
+}
+
 func TestNormalizeRemovesUnsafeControlsAndPreservesLines(t *testing.T) {
 	got := Normalize("A\r\nB\x00\tC\n")
 	if got != "A\nB\tC" {
 		t.Fatalf("unexpected normalized text %q", got)
+	}
+}
+
+func TestChunkerIdentityProfileSaltsIDsWithoutChangingLegacyDefault(t *testing.T) {
+	chunkID := func(t *testing.T, identityProfile string) string {
+		t.Helper()
+		chunker, err := New(textPreservingTokenizer{}, Policy{
+			MaximumTokens:   20,
+			OverlapTokens:   2,
+			TargetPages:     2,
+			MaximumPages:    3,
+			MaximumChunks:   10,
+			IdentityProfile: identityProfile,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = chunker.AddPage("book-1", Page{Number: 1, Text: "hello"}); err != nil {
+			t.Fatal(err)
+		}
+		chunks, err := chunker.Finish("book-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return chunks[0].ID()
+	}
+
+	legacyFirst := chunkID(t, "")
+	legacySecond := chunkID(t, "")
+	filteredFirst := chunkID(t, "selection-v1:0123456789abcdef")
+	filteredSecond := chunkID(t, "selection-v1:0123456789abcdef")
+	if legacyFirst != legacySecond {
+		t.Fatal("empty identity profile changed deterministic legacy IDs")
+	}
+	if filteredFirst != filteredSecond || filteredFirst == legacyFirst {
+		t.Fatalf("identity profile did not deterministically salt ID: legacy=%q filtered=%q", legacyFirst, filteredFirst)
+	}
+}
+
+func TestChunkerRejectsUnsafeIdentityProfile(t *testing.T) {
+	base := Policy{MaximumTokens: 20, OverlapTokens: 2, TargetPages: 2, MaximumPages: 3, MaximumChunks: 10}
+	for _, profile := range []string{"has space", "line\nbreak", "ümlaut", strings.Repeat("a", 129)} {
+		policy := base
+		policy.IdentityProfile = profile
+		if _, err := New(textPreservingTokenizer{}, policy); err == nil {
+			t.Fatalf("unsafe identity profile %q was accepted", profile)
+		}
 	}
 }

@@ -31,3 +31,18 @@ func TestEvidenceProfileRegistryRejectsUntrustedMediaType(t *testing.T) {
 		t.Fatal("unsupported media type was accepted")
 	}
 }
+
+func TestEvidenceProfileRegistrySupportsFilteredPDFAndEPUB(t *testing.T) {
+	for _, extractionVersion := range []string{
+		"poppler-layout-v1+layout-selector-v1",
+		"epub-spine-v1+layout-selector-v1",
+	} {
+		profile, ok := SupportedIndexProfileForExtraction(extractionVersion)
+		if !ok {
+			t.Fatalf("filtered extraction profile %q is not registered", extractionVersion)
+		}
+		if profile.ExtractionVersion != extractionVersion || profile.ContentSelectionVersion != "layout-selector-v1" {
+			t.Fatalf("unexpected filtered profile: %#v", profile)
+		}
+	}
+}

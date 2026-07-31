@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -41,6 +42,7 @@ func TestE2ERoleCanReadOnlyRequiredM4IngestionTables(t *testing.T) {
 		`SELECT COUNT(*) FROM ingestion.inbox`,
 		`SELECT COUNT(*) FROM ingestion.jobs`,
 		`SELECT COUNT(*) FROM ingestion.artifact_sets`,
+		`SELECT COUNT(*) FROM ingestion.content_selection_inbox`,
 	} {
 		var count int
 		if err = pool.QueryRow(ctx, statement).Scan(&count); err != nil {
@@ -53,6 +55,89 @@ func TestE2ERoleCanReadOnlyRequiredM4IngestionTables(t *testing.T) {
 		VALUES('e2e-write-denied',decode(repeat('00',32),'hex'),decode('01','hex'),'e2e-write-denied',decode(repeat('00',32),'hex'),decode(repeat('00',32),'hex'),NOW())`)
 	if !isInsufficientPrivilege(err) {
 		t.Fatalf("e2e role write error = %v, want insufficient_privilege", err)
+	}
+}
+
+func TestContentSelectionAwaitResumeIsAtomicAndIdempotent(t *testing.T) {
+	if os.Getenv("INGESTION_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set INGESTION_POSTGRES_INTEGRATION=true inside the isolated Compose test network")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIngestionIntegrationSecret(t, "INGESTION_POSTGRES_DSN_FILE"))
+	if err != nil {
+		t.Fatalf("connect ingestion database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	suffix := randomRepositoryIntegrationID(t)
+	bookID := "selection-book-" + suffix
+	jobID := "selection-job-" + suffix
+	uploadID := "selection-upload-" + suffix
+	requestID := "selection-request-" + suffix
+	resultID := "selection-result-" + suffix
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sourceSHA256 := [32]byte{1}
+	configDigest := [32]byte{2}
+	uploadPayload := []byte("bounded-upload-envelope")
+	job, err := domain.NewProcessingJob(jobID, bookID, sourceSHA256, hex.EncodeToString(configDigest[:]), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = job.Claim("worker-1", now, 15*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	event := application.UploadedEvent{
+		EventID: uploadID, BookID: bookID, ObjectReference: "originals/" + bookID + ".pdf", MediaType: application.MediaTypePDF,
+		CorrelationID: "correlation-" + suffix, CausationID: "cause-" + suffix, Producer: "catalog-service", SchemaVersion: "v1", IdempotencyKey: bookID,
+		SourceSHA256: sourceSHA256, ByteSize: 1, LifecycleVersion: 1, OccurredAt: now, Payload: uploadPayload,
+	}
+	repository := NewPostgres(pool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute})
+	acceptedJob, accepted, err := repository.Accept(ctx, event, [32]byte{3}, job, application.OutboxEvent{
+		ID: "selection-started-" + suffix, Type: "ingestion.book.processing-started.v1", Payload: []byte("started"), OccurredAt: now,
+	})
+	if err != nil || !accepted {
+		t.Fatalf("Accept() accepted=%t error=%v", accepted, err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM ingestion.jobs WHERE id=$1", jobID)
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM ingestion.inbox WHERE event_id=$1", uploadID)
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM ingestion.lifecycle_fences WHERE book_id=$1", bookID)
+	})
+	claim := application.ClaimToken{Owner: acceptedJob.LeaseOwner(), Attempt: acceptedJob.Attempts(), ExpiresAt: acceptedJob.LeaseExpiresAt()}
+	if err = acceptedJob.AwaitContentSelection(claim.Owner, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err = repository.AwaitSelection(ctx, acceptedJob, claim, application.OutboxEvent{
+		ID: requestID, Type: "ingestion.book.content-selection-requested.v1", Payload: []byte("request"), OccurredAt: now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("AwaitSelection() error = %v", err)
+	}
+	resultPayload := []byte("bounded-selection-result")
+	resultDigest := sha256.Sum256(resultPayload)
+	record := application.ContentSelectionRecord{
+		EventID: resultID, RequestID: requestID, JobID: jobID, BookID: bookID, PayloadDigest: resultDigest, Payload: resultPayload,
+		SourceSHA256: sourceSHA256, ProcessingProfileDigest: configDigest, LifecycleVersion: 1, ReceivedAt: now.Add(2 * time.Second),
+	}
+	resumed, resumedNow, err := repository.AcceptContentSelection(ctx, record, "worker-2", now.Add(2*time.Second), 15*time.Minute)
+	if err != nil || !resumedNow || resumed.State() != domain.JobProcessing {
+		t.Fatalf("AcceptContentSelection() resumed=%t state=%q error=%v", resumedNow, resumed.State(), err)
+	}
+	if stored, loadErr := repository.LoadUploadedPayload(ctx, jobID); loadErr != nil || string(stored) != string(uploadPayload) {
+		t.Fatalf("LoadUploadedPayload() payload=%q error=%v", stored, loadErr)
+	}
+	_, duplicateAccepted, err := repository.AcceptContentSelection(ctx, record, "worker-3", now.Add(3*time.Second), 15*time.Minute)
+	if err != nil || duplicateAccepted {
+		t.Fatalf("duplicate result accepted=%t error=%v", duplicateAccepted, err)
+	}
+	conflict := record
+	conflict.EventID = "selection-conflict-" + suffix
+	conflict.Payload = []byte("conflicting-result")
+	conflict.PayloadDigest = sha256.Sum256(conflict.Payload)
+	if _, _, err = repository.AcceptContentSelection(ctx, conflict, "worker-3", now.Add(3*time.Second), 15*time.Minute); !errors.Is(err, application.ErrConflictingEvent) {
+		t.Fatalf("conflicting result error = %v", err)
 	}
 }
 

@@ -17,11 +17,12 @@ var (
 type JobState string
 
 const (
-	JobQueued     JobState = "queued"
-	JobProcessing JobState = "processing"
-	JobRetrying   JobState = "retrying"
-	JobCompleted  JobState = "completed"
-	JobFailed     JobState = "failed"
+	JobQueued            JobState = "queued"
+	JobAwaitingSelection JobState = "awaiting_selection"
+	JobProcessing        JobState = "processing"
+	JobRetrying          JobState = "retrying"
+	JobCompleted         JobState = "completed"
+	JobFailed            JobState = "failed"
 )
 
 type FailureCategory string
@@ -83,6 +84,9 @@ func RestoreProcessingJob(id, bookID string, sourceSHA256 [32]byte, configDigest
 	if (state == JobProcessing) != (validIdentifier(leaseOwner) && !leaseExpiresAt.IsZero()) || (state == JobRetrying) != !nextAttemptAt.IsZero() || (state == JobFailed) != failure.Valid() {
 		return ProcessingJob{}, ErrInvalidJob
 	}
+	if state == JobAwaitingSelection && attempts < 1 {
+		return ProcessingJob{}, ErrInvalidJob
+	}
 	if state == JobCompleted && (strings.TrimSpace(manifestRef) == "" || manifestSize < 1) {
 		return ProcessingJob{}, ErrInvalidJob
 	}
@@ -96,6 +100,9 @@ func (j *ProcessingJob) Claim(owner string, now time.Time, lease time.Duration) 
 	if j.terminal() {
 		return ErrTerminalJob
 	}
+	if j.state == JobAwaitingSelection {
+		return ErrInvalidJob
+	}
 	if !validIdentifier(owner) || now.IsZero() || lease <= 0 {
 		return ErrInvalidJob
 	}
@@ -104,6 +111,27 @@ func (j *ProcessingJob) Claim(owner string, now time.Time, lease time.Duration) 
 	}
 	j.state = JobProcessing
 	j.attempts++
+	j.leaseOwner = owner
+	j.leaseExpiresAt = now.Add(lease).UTC()
+	j.updatedAt = now.UTC()
+	return nil
+}
+
+func (j *ProcessingJob) AwaitContentSelection(owner string, now time.Time) error {
+	if err := j.requireOwner(owner, now); err != nil {
+		return err
+	}
+	j.state = JobAwaitingSelection
+	j.clearLease()
+	j.updatedAt = now.UTC()
+	return nil
+}
+
+func (j *ProcessingJob) ResumeAfterContentSelection(owner string, now time.Time, lease time.Duration) error {
+	if j.state != JobAwaitingSelection || !validIdentifier(owner) || now.IsZero() || lease <= 0 {
+		return ErrInvalidJob
+	}
+	j.state = JobProcessing
 	j.leaseOwner = owner
 	j.leaseExpiresAt = now.Add(lease).UTC()
 	j.updatedAt = now.UTC()
@@ -193,7 +221,7 @@ func (j ProcessingJob) requireOwner(owner string, now time.Time) error {
 
 func (s JobState) Valid() bool {
 	switch s {
-	case JobQueued, JobProcessing, JobRetrying, JobCompleted, JobFailed:
+	case JobQueued, JobAwaitingSelection, JobProcessing, JobRetrying, JobCompleted, JobFailed:
 		return true
 	default:
 		return false

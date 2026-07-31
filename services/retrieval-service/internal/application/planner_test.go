@@ -56,6 +56,46 @@ func TestPlannerRejectsIncompatibleManifestProfile(t *testing.T) {
 	}
 }
 
+func TestFilteredProfileRequiresBoundedContentSelectionAudit(t *testing.T) {
+	profile, ok := domain.SupportedIndexProfileForExtraction("poppler-layout-v1+layout-selector-v1")
+	if !ok {
+		t.Fatal("filtered PDF profile is not supported")
+	}
+	event := validManifestEvent()
+	event.Manifest.ExtractionVersion = profile.ExtractionVersion
+	event.Manifest.ContentSelection = &ContentSelection{
+		Mode:                    "enforcement",
+		SelectorVersion:         profile.ContentSelectionVersion,
+		ParserVersion:           "docling-v1",
+		FallbackReason:          "none",
+		ModelDigest:             sum(8),
+		PolicyDigest:            sum(9),
+		ProcessingProfileDigest: event.Manifest.ProcessingConfigDigest,
+		OriginalCount:           2,
+		RetainedCount:           1,
+		ExcludedCount:           1,
+		ExcludedRatio:           0.5,
+		Ranges:                  []ContentSelectionRange{{Start: 1, End: 1, Reason: "title_page"}},
+	}
+	if err := event.Validate(profile, testManifestPolicy()); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	event.Manifest.ContentSelection.Ranges[0].End = 3
+	if err := event.Validate(profile, testManifestPolicy()); !errors.Is(err, ErrUnsupportedIndexProfile) {
+		t.Fatalf("unbounded selection Validate() error = %v", err)
+	}
+	event.Manifest.ContentSelection.Ranges[0].End = 1
+	event.Manifest.ContentSelection.ExcludedRatio = 0.25
+	if err := event.Validate(profile, testManifestPolicy()); !errors.Is(err, ErrUnsupportedIndexProfile) {
+		t.Fatalf("inconsistent selection ratio Validate() error = %v", err)
+	}
+	event.Manifest.ContentSelection.ExcludedRatio = 0.5
+	event.Manifest.ContentSelection.FallbackReason = "forged_fallback"
+	if err := event.Validate(profile, testManifestPolicy()); !errors.Is(err, ErrUnsupportedIndexProfile) {
+		t.Fatalf("unknown fallback Validate() error = %v", err)
+	}
+}
+
 func TestPlannerRejectsManifestPageCountAboveSharedLimit(t *testing.T) {
 	repository := newMemoryPlanningRepository()
 	planner := newTestPlanner(t, repository)

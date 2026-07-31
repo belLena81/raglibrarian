@@ -31,11 +31,12 @@ type Tokenizer interface {
 }
 
 type Policy struct {
-	MaximumTokens int
-	OverlapTokens int
-	MaximumChunks int
-	TargetPages   int
-	MaximumPages  int
+	MaximumTokens   int
+	OverlapTokens   int
+	MaximumChunks   int
+	TargetPages     int
+	MaximumPages    int
+	IdentityProfile string
 }
 
 type Page struct {
@@ -72,7 +73,8 @@ type Chunker struct {
 
 func New(tokenizer Tokenizer, policy Policy) (*Chunker, error) {
 	if tokenizer == nil || policy.MaximumTokens < 1 || policy.OverlapTokens < 0 || policy.OverlapTokens >= policy.MaximumTokens ||
-		policy.MaximumChunks < 1 || policy.TargetPages < 1 || policy.MaximumPages < policy.TargetPages {
+		policy.MaximumChunks < 1 || policy.TargetPages < 1 || policy.MaximumPages < policy.TargetPages ||
+		!validIdentityProfile(policy.IdentityProfile) {
 		return nil, errors.New("invalid chunking policy")
 	}
 	return &Chunker{tokenizer: tokenizer, policy: policy}, nil
@@ -158,6 +160,25 @@ func (c *Chunker) Finish(bookID string) ([]domain.Chunk, error) {
 		c.buffer = c.buffer[:0]
 	}
 	return c.flushBoundary(bookID)
+}
+
+// Boundary ends the current retained content segment. It emits pending new
+// content, discards any overlap-only tail, and clears structural context so an
+// excluded location cannot leak text or headings into the next segment.
+func (c *Chunker) Boundary(bookID string) ([]domain.Chunk, error) {
+	if c.finished || strings.TrimSpace(bookID) == "" {
+		return nil, errors.New("invalid chunker boundary")
+	}
+	if c.overlapOnly() {
+		c.buffer = c.buffer[:0]
+	}
+	result, err := c.flushBoundary(bookID)
+	if err != nil {
+		return nil, err
+	}
+	c.buffer = c.buffer[:0]
+	c.structure = StructureContext{}
+	return result, nil
 }
 
 func (c *Chunker) flushBoundary(bookID string) ([]domain.Chunk, error) {
@@ -304,6 +325,23 @@ func detectHeading(text string) StructureContext {
 func stableChunkID(bookID string, order uint64, pageStart, pageEnd uint32, tokenStart, tokenEnd uint64, structure StructureContext, policy Policy, text string) string {
 	contentSum := sha256.Sum256([]byte(text))
 	identity := fmt.Sprintf("%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%s\x00%s", StructureVersion, bookID, ChunkingVersion, policy.MaximumTokens, policy.OverlapTokens, order, pageStart, pageEnd, tokenStart, tokenEnd, structure.Chapter+"\x00"+structure.Section, hex.EncodeToString(contentSum[:]))
+	if policy.IdentityProfile != "" {
+		identity += "\x00" + policy.IdentityProfile
+	}
 	sum := sha256.Sum256([]byte(identity))
 	return hex.EncodeToString(sum[:16])
+}
+
+func validIdentityProfile(value string) bool {
+	if len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' || char == ':' {
+			continue
+		}
+		return false
+	}
+	return true
 }

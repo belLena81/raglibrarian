@@ -77,6 +77,33 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	var selectionConsumer *transport.ContentSelectionConsumer
+	if cfg.RuntimeBackend == "local" && cfg.ContentSelectionMode != "disabled" {
+		selectionChannel, channelErr := connection.Channel()
+		if channelErr != nil {
+			return errors.New("content selection broker channel unavailable")
+		}
+		defer func() { _ = selectionChannel.Close() }()
+		selectionConsumer, err = transport.NewContentSelectionConsumer(
+			selectionChannel,
+			cfg.ContentSelectionQueue,
+			cfg.WorkConcurrency,
+			runtime,
+			runtime.Publisher,
+			transport.ContentSelectionBrokerPolicy{
+				MaximumAttempts:      cfg.MaximumAttempts,
+				MaximumRanges:        cfg.ContentSelectionMaximumRanges,
+				RetryExchange:        cfg.RetryExchange,
+				FirstRetryRoute:      cfg.ContentSelectionFirstRetryRoute,
+				SecondRetryRoute:     cfg.ContentSelectionSecondRetryRoute,
+				SubsequentRetryRoute: cfg.ContentSelectionSubsequentRetryRoute,
+				PublishTimeout:       cfg.RabbitPublishTimeout,
+			},
+		)
+		if err != nil {
+			return err
+		}
+	}
 	initialProbeCtx, cancelInitialProbe := context.WithTimeout(ctx, cfg.WorkerReadinessProbeTimeout)
 	postgresReady, storageReady := runtime.DependenciesReady(initialProbeCtx)
 	cancelInitialProbe()
@@ -107,6 +134,12 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	go func() { cleanupErrors <- runtime.Cleaner.Run(ctx) }()
 	consumerErrors := make(chan error, 1)
 	go func() { consumerErrors <- consumer.Run(ctx, cfg.WorkConcurrency) }()
+	var selectionErrors <-chan error
+	if selectionConsumer != nil {
+		errorsChannel := make(chan error, 1)
+		selectionErrors = errorsChannel
+		go func() { errorsChannel <- selectionConsumer.Run(ctx, cfg.WorkConcurrency) }()
+	}
 	logger.Info("ingestion worker started",
 		"chunking_version", chunking.ChunkingVersion,
 		"structure_version", chunking.StructureVersion,
@@ -115,6 +148,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		"chunk_target_pages", cfg.ChunkTargetPages,
 		"chunk_maximum_pages", cfg.ChunkMaximumPages,
 		"parser_sandbox_memory_bytes", cfg.ParserSandboxMemoryBytes,
+		"content_selection_mode", cfg.ContentSelectionMode,
 	)
 	select {
 	case <-ctx.Done():
@@ -132,6 +166,8 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	case err = <-cleanupErrors:
 		return err
 	case err = <-consumerErrors:
+		return err
+	case err = <-selectionErrors:
 		return err
 	}
 }

@@ -99,6 +99,9 @@ func TestValidatedCommandAllowsOnlyFixedPopplerShapeAndRegularTemporarySource(t 
 	if _, _, _, _, err := validatedCommand([]string{defaultPDFToTextPath, "-layout", "-enc", "UTF-8", source, "-"}); err != nil {
 		t.Fatalf("pdftotext command rejected: %v", err)
 	}
+	if _, _, _, _, err := validatedCommand([]string{defaultPDFToTextPath, "-bbox-layout", "-enc", "UTF-8", source, "-"}); err != nil {
+		t.Fatalf("pdftotext bbox command rejected: %v", err)
+	}
 	epubSource := filepath.Join(directory, "source.epub")
 	if err := os.WriteFile(epubSource, []byte("synthetic"), 0o600); err != nil {
 		t.Fatal(err)
@@ -112,6 +115,7 @@ func TestValidatedCommandAllowsOnlyFixedPopplerShapeAndRegularTemporarySource(t 
 		{defaultPDFInfoPath, "/a/b"},
 		{defaultPDFInfoPath, "/etc/passwd"},
 		{defaultPDFToTextPath, source, "-"},
+		{defaultPDFToTextPath, "-bbox", "-enc", "UTF-8", source, "-"},
 		{defaultEPUBParserPath, epubSource},
 		{defaultEPUBParserPath, "v2", "2000", "500", "1048576", "8388608", "2097152", epubSource},
 		{defaultEPUBParserPath, "v1", "0", "500", "1048576", "8388608", "2097152", epubSource},

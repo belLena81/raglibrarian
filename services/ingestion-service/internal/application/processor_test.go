@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -18,23 +19,28 @@ import (
 )
 
 type processorRepository struct {
-	accepted       bool
-	acceptErr      error
-	acceptWait     bool
-	completeErr    error
-	retryErr       error
-	failErr        error
-	deletionWait   bool
-	accepts        int
-	deletionCalls  int
-	completes      int
-	retries        int
-	fails          int
-	failedJob      domain.ProcessingJob
-	acceptCtxErr   error
-	deletionCtxErr error
-	retryCtxErr    error
-	failCtxErr     error
+	accepted          bool
+	acceptErr         error
+	acceptWait        bool
+	completeErr       error
+	retryErr          error
+	failErr           error
+	deletionWait      bool
+	accepts           int
+	deletionCalls     int
+	completes         int
+	retries           int
+	fails             int
+	failedJob         domain.ProcessingJob
+	acceptCtxErr      error
+	deletionCtxErr    error
+	retryCtxErr       error
+	failCtxErr        error
+	awaits            int
+	selectionAccepted bool
+	selectionRecord   ContentSelectionRecord
+	selectionJob      domain.ProcessingJob
+	uploadedPayload   []byte
 }
 
 func (r *processorRepository) Accept(ctx context.Context, _ UploadedEvent, _ [32]byte, job domain.ProcessingJob, _ OutboxEvent) (domain.ProcessingJob, bool, error) {
@@ -55,6 +61,28 @@ func (r *processorRepository) AcceptDeletion(ctx context.Context, _ DeletionEven
 		return ctx.Err()
 	}
 	return nil
+}
+
+func (r *processorRepository) AwaitSelection(_ context.Context, job domain.ProcessingJob, _ ClaimToken, _ OutboxEvent) error {
+	r.awaits++
+	r.selectionJob = job
+	return nil
+}
+
+func (r *processorRepository) AcceptContentSelection(_ context.Context, record ContentSelectionRecord, _ string, _ time.Time, _ time.Duration) (domain.ProcessingJob, bool, error) {
+	r.selectionRecord = record
+	return r.selectionJob, r.selectionAccepted, nil
+}
+
+func (r *processorRepository) LoadContentSelection(context.Context, string) (ContentSelectionRecord, error) {
+	if len(r.selectionRecord.Payload) == 0 {
+		return ContentSelectionRecord{}, ErrContentSelectionNotFound
+	}
+	return r.selectionRecord, nil
+}
+
+func (r *processorRepository) LoadUploadedPayload(context.Context, string) ([]byte, error) {
+	return append([]byte(nil), r.uploadedPayload...), nil
 }
 
 func (r *processorRepository) Complete(_ context.Context, _ domain.ProcessingJob, _ ClaimToken, _ artifact.Result, _ OutboxEvent) error {
@@ -92,6 +120,7 @@ type processorExtractor struct {
 	err        error
 	waitForCtx bool
 	sourcePath string
+	pages      []extractor.Page
 }
 
 type processorStreamingRunner struct{}
@@ -113,10 +142,16 @@ func (e *processorExtractor) Extract(ctx context.Context, sourcePath string, con
 	if e.err != nil {
 		return extractor.DocumentInfo{}, e.err
 	}
-	if err := consume(extractor.Page{Number: 1, Text: "synthetic text"}); err != nil {
-		return extractor.DocumentInfo{}, err
+	pages := e.pages
+	if len(pages) == 0 {
+		pages = []extractor.Page{{Number: 1, Text: "synthetic text"}}
 	}
-	return extractor.DocumentInfo{PageCount: 1}, nil
+	for _, page := range pages {
+		if err := consume(page); err != nil {
+			return extractor.DocumentInfo{}, err
+		}
+	}
+	return extractor.DocumentInfo{PageCount: uint32(len(pages))}, nil // #nosec G115 -- test pages are bounded.
 }
 
 type processorChunker struct{}
@@ -125,7 +160,8 @@ func (processorChunker) AddPage(string, chunking.Page) ([]domain.Chunk, error) {
 	return []domain.Chunk{{}}, nil
 }
 
-func (processorChunker) Finish(string) ([]domain.Chunk, error) { return nil, nil }
+func (processorChunker) Finish(string) ([]domain.Chunk, error)   { return nil, nil }
+func (processorChunker) Boundary(string) ([]domain.Chunk, error) { return nil, nil }
 
 type processorSequenceChunker struct {
 	add    []domain.Chunk
@@ -139,11 +175,39 @@ func (c processorSequenceChunker) AddPage(string, chunking.Page) ([]domain.Chunk
 func (c processorSequenceChunker) Finish(string) ([]domain.Chunk, error) {
 	return c.finish, nil
 }
+func (c processorSequenceChunker) Boundary(string) ([]domain.Chunk, error) { return nil, nil }
+
+type selectionTrackingChunker struct {
+	pages      []uint32
+	boundaries int
+	nextOrder  uint64
+}
+
+func (c *selectionTrackingChunker) AddPage(bookID string, page chunking.Page) ([]domain.Chunk, error) {
+	c.pages = append(c.pages, page.Number)
+	value, err := domain.NewChunk(domain.ChunkInput{
+		ID: fmt.Sprintf("chunk-%d", c.nextOrder), BookID: bookID, Order: c.nextOrder,
+		Text: page.Text, PageStart: page.Number, PageEnd: page.Number, TokenStart: c.nextOrder, TokenEnd: c.nextOrder + 1,
+	})
+	if err != nil {
+		return nil, err
+	}
+	c.nextOrder++
+	return []domain.Chunk{value}, nil
+}
+
+func (c *selectionTrackingChunker) Boundary(string) ([]domain.Chunk, error) {
+	c.boundaries++
+	return nil, nil
+}
+
+func (c *selectionTrackingChunker) Finish(string) ([]domain.Chunk, error) { return nil, nil }
 
 type processorWriter struct {
 	result      artifact.Result
 	addErr      error
 	finalizeErr error
+	selection   *artifact.ContentSelection
 	aborts      int
 	adds        int
 }
@@ -153,7 +217,8 @@ func (w *processorWriter) Add(context.Context, domain.Chunk) error {
 	return w.addErr
 }
 
-func (w *processorWriter) Finalize(context.Context, uint32) (artifact.Result, error) {
+func (w *processorWriter) Finalize(_ context.Context, _ uint32, selection *artifact.ContentSelection) (artifact.Result, error) {
+	w.selection = selection
 	return w.result, w.finalizeErr
 }
 
@@ -163,8 +228,9 @@ func (w *processorWriter) Abort(context.Context) error {
 }
 
 type processorFactory struct {
-	writer  *processorWriter
-	chunker Chunker
+	writer    *processorWriter
+	chunker   Chunker
+	selection ContentSelectionProfile
 }
 
 func (f processorFactory) NewChunker() (Chunker, error) {
@@ -185,11 +251,19 @@ func (processorFactory) ConfigDigest(mediaType string) ([32]byte, error) {
 	return sha256.Sum256([]byte(mediaType)), nil
 }
 
+func (f processorFactory) ContentSelectionProfile() ContentSelectionProfile {
+	if f.selection.Mode == "" {
+		return ContentSelectionProfile{Mode: ContentSelectionDisabled}
+	}
+	return f.selection
+}
+
 type processorEvents struct {
-	readyErr error
-	started  int
-	ready    int
-	failed   int
+	readyErr           error
+	started            int
+	selectionRequested int
+	ready              int
+	failed             int
 }
 
 type processorDiagnostics struct {
@@ -215,6 +289,11 @@ func (d *processorDiagnostics) FailurePersisted(_, _, _, _, detail string) {
 func (e *processorEvents) Started(UploadedEvent, domain.ProcessingJob, time.Time) (OutboxEvent, error) {
 	e.started++
 	return OutboxEvent{ID: "started-1"}, nil
+}
+
+func (e *processorEvents) ContentSelectionRequested(UploadedEvent, domain.ProcessingJob, time.Time) (OutboxEvent, error) {
+	e.selectionRequested++
+	return OutboxEvent{ID: "selection-request-1", Type: "ingestion.book.content-selection-requested.v1", Payload: []byte{1}, OccurredAt: time.Now().UTC()}, nil
 }
 
 func (e *processorEvents) Ready(UploadedEvent, domain.ProcessingJob, artifact.Result, time.Time) (OutboxEvent, error) {
@@ -249,6 +328,156 @@ func TestProcessorCompletesAndTreatsDuplicateAsDurableSuccess(t *testing.T) {
 	}
 	if duplicateRepository.accepts != 1 || duplicateRepository.completes != 0 || duplicateWriter.adds != 0 {
 		t.Fatalf("duplicate was processed: repo=%#v writer=%#v", duplicateRepository, duplicateWriter)
+	}
+}
+
+func TestProcessorPersistsAwaitingSelectionBeforeExtraction(t *testing.T) {
+	profile := validSelectionProfile(ContentSelectionEnforcement)
+	processor, repository, writer, events, _, extractor := newTestProcessor(t, processorOptions{
+		selection:       profile,
+		decodeUploaded:  func([]byte) (UploadedEvent, error) { return validProcessorEvent(), nil },
+		decodeSelection: func([]byte, int) (ContentSelectionResult, error) { return ContentSelectionResult{}, nil },
+	})
+	if err := processor.Process(context.Background(), validProcessorEvent()); err != nil {
+		t.Fatal(err)
+	}
+	if repository.awaits != 1 || repository.selectionJob.State() != domain.JobAwaitingSelection || events.selectionRequested != 1 {
+		t.Fatalf("selection wait = repo=%#v events=%#v", repository, events)
+	}
+	if writer.adds != 0 || extractor.sourcePath != "" || repository.completes != 0 {
+		t.Fatalf("processing started before selection: writer=%#v source=%q", writer, extractor.sourcePath)
+	}
+}
+
+func TestProcessorEnforcesSelectionAndRecordsManifestAudit(t *testing.T) {
+	profile := validSelectionProfile(ContentSelectionEnforcement)
+	event := validProcessorEvent()
+	result := validSelectionResult(event, profile)
+	result.OriginalLocationCount = 4
+	result.Ranges = []ContentSelectionRange{{Start: 1, End: 1, Reason: "title"}}
+	chunker := &selectionTrackingChunker{}
+	job := processingSelectionJob(t, event)
+	processor, repository, writer, _, _, _ := newTestProcessor(t, processorOptions{
+		selection: profile, selectionAccepted: true, selectionJob: job, uploadedPayload: event.Payload,
+		decodeUploaded:  func([]byte) (UploadedEvent, error) { return event, nil },
+		decodeSelection: func([]byte, int) (ContentSelectionResult, error) { return result, nil },
+		chunker:         chunker,
+		pages:           []extractor.Page{{Number: 1, Text: "drop"}, {Number: 2, Text: "keep two"}, {Number: 3, Text: "keep three"}, {Number: 4, Text: "keep four"}},
+	})
+	if err := processor.ProcessContentSelection(context.Background(), result); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(chunker.pages) != "[2 3 4]" || chunker.boundaries != 1 || writer.adds != 3 || repository.completes != 1 {
+		t.Fatalf("enforcement = pages=%v boundaries=%d writer=%#v repo=%#v", chunker.pages, chunker.boundaries, writer, repository)
+	}
+	if writer.selection == nil || writer.selection.Mode != "enforcement" || len(writer.selection.Ranges) != 1 || writer.selection.OriginalLocationCount != 4 {
+		t.Fatalf("manifest selection = %#v", writer.selection)
+	}
+}
+
+func TestProcessorObservationRetainsEveryLocation(t *testing.T) {
+	profile := validSelectionProfile(ContentSelectionObservation)
+	event := validProcessorEvent()
+	result := validSelectionResult(event, profile)
+	result.OriginalLocationCount = 2
+	result.FallbackReason = "observation"
+	result.FallbackUnfiltered = true
+	chunker := &selectionTrackingChunker{}
+	job := processingSelectionJob(t, event)
+	processor, repository, writer, _, _, _ := newTestProcessor(t, processorOptions{
+		selection: profile, selectionAccepted: true, selectionJob: job, uploadedPayload: event.Payload,
+		decodeUploaded:  func([]byte) (UploadedEvent, error) { return event, nil },
+		decodeSelection: func([]byte, int) (ContentSelectionResult, error) { return result, nil },
+		chunker:         chunker,
+		pages:           []extractor.Page{{Number: 1, Text: "first"}, {Number: 2, Text: "second"}},
+	})
+	if err := processor.ProcessContentSelection(context.Background(), result); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(chunker.pages) != "[1 2]" || chunker.boundaries != 0 || repository.completes != 1 {
+		t.Fatalf("observation = pages=%v boundaries=%d repo=%#v", chunker.pages, chunker.boundaries, repository)
+	}
+	if writer.selection == nil || writer.selection.FallbackReason != "observation" || len(writer.selection.Ranges) != 0 {
+		t.Fatalf("observation audit = %#v", writer.selection)
+	}
+}
+
+func TestProcessorFailOpenWithoutParserOrdinalCountUsesExtractorCount(t *testing.T) {
+	profile := validSelectionProfile(ContentSelectionEnforcement)
+	event := validProcessorEvent()
+	result := validSelectionResult(event, profile)
+	result.OriginalLocationCount = 0
+	result.FallbackReason = "invalid_output"
+	result.FallbackUnfiltered = true
+	chunker := &selectionTrackingChunker{}
+	job := processingSelectionJob(t, event)
+	processor, repository, writer, _, _, _ := newTestProcessor(t, processorOptions{
+		selection: profile, selectionAccepted: true, selectionJob: job, uploadedPayload: event.Payload,
+		decodeUploaded:  func([]byte) (UploadedEvent, error) { return event, nil },
+		decodeSelection: func([]byte, int) (ContentSelectionResult, error) { return result, nil },
+		chunker:         chunker,
+		pages:           []extractor.Page{{Number: 1, Text: "first"}, {Number: 2, Text: "second"}},
+	})
+	if err := processor.ProcessContentSelection(context.Background(), result); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(chunker.pages) != "[1 2]" || chunker.boundaries != 0 || repository.completes != 1 {
+		t.Fatalf("fail open = pages=%v boundaries=%d repo=%#v", chunker.pages, chunker.boundaries, repository)
+	}
+	if writer.selection == nil || writer.selection.OriginalLocationCount != 2 || writer.selection.FallbackReason != "invalid_output" {
+		t.Fatalf("fail-open audit = %#v", writer.selection)
+	}
+
+	invalid := result
+	invalid.FallbackReason = "none"
+	invalid.FallbackUnfiltered = false
+	if err := invalid.Validate(profile); !errors.Is(err, ErrInvalidEvent) {
+		t.Fatalf("zero-count filtered result error = %v", err)
+	}
+}
+
+func TestProcessorOrdinalMismatchReplaysUnfilteredWithAudit(t *testing.T) {
+	profile := validSelectionProfile(ContentSelectionEnforcement)
+	event := validProcessorEvent()
+	result := validSelectionResult(event, profile)
+	result.OriginalLocationCount = 4
+	result.Ranges = []ContentSelectionRange{{Start: 1, End: 1, Reason: "title"}}
+	chunker := &selectionTrackingChunker{}
+	job := processingSelectionJob(t, event)
+	processor, repository, writer, _, _, _ := newTestProcessor(t, processorOptions{
+		selection: profile, selectionAccepted: true, selectionJob: job, uploadedPayload: event.Payload,
+		decodeUploaded:  func([]byte) (UploadedEvent, error) { return event, nil },
+		decodeSelection: func([]byte, int) (ContentSelectionResult, error) { return result, nil },
+		chunker:         chunker,
+		pages:           []extractor.Page{{Number: 1, Text: "first"}, {Number: 2, Text: "second"}},
+	})
+	if err := processor.ProcessContentSelection(context.Background(), result); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(chunker.pages) != "[1 2]" || chunker.boundaries != 0 || repository.completes != 1 {
+		t.Fatalf("mismatch fallback = pages=%v boundaries=%d repo=%#v", chunker.pages, chunker.boundaries, repository)
+	}
+	if writer.selection == nil || writer.selection.OriginalLocationCount != 2 || writer.selection.FallbackReason != "ambiguous_mapping" || len(writer.selection.Ranges) != 0 {
+		t.Fatalf("mismatch audit = %#v", writer.selection)
+	}
+}
+
+func TestProcessorRejectsOverPolicySelectionBeforePersistence(t *testing.T) {
+	profile := validSelectionProfile(ContentSelectionEnforcement)
+	event := validProcessorEvent()
+	result := validSelectionResult(event, profile)
+	result.OriginalLocationCount = 2
+	result.Ranges = []ContentSelectionRange{{Start: 1, End: 1, Reason: "title"}}
+	processor, repository, _, _, _, _ := newTestProcessor(t, processorOptions{
+		selection:       profile,
+		decodeUploaded:  func([]byte) (UploadedEvent, error) { return event, nil },
+		decodeSelection: func([]byte, int) (ContentSelectionResult, error) { return result, nil },
+	})
+	if err := processor.ProcessContentSelection(context.Background(), result); !errors.Is(err, ErrInvalidEvent) {
+		t.Fatalf("error = %v", err)
+	}
+	if len(repository.selectionRecord.Payload) != 0 {
+		t.Fatal("invalid selection reached persistence")
 	}
 }
 
@@ -500,6 +729,13 @@ type processorOptions struct {
 	finalizeErr        error
 	chunker            Chunker
 	persistenceTimeout time.Duration
+	selection          ContentSelectionProfile
+	decodeUploaded     UploadDecoder
+	decodeSelection    ContentSelectionDecoder
+	selectionAccepted  bool
+	selectionJob       domain.ProcessingJob
+	uploadedPayload    []byte
+	pages              []extractor.Page
 }
 
 func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *processorRepository, *processorWriter, *processorEvents, *processorDiagnostics, *processorExtractor) {
@@ -514,10 +750,13 @@ func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *proc
 	}
 	contents := []byte("%PDF-1.7\nsynthetic")
 	repository := &processorRepository{
-		accepted:     accepted,
-		acceptWait:   options.acceptWait,
-		completeErr:  options.completeErr,
-		deletionWait: options.deletionWait,
+		accepted:          accepted,
+		acceptWait:        options.acceptWait,
+		completeErr:       options.completeErr,
+		deletionWait:      options.deletionWait,
+		selectionAccepted: options.selectionAccepted,
+		selectionJob:      options.selectionJob,
+		uploadedPayload:   append([]byte(nil), options.uploadedPayload...),
 	}
 	writer := &processorWriter{
 		result:      artifact.Result{ManifestReference: "books/book-1/source/profile/manifest.pb", ManifestSHA256: sha256.Sum256([]byte("manifest")), ManifestByteSize: 8, PageCount: 1, ChunkCount: 1},
@@ -526,7 +765,7 @@ func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *proc
 	}
 	events := &processorEvents{readyErr: options.readyErr}
 	diagnostics := &processorDiagnostics{}
-	pdfExtractor := &processorExtractor{err: options.extractErr, waitForCtx: options.waitForContext}
+	pdfExtractor := &processorExtractor{err: options.extractErr, waitForCtx: options.waitForContext, pages: options.pages}
 	extractors, err := NewFormatExtractors(ExtractionAdapter{
 		MediaType: MediaTypePDF,
 		Extension: ".pdf",
@@ -545,24 +784,26 @@ func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *proc
 		repository,
 		processorSource{contents: contents, size: int64(len(contents)), err: options.sourceErr},
 		extractors,
-		processorFactory{writer: writer, chunker: options.chunker},
+		processorFactory{writer: writer, chunker: options.chunker, selection: options.selection},
 		events,
 		func() (string, error) { return "job-1", nil },
 		func() time.Time { return now },
 		"worker-1",
 		Config{
-			MaximumSourceBytes:    25 << 20,
-			MaximumTemporaryBytes: 25 << 20,
-			TemporaryDirectory:    t.TempDir(),
-			ProcessingTimeout:     10 * time.Millisecond,
-			PersistenceTimeout:    persistenceTimeout,
-			ArtifactAbortTimeout:  10 * time.Second,
-			JobLease:              31 * time.Second,
-			MaximumAttempts:       maximumAttempts,
-			FirstRetryDelay:       5 * time.Second,
-			SecondRetryDelay:      30 * time.Second,
-			SubsequentRetryDelay:  2 * time.Minute,
-			Diagnostics:           diagnostics,
+			MaximumSourceBytes:     25 << 20,
+			MaximumTemporaryBytes:  25 << 20,
+			TemporaryDirectory:     t.TempDir(),
+			ProcessingTimeout:      10 * time.Millisecond,
+			PersistenceTimeout:     persistenceTimeout,
+			ArtifactAbortTimeout:   10 * time.Second,
+			JobLease:               31 * time.Second,
+			MaximumAttempts:        maximumAttempts,
+			FirstRetryDelay:        5 * time.Second,
+			SecondRetryDelay:       30 * time.Second,
+			SubsequentRetryDelay:   2 * time.Minute,
+			Diagnostics:            diagnostics,
+			DecodeUploaded:         options.decodeUploaded,
+			DecodeContentSelection: options.decodeSelection,
 		},
 	)
 	if err != nil {
@@ -607,6 +848,41 @@ func processorTestChunk(t *testing.T, order, tokenStart, tokenEnd uint64) domain
 		t.Fatal(err)
 	}
 	return chunk
+}
+
+func validSelectionProfile(mode ContentSelectionMode) ContentSelectionProfile {
+	model := sha256.Sum256([]byte("model"))
+	return ContentSelectionProfile{
+		Mode: mode, PolicyVersion: "layout-selector-v1", ParserVersion: "docling-serve-v1.21.0",
+		ModelSHA256: hex.EncodeToString(model[:]), MinimumSignals: 2, MaximumRanges: 256, MaximumExcludedRatio: 0.25,
+	}
+}
+
+func validSelectionResult(event UploadedEvent, profile ContentSelectionProfile) ContentSelectionResult {
+	payload := []byte("synthetic-selection-payload")
+	processingDigest := sha256.Sum256([]byte(event.MediaType))
+	return ContentSelectionResult{
+		EventID: "selection-result-1", RequestID: "selection-request-1", JobID: "job-1", BookID: event.BookID,
+		CorrelationID: event.CorrelationID, CausationID: "selection-request-1", Producer: "ingestion-layout-worker",
+		SchemaVersion: "v1", IdempotencyKey: "selection-request-1", SourceSHA256: event.SourceSHA256,
+		ProcessingProfileDigest: processingDigest, PolicyDigest: profile.PolicyDigest(), PayloadDigest: sha256.Sum256(payload),
+		MediaType: event.MediaType, Mode: string(profile.Mode), PolicyVersion: profile.PolicyVersion,
+		ParserVersion: profile.ParserVersion, ModelSHA256: profile.ModelSHA256, FallbackReason: "none",
+		LifecycleVersion: event.LifecycleVersion, OriginalLocationCount: 1, OccurredAt: event.OccurredAt.Add(time.Hour), Payload: payload,
+	}
+}
+
+func processingSelectionJob(t *testing.T, event UploadedEvent) domain.ProcessingJob {
+	t.Helper()
+	digest := sha256.Sum256([]byte(event.MediaType))
+	job, err := domain.NewProcessingJob("job-1", event.BookID, event.SourceSHA256, hex.EncodeToString(digest[:]), event.OccurredAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = job.Claim("worker-1", event.OccurredAt.Add(time.Minute), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	return job
 }
 
 func boolPointer(value bool) *bool { return &value }

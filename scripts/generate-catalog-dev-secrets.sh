@@ -7,7 +7,7 @@ command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 dir="${1:-.dev/secrets}"
 mkdir -p "$dir"
 chmod 700 "$dir"
-for file in minio_root_user minio_root_password catalog_minio_access_key catalog_minio_secret_key ingestion_minio_access_key ingestion_minio_secret_key ingestion_cleanup_minio_access_key ingestion_cleanup_minio_secret_key catalog_rabbitmq_uri catalog_ingestion_rabbitmq_uri ingestion_rabbitmq_uri edge_status_rabbitmq_uri_1 edge_status_rabbitmq_uri_2 rabbitmq_definitions.json rabbitmq.conf; do
+for file in minio_root_user minio_root_password catalog_minio_access_key catalog_minio_secret_key ingestion_minio_access_key ingestion_minio_secret_key layout_minio_access_key layout_minio_secret_key ingestion_cleanup_minio_access_key ingestion_cleanup_minio_secret_key catalog_rabbitmq_uri catalog_ingestion_rabbitmq_uri ingestion_rabbitmq_uri layout_rabbitmq_uri edge_status_rabbitmq_uri_1 edge_status_rabbitmq_uri_2 rabbitmq_definitions.json rabbitmq.conf; do
   if [[ -e "$dir/$file" ]]; then
     echo "refusing to overwrite existing development secret: $dir/$file" >&2
     exit 1
@@ -25,6 +25,8 @@ minio_access_key=catalog-service
 minio_secret_key=$(openssl rand -hex 32)
 ingestion_minio_access_key=ingestion-service
 ingestion_minio_secret_key=$(openssl rand -hex 32)
+layout_minio_access_key=layout-parser-worker
+layout_minio_secret_key=$(openssl rand -hex 32)
 ingestion_cleanup_minio_access_key=ingestion-cleanup
 ingestion_cleanup_minio_secret_key=$(openssl rand -hex 32)
 printf '%s\n' "$minio_root_user" > "$dir/minio_root_user"
@@ -33,6 +35,8 @@ printf '%s\n' "$minio_access_key" > "$dir/catalog_minio_access_key"
 printf '%s\n' "$minio_secret_key" > "$dir/catalog_minio_secret_key"
 printf '%s\n' "$ingestion_minio_access_key" > "$dir/ingestion_minio_access_key"
 printf '%s\n' "$ingestion_minio_secret_key" > "$dir/ingestion_minio_secret_key"
+printf '%s\n' "$layout_minio_access_key" > "$dir/layout_minio_access_key"
+printf '%s\n' "$layout_minio_secret_key" > "$dir/layout_minio_secret_key"
 printf '%s\n' "$ingestion_cleanup_minio_access_key" > "$dir/ingestion_cleanup_minio_access_key"
 printf '%s\n' "$ingestion_cleanup_minio_secret_key" > "$dir/ingestion_cleanup_minio_secret_key"
 printf 'amqp://catalog_publisher:%s@rabbitmq:5672/\n' "$catalog_publish_password" > "$dir/catalog_rabbitmq_uri"
@@ -60,6 +64,8 @@ jq --arg edge2 "$edge_password_2" '
   {source:"raglibrarian.ingestion.events.v1",vhost:"/",destination:"catalog.book-processing.v1",destination_type:"queue",routing_key:"ingestion.book.processing-failed.v1",arguments:{}}
 ])' "$dir/rabbitmq_definitions.json" > "$definitions_tmp"
 mv -f "$definitions_tmp" "$dir/rabbitmq_definitions.json"
-chmod 400 "$dir"/catalog_* "$dir"/ingestion_* "$dir"/edge_status_* "$dir"/minio_* "$dir"/rabbitmq_definitions.json "$dir"/rabbitmq.conf
-unset catalog_publish_password catalog_consume_password ingestion_password edge_password edge_password_2 minio_root_user minio_root_password minio_access_key minio_secret_key ingestion_minio_access_key ingestion_minio_secret_key ingestion_cleanup_minio_access_key ingestion_cleanup_minio_secret_key
+chmod 400 "$dir"/catalog_* "$dir"/ingestion_* "$dir"/layout_* "$dir"/edge_status_* "$dir"/minio_* "$dir"/rabbitmq_definitions.json "$dir"/rabbitmq.conf
+bash ./scripts/upgrade-content-selection-topology.sh "$dir"
+bash ./scripts/ensure-layout-worker-rabbitmq.sh "$dir"
+unset catalog_publish_password catalog_consume_password ingestion_password edge_password edge_password_2 minio_root_user minio_root_password minio_access_key minio_secret_key ingestion_minio_access_key ingestion_minio_secret_key layout_minio_access_key layout_minio_secret_key ingestion_cleanup_minio_access_key ingestion_cleanup_minio_secret_key
 echo "Generated Catalog development credentials in $dir"

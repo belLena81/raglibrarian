@@ -35,6 +35,129 @@ type Consumer struct {
 	now       func() time.Time
 }
 
+type ContentSelectionProcessor interface {
+	ProcessContentSelection(context.Context, application.ContentSelectionResult) error
+}
+
+type ContentSelectionBrokerPolicy struct {
+	MaximumAttempts      int
+	MaximumRanges        int
+	RetryExchange        string
+	FirstRetryRoute      string
+	SecondRetryRoute     string
+	SubsequentRetryRoute string
+	PublishTimeout       time.Duration
+}
+
+type ContentSelectionConsumer struct {
+	channel   *amqp091.Channel
+	queue     string
+	processor ContentSelectionProcessor
+	publisher Publisher
+	policy    ContentSelectionBrokerPolicy
+	now       func() time.Time
+}
+
+func NewContentSelectionConsumer(channel *amqp091.Channel, queue string, concurrency int, processor ContentSelectionProcessor, publisher Publisher, policy ContentSelectionBrokerPolicy) (*ContentSelectionConsumer, error) {
+	if channel == nil || queue == "" || concurrency < 1 || processor == nil || publisher == nil || policy.MaximumAttempts < 1 ||
+		policy.MaximumRanges < 1 || policy.MaximumRanges > 256 || policy.RetryExchange == "" || policy.FirstRetryRoute == "" ||
+		policy.SecondRetryRoute == "" || policy.SubsequentRetryRoute == "" || policy.PublishTimeout <= 0 {
+		return nil, errors.New("invalid content selection consumer")
+	}
+	if err := channel.Qos(concurrency, 0, false); err != nil {
+		return nil, err
+	}
+	return &ContentSelectionConsumer{
+		channel: channel, queue: queue, processor: processor, publisher: publisher, policy: policy, now: time.Now,
+	}, nil
+}
+
+func (c *ContentSelectionConsumer) Run(ctx context.Context, concurrency int) error {
+	deliveries, err := c.channel.Consume(c.queue, "ingestion-content-selection-worker", false, false, false, false, nil)
+	if err != nil {
+		return errors.New("content selection broker consumer unavailable")
+	}
+	var wait sync.WaitGroup
+	sem := make(chan struct{}, concurrency)
+	for {
+		select {
+		case <-ctx.Done():
+			wait.Wait()
+			return ctx.Err()
+		case delivery, open := <-deliveries:
+			if !open {
+				wait.Wait()
+				return errors.New("content selection broker delivery channel closed")
+			}
+			sem <- struct{}{}
+			wait.Add(1)
+			go func() {
+				defer func() { <-sem; wait.Done() }()
+				c.handle(ctx, delivery)
+			}()
+		}
+	}
+}
+
+func (c *ContentSelectionConsumer) handle(ctx context.Context, delivery amqp091.Delivery) {
+	if delivery.Type != ContentSelectionCompletedRoute || delivery.ContentType != "application/x-protobuf" ||
+		len(delivery.Body) == 0 || len(delivery.Body) > contracts.MaximumBrokerMessageBytes {
+		settleReject(ctx, delivery)
+		return
+	}
+	result, err := DecodeContentSelectionCompleted(delivery.Body, c.policy.MaximumRanges)
+	if err != nil || delivery.MessageId == "" || delivery.MessageId != result.EventID {
+		settleReject(ctx, delivery)
+		return
+	}
+	err = c.processor.ProcessContentSelection(ctx, result)
+	switch application.DeliveryDisposition(err) {
+	case application.DeliveryAcknowledge:
+		settleAck(ctx, delivery)
+	case application.DeliveryReject:
+		settleReject(ctx, delivery)
+	case application.DeliveryRequeue:
+		c.retry(ctx, delivery)
+	}
+}
+
+func (c *ContentSelectionConsumer) retry(ctx context.Context, delivery amqp091.Delivery) {
+	if ctx.Err() != nil {
+		return
+	}
+	attempt, valid := deliveryAttempt(delivery.Headers, c.policy.MaximumAttempts)
+	if !valid || attempt >= c.policy.MaximumAttempts {
+		settleNack(ctx, delivery, false)
+		return
+	}
+	nextAttempt := attempt + 1
+	publishCtx, cancel := context.WithTimeout(ctx, c.policy.PublishTimeout)
+	err := c.publisher.PublishWithContext(publishCtx, c.policy.RetryExchange, c.policy.retryRouteForAttempt(nextAttempt), true, false, amqp091.Publishing{
+		Headers:     amqp091.Table{applicationDeliveryCountHeader: int64(nextAttempt)},
+		ContentType: "application/x-protobuf", DeliveryMode: amqp091.Persistent,
+		MessageId: delivery.MessageId, Type: delivery.Type, Timestamp: c.now().UTC(), Body: delivery.Body,
+	})
+	cancel()
+	if err != nil {
+		if ctx.Err() == nil {
+			settleNack(ctx, delivery, true)
+		}
+		return
+	}
+	settleAck(ctx, delivery)
+}
+
+func (p ContentSelectionBrokerPolicy) retryRouteForAttempt(attempt int) string {
+	switch {
+	case attempt <= 1:
+		return p.FirstRetryRoute
+	case attempt <= 3:
+		return p.SecondRetryRoute
+	default:
+		return p.SubsequentRetryRoute
+	}
+}
+
 type BrokerPolicy struct {
 	MaximumAttempts int
 	RetryExchange   string

@@ -20,6 +20,95 @@ enum BookProcessingFailureCategory {
   BOOK_PROCESSING_FAILURE_CATEGORY_INTERNAL_PROCESSING_ERROR = 10;
 }
 
+enum ContentSelectionMode {
+  CONTENT_SELECTION_MODE_UNSPECIFIED = 0;
+  CONTENT_SELECTION_MODE_DISABLED = 1;
+  CONTENT_SELECTION_MODE_OBSERVATION = 2;
+  CONTENT_SELECTION_MODE_ENFORCEMENT = 3;
+}
+
+enum ContentExclusionReason {
+  CONTENT_EXCLUSION_REASON_UNSPECIFIED = 0;
+  CONTENT_EXCLUSION_REASON_TITLE_PAGE = 1;
+  CONTENT_EXCLUSION_REASON_COPYRIGHT_OR_IMPRINT = 2;
+  CONTENT_EXCLUSION_REASON_DEDICATION_OR_ORNAMENTAL_BLANK = 3;
+  CONTENT_EXCLUSION_REASON_TABLE_OR_LIST = 4;
+  CONTENT_EXCLUSION_REASON_INDEX = 5;
+  CONTENT_EXCLUSION_REASON_PUBLISHER_CATALOG_OR_ADVERTISING = 6;
+  CONTENT_EXCLUSION_REASON_ALSO_BY = 7;
+  CONTENT_EXCLUSION_REASON_COLOPHON = 8;
+}
+
+enum ContentSelectionFallbackReason {
+  CONTENT_SELECTION_FALLBACK_REASON_UNSPECIFIED = 0;
+  CONTENT_SELECTION_FALLBACK_REASON_NONE = 1;
+  CONTENT_SELECTION_FALLBACK_REASON_DISABLED = 2;
+  CONTENT_SELECTION_FALLBACK_REASON_OBSERVATION = 3;
+  CONTENT_SELECTION_FALLBACK_REASON_UNSUPPORTED_LAYOUT = 4;
+  CONTENT_SELECTION_FALLBACK_REASON_PROCESSING_TIMEOUT = 5;
+  CONTENT_SELECTION_FALLBACK_REASON_INVALID_OUTPUT = 6;
+  CONTENT_SELECTION_FALLBACK_REASON_AMBIGUOUS_MAPPING = 7;
+  CONTENT_SELECTION_FALLBACK_REASON_RESOURCE_LIMIT = 8;
+  CONTENT_SELECTION_FALLBACK_REASON_EXCESSIVE_EXCLUSION = 9;
+  CONTENT_SELECTION_FALLBACK_REASON_INTERNAL_ERROR = 10;
+}
+
+message ExcludedRangeV1 {
+  // Ordinals are one-based and inclusive in the original PDF page or EPUB spine order.
+  uint32 start_ordinal = 1;
+  uint32 end_ordinal = 2;
+  ContentExclusionReason reason = 3;
+}
+
+message BookContentSelectionRequestedV1 {
+  string event_id = 1;
+  // Equal to event_id in v1; completion events use it as the durable request correlation key.
+  string request_id = 2;
+  string book_id = 3;
+  string source_reference = 4;
+  string media_type = 5;
+  bytes source_sha256 = 6;
+  int64 source_byte_size = 7;
+  int64 lifecycle_version = 8;
+  bytes processing_profile_digest = 9;
+  ContentSelectionMode mode = 10;
+  string selector_version = 11;
+  string parser_profile = 12;
+  string correlation_id = 13;
+  google.protobuf.Timestamp occurred_at = 14;
+  string causation_id = 15;
+  string producer = 16;
+  string schema_version = 17;
+  string idempotency_key = 18;
+  string job_id = 19;
+  bytes policy_digest = 20;
+}
+
+message BookContentSelectionCompletedV1 {
+  string event_id = 1;
+  string request_id = 2;
+  string book_id = 3;
+  bytes source_sha256 = 4;
+  int64 lifecycle_version = 5;
+  bytes processing_profile_digest = 6;
+  uint32 original_ordinal_count = 7;
+  ContentSelectionMode mode = 8;
+  string selector_version = 9;
+  string parser_version = 10;
+  bytes model_digest = 11;
+  bytes policy_digest = 12;
+  ContentSelectionFallbackReason fallback_reason = 13;
+  repeated ExcludedRangeV1 excluded_ranges = 14;
+  string correlation_id = 15;
+  google.protobuf.Timestamp occurred_at = 16;
+  string causation_id = 17;
+  string producer = 18;
+  string schema_version = 19;
+  string idempotency_key = 20;
+  string job_id = 21;
+  string media_type = 22;
+}
+
 message BookProcessingStartedV1 {
   string event_id = 1;
   string book_id = 2;
@@ -110,6 +199,21 @@ message ChunkShardDescriptorV1 {
   uint64 last_chunk_order = 7;
 }
 
+message ContentSelectionV1 {
+  ContentSelectionMode mode = 1;
+  string selector_version = 2;
+  string parser_version = 3;
+  bytes model_digest = 4;
+  bytes policy_digest = 5;
+  ContentSelectionFallbackReason fallback_reason = 6;
+  uint32 original_ordinal_count = 7;
+  uint32 retained_ordinal_count = 8;
+  uint32 excluded_ordinal_count = 9;
+  double excluded_ratio = 10;
+  repeated ExcludedRangeV1 excluded_ranges = 11;
+  bytes processing_profile_digest = 12;
+}
+
 message ChunkManifestV1 {
   string schema_version = 1;
   string book_id = 2;
@@ -127,6 +231,7 @@ message ChunkManifestV1 {
   uint32 maximum_tokens = 14;
   uint32 overlap_tokens = 15;
   int64 lifecycle_version = 16;
+  ContentSelectionV1 content_selection = 17;
 }
 
 message BookArtifactsDeletedV1 {

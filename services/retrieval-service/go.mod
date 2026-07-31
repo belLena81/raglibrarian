@@ -18,7 +18,7 @@ require (
 	github.com/belLena81/raglibrarian/pkg/providerhttp v0.0.0-00010101000000-000000000000
 	github.com/belLena81/raglibrarian/pkg/rabbitmqconn v0.0.0-00010101000000-000000000000
 	github.com/jackc/pgx/v5 v5.9.2
-	github.com/klauspost/compress v1.18.2
+	github.com/klauspost/compress v1.18.7
 	github.com/minio/minio-go/v7 v7.0.99
 	github.com/rabbitmq/amqp091-go v1.12.0
 	github.com/stretchr/testify v1.11.1

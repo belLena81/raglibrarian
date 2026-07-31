@@ -130,16 +130,18 @@ but does not supply semantic section roles; see the
 
 ### Option 4: layout-aware parsing
 
-Add a sandboxed parser sidecar and map its bounded structured output into the
-Ingestion extractor port. Docling exposes document hierarchy, layout,
-provenance, bounding boxes, and separation of the main body from headers and
-footers; see the
-[Docling document model](https://docling-project.github.io/docling/concepts/docling_document/).
+Run Poppler's bounded `-bbox-layout` extraction through the existing parser
+sandbox and map page, block, line, word, and bounding-box output into the
+Ingestion layout analyzer port. EPUB analysis reuses the existing bounded Go
+spine parser. Conservative Go-owned heuristics derive only the labels needed by
+the exclusion policy; ambiguous or image-only pages fail open and retain their
+content.
 
-This improves detection of complex tables of contents, multi-column indexes,
-headers, footers, and scanned or irregularly formatted books. It also introduces
-another runtime, model assets, CPU and memory requirements, parser timeouts, and
-a required fallback to the current extractor.
+This preserves the event-driven worker and versioned result contracts without
+introducing another language runtime or model-serving service. It improves
+layout signals for born-digital PDFs, but intentionally does not OCR scanned
+books. Poppler documents the structured output under `-bbox-layout`; see the
+[pdftotext documentation](https://manpages.debian.org/bookworm/poppler-utils/pdftotext.1.en.html).
 
 GROBID can segment title/front/body/bibliography regions, but it is primarily
 oriented toward scholarly publications and is a less natural default for a

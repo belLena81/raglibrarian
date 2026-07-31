@@ -11,7 +11,7 @@ HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
 # 0.69.2 is the vendor-designated unaffected Trivy release after the 2026
 # publishing incident. Do not move this pin without reviewing the advisory.
 TRIVY_IMAGE := aquasec/trivy:0.69.2
-SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-retrieval-service:local raglibrarian-retrieval-worker:local raglibrarian-answer-service:local
+SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-layout-parser-worker:local raglibrarian-retrieval-service:local raglibrarian-retrieval-worker:local raglibrarian-answer-service:local
 QDRANT_IMAGE := qdrant/qdrant:v1.18.3
 QDRANT_TRIVY_IGNORE_FILE := security/trivy/qdrant-v1.18.3.ignore.yaml
 M5_TEI_IMAGE := ghcr.io/huggingface/text-embeddings-inference@sha256:cb570aabbfa016b86684f576b5bd72d1ee96cc0b7a00b0ad221b298762b32157
@@ -652,6 +652,7 @@ test-secrets: _require_root
 		echo "Runtime secrets are missing; generating them first."; \
 		$(MAKE) dev-secrets; \
 	fi; \
+	bash ./scripts/ensure-m4-dev-secrets.sh "$$secret_dir"; \
 	bash ./scripts/ensure-test-dev-secrets.sh "$$secret_dir"
 
 m5-model-bootstrap: _require_root
@@ -743,6 +744,7 @@ image-build: _require_root
 	docker build --target catalog-runtime --build-arg SERVICE=catalog-service -t raglibrarian-catalog-service:local .
 	docker build --build-arg SERVICE=edge-api -t raglibrarian-edge-api:local .
 	docker build --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/worker -t raglibrarian-ingestion-service:local .
+	docker build --target layout-worker-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/layout_worker -t raglibrarian-layout-parser-worker:local .
 	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/server -t raglibrarian-retrieval-service:local .
 	docker build --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/worker -t raglibrarian-retrieval-worker:local .
 	docker build --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/lambda -t raglibrarian-ingestion-lambda:local .
@@ -768,6 +770,7 @@ image-build-ci: _require_root
 	build_ci raglibrarian-catalog-service:local catalog-service --target catalog-runtime --build-arg SERVICE=catalog-service; \
 	build_ci raglibrarian-edge-api:local edge-api --build-arg SERVICE=edge-api; \
 	build_ci raglibrarian-ingestion-service:local ingestion-service --target ingestion-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/worker; \
+	build_ci raglibrarian-layout-parser-worker:local layout-parser-worker --target layout-worker-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/layout_worker; \
 	build_ci raglibrarian-retrieval-service:local retrieval-service --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/server; \
 	build_ci raglibrarian-retrieval-worker:local retrieval-worker --target retrieval-runtime --build-arg SERVICE=retrieval-service --build-arg SERVICE_COMMAND=cmd/worker; \
 	build_ci raglibrarian-ingestion-lambda:local ingestion-service --target ingestion-lambda-runtime --build-arg SERVICE=ingestion-service --build-arg SERVICE_COMMAND=cmd/lambda; \

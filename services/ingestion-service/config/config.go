@@ -17,30 +17,39 @@ import (
 )
 
 const (
-	DefaultChunkTargetPages         = 2
-	DefaultChunkMaximumPages        = 3
-	DefaultQueue                    = "ingestion.book-uploaded.v1"
-	DefaultResultExchange           = "raglibrarian.ingestion.events.v1"
-	DefaultRetryExchange            = "raglibrarian.ingestion.retry.v1"
-	DefaultUploadFirstRetryRoute    = "ingestion.retry.5s"
-	DefaultUploadSecondRetryRoute   = "ingestion.retry.30s"
-	DefaultUploadThirdRetryRoute    = "ingestion.retry.2m"
-	DefaultDeleteFirstRetryRoute    = "ingestion.deletion.retry.5s"
-	DefaultDeleteSecondRetryRoute   = "ingestion.deletion.retry.30s"
-	DefaultDeleteThirdRetryRoute    = "ingestion.deletion.retry.2m"
-	DefaultParserSandboxMemoryBytes = defaults.ParserSandboxMemoryBytesMin
-	MaximumParserSandboxMemoryBytes = defaults.ParserSandboxMemoryBytesMax
-	DefaultEPUBMaximumEntries       = defaults.EPUBMaximumEntries
-	MaximumEPUBMaximumEntries       = defaults.EPUBMaximumEntriesLimit
-	DefaultEPUBMaximumSpineItems    = int64(defaults.EPUBMaximumSpineItems)
-	MaximumEPUBMaximumSpineItems    = int64(defaults.EPUBMaximumSpineItemsLimit)
-	DefaultEPUBMaximumEntryBytes    = defaults.EPUBMaximumEntryBytes
-	MaximumEPUBMaximumEntryBytes    = defaults.EPUBMaximumEntryBytesLimit
-	DefaultEPUBMaximumExpandedBytes = defaults.EPUBMaximumExpandedBytes
-	MaximumEPUBMaximumExpandedBytes = defaults.EPUBMaximumExpandedBytesLimit
-	DefaultEPUBMaximumTextBytes     = defaults.EPUBMaximumTextBytes
-	MaximumEPUBMaximumTextBytes     = defaults.EPUBMaximumTextBytesLimit
-	DefaultCommandStderrBytes       = defaults.CommandStderrBytes
+	DefaultChunkTargetPages          = 2
+	DefaultChunkMaximumPages         = 3
+	DefaultQueue                     = "ingestion.book-uploaded.v1"
+	DefaultResultExchange            = "raglibrarian.ingestion.events.v1"
+	DefaultRetryExchange             = "raglibrarian.ingestion.retry.v1"
+	DefaultUploadFirstRetryRoute     = "ingestion.retry.5s"
+	DefaultUploadSecondRetryRoute    = "ingestion.retry.30s"
+	DefaultUploadThirdRetryRoute     = "ingestion.retry.2m"
+	DefaultDeleteFirstRetryRoute     = "ingestion.deletion.retry.5s"
+	DefaultDeleteSecondRetryRoute    = "ingestion.deletion.retry.30s"
+	DefaultDeleteThirdRetryRoute     = "ingestion.deletion.retry.2m"
+	DefaultSelectionFirstRetryRoute  = "ingestion.content-selection.retry.5s"
+	DefaultSelectionSecondRetryRoute = "ingestion.content-selection.retry.30s"
+	DefaultSelectionThirdRetryRoute  = "ingestion.content-selection.retry.2m"
+	DefaultParserSandboxMemoryBytes  = defaults.ParserSandboxMemoryBytesMin
+	MaximumParserSandboxMemoryBytes  = defaults.ParserSandboxMemoryBytesMax
+	DefaultEPUBMaximumEntries        = defaults.EPUBMaximumEntries
+	MaximumEPUBMaximumEntries        = defaults.EPUBMaximumEntriesLimit
+	DefaultEPUBMaximumSpineItems     = int64(defaults.EPUBMaximumSpineItems)
+	MaximumEPUBMaximumSpineItems     = int64(defaults.EPUBMaximumSpineItemsLimit)
+	DefaultEPUBMaximumEntryBytes     = defaults.EPUBMaximumEntryBytes
+	MaximumEPUBMaximumEntryBytes     = defaults.EPUBMaximumEntryBytesLimit
+	DefaultEPUBMaximumExpandedBytes  = defaults.EPUBMaximumExpandedBytes
+	MaximumEPUBMaximumExpandedBytes  = defaults.EPUBMaximumExpandedBytesLimit
+	DefaultEPUBMaximumTextBytes      = defaults.EPUBMaximumTextBytes
+	MaximumEPUBMaximumTextBytes      = defaults.EPUBMaximumTextBytesLimit
+	DefaultCommandStderrBytes        = defaults.CommandStderrBytes
+	DefaultContentSelectionQueue     = "ingestion.content-selection-results.v1"
+	DefaultContentSelectionMode      = "enforcement"
+	DefaultContentSelectionPolicy    = "layout-selector-v1"
+	DefaultContentSelectionParser    = "poppler-bbox-layout-v1"
+	// V1 attests the exact deterministic parser profile and policy implementation.
+	DefaultContentSelectionModelSHA = "55b474c59ef72485c1f1238bf2793c563c49dfa28f7cec3dd298ebacd202d012"
 )
 
 type Config struct {
@@ -51,10 +60,14 @@ type Config struct {
 	TokenizerFile, PDFInfoPath, PDFTextPath, EPUBParserPath, TemporaryDirectory string
 	DebugDumpPDFTextDirectory                                                   string
 	Queue, ResultExchange, RetryExchange                                        string
+	ContentSelectionQueue, ContentSelectionMode, ContentSelectionPolicyVersion  string
+	ContentSelectionParserVersion, ContentSelectionModelDigest                  string
 	UploadFirstRetryRoute, UploadSecondRetryRoute                               string
 	UploadSubsequentRetryRoute                                                  string
 	DeletionFirstRetryRoute, DeletionSecondRetryRoute                           string
 	DeletionSubsequentRetryRoute                                                string
+	ContentSelectionFirstRetryRoute, ContentSelectionSecondRetryRoute           string
+	ContentSelectionSubsequentRetryRoute                                        string
 	MinIOInsecure                                                               bool
 	WorkConcurrency, MaximumAttempts, MaximumChunks                             int
 	ChunkMaximumTokens, ChunkOverlapTokens, ChunkTargetPages, ChunkMaximumPages int
@@ -67,6 +80,9 @@ type Config struct {
 	ArtifactVersionCleanupPasses                                                int
 	ArtifactMaximumShardBytes                                                   int64
 	MemoryLimitBytes, ParserSandboxMemoryBytes, ParserRuntimeHeadroomBytes      int64
+	ContentSelectionMaximumRanges                                               int
+	ContentSelectionMinimumSignals                                              int
+	ContentSelectionMaximumExcludedRatio                                        float64
 	MaximumPages                                                                uint32
 	ProcessingTimeout, PersistenceTimeout, ArtifactAbortTimeout, JobLease       time.Duration
 	FirstRetryDelay, SecondRetryDelay, SubsequentRetryDelay, OutboxInterval     time.Duration
@@ -560,79 +576,106 @@ func loadLocal() (Config, error) {
 	}
 	retryExchange, uploadFirstRetryRoute, uploadSecondRetryRoute, uploadSubsequentRetryRoute,
 		deletionFirstRetryRoute, deletionSecondRetryRoute, deletionSubsequentRetryRoute := retryRoutingValues()
+	contentSelectionMode := optional("INGESTION_CONTENT_SELECTION_MODE", DefaultContentSelectionMode)
+	if contentSelectionMode != "disabled" && contentSelectionMode != "observation" && contentSelectionMode != "enforcement" {
+		return Config{}, fmt.Errorf("INGESTION_CONTENT_SELECTION_MODE must be disabled, observation, or enforcement")
+	}
+	contentSelectionMaximumRanges, err := fixedInt("INGESTION_CONTENT_SELECTION_MAX_RANGES", 256)
+	if err != nil {
+		return Config{}, err
+	}
+	contentSelectionMinimumSignals, err := fixedInt("INGESTION_CONTENT_SELECTION_MIN_SIGNALS", 2)
+	if err != nil {
+		return Config{}, err
+	}
+	contentSelectionMaximumExcludedRatio, err := strconv.ParseFloat(optional("INGESTION_CONTENT_SELECTION_MAX_EXCLUDED_RATIO", "0.25"), 64)
+	if err != nil || contentSelectionMaximumExcludedRatio != 0.25 {
+		return Config{}, fmt.Errorf("INGESTION_CONTENT_SELECTION_MAX_EXCLUDED_RATIO must be 0.25 for the supported processing profile")
+	}
 	return Config{
-		RuntimeBackend:                 "local",
-		DSN:                            dsn,
-		RabbitURI:                      rabbitURI,
-		MinIOEndpoint:                  endpoint,
-		MinIOAccessKey:                 accessKey,
-		MinIOSecretKey:                 secretKey,
-		SourceBucket:                   sourceBucket,
-		ArtifactBucket:                 artifactBucket,
-		MinIOCAFile:                    caFile,
-		MetricsAddress:                 metrics,
-		TokenizerFile:                  tokenizerFile,
-		PDFInfoPath:                    optional("INGESTION_PDFINFO_PATH", "/usr/bin/pdfinfo"),
-		PDFTextPath:                    optional("INGESTION_PDFTOTEXT_PATH", "/usr/bin/pdftotext"),
-		EPUBParserPath:                 optional("INGESTION_EPUB_PARSER_PATH", "/usr/local/bin/epub-parser"),
-		TemporaryDirectory:             temporaryDirectory,
-		DebugDumpPDFTextDirectory:      debugDumpPDFTextDirectory,
-		Queue:                          optional("INGESTION_QUEUE", DefaultQueue),
-		ResultExchange:                 optional("INGESTION_RESULT_EXCHANGE", DefaultResultExchange),
-		RetryExchange:                  retryExchange,
-		UploadFirstRetryRoute:          uploadFirstRetryRoute,
-		UploadSecondRetryRoute:         uploadSecondRetryRoute,
-		UploadSubsequentRetryRoute:     uploadSubsequentRetryRoute,
-		DeletionFirstRetryRoute:        deletionFirstRetryRoute,
-		DeletionSecondRetryRoute:       deletionSecondRetryRoute,
-		DeletionSubsequentRetryRoute:   deletionSubsequentRetryRoute,
-		MinIOInsecure:                  insecure,
-		WorkConcurrency:                workConcurrency,
-		MaximumAttempts:                maximumAttempts,
-		MaximumChunks:                  maximumChunks,
-		EPUBMaximumEntries:             epubMaximumEntries,
-		EPUBMaximumSpineItems:          uint32(epubMaximumSpineItems64), // #nosec G115 -- bounded above.
-		EPUBMaximumEntryBytes:          epubMaximumEntryBytes,
-		EPUBMaximumExpandedBytes:       epubMaximumExpandedBytes,
-		EPUBMaximumTextBytes:           epubMaximumTextBytes,
-		ChunkMaximumTokens:             chunkMaximumTokens,
-		ChunkOverlapTokens:             chunkOverlapTokens,
-		ChunkTargetPages:               chunkTargetPages,
-		ChunkMaximumPages:              chunkMaximumPages,
-		MaximumSourceBytes:             maximumSource,
-		MaximumExtractedBytes:          maximumExtracted,
-		MaximumPageBytes:               maximumPage,
-		MaximumManifestBytes:           maximumManifest,
-		ArtifactChunksPerShard:         artifactChunksPerShard,
-		ArtifactVersionCleanupPasses:   artifactVersionCleanupPasses,
-		ArtifactMaximumShardBytes:      artifactMaximumShardBytes,
-		MaximumTemporaryBytes:          maximumTemporary,
-		MemoryLimitBytes:               memoryLimit,
-		ParserSandboxMemoryBytes:       parserMemory,
-		ParserRuntimeHeadroomBytes:     parserRuntimeHeadroomBytes,
-		MaximumPages:                   maximumPages,
-		ProcessingTimeout:              timeout,
-		PersistenceTimeout:             persistenceTimeout,
-		ArtifactAbortTimeout:           artifactAbortTimeout,
-		JobLease:                       lease,
-		FirstRetryDelay:                firstRetryDelay,
-		SecondRetryDelay:               secondRetryDelay,
-		SubsequentRetryDelay:           subsequentRetryDelay,
-		OutboxInterval:                 outboxInterval,
-		RabbitDialTimeout:              rabbitDialTimeout,
-		RabbitHeartbeat:                rabbitHeartbeat,
-		RabbitPublishTimeout:           rabbitPublishTimeout,
-		OutboxLease:                    outboxLease,
-		RetryDispatchDelay:             retryDispatchDelay,
-		OutboxRetryBaseDelay:           outboxRetryBaseDelay,
-		OutboxRetryMaxDelay:            outboxRetryMaxDelay,
-		CleanupInterval:                cleanupInterval,
-		OrphanGracePeriod:              orphanGracePeriod,
-		WorkerReadinessProbeTimeout:    workerReadinessProbeTimeout,
-		WorkerReadinessRefreshInterval: workerReadinessRefreshInterval,
-		WorkerMetricsReadHeaderTimeout: workerMetricsReadHeaderTimeout,
-		WorkerMetricsShutdownTimeout:   workerMetricsShutdownTimeout,
-		RunAs:                          process.Identity{UID: uid, GID: gid},
+		RuntimeBackend:                       "local",
+		DSN:                                  dsn,
+		RabbitURI:                            rabbitURI,
+		MinIOEndpoint:                        endpoint,
+		MinIOAccessKey:                       accessKey,
+		MinIOSecretKey:                       secretKey,
+		SourceBucket:                         sourceBucket,
+		ArtifactBucket:                       artifactBucket,
+		MinIOCAFile:                          caFile,
+		MetricsAddress:                       metrics,
+		TokenizerFile:                        tokenizerFile,
+		PDFInfoPath:                          optional("INGESTION_PDFINFO_PATH", "/usr/bin/pdfinfo"),
+		PDFTextPath:                          optional("INGESTION_PDFTOTEXT_PATH", "/usr/bin/pdftotext"),
+		EPUBParserPath:                       optional("INGESTION_EPUB_PARSER_PATH", "/usr/local/bin/epub-parser"),
+		TemporaryDirectory:                   temporaryDirectory,
+		DebugDumpPDFTextDirectory:            debugDumpPDFTextDirectory,
+		Queue:                                optional("INGESTION_QUEUE", DefaultQueue),
+		ContentSelectionQueue:                optional("INGESTION_CONTENT_SELECTION_QUEUE", DefaultContentSelectionQueue),
+		ContentSelectionMode:                 contentSelectionMode,
+		ContentSelectionPolicyVersion:        optional("INGESTION_CONTENT_SELECTION_POLICY_VERSION", DefaultContentSelectionPolicy),
+		ContentSelectionParserVersion:        optional("INGESTION_CONTENT_SELECTION_PARSER_VERSION", DefaultContentSelectionParser),
+		ContentSelectionModelDigest:          optional("INGESTION_CONTENT_SELECTION_MODEL_SHA256", DefaultContentSelectionModelSHA),
+		ResultExchange:                       optional("INGESTION_RESULT_EXCHANGE", DefaultResultExchange),
+		RetryExchange:                        retryExchange,
+		UploadFirstRetryRoute:                uploadFirstRetryRoute,
+		UploadSecondRetryRoute:               uploadSecondRetryRoute,
+		UploadSubsequentRetryRoute:           uploadSubsequentRetryRoute,
+		DeletionFirstRetryRoute:              deletionFirstRetryRoute,
+		DeletionSecondRetryRoute:             deletionSecondRetryRoute,
+		DeletionSubsequentRetryRoute:         deletionSubsequentRetryRoute,
+		ContentSelectionFirstRetryRoute:      optional("INGESTION_CONTENT_SELECTION_FIRST_RETRY_ROUTE", DefaultSelectionFirstRetryRoute),
+		ContentSelectionSecondRetryRoute:     optional("INGESTION_CONTENT_SELECTION_SECOND_RETRY_ROUTE", DefaultSelectionSecondRetryRoute),
+		ContentSelectionSubsequentRetryRoute: optional("INGESTION_CONTENT_SELECTION_SUBSEQUENT_RETRY_ROUTE", DefaultSelectionThirdRetryRoute),
+		MinIOInsecure:                        insecure,
+		WorkConcurrency:                      workConcurrency,
+		MaximumAttempts:                      maximumAttempts,
+		MaximumChunks:                        maximumChunks,
+		EPUBMaximumEntries:                   epubMaximumEntries,
+		EPUBMaximumSpineItems:                uint32(epubMaximumSpineItems64), // #nosec G115 -- bounded above.
+		EPUBMaximumEntryBytes:                epubMaximumEntryBytes,
+		EPUBMaximumExpandedBytes:             epubMaximumExpandedBytes,
+		EPUBMaximumTextBytes:                 epubMaximumTextBytes,
+		ChunkMaximumTokens:                   chunkMaximumTokens,
+		ChunkOverlapTokens:                   chunkOverlapTokens,
+		ChunkTargetPages:                     chunkTargetPages,
+		ChunkMaximumPages:                    chunkMaximumPages,
+		MaximumSourceBytes:                   maximumSource,
+		MaximumExtractedBytes:                maximumExtracted,
+		MaximumPageBytes:                     maximumPage,
+		MaximumManifestBytes:                 maximumManifest,
+		ArtifactChunksPerShard:               artifactChunksPerShard,
+		ArtifactVersionCleanupPasses:         artifactVersionCleanupPasses,
+		ArtifactMaximumShardBytes:            artifactMaximumShardBytes,
+		MaximumTemporaryBytes:                maximumTemporary,
+		MemoryLimitBytes:                     memoryLimit,
+		ParserSandboxMemoryBytes:             parserMemory,
+		ParserRuntimeHeadroomBytes:           parserRuntimeHeadroomBytes,
+		ContentSelectionMaximumRanges:        contentSelectionMaximumRanges,
+		ContentSelectionMinimumSignals:       contentSelectionMinimumSignals,
+		ContentSelectionMaximumExcludedRatio: contentSelectionMaximumExcludedRatio,
+		MaximumPages:                         maximumPages,
+		ProcessingTimeout:                    timeout,
+		PersistenceTimeout:                   persistenceTimeout,
+		ArtifactAbortTimeout:                 artifactAbortTimeout,
+		JobLease:                             lease,
+		FirstRetryDelay:                      firstRetryDelay,
+		SecondRetryDelay:                     secondRetryDelay,
+		SubsequentRetryDelay:                 subsequentRetryDelay,
+		OutboxInterval:                       outboxInterval,
+		RabbitDialTimeout:                    rabbitDialTimeout,
+		RabbitHeartbeat:                      rabbitHeartbeat,
+		RabbitPublishTimeout:                 rabbitPublishTimeout,
+		OutboxLease:                          outboxLease,
+		RetryDispatchDelay:                   retryDispatchDelay,
+		OutboxRetryBaseDelay:                 outboxRetryBaseDelay,
+		OutboxRetryMaxDelay:                  outboxRetryMaxDelay,
+		CleanupInterval:                      cleanupInterval,
+		OrphanGracePeriod:                    orphanGracePeriod,
+		WorkerReadinessProbeTimeout:          workerReadinessProbeTimeout,
+		WorkerReadinessRefreshInterval:       workerReadinessRefreshInterval,
+		WorkerMetricsReadHeaderTimeout:       workerMetricsReadHeaderTimeout,
+		WorkerMetricsShutdownTimeout:         workerMetricsShutdownTimeout,
+		RunAs:                                process.Identity{UID: uid, GID: gid},
 	}, nil
 }
 

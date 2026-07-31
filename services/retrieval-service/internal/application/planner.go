@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/indexprofile"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
 )
 
@@ -80,6 +82,19 @@ type Shard struct {
 	FirstChunkOrder, LastChunkOrder    uint64
 }
 
+type ContentSelectionRange struct {
+	Start, End uint32
+	Reason     string
+}
+
+type ContentSelection struct {
+	Mode, SelectorVersion, ParserVersion, FallbackReason string
+	ModelDigest, PolicyDigest, ProcessingProfileDigest   [32]byte
+	OriginalCount, RetainedCount, ExcludedCount          uint32
+	ExcludedRatio                                        float64
+	Ranges                                               []ContentSelectionRange
+}
+
 type Manifest struct {
 	SchemaVersion, BookID, ExtractionVersion, NormalizationVersion, TokenizerVersion, ChunkingVersion, StructureVersion string
 	SourceSHA256, ManifestSHA256, ProcessingConfigDigest                                                                [32]byte
@@ -87,6 +102,7 @@ type Manifest struct {
 	LifecycleVersion                                                                                                    uint64
 	GeneratedAt                                                                                                         time.Time
 	Shards                                                                                                              []Shard
+	ContentSelection                                                                                                    *ContentSelection
 }
 
 type ManifestEvent struct {
@@ -143,6 +159,9 @@ func (e ManifestEvent) Validate(profile domain.IndexProfile, policy ManifestPoli
 	if !matchesProfileNumbers(e.Manifest, profile) {
 		return ErrUnsupportedIndexProfile
 	}
+	if !validContentSelection(e.Manifest, profile) {
+		return ErrUnsupportedIndexProfile
+	}
 	if e.Manifest.PageCount < 1 || e.Manifest.PageCount > policy.MaxPages || e.Manifest.ChunkCount < 1 || e.Manifest.GeneratedAt.IsZero() || e.Manifest.GeneratedAt.After(e.OccurredAt) {
 		return ErrInvalidEvent
 	}
@@ -170,6 +189,67 @@ func (e ManifestEvent) Validate(profile domain.IndexProfile, policy ManifestPoli
 		return ErrInvalidEvent
 	}
 	return nil
+}
+
+func validContentSelection(manifest Manifest, profile domain.IndexProfile) bool {
+	selection := manifest.ContentSelection
+	if profile.ContentSelectionVersion == indexprofile.ContentSelectionDisabled {
+		return selection == nil || selection.Mode == indexprofile.ContentSelectionDisabled
+	}
+	if selection == nil || selection.SelectorVersion != profile.ContentSelectionVersion ||
+		(selection.Mode != "observation" && selection.Mode != "enforcement") ||
+		selection.ParserVersion == "" || selection.ModelDigest == ([32]byte{}) ||
+		selection.PolicyDigest == ([32]byte{}) || selection.ProcessingProfileDigest == ([32]byte{}) ||
+		selection.ProcessingProfileDigest != manifest.ProcessingConfigDigest ||
+		selection.OriginalCount != manifest.PageCount || selection.RetainedCount > selection.OriginalCount ||
+		selection.ExcludedCount > selection.OriginalCount || math.IsNaN(selection.ExcludedRatio) ||
+		math.IsInf(selection.ExcludedRatio, 0) || selection.ExcludedRatio < 0 || selection.ExcludedRatio > 1 {
+		return false
+	}
+	var excluded uint32
+	var previousEnd uint32
+	for index, value := range selection.Ranges {
+		if value.Start == 0 || value.End < value.Start || value.End > selection.OriginalCount ||
+			!validContentSelectionReason(value.Reason) || (index > 0 && value.Start <= previousEnd) {
+			return false
+		}
+		count := value.End - value.Start + 1
+		if excluded > ^uint32(0)-count {
+			return false
+		}
+		excluded += count
+		previousEnd = value.End
+	}
+	if selection.Mode == "enforcement" {
+		if selection.FallbackReason == "none" {
+			expectedRatio := float64(selection.ExcludedCount) / float64(selection.OriginalCount)
+			return excluded == selection.ExcludedCount &&
+				selection.RetainedCount+selection.ExcludedCount == selection.OriginalCount &&
+				math.Abs(selection.ExcludedRatio-expectedRatio) <= 1e-12
+		}
+		return validContentSelectionFallback(selection.FallbackReason) && selection.FallbackReason != "observation" &&
+			len(selection.Ranges) == 0 && selection.ExcludedCount == 0 && selection.RetainedCount == selection.OriginalCount && selection.ExcludedRatio == 0
+	}
+	return selection.FallbackReason == "observation" && len(selection.Ranges) == 0 &&
+		selection.RetainedCount == selection.OriginalCount && selection.ExcludedCount == 0 && selection.ExcludedRatio == 0
+}
+
+func validContentSelectionFallback(value string) bool {
+	switch value {
+	case "none", "observation", "unsupported_layout", "processing_timeout", "invalid_output", "ambiguous_mapping", "resource_limit", "excessive_exclusion", "internal_error":
+		return true
+	default:
+		return false
+	}
+}
+
+func validContentSelectionReason(value string) bool {
+	switch value {
+	case "title_page", "copyright_or_imprint", "dedication_or_ornamental_blank", "table_or_list", "index", "publisher_catalog_or_advertising", "also_by", "colophon":
+		return true
+	default:
+		return false
+	}
 }
 
 // ManifestFailureCategory identifies terminal failures that can be safely
@@ -292,8 +372,8 @@ func (p *Planner) plan(ctx context.Context, snapshot PlanningSnapshot) error {
 	if snapshot.Metadata.BookID != snapshot.Manifest.BookID || snapshot.Metadata.SourceSHA256 != snapshot.Manifest.SourceSHA256 {
 		return ErrConflictingEvent
 	}
-	profile, ok := domain.SupportedIndexProfileForMediaType(snapshot.Metadata.EffectiveMediaType())
-	if !ok || profile.ExtractionVersion != snapshot.Manifest.Manifest.ExtractionVersion {
+	profile, ok := domain.SupportedIndexProfileForExtraction(snapshot.Manifest.Manifest.ExtractionVersion)
+	if !ok || !profileMatchesMediaType(profile, snapshot.Metadata.EffectiveMediaType()) {
 		return ErrUnsupportedIndexProfile
 	}
 	jobID, err := p.newID()
@@ -314,6 +394,17 @@ func (p *Planner) plan(ctx context.Context, snapshot PlanningSnapshot) error {
 	}
 	_, err = p.repository.CommitPlan(ctx, snapshot, batches)
 	return err
+}
+
+func profileMatchesMediaType(profile domain.IndexProfile, mediaType string) bool {
+	switch mediaType {
+	case domain.MediaTypePDF:
+		return profile.ExtractionVersion == indexprofile.ExtractionPDF || profile.ExtractionVersion == indexprofile.ExtractionPDFFiltered
+	case domain.MediaTypeEPUB:
+		return profile.ExtractionVersion == indexprofile.ExtractionEPUB || profile.ExtractionVersion == indexprofile.ExtractionEPUBFiltered
+	default:
+		return false
+	}
 }
 
 func effectiveLifecycleVersion(value uint64) uint64 {

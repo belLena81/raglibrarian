@@ -72,7 +72,7 @@ func validatedCommand(arguments []string) (string, []string, string, string, err
 		}
 		sourcePath = commandArguments[0]
 	case parserSandboxPDFToTextPath():
-		if len(commandArguments) != 5 || commandArguments[0] != "-layout" || commandArguments[1] != "-enc" || commandArguments[2] != "UTF-8" || commandArguments[4] != "-" {
+		if len(commandArguments) != 5 || (commandArguments[0] != "-layout" && commandArguments[0] != "-bbox-layout") || commandArguments[1] != "-enc" || commandArguments[2] != "UTF-8" || commandArguments[4] != "-" {
 			return "", nil, "", "", errors.New("invalid pdftotext command")
 		}
 		sourcePath = commandArguments[3]
