@@ -2,6 +2,9 @@ package repository
 
 import (
 	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -75,21 +78,29 @@ func TestRetrievalSummaryCacheHardeningMigrationAddsAccessAndFingerprintMetadata
 	contents := strings.Join(strings.Fields(readMigration(t, "../../migrations/004_retrieval_summary_cache_hardening.up.sql")), " ")
 
 	for _, fragment := range []string{
+		"BEGIN;",
 		"ADD COLUMN IF NOT EXISTS topic_hash TEXT",
 		"ADD COLUMN IF NOT EXISTS guard_hash TEXT",
 		"ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT now()",
 		"ADD COLUMN IF NOT EXISTS hit_count BIGINT NOT NULL DEFAULT 0",
 		"ALTER COLUMN query_embedding DROP NOT NULL",
-		"DROP COLUMN topic_tokens",
-		"DROP COLUMN guard_tokens",
-		"DELETE FROM retrieval.summary_assessment_cache",
+		"DROP COLUMN IF EXISTS topic_tokens",
+		"DROP COLUMN IF EXISTS guard_tokens",
+		"DELETE FROM retrieval.summary_assessment_cache WHERE EXISTS",
+		"FROM information_schema.columns",
+		"column_name IN ('topic_tokens','guard_tokens')",
+		"IF NOT EXISTS ( SELECT 1 FROM pg_constraint",
 		"CHECK (query_embedding IS NULL OR octet_length(query_embedding) > 0)",
 		"CREATE INDEX IF NOT EXISTS retrieval_summary_assessment_cache_negative_v2_idx",
 		"CREATE INDEX IF NOT EXISTS retrieval_summary_assessment_cache_eviction_idx",
+		"COMMIT;",
 	} {
 		if !strings.Contains(contents, fragment) {
 			t.Fatalf("retrieval summary cache hardening migration is missing %q", fragment)
 		}
+	}
+	if strings.Contains(contents, "DELETE FROM retrieval.summary_assessment_cache;") {
+		t.Fatal("retrieval summary cache hardening migration unconditionally purges hardened rows")
 	}
 }
 
@@ -106,6 +117,29 @@ func TestPostgresBootstrapRunsRetrievalLexicalSearchMigration(t *testing.T) {
 		if !strings.Contains(contents, fragment) {
 			t.Fatalf("postgres bootstrap is missing %q", fragment)
 		}
+	}
+}
+
+func TestPostgresBootstrapRevisionTracksHighestRetrievalMigration(t *testing.T) {
+	entries, err := os.ReadDir("../../migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrationPattern := regexp.MustCompile(`^([0-9]{3})_.*\.up\.sql$`)
+	versions := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if match := migrationPattern.FindStringSubmatch(entry.Name()); match != nil {
+			versions = append(versions, match[1])
+		}
+	}
+	if len(versions) == 0 {
+		t.Fatal("no retrieval migrations found")
+	}
+	sort.Strings(versions)
+	expectedLabel := `io.raglibrarian.bootstrap-revision: "retrieval-` + versions[len(versions)-1] + `"`
+	compose := readMigration(t, filepath.Clean("../../../../docker-compose.yml"))
+	if !strings.Contains(compose, expectedLabel) {
+		t.Fatalf("db-bootstrap label must track highest retrieval migration: missing %q", expectedLabel)
 	}
 }
 

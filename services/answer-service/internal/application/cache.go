@@ -235,11 +235,11 @@ func queriesMatch(current, cached queryMatch, policy CachePolicy) CacheOutcome {
 	if current.embeddingProfile != cached.embeddingProfile {
 		return CacheOutcomeSemanticMismatch
 	}
-	if current.normalizedQuery == cached.normalizedQuery {
-		return CacheOutcomeHit
-	}
 	if !sameTokens(current.guardTokens, cached.guardTokens) {
 		return CacheOutcomeGuardMismatch
+	}
+	if current.normalizedQuery == cached.normalizedQuery {
+		return CacheOutcomeHit
 	}
 	if !sameAnswerModes(current.modes, cached.modes) {
 		return CacheOutcomeModeMismatch
@@ -366,7 +366,10 @@ func hasPhrase(words []string, first, second string) bool {
 func guardTokens(value string) []string {
 	unique := make(map[string]struct{})
 	for _, raw := range rawGuardWords(value) {
-		normalized := strings.Join(queryWords(raw), " ")
+		normalized, symbolic := symbolicLanguageGuard(raw)
+		if !symbolic {
+			normalized = strings.Join(queryWords(raw), " ")
+		}
 		if normalized == "" {
 			continue
 		}
@@ -386,7 +389,7 @@ func rawGuardWords(value string) []string {
 	var words []string
 	var builder strings.Builder
 	for _, char := range value {
-		if unicode.IsLetter(char) || unicode.IsNumber(char) || strings.ContainsRune("_-/.:", char) {
+		if unicode.IsLetter(char) || unicode.IsNumber(char) || strings.ContainsRune("_-/.:+#", char) {
 			builder.WriteRune(char)
 			continue
 		}
@@ -402,6 +405,9 @@ func rawGuardWords(value string) []string {
 }
 
 func guardToken(raw string) bool {
+	if _, ok := symbolicLanguageGuard(raw); ok {
+		return true
+	}
 	word := strings.Trim(raw, "_-/.:")
 	if word == "" {
 		return false
@@ -418,6 +424,31 @@ func guardToken(raw string) bool {
 		}
 	}
 	return hasDigit
+}
+
+func symbolicLanguageGuard(raw string) (string, bool) {
+	word := strings.TrimSpace(strings.Trim(raw, "_-/.:"))
+	if word == "" {
+		return "", false
+	}
+	first := true
+	hasSymbol := false
+	for _, char := range word {
+		switch {
+		case first && !unicode.IsLetter(char) && !unicode.IsNumber(char):
+			return "", false
+		case unicode.IsLetter(char) || unicode.IsNumber(char):
+		case char == '+' || char == '#':
+			hasSymbol = true
+		default:
+			return "", false
+		}
+		first = false
+	}
+	if !hasSymbol {
+		return "", false
+	}
+	return strings.ToLower(word), true
 }
 
 func sameTokens(left, right []string) bool {

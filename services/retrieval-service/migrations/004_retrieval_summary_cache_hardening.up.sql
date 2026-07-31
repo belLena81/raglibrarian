@@ -1,4 +1,13 @@
-DELETE FROM retrieval.summary_assessment_cache;
+BEGIN;
+
+DELETE FROM retrieval.summary_assessment_cache
+WHERE EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'retrieval'
+      AND table_name = 'summary_assessment_cache'
+      AND column_name IN ('topic_tokens','guard_tokens')
+);
 
 ALTER TABLE retrieval.summary_assessment_cache
     ADD COLUMN IF NOT EXISTS topic_hash TEXT CHECK (topic_hash IS NULL OR topic_hash ~ '^[a-f0-9]{64}$'),
@@ -8,13 +17,24 @@ ALTER TABLE retrieval.summary_assessment_cache
 
 ALTER TABLE retrieval.summary_assessment_cache
     ALTER COLUMN query_embedding DROP NOT NULL,
-    DROP COLUMN topic_tokens,
-    DROP COLUMN guard_tokens,
+    DROP COLUMN IF EXISTS topic_tokens,
+    DROP COLUMN IF EXISTS guard_tokens,
     DROP CONSTRAINT IF EXISTS summary_assessment_cache_query_embedding_check;
 
-ALTER TABLE retrieval.summary_assessment_cache
-    ADD CONSTRAINT summary_assessment_cache_query_embedding_v2_check
-    CHECK (query_embedding IS NULL OR octet_length(query_embedding) > 0);
+DO $migration$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'retrieval.summary_assessment_cache'::regclass
+          AND conname = 'summary_assessment_cache_query_embedding_v2_check'
+    ) THEN
+        ALTER TABLE retrieval.summary_assessment_cache
+            ADD CONSTRAINT summary_assessment_cache_query_embedding_v2_check
+            CHECK (query_embedding IS NULL OR octet_length(query_embedding) > 0);
+    END IF;
+END
+$migration$;
 
 DROP INDEX IF EXISTS retrieval.retrieval_summary_assessment_cache_negative_idx;
 
@@ -25,3 +45,5 @@ CREATE INDEX IF NOT EXISTS retrieval_summary_assessment_cache_negative_v2_idx
 
 CREATE INDEX IF NOT EXISTS retrieval_summary_assessment_cache_eviction_idx
     ON retrieval.summary_assessment_cache (hit_count DESC, last_accessed_at DESC, updated_at DESC);
+
+COMMIT;

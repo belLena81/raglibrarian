@@ -442,6 +442,115 @@ func TestAnswerCacheHitsForNormalizedQueryAndKeepsRetrievalLive(t *testing.T) {
 	}
 }
 
+func TestAnswerCacheDistinguishesSymbolicProgrammingLanguages(t *testing.T) {
+	tests := []struct {
+		name   string
+		first  string
+		second string
+	}{
+		{name: "C then C++", first: "Concurrency in C", second: "Concurrency in C++"},
+		{name: "C++ then C", first: "Concurrency in C++", second: "Concurrency in C"},
+		{name: "C then C#", first: "Concurrency in C", second: "Concurrency in C#"},
+		{name: "C++ then C#", first: "Concurrency in C++", second: "Concurrency in C#"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
+			provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
+			service := newCachedTestService(t, retriever, provider)
+
+			first := validRequest()
+			first.Question = test.first
+			if _, err := service.Answer(context.Background(), first); err != nil {
+				t.Fatal(err)
+			}
+			second := validRequest()
+			second.Question = test.second
+			if _, err := service.Answer(context.Background(), second); err != nil {
+				t.Fatal(err)
+			}
+
+			if provider.calls.Load() != 2 {
+				t.Fatalf("provider calls = %d, want symbolic language cache miss", provider.calls.Load())
+			}
+		})
+	}
+}
+
+func TestAnswerCacheNormalizesSymbolicProgrammingLanguageCaseAndOuterPunctuation(t *testing.T) {
+	tests := []struct {
+		name   string
+		first  string
+		second string
+	}{
+		{name: "C++", first: "Concurrency in C++", second: "  concurrency IN c++! "},
+		{name: "C#", first: "Concurrency in C#", second: "concurrency in c#!"},
+		{name: "F#", first: "Concurrency in F#", second: "concurrency in f#!"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
+			provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
+			service := newCachedTestService(t, retriever, provider)
+
+			first := validRequest()
+			first.Question = test.first
+			if _, err := service.Answer(context.Background(), first); err != nil {
+				t.Fatal(err)
+			}
+			second := validRequest()
+			second.Question = test.second
+			if _, err := service.Answer(context.Background(), second); err != nil {
+				t.Fatal(err)
+			}
+
+			if provider.calls.Load() != 1 {
+				t.Fatalf("provider calls = %d, want normalized symbolic language cache hit", provider.calls.Load())
+			}
+		})
+	}
+}
+
+func TestGuardTokensPreserveAttachedSymbolicProgrammingLanguages(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{name: "plain C", query: "Concurrency in C", want: nil},
+		{name: "C++", query: "Concurrency in C++", want: []string{"c++"}},
+		{name: "C#", query: "Concurrency in C#", want: []string{"c#"}},
+		{name: "F#", query: "Concurrency in F#", want: []string{"f#"}},
+		{name: "C++ version", query: "Concurrency in C++17", want: []string{"c++17"}},
+		{name: "standalone plus", query: "cost + latency", want: nil},
+		{name: "hashtag", query: "#cache behavior", want: nil},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := guardTokens(test.query); !sameTokens(got, test.want) {
+				t.Fatalf("guardTokens(%q) = %#v, want %#v", test.query, got, test.want)
+			}
+		})
+	}
+}
+
+func TestQueriesMatchChecksGuardsBeforeNormalizedQueryFastPath(t *testing.T) {
+	current := queryMatch{
+		normalizedQuery:  "concurrency in c",
+		topicTokens:      []string{"c", "concurrency"},
+		guardTokens:      nil,
+		modes:            []answerMode{answerModeOverview},
+		embedding:        []float32{1, 0},
+		embeddingProfile: "embedding-v1",
+	}
+	cached := current
+	cached.guardTokens = []string{"c++"}
+
+	if outcome := queriesMatch(current, cached, CachePolicy{MinimumCosine: 0.9}); outcome != CacheOutcomeGuardMismatch {
+		t.Fatalf("queriesMatch() = %q, want %q", outcome, CacheOutcomeGuardMismatch)
+	}
+}
+
 func TestAnswerCacheHitsForTopicExpansionWhenModeIsCompatible(t *testing.T) {
 	retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
 	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}

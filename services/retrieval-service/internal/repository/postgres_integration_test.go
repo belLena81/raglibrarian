@@ -18,6 +18,7 @@ import (
 	retrievalv1 "github.com/belLena81/raglibrarian/pkg/proto/retrieval/v1"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/application"
 	"github.com/belLena81/raglibrarian/services/retrieval-service/internal/domain"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/protobuf/proto"
 )
@@ -326,6 +327,86 @@ func TestSummaryAssessmentCachePersistsExactAndNegativeSemanticHits(t *testing.T
 	}
 	if outcome != application.AssessmentCacheOutcomeNegativeHit || assessment.Relevant {
 		t.Fatalf("Lookup() semantic negative = %#v/%q, want negative semantic hit", assessment, outcome)
+	}
+}
+
+func TestSummaryAssessmentCacheHardeningMigrationReplaysWithoutPurgingHardenedRows(t *testing.T) {
+	if os.Getenv("RETRIEVAL_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set RETRIEVAL_POSTGRES_INTEGRATION=true against an isolated migrated database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+
+	schema := "cache_migration_" + randomIntegrationID(t)
+	schemaSQL := pgx.Identifier{schema}.Sanitize()
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, "DROP SCHEMA IF EXISTS "+schemaSQL+" CASCADE")
+	})
+	if _, err = pool.Exec(ctx, "CREATE SCHEMA "+schemaSQL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `CREATE TABLE `+schemaSQL+`.summary_assessment_cache (
+		provider_profile TEXT NOT NULL,
+		question_hash TEXT NOT NULL,
+		passage_hash TEXT NOT NULL,
+		topic_tokens TEXT[] NOT NULL,
+		guard_tokens TEXT[] NOT NULL,
+		query_embedding BYTEA NOT NULL
+			CONSTRAINT summary_assessment_cache_query_embedding_check CHECK (octet_length(query_embedding) > 0),
+		relevant BOOLEAN NOT NULL,
+		summary TEXT NOT NULL,
+		expires_at TIMESTAMPTZ NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		PRIMARY KEY (provider_profile,question_hash,passage_hash)
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO `+schemaSQL+`.summary_assessment_cache
+		(provider_profile,question_hash,passage_hash,topic_tokens,guard_tokens,query_embedding,relevant,summary,expires_at)
+		VALUES('legacy',$1,$2,'{cache}','{}',$3,true,'legacy summary',now()+interval '1 hour')`,
+		strings.Repeat("a", 64), strings.Repeat("b", 64), application.EncodeAssessmentEmbedding([]float32{1, 0})); err != nil {
+		t.Fatal(err)
+	}
+
+	migrationBytes, err := os.ReadFile("../../migrations/004_retrieval_summary_cache_hardening.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration := strings.ReplaceAll(string(migrationBytes), "retrieval.", schemaSQL+".")
+	migration = strings.ReplaceAll(migration, "table_schema = 'retrieval'", "table_schema = '"+schema+"'")
+	if _, err = pool.Exec(ctx, migration); err != nil {
+		t.Fatalf("first hardening migration error = %v", err)
+	}
+	var count int
+	if err = pool.QueryRow(ctx, "SELECT count(*) FROM "+schemaSQL+".summary_assessment_cache").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("legacy rows after first migration = %d, want 0", count)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO `+schemaSQL+`.summary_assessment_cache
+		(provider_profile,question_hash,passage_hash,relevant,summary,expires_at)
+		VALUES('hardened',$1,$2,true,'hardened summary',now()+interval '1 hour')`,
+		strings.Repeat("c", 64), strings.Repeat("d", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, migration); err != nil {
+		t.Fatalf("replayed hardening migration error = %v", err)
+	}
+	var summary string
+	if err = pool.QueryRow(ctx, "SELECT summary FROM "+schemaSQL+".summary_assessment_cache WHERE provider_profile='hardened'").Scan(&summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary != "hardened summary" {
+		t.Fatalf("hardened summary after migration replay = %q", summary)
 	}
 }
 

@@ -144,8 +144,10 @@ and [ephemeral storage](https://docs.aws.amazon.com/lambda/latest/dg/configurati
   filters, limit, minimum evidence score, Retrieval profile, generator profile,
   the complete ordered generator evidence context, answer intent, exact
   canonical topic and guard-token sets, and, for non-exact normalized queries,
-  query embedding similarity. Broader lexical or semantic matches are measured
-  as near misses and never skip generation. Logs and metrics expose only
+  query embedding similarity. Symbol-bearing identifiers such as `C++` and
+  `C#` remain distinct guards and guard compatibility is checked before the
+  exact-query shortcut. Broader lexical or semantic matches are measured as
+  near misses and never skip generation. Logs and metrics expose only
   bounded sanitized cache diagnostics, never raw queries, passages, embeddings,
   prompts, fingerprints, or cached answer bodies.
 - Retrieval summary assessment caching is separate from the final-answer cache
@@ -156,6 +158,11 @@ and [ephemeral storage](https://docs.aws.amazon.com/lambda/latest/dg/configurati
   Similar-query reuse is deliberately limited to negative relevance decisions;
   positive summaries require an exact question/passage cache key so a summary
   written for one wording is not reused as grounded content for another.
+- Compose applies Retrieval migrations through its one-shot `db-bootstrap`
+  service for both fresh and retained PostgreSQL volumes. Application services
+  wait for successful completion. The bootstrap revision must match the latest
+  Retrieval migration so Compose recreates the job during an upgrade, and each
+  migration must be transactional and replay-safe.
 
 ## Milestone 1 — secure service foundation
 

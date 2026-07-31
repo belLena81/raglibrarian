@@ -48,6 +48,8 @@ services:
   db-bootstrap:
     <<: *job-hardening
     image: postgres:16.9-alpine
+    labels:
+      io.raglibrarian.bootstrap-revision: "retrieval-004"
     environment:
       PGHOST: postgres
       PGPORT: "5432"

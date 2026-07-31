@@ -265,6 +265,11 @@ make app-test
 
 `make app-bootstrap` is the standard bootstrap and start path for an existing checkout.
 It now covers the complete local product stack rather than a milestone-specific slice.
+Its one-shot `db-bootstrap` service applies service-owned migrations to both
+fresh and retained PostgreSQL volumes before application services start. The
+Compose bootstrap revision tracks the latest Retrieval migration so an upgrade
+recreates this job; advance that revision whenever a Retrieval migration is
+added.
 `make app-test` runs the current static, unit/race, UI, IaC, and security gate
 set through `make full-gates`.
 `make local-run` remains the underlying bootstrap command for the Compose stack.
@@ -308,12 +313,15 @@ setting both `ANSWER_CACHE_CAPACITY` and `ANSWER_CACHE_TTL`; the remaining
 performs live Retrieval first and reuses an answer only when authorization
 scope, filters, result limit, minimum evidence score, Retrieval profile,
 generator profile, the complete ordered generator evidence context, answer
-intent, guard tokens, and canonical topic tokens remain compatible. Exact
-normalized questions may reuse directly; non-exact questions additionally
-require the configured embedding similarity. Topic containment, partial
-lexical overlap, and semantic-only similarity are near-miss diagnostics rather
-than reusable hits. Cache logs and metrics must not include raw questions,
-passages, embeddings, prompts, fingerprints, or cached answer text.
+intent, guard tokens, and canonical topic tokens remain compatible.
+Meaning-bearing symbolic identifiers such as `C`, `C++`, and `C#` are distinct
+guards even when their broad lexical normalization is otherwise equal. Exact
+normalized questions may reuse only after guard compatibility; non-exact
+questions additionally require the configured embedding similarity. Topic
+containment, partial lexical overlap, and semantic-only similarity are near-miss
+diagnostics rather than reusable hits. Cache logs and metrics must not include
+raw questions, passages, embeddings, prompts, fingerprints, or cached answer
+text.
 Retrieval also has an optional summary-assessment cache for its passage-level
 LLM relevance/summary step. Enable it with `RETRIEVAL_SUMMARY_CACHE_TTL`; exact
 question/passage hits can reuse successful provider assessments. Enabled cache
