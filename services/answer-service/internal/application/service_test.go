@@ -160,7 +160,28 @@ func (o *fakeObserver) Failure(Outcome, string, string, time.Duration) {}
 func (o *fakeObserver) GeneratorStarted()                              {}
 func (o *fakeObserver) GeneratorResponse(int, int)                     {}
 func (o *fakeObserver) GeneratorFinished()                             {}
-func (o *fakeObserver) CacheLookup(CacheOutcome)                       {}
+func (o *fakeObserver) CacheConfigured(CacheState)                     {}
+func (o *fakeObserver) CacheLookup(CacheDiagnostic)                    {}
+func (o *fakeObserver) CacheOperational(CacheOperationalState)         {}
+
+type cacheRecordingObserver struct {
+	fakeObserver
+	lookups    []CacheDiagnostic
+	configured CacheState
+	operations CacheOperationalState
+}
+
+func (o *cacheRecordingObserver) CacheConfigured(state CacheState) {
+	o.configured = state
+}
+
+func (o *cacheRecordingObserver) CacheLookup(diagnostic CacheDiagnostic) {
+	o.lookups = append(o.lookups, diagnostic)
+}
+
+func (o *cacheRecordingObserver) CacheOperational(state CacheOperationalState) {
+	o.operations = state
+}
 
 func TestAnswerReturnsValidatedGroundedSegments(t *testing.T) {
 	retriever := &fakeRetriever{result: searchResult("evidence-1")}
@@ -439,6 +460,118 @@ func TestAnswerCacheHitsForNormalizedQueryAndKeepsRetrievalLive(t *testing.T) {
 
 	if err != nil || result.Answer == nil || provider.calls.Load() != 1 || retriever.calls.Load() != 2 {
 		t.Fatalf("Answer() = %#v, %v; provider calls=%d retrieval calls=%d", result, err, provider.calls.Load(), retriever.calls.Load())
+	}
+}
+
+func TestAnswerCacheExactSequentialRequestMissesThenHits(t *testing.T) {
+	retriever := &fakeRetriever{result: cachedSearch("evidence-1")}
+	provider := &fakeProvider{segments: []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}}
+	observer := &cacheRecordingObserver{}
+	service, err := NewService(
+		retriever,
+		provider,
+		observer,
+		testLimits(),
+		testRequestPolicy(),
+		CachePolicy{
+			Capacity:         8,
+			TTL:              time.Minute,
+			MinimumCosine:    0.9,
+			GeneratorProfile: "generator-v1",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := validRequest()
+	request.Question = "Concurrency in Node.js"
+
+	if _, err := service.Answer(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Answer(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+
+	if retriever.calls.Load() != 2 {
+		t.Fatalf("retrieval calls = %d, want 2 live searches", retriever.calls.Load())
+	}
+	if provider.calls.Load() != 1 {
+		t.Fatalf("provider calls = %d, want 1", provider.calls.Load())
+	}
+	if len(observer.lookups) != 2 ||
+		observer.lookups[0].Outcome != CacheOutcomeMiss ||
+		observer.lookups[1].Outcome != CacheOutcomeHit {
+		t.Fatalf("cache lookups = %#v, want miss then hit", observer.lookups)
+	}
+	if observer.operations.Entries != 1 || observer.operations.Stores != 1 {
+		t.Fatalf("cache operations = %#v, want one entry and one store", observer.operations)
+	}
+}
+
+func TestCacheDiagnosticDistinguishesDisabledAndMetadataFailures(t *testing.T) {
+	if diagnostic := cacheDiagnostic(nil, domain.SearchResult{}, CacheOutcomeBypass); diagnostic != (CacheDiagnostic{
+		Outcome: CacheOutcomeBypass,
+		Stage:   "policy",
+		Reason:  "cache_disabled",
+	}) {
+		t.Fatalf("disabled diagnostic = %#v", diagnostic)
+	}
+	cache := newTestAnswerCache(t, CachePolicy{
+		Capacity:         1,
+		TTL:              time.Minute,
+		MinimumCosine:    0.9,
+		GeneratorProfile: "generator-v1",
+	})
+	tests := []struct {
+		name   string
+		search domain.SearchResult
+		reason string
+	}{
+		{name: "embedding profile first", search: domain.SearchResult{}, reason: "embedding_profile_missing"},
+		{name: "retrieval profile", search: domain.SearchResult{EmbeddingProfile: "embed-v1"}, reason: "retrieval_profile_missing"},
+		{name: "embedding missing", search: domain.SearchResult{EmbeddingProfile: "embed-v1", RetrievalProfile: "retrieval-v1"}, reason: "query_embedding_missing"},
+		{name: "embedding invalid", search: domain.SearchResult{EmbeddingProfile: "embed-v1", RetrievalProfile: "retrieval-v1", QueryEmbedding: []float32{0, 0}}, reason: "query_embedding_invalid"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			diagnostic := cacheDiagnostic(cache, test.search, CacheOutcomeBypass)
+			if diagnostic.Stage != "metadata" || diagnostic.Reason != test.reason {
+				t.Fatalf("diagnostic = %#v", diagnostic)
+			}
+		})
+	}
+	hardMismatch := cacheDiagnostic(cache, cachedSearch("evidence-1"), CacheOutcomeHardMismatch)
+	if hardMismatch.Reason != "cache_key_mismatch" {
+		t.Fatalf("hard mismatch diagnostic = %#v", hardMismatch)
+	}
+}
+
+func TestAnswerCacheMismatchOutcomeDoesNotDependOnEntryOrder(t *testing.T) {
+	cache := newTestAnswerCache(t, CachePolicy{
+		Capacity:         2,
+		TTL:              time.Minute,
+		MinimumCosine:    0.9,
+		GeneratorProfile: "generator-v1",
+	})
+	search := cachedSearch("evidence-1")
+	evidence := selectEvidence(search, testLimits())
+	segments := []domain.AnswerSegment{{Text: "answer", EvidenceIDs: []string{"evidence-1"}}}
+	modeMismatch := validRequest()
+	modeMismatch.Question = "concurrency examples"
+	topicMismatch := validRequest()
+	topicMismatch.Question = "parallelism risks"
+	cache.store(modeMismatch, search, evidence, segments)
+	cache.store(topicMismatch, search, evidence, segments)
+	current := validRequest()
+	current.Question = "concurrency risks"
+
+	if _, outcome := cache.lookup(current, search, evidence); outcome != CacheOutcomeModeMismatch {
+		t.Fatalf("forward lookup outcome = %q, want mode mismatch", outcome)
+	}
+	cache.entries[0], cache.entries[1] = cache.entries[1], cache.entries[0]
+	if _, outcome := cache.lookup(current, search, evidence); outcome != CacheOutcomeModeMismatch {
+		t.Fatalf("reversed lookup outcome = %q, want mode mismatch", outcome)
 	}
 }
 

@@ -591,6 +591,86 @@ func TestSearcherStoresProviderSummaryAssessmentCache(t *testing.T) {
 	}
 }
 
+func TestSearcherReusesStoredSummaryAssessmentForSecondIdenticalSearch(t *testing.T) {
+	vector := make([]float32, domain.EmbeddingDimensions)
+	vector[0] = 1
+	embedder := &stubEmbedder{vector: vector}
+	store := &stubEvidenceStore{
+		results: []Evidence{{
+			EvidenceID: "evidence-1",
+			JobID:      "job-1",
+			BookID:     "book-1",
+			Passage:    "Synthetic repeated searches reuse one assessment.",
+			Score:      0.91,
+		}},
+	}
+	assessor := &stubEvidenceAssessor{response: func(SummaryRequest) EvidenceAssessment {
+		return EvidenceAssessment{Relevant: true, Summary: "synthetic cached assessment"}
+	}}
+	cache := newStatefulAssessmentCache()
+	observer := &recordingAssessmentCacheObserver{}
+	policy := testSearchPolicy(4)
+	policy.AssessmentCache = testAssessmentCachePolicy()
+	searcher, err := NewSearcherWithPolicyAndLexical(
+		embedder,
+		store,
+		nil,
+		visibleIndexes{},
+		assessor,
+		policy,
+		WithAssessmentCache(cache),
+		WithAssessmentCacheObserver(observer),
+	)
+	if err != nil {
+		t.Fatalf("NewSearcherWithPolicyAndLexical() error = %v", err)
+	}
+	actor := domain.Actor{UserID: "user-1", Role: "reader", Status: "active"}
+	input := domain.SearchQueryInput{Question: "synthetic repeated search", Limit: 1}
+
+	first, err := searcher.Search(context.Background(), actor, input)
+	if err != nil {
+		t.Fatalf("first Search() error = %v", err)
+	}
+	if len(first.Evidence) != 1 || first.Evidence[0].Summary != "synthetic cached assessment" {
+		t.Fatalf("first Search() evidence = %#v, want provider assessment", first.Evidence)
+	}
+	if assessor.calls() != 1 {
+		t.Fatalf("assessor calls after first search = %d, want 1", assessor.calls())
+	}
+	if lookups, stores := cache.counts(); lookups != 1 || stores != 1 {
+		t.Fatalf("cache calls after first search = lookups %d stores %d, want 1/1", lookups, stores)
+	}
+
+	second, err := searcher.Search(context.Background(), actor, input)
+	if err != nil {
+		t.Fatalf("second Search() error = %v", err)
+	}
+	if len(second.Evidence) != 1 || second.Evidence[0].EvidenceID != first.Evidence[0].EvidenceID ||
+		second.Evidence[0].Passage != first.Evidence[0].Passage ||
+		second.Evidence[0].Summary != first.Evidence[0].Summary {
+		t.Fatalf("second Search() evidence = %#v, want unchanged cached evidence", second.Evidence)
+	}
+	if assessor.calls() != 1 {
+		t.Fatalf("assessor calls after second search = %d, want cached total 1", assessor.calls())
+	}
+	if lookups, stores := cache.counts(); lookups != 2 || stores != 1 {
+		t.Fatalf("cache calls after second search = lookups %d stores %d, want 2/1", lookups, stores)
+	}
+	if embedder.calls != 2 || store.calls != 2 || store.documentCalls != 2 {
+		t.Fatalf("live retrieval calls = embedder %d evidence %d documents %d, want 2/2/2", embedder.calls, store.calls, store.documentCalls)
+	}
+	stats := observer.values()
+	if len(stats) != 2 {
+		t.Fatalf("cache search reports = %#v, want two", stats)
+	}
+	if stats[0].Misses != 1 || stats[0].Stores != 1 || stats[0].ProviderCalls != 1 || stats[0].Hits != 0 {
+		t.Fatalf("first cache search stats = %#v, want miss/store/provider call", stats[0])
+	}
+	if stats[1].Hits != 1 || stats[1].ProviderCalls != 0 || stats[1].Stores != 0 || stats[1].Misses != 0 {
+		t.Fatalf("second cache search stats = %#v, want exact hit without provider call", stats[1])
+	}
+}
+
 func TestPersistentCacheHitDoesNotConsumeProviderCallBudget(t *testing.T) {
 	vector := make([]float32, domain.EmbeddingDimensions)
 	vector[0] = 1
@@ -1406,4 +1486,71 @@ func (s *stubAssessmentCache) Store(_ context.Context, entry AssessmentCacheEntr
 	s.stores++
 	s.stored = entry
 	return s.storeErr
+}
+
+type assessmentCacheKey struct {
+	providerProfile string
+	questionHash    string
+	passageHash     string
+}
+
+type statefulAssessmentCache struct {
+	mu      sync.Mutex
+	entries map[assessmentCacheKey]EvidenceAssessment
+	lookups int
+	stores  int
+}
+
+func newStatefulAssessmentCache() *statefulAssessmentCache {
+	return &statefulAssessmentCache{entries: make(map[assessmentCacheKey]EvidenceAssessment)}
+}
+
+func (s *statefulAssessmentCache) Lookup(_ context.Context, lookup AssessmentCacheLookup) (EvidenceAssessment, AssessmentCacheOutcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lookups++
+	assessment, found := s.entries[assessmentCacheKey{
+		providerProfile: lookup.ProviderProfile,
+		questionHash:    lookup.QuestionHash,
+		passageHash:     lookup.PassageHash,
+	}]
+	if !found {
+		return EvidenceAssessment{}, AssessmentCacheOutcomeMiss, nil
+	}
+	return assessment, AssessmentCacheOutcomeHit, nil
+}
+
+func (s *statefulAssessmentCache) Store(_ context.Context, entry AssessmentCacheEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stores++
+	s.entries[assessmentCacheKey{
+		providerProfile: entry.ProviderProfile,
+		questionHash:    entry.QuestionHash,
+		passageHash:     entry.PassageHash,
+	}] = entry.Assessment
+	return nil
+}
+
+func (s *statefulAssessmentCache) counts() (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lookups, s.stores
+}
+
+type recordingAssessmentCacheObserver struct {
+	mu      sync.Mutex
+	reports []AssessmentCacheStats
+}
+
+func (o *recordingAssessmentCacheObserver) AssessmentCacheSearch(stats AssessmentCacheStats) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.reports = append(o.reports, stats)
+}
+
+func (o *recordingAssessmentCacheObserver) values() []AssessmentCacheStats {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]AssessmentCacheStats(nil), o.reports...)
 }

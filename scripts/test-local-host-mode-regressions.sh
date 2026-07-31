@@ -258,6 +258,18 @@ if ! grep -Fq 'export RETRIEVAL_SUMMARY_CACHE_CLEANUP_BATCH_SIZE="${RETRIEVAL_SU
   echo "host env renderer does not export retrieval summary cache cleanup batch size" >&2
   exit 1
 fi
+if ! grep -Fq 'export ANSWER_CACHE_CAPACITY="${ANSWER_CACHE_CAPACITY:-0}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export answer cache capacity" >&2
+  exit 1
+fi
+if ! grep -Fq 'export ANSWER_CACHE_TTL="${ANSWER_CACHE_TTL:-0s}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export answer cache TTL" >&2
+  exit 1
+fi
+if ! grep -Fq 'export ANSWER_CACHE_MINIMUM_COSINE="${ANSWER_CACHE_MINIMUM_COSINE:-0.95}"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export answer cache semantic threshold" >&2
+  exit 1
+fi
 if ! grep -Fq 'export EDGE_CATALOG_PREVIEW_DEADLINE="${EDGE_CATALOG_PREVIEW_DEADLINE:-6s}"' "$root_dir/scripts/render-local-host-env.sh"; then
   echo "host env renderer does not export the catalog preview deadline" >&2
   exit 1

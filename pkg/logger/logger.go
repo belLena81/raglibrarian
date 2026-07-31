@@ -95,6 +95,7 @@ var allowedFieldNames = map[string]struct{}{
 	"stack_fingerprint": {}, "stack_trace": {}, "actor_id": {}, "book_id": {}, "checksum_sha256": {}, "request_url": {}, "request_path": {}, "request_model": {}, "request_body_sha256": {},
 	"request_body_preview": {}, "response_body_sha256": {}, "response_body_preview": {}, "response_body_raw_prefix": {}, "response_body_raw_prefix_bytes": {}, "byte_size": {}, "tag_count": {}, "page_size": {}, "result_count": {}, "role": {}, "account_status": {},
 	"segment_count": {}, "summary_length": {}, "cache_outcome": {},
+	"cache_enabled": {}, "cache_capacity": {}, "cache_ttl_seconds": {}, "cache_minimum_cosine_millis": {},
 	"cache_hits": {}, "cache_negative_hits": {}, "cache_misses": {}, "cache_semantic_mismatches": {}, "cache_guard_mismatches": {},
 	"cache_lookup_errors": {}, "cache_stores": {}, "cache_store_errors": {}, "provider_calls": {}, "local_fallbacks": {},
 }
@@ -130,6 +131,8 @@ func safeFieldValue(field zapcore.Field) (string, bool) {
 	switch field.Type {
 	case zapcore.StringType:
 		value = field.String
+	case zapcore.BoolType:
+		value = strconv.FormatBool(field.Integer == 1)
 	case zapcore.Int64Type, zapcore.Int32Type, zapcore.Int16Type, zapcore.Int8Type:
 		value = strconv.FormatInt(field.Integer, 10)
 	case zapcore.Uint64Type, zapcore.Uint32Type, zapcore.Uint16Type, zapcore.Uint8Type:
@@ -197,6 +200,14 @@ func validDiagnosticField(key string, fieldType zapcore.FieldType, value string)
 		"cache_hits", "cache_negative_hits", "cache_misses", "cache_semantic_mismatches", "cache_guard_mismatches",
 		"cache_lookup_errors", "cache_stores", "cache_store_errors", "provider_calls", "local_fallbacks":
 		return integerField(fieldType) && parseBoundedInt(value, 0, 1<<53-1)
+	case "cache_enabled":
+		return fieldType == zapcore.BoolType && (value == "true" || value == "false")
+	case "cache_capacity":
+		return integerField(fieldType) && parseBoundedInt(value, 0, 10000)
+	case "cache_ttl_seconds":
+		return integerField(fieldType) && parseBoundedInt(value, 0, 24*60*60)
+	case "cache_minimum_cosine_millis":
+		return integerField(fieldType) && parseBoundedInt(value, 0, 1000)
 	case "role":
 		return fieldType == zapcore.StringType && (value == "admin" || value == "librarian" || value == "reader")
 	case "account_status":
@@ -224,7 +235,7 @@ var allowedDiagnosticValues = map[string]map[string]struct{}{
 	},
 	"cache_outcome": {
 		"bypass": {}, "hit": {}, "miss": {}, "stale": {}, "mode_mismatch": {}, "topic_mismatch": {}, "semantic_mismatch": {}, "evidence_mismatch": {},
-		"semantic_only_hit": {}, "lexical_hit": {}, "negative_hit": {}, "guard_mismatch": {}, "hard_mismatch": {}, "generation_coalesced": {}, "validation_mismatch": {}, "stored": {}, "lookup_error": {}, "store_error": {},
+		"negative_hit": {}, "guard_mismatch": {}, "hard_mismatch": {}, "generation_coalesced": {}, "validation_mismatch": {}, "stored": {}, "lookup_error": {}, "store_error": {},
 	},
 	"operation": {
 		"register": {}, "verify_email": {}, "resend_verification": {}, "password_reset_request": {}, "password_reset_verify": {}, "password_reset_complete": {},
@@ -236,6 +247,7 @@ var allowedDiagnosticValues = map[string]map[string]struct{}{
 	"stage": {
 		"session_cleanup": {}, "verification_cleanup": {}, "rejected_cleanup": {}, "password_reset_cleanup": {}, "email_claim": {}, "email_mark": {}, "email_retry": {}, "email_exhausted": {},
 		"retrieval": {}, "provider": {}, "validation": {},
+		"policy": {}, "metadata": {}, "match": {}, "coordination": {},
 	},
 	"reason": {},
 	"reason_code": {
@@ -248,6 +260,9 @@ var allowedDiagnosticValues = map[string]map[string]struct{}{
 		"outbox_publish_failed": {}, "outbox_mark_failed": {}, "outbox_defer_failed": {},
 		"deadline_exceeded": {}, "canceled": {}, "provider_unavailable": {}, "invalid_provider_response": {}, "invalid_provider_output": {}, "retrieval_failed": {},
 		"provider_request_create_failed": {}, "provider_timeout": {}, "provider_canceled": {}, "provider_tls_error": {}, "provider_dns_error": {}, "provider_network_error": {}, "provider_transport_error": {},
+		"cache_disabled": {}, "embedding_profile_missing": {}, "retrieval_profile_missing": {}, "query_embedding_missing": {}, "query_embedding_invalid": {},
+		"cache_key_mismatch": {}, "hit": {}, "miss": {}, "stale": {}, "mode_mismatch": {}, "topic_mismatch": {}, "semantic_mismatch": {},
+		"guard_mismatch": {}, "evidence_mismatch": {}, "generation_coalesced": {}, "validation_mismatch": {},
 	},
 	"error_code": {
 		"request_id_generation_failed": {}, "internal_panic": {},

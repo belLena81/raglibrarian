@@ -44,7 +44,9 @@ type Observer interface {
 	GeneratorStarted()
 	GeneratorResponse(segmentCount, summaryLength int)
 	GeneratorFinished()
-	CacheLookup(CacheOutcome)
+	CacheConfigured(CacheState)
+	CacheLookup(CacheDiagnostic)
+	CacheOperational(CacheOperationalState)
 }
 
 type codedReason interface {
@@ -110,6 +112,8 @@ func NewService(retriever Retriever, generator AnswerGenerator, observer Observe
 		}
 		service.cache = cache
 	}
+	observer.CacheConfigured(service.cache.state())
+	observer.CacheOperational(service.cache.operationalState())
 	return service, nil
 }
 
@@ -178,19 +182,21 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 		return result, nil
 	}
 	if cached, outcome := s.cache.lookup(normalized, search, evidence); cacheMatchHit(outcome) {
+		s.observer.CacheOperational(s.cache.operationalState())
 		validated, validationErr := validateSegments(cached.segments, evidence, s.limits)
 		if validationErr == nil {
 			summary := summarizeSegments(validated, s.limits.MaximumSummaryRunes)
 			result.Answer = &domain.GroundedAnswer{Segments: validated}
 			result.Summary = summary
-			s.observer.CacheLookup(outcome)
+			s.observer.CacheLookup(cacheDiagnostic(s.cache, search, outcome))
 			s.observer.GeneratorResponse(len(validated), utf8.RuneCountInString(summary))
 			s.observer.Observe(OutcomeAnswered, time.Since(started))
 			return result, nil
 		}
-		s.observer.CacheLookup(CacheOutcomeValidationMismatch)
+		s.observer.CacheLookup(cacheDiagnostic(s.cache, search, CacheOutcomeValidationMismatch))
 	} else {
-		s.observer.CacheLookup(outcome)
+		s.observer.CacheOperational(s.cache.operationalState())
+		s.observer.CacheLookup(cacheDiagnostic(s.cache, search, outcome))
 	}
 	flightKey, coalesce := s.cache.flightKey(normalized, search, evidence)
 	if coalesce {
@@ -202,12 +208,12 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 				summary := summarizeSegments(validated, s.limits.MaximumSummaryRunes)
 				result.Answer = &domain.GroundedAnswer{Segments: validated}
 				result.Summary = summary
-				s.observer.CacheLookup(CacheOutcomeGenerationCoalesced)
+				s.observer.CacheLookup(cacheDiagnostic(s.cache, search, CacheOutcomeGenerationCoalesced))
 				s.observer.GeneratorResponse(len(validated), utf8.RuneCountInString(summary))
 				s.observer.Observe(OutcomeAnswered, time.Since(started))
 				return result, nil
 			}
-			s.observer.CacheLookup(CacheOutcomeValidationMismatch)
+			s.observer.CacheLookup(cacheDiagnostic(s.cache, search, CacheOutcomeValidationMismatch))
 		} else if waited {
 			return result, nil
 		}
@@ -254,6 +260,7 @@ func (s *Service) Answer(parent context.Context, request domain.SearchRequest) (
 	result.Answer = &domain.GroundedAnswer{Segments: validated}
 	result.Summary = summary
 	s.cache.store(normalized, search, evidence, segments)
+	s.observer.CacheOperational(s.cache.operationalState())
 	if coalesce {
 		s.inflight.complete(flightKey, segments, true)
 	}

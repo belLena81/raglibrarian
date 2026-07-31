@@ -60,9 +60,25 @@ func (r *Recorder) GeneratorFinished() {
 	r.metrics.GeneratorFinished()
 }
 
-func (r *Recorder) CacheLookup(outcome application.CacheOutcome) {
-	r.metrics.CacheLookup(outcome)
-	r.log.Info("answer.cache.lookup",
-		zap.String("cache_outcome", string(outcome)),
+func (r *Recorder) CacheConfigured(state application.CacheState) {
+	r.metrics.CacheConfigured(state)
+	r.log.Info("answer.cache.configured",
+		zap.Bool("cache_enabled", state.Enabled),
+		zap.Int("cache_capacity", state.Capacity),
+		zap.Int64("cache_ttl_seconds", state.TTLSeconds),
+		zap.Int("cache_minimum_cosine_millis", state.MinimumCosineMillis),
 	)
+}
+
+func (r *Recorder) CacheLookup(diagnostic application.CacheDiagnostic) {
+	r.metrics.CacheLookup(diagnostic.Outcome)
+	r.log.Info("answer.cache.lookup",
+		zap.String("cache_outcome", string(diagnostic.Outcome)),
+		zap.String("stage", diagnostic.Stage),
+		zap.String("reason_code", diagnostic.Reason),
+	)
+}
+
+func (r *Recorder) CacheOperational(state application.CacheOperationalState) {
+	r.metrics.CacheOperational(state)
 }

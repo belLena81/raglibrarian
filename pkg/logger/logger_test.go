@@ -64,7 +64,7 @@ func TestNewWithWriterAllowsKnownCacheOutcomes(t *testing.T) {
 	log, err := logger.NewWithWriter(&output)
 	require.NoError(t, err)
 
-	for _, outcome := range []string{"semantic_only_hit", "lexical_hit", "guard_mismatch", "hard_mismatch"} {
+	for _, outcome := range []string{"guard_mismatch", "hard_mismatch", "generation_coalesced", "validation_mismatch"} {
 		output.Reset()
 		log.Info("answer.cache.lookup", zap.String("cache_outcome", outcome))
 		assert.Contains(t, output.String(), "answer cache lookup cache_outcome="+outcome)
@@ -74,6 +74,48 @@ func TestNewWithWriterAllowsKnownCacheOutcomes(t *testing.T) {
 	log.Info("answer.cache.lookup", zap.String("cache_outcome", "query_text_leaked"))
 	assert.Contains(t, output.String(), "answer cache lookup")
 	assert.NotContains(t, output.String(), "cache_outcome=")
+}
+
+func TestNewWithWriterAllowsBoundedAnswerCacheDiagnostics(t *testing.T) {
+	var output bytes.Buffer
+	log, err := logger.NewWithWriter(&output)
+	require.NoError(t, err)
+
+	log.Info("answer.cache.configured",
+		zap.Bool("cache_enabled", true),
+		zap.Int("cache_capacity", 256),
+		zap.Int64("cache_ttl_seconds", 21600),
+		zap.Int("cache_minimum_cosine_millis", 950),
+	)
+	line := output.String()
+	for _, field := range []string{
+		"cache_enabled=true",
+		"cache_capacity=256",
+		"cache_ttl_seconds=21600",
+		"cache_minimum_cosine_millis=950",
+	} {
+		assert.Contains(t, line, field)
+	}
+
+	output.Reset()
+	log.Info("answer.cache.lookup",
+		zap.String("cache_outcome", "bypass"),
+		zap.String("stage", "policy"),
+		zap.String("reason_code", "cache_disabled"),
+	)
+	assert.Contains(t, output.String(), "cache_outcome=bypass reason_code=cache_disabled stage=policy")
+
+	output.Reset()
+	log.Info("answer.cache.configured",
+		zap.String("cache_enabled", "true"),
+		zap.Int("cache_capacity", 10001),
+		zap.Int64("cache_ttl_seconds", 86401),
+		zap.Int("cache_minimum_cosine_millis", 1001),
+	)
+	assert.NotContains(t, output.String(), "cache_enabled=")
+	assert.NotContains(t, output.String(), "cache_capacity=")
+	assert.NotContains(t, output.String(), "cache_ttl_seconds=")
+	assert.NotContains(t, output.String(), "cache_minimum_cosine_millis=")
 }
 
 func TestNewWithWriterAllowsBoundedCacheSummaryCounts(t *testing.T) {

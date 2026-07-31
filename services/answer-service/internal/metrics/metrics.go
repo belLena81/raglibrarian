@@ -4,6 +4,7 @@ package metrics
 import (
 	"fmt"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 )
 
 type Recorder struct {
+	cacheOperationalMu       sync.Mutex
+	cacheSequence            uint64
 	answered                 atomic.Uint64
 	emptyEvidence            atomic.Uint64
 	retrievalFailure         atomic.Uint64
@@ -24,13 +27,20 @@ type Recorder struct {
 	cacheModeMismatch        atomic.Uint64
 	cacheTopicMismatch       atomic.Uint64
 	cacheSemanticMismatch    atomic.Uint64
-	cacheSemanticOnlyHit     atomic.Uint64
-	cacheLexicalHit          atomic.Uint64
 	cacheGuardMismatch       atomic.Uint64
 	cacheHardMismatch        atomic.Uint64
 	cacheEvidenceMismatch    atomic.Uint64
 	cacheGenerationCoalesced atomic.Uint64
 	cacheValidationMismatch  atomic.Uint64
+	cacheEnabled             atomic.Uint64
+	cacheCapacity            atomic.Int64
+	cacheTTLSeconds          atomic.Int64
+	cacheMinimumCosineMillis atomic.Int64
+	cacheEntries             atomic.Int64
+	cacheStores              atomic.Uint64
+	cacheEvictions           atomic.Uint64
+	cacheExpired             atomic.Uint64
+	providerRequests         atomic.Uint64
 	providerInFlight         atomic.Int64
 	retrievalReady           atomic.Uint64
 	durationNS               atomic.Uint64
@@ -56,7 +66,10 @@ func (r *Recorder) Observe(outcome application.Outcome, duration time.Duration) 
 	}
 }
 
-func (r *Recorder) GeneratorStarted()  { r.providerInFlight.Add(1) }
+func (r *Recorder) GeneratorStarted() {
+	r.providerRequests.Add(1)
+	r.providerInFlight.Add(1)
+}
 func (r *Recorder) GeneratorFinished() { r.providerInFlight.Add(-1) }
 func (r *Recorder) CacheLookup(outcome application.CacheOutcome) {
 	switch outcome {
@@ -74,10 +87,6 @@ func (r *Recorder) CacheLookup(outcome application.CacheOutcome) {
 		r.cacheTopicMismatch.Add(1)
 	case application.CacheOutcomeSemanticMismatch:
 		r.cacheSemanticMismatch.Add(1)
-	case application.CacheOutcomeSemanticOnlyHit:
-		r.cacheSemanticOnlyHit.Add(1)
-	case application.CacheOutcomeLexicalHit:
-		r.cacheLexicalHit.Add(1)
 	case application.CacheOutcomeGuardMismatch:
 		r.cacheGuardMismatch.Add(1)
 	case application.CacheOutcomeHardMismatch:
@@ -89,6 +98,28 @@ func (r *Recorder) CacheLookup(outcome application.CacheOutcome) {
 	case application.CacheOutcomeValidationMismatch:
 		r.cacheValidationMismatch.Add(1)
 	}
+}
+func (r *Recorder) CacheConfigured(state application.CacheState) {
+	if state.Enabled {
+		r.cacheEnabled.Store(1)
+	} else {
+		r.cacheEnabled.Store(0)
+	}
+	r.cacheCapacity.Store(int64(state.Capacity))
+	r.cacheTTLSeconds.Store(state.TTLSeconds)
+	r.cacheMinimumCosineMillis.Store(int64(state.MinimumCosineMillis))
+}
+func (r *Recorder) CacheOperational(state application.CacheOperationalState) {
+	r.cacheOperationalMu.Lock()
+	defer r.cacheOperationalMu.Unlock()
+	if state.Sequence < r.cacheSequence {
+		return
+	}
+	r.cacheSequence = state.Sequence
+	r.cacheEntries.Store(int64(state.Entries))
+	r.cacheStores.Store(state.Stores)
+	r.cacheEvictions.Store(state.Evictions)
+	r.cacheExpired.Store(state.Expired)
 }
 func (r *Recorder) SetRetrievalReady(ready bool) {
 	if ready {
@@ -118,8 +149,10 @@ func (r *Recorder) Handler() http.Handler {
 			response.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 			_, _ = fmt.Fprintf(response, metricFormat, r.answered.Load(), r.emptyEvidence.Load(), r.retrievalFailure.Load(), r.providerFailure.Load(), r.invalidOutput.Load(),
 				r.capacityExhausted.Load(), r.cacheBypass.Load(), r.cacheHit.Load(), r.cacheMiss.Load(), r.cacheStale.Load(), r.cacheModeMismatch.Load(), r.cacheTopicMismatch.Load(),
-				r.cacheSemanticMismatch.Load(), r.cacheSemanticOnlyHit.Load(), r.cacheLexicalHit.Load(), r.cacheGuardMismatch.Load(), r.cacheHardMismatch.Load(), r.cacheEvidenceMismatch.Load(),
-				r.cacheGenerationCoalesced.Load(), r.cacheValidationMismatch.Load(), r.providerInFlight.Load(),
+				r.cacheSemanticMismatch.Load(), r.cacheGuardMismatch.Load(), r.cacheHardMismatch.Load(), r.cacheEvidenceMismatch.Load(),
+				r.cacheGenerationCoalesced.Load(), r.cacheValidationMismatch.Load(), r.cacheEnabled.Load(), r.cacheCapacity.Load(), r.cacheTTLSeconds.Load(),
+				r.cacheMinimumCosineMillis.Load(), r.cacheEntries.Load(), r.cacheStores.Load(), r.cacheEvictions.Load(), r.cacheExpired.Load(),
+				r.providerRequests.Load(), r.providerInFlight.Load(),
 				r.retrievalReady.Load(), float64(r.durationNS.Load())/float64(time.Second))
 		default:
 			http.NotFound(response, request)
@@ -142,13 +175,29 @@ answer_cache_lookups_total{outcome="stale"} %d
 answer_cache_lookups_total{outcome="mode_mismatch"} %d
 answer_cache_lookups_total{outcome="topic_mismatch"} %d
 answer_cache_lookups_total{outcome="semantic_mismatch"} %d
-answer_cache_lookups_total{outcome="semantic_only_hit"} %d
-answer_cache_lookups_total{outcome="lexical_hit"} %d
 answer_cache_lookups_total{outcome="guard_mismatch"} %d
 answer_cache_lookups_total{outcome="hard_mismatch"} %d
 answer_cache_lookups_total{outcome="evidence_mismatch"} %d
 answer_cache_lookups_total{outcome="generation_coalesced"} %d
 answer_cache_lookups_total{outcome="validation_mismatch"} %d
+# TYPE answer_cache_enabled gauge
+answer_cache_enabled %d
+# TYPE answer_cache_capacity gauge
+answer_cache_capacity %d
+# TYPE answer_cache_ttl_seconds gauge
+answer_cache_ttl_seconds %d
+# TYPE answer_cache_minimum_cosine_millis gauge
+answer_cache_minimum_cosine_millis %d
+# TYPE answer_cache_entries gauge
+answer_cache_entries %d
+# TYPE answer_cache_stores_total counter
+answer_cache_stores_total %d
+# TYPE answer_cache_evictions_total counter
+answer_cache_evictions_total %d
+# TYPE answer_cache_expired_entries_total counter
+answer_cache_expired_entries_total %d
+# TYPE answer_provider_requests_total counter
+answer_provider_requests_total %d
 # TYPE answer_provider_in_flight gauge
 answer_provider_in_flight %d
 # TYPE answer_retrieval_ready gauge

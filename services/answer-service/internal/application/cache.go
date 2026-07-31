@@ -26,10 +26,14 @@ type CachePolicy struct {
 }
 
 type answerCache struct {
-	policy  CachePolicy
-	now     func() time.Time
-	mu      sync.Mutex
-	entries []cacheEntry
+	policy    CachePolicy
+	now       func() time.Time
+	mu        sync.Mutex
+	entries   []cacheEntry
+	stores    uint64
+	evictions uint64
+	expired   uint64
+	sequence  uint64
 }
 
 type cacheEntry struct {
@@ -87,14 +91,33 @@ const (
 	CacheOutcomeModeMismatch        CacheOutcome = "mode_mismatch"
 	CacheOutcomeTopicMismatch       CacheOutcome = "topic_mismatch"
 	CacheOutcomeSemanticMismatch    CacheOutcome = "semantic_mismatch"
-	CacheOutcomeSemanticOnlyHit     CacheOutcome = "semantic_only_hit"
-	CacheOutcomeLexicalHit          CacheOutcome = "lexical_hit"
 	CacheOutcomeGuardMismatch       CacheOutcome = "guard_mismatch"
 	CacheOutcomeHardMismatch        CacheOutcome = "hard_mismatch"
 	CacheOutcomeEvidenceMismatch    CacheOutcome = "evidence_mismatch"
 	CacheOutcomeGenerationCoalesced CacheOutcome = "generation_coalesced"
 	CacheOutcomeValidationMismatch  CacheOutcome = "validation_mismatch"
 )
+
+type CacheDiagnostic struct {
+	Outcome CacheOutcome
+	Stage   string
+	Reason  string
+}
+
+type CacheState struct {
+	Enabled             bool
+	Capacity            int
+	TTLSeconds          int64
+	MinimumCosineMillis int
+}
+
+type CacheOperationalState struct {
+	Entries   int
+	Stores    uint64
+	Evictions uint64
+	Expired   uint64
+	Sequence  uint64
+}
 
 func newAnswerCache(policy CachePolicy) (*answerCache, error) {
 	if policy.Capacity == 0 || policy.TTL == 0 {
@@ -140,15 +163,15 @@ func (c *answerCache) lookup(request domain.SearchRequest, search domain.SearchR
 		}
 		matchOutcome := queriesMatch(match, entry.match, c.policy)
 		if !cacheMatchHit(matchOutcome) {
-			outcome = matchOutcome
+			outcome = preferredCacheMissOutcome(outcome, matchOutcome)
 			continue
 		}
 		if !cachedSegmentsMatchEvidence(entry.segments, evidence) {
-			outcome = CacheOutcomeEvidenceMismatch
+			outcome = preferredCacheMissOutcome(outcome, CacheOutcomeEvidenceMismatch)
 			continue
 		}
 		if !cachedEvidenceProjectionMatches(entry.segments, entry.evidenceProjection, evidence) {
-			outcome = CacheOutcomeEvidenceMismatch
+			outcome = preferredCacheMissOutcome(outcome, CacheOutcomeEvidenceMismatch)
 			continue
 		}
 		matched := cloneCacheEntry(*entry)
@@ -156,6 +179,34 @@ func (c *answerCache) lookup(request domain.SearchRequest, search domain.SearchR
 		return matched, matchOutcome
 	}
 	return cacheEntry{}, outcome
+}
+
+func preferredCacheMissOutcome(current, candidate CacheOutcome) CacheOutcome {
+	if cacheMissOutcomePriority(candidate) > cacheMissOutcomePriority(current) {
+		return candidate
+	}
+	return current
+}
+
+func cacheMissOutcomePriority(outcome CacheOutcome) int {
+	switch outcome {
+	case CacheOutcomeEvidenceMismatch:
+		return 7
+	case CacheOutcomeGuardMismatch:
+		return 6
+	case CacheOutcomeModeMismatch:
+		return 5
+	case CacheOutcomeTopicMismatch:
+		return 4
+	case CacheOutcomeSemanticMismatch:
+		return 3
+	case CacheOutcomeStale:
+		return 2
+	case CacheOutcomeHardMismatch:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func (c *answerCache) store(request domain.SearchRequest, search domain.SearchResult, evidence []domain.ContextEvidence, segments []domain.AnswerSegment) {
@@ -172,6 +223,8 @@ func (c *answerCache) store(request domain.SearchRequest, search domain.SearchRe
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_ = c.pruneExpired(entry.created)
+	c.stores++
+	c.sequence++
 	for index := range c.entries {
 		if equivalentCacheEntry(c.entries[index], entry) {
 			c.entries[index] = entry
@@ -182,8 +235,67 @@ func (c *answerCache) store(request domain.SearchRequest, search domain.SearchRe
 	if len(c.entries) == c.policy.Capacity {
 		copy(c.entries, c.entries[1:])
 		c.entries = c.entries[:len(c.entries)-1]
+		c.evictions++
 	}
 	c.entries = append(c.entries, entry)
+}
+
+func (c *answerCache) state() CacheState {
+	if c == nil {
+		return CacheState{}
+	}
+	return CacheState{
+		Enabled:             true,
+		Capacity:            c.policy.Capacity,
+		TTLSeconds:          int64(c.policy.TTL / time.Second),
+		MinimumCosineMillis: int(math.Round(c.policy.MinimumCosine * 1000)),
+	}
+}
+
+func (c *answerCache) operationalState() CacheOperationalState {
+	if c == nil {
+		return CacheOperationalState{}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return CacheOperationalState{
+		Entries:   len(c.entries),
+		Stores:    c.stores,
+		Evictions: c.evictions,
+		Expired:   c.expired,
+		Sequence:  c.sequence,
+	}
+}
+
+func cacheDiagnostic(cache *answerCache, search domain.SearchResult, outcome CacheOutcome) CacheDiagnostic {
+	if outcome == CacheOutcomeBypass {
+		if cache == nil {
+			return CacheDiagnostic{Outcome: outcome, Stage: "policy", Reason: "cache_disabled"}
+		}
+		switch {
+		case strings.TrimSpace(search.EmbeddingProfile) == "":
+			return CacheDiagnostic{Outcome: outcome, Stage: "metadata", Reason: "embedding_profile_missing"}
+		case strings.TrimSpace(search.RetrievalProfile) == "":
+			return CacheDiagnostic{Outcome: outcome, Stage: "metadata", Reason: "retrieval_profile_missing"}
+		case len(search.QueryEmbedding) == 0:
+			return CacheDiagnostic{Outcome: outcome, Stage: "metadata", Reason: "query_embedding_missing"}
+		default:
+			return CacheDiagnostic{Outcome: outcome, Stage: "metadata", Reason: "query_embedding_invalid"}
+		}
+	}
+	stage := "match"
+	reason := string(outcome)
+	switch outcome {
+	case CacheOutcomeHardMismatch:
+		// Do not reveal whether authorization scope, filters, profiles, or
+		// selected evidence caused the hard-key mismatch.
+		reason = "cache_key_mismatch"
+	case CacheOutcomeEvidenceMismatch, CacheOutcomeValidationMismatch:
+		stage = "validation"
+	case CacheOutcomeGenerationCoalesced:
+		stage = "coordination"
+	}
+	return CacheDiagnostic{Outcome: outcome, Stage: stage, Reason: reason}
 }
 
 func (c *answerCache) key(request domain.SearchRequest, search domain.SearchResult, evidence []domain.ContextEvidence) cacheKey {
@@ -638,17 +750,21 @@ func cloneStringMap(values map[string]string) map[string]string {
 
 func (c *answerCache) pruneExpired(now time.Time) bool {
 	firstLive := 0
-	pruned := false
+	pruned := 0
 	for _, entry := range c.entries {
 		if now.Sub(entry.created) < c.policy.TTL {
 			c.entries[firstLive] = entry
 			firstLive++
 		} else {
-			pruned = true
+			pruned++
 		}
 	}
 	c.entries = c.entries[:firstLive]
-	return pruned
+	c.expired += uint64(pruned)
+	if pruned > 0 {
+		c.sequence++
+	}
+	return pruned > 0
 }
 
 var errInvalidCachePolicy = errors.New("invalid answer cache policy")
