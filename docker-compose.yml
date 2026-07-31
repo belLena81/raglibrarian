@@ -824,11 +824,13 @@ services:
       RETRIEVAL_POSTGRES_DSN_FILE: /run/secrets/retrieval_runtime_dsn
       RETRIEVAL_PLANNER_POSTGRES_DSN_FILE: /run/secrets/retrieval_planner_dsn
       RETRIEVAL_CLEANUP_POSTGRES_DSN_FILE: /run/secrets/retrieval_cleanup_dsn
+      RETRIEVAL_MIGRATION_PGPASS_FILE: /run/secrets/retrieval_migration_pgpass
       GOCACHE: /tmp/go-build
     secrets:
       - retrieval_runtime_dsn
       - retrieval_planner_dsn
       - retrieval_cleanup_dsn
+      - retrieval_migration_pgpass
     networks:
       - backend
       - retrieval-index

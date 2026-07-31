@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -336,7 +337,7 @@ func TestSummaryAssessmentCacheHardeningMigrationReplaysWithoutPurgingHardenedRo
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, readIntegrationDSN(t))
+	pool, err := newMigrationIntegrationPool(ctx, t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2302,6 +2303,60 @@ func TestCorpusSnapshotReflectsActiveIndexedLifecycleState(t *testing.T) {
 func readIntegrationDSN(t *testing.T) string {
 	t.Helper()
 	return readDSNFile(t, os.Getenv("RETRIEVAL_POSTGRES_DSN_FILE"))
+}
+
+func newMigrationIntegrationPool(ctx context.Context, t *testing.T) (*pgxpool.Pool, error) {
+	t.Helper()
+	passfile := os.Getenv("RETRIEVAL_MIGRATION_PGPASS_FILE")
+	if passfile == "" {
+		t.Fatal("retrieval migration passfile is unavailable")
+	}
+	return pgxpool.New(ctx, migrationIntegrationDSN(t, readIntegrationDSN(t), passfile))
+}
+
+func migrationIntegrationDSN(t *testing.T, runtimeDSN, passfile string) string {
+	t.Helper()
+
+	parsed, err := url.Parse(runtimeDSN)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		t.Fatal("retrieval integration DSN is invalid")
+	}
+	parsed.User = url.User("retrieval_migrator")
+	query := parsed.Query()
+	query.Del("password")
+	query.Set("passfile", passfile)
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+func TestMigrationIntegrationDSNUsesMigratorPassfile(t *testing.T) {
+	runtimeDSN := "postgres://retrieval_runtime:runtime-password@postgres:5432/retrieval?sslmode=verify-full&sslrootcert=%2Ftmp%2Fca.pem&application_name=retrieval-contract"
+	passfile := "/run/secrets/retrieval_migration_pgpass"
+
+	migrationDSN := migrationIntegrationDSN(t, runtimeDSN, passfile)
+	parsed, err := url.Parse(migrationDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Scheme != "postgres" || parsed.Host != "postgres:5432" || parsed.Path != "/retrieval" {
+		t.Fatalf("migration DSN endpoint = %q://%q%q", parsed.Scheme, parsed.Host, parsed.Path)
+	}
+	if parsed.User.Username() != "retrieval_migrator" {
+		t.Fatalf("migration DSN user = %q", parsed.User.Username())
+	}
+	if _, passwordPresent := parsed.User.Password(); passwordPresent {
+		t.Fatal("migration DSN must not retain the runtime password")
+	}
+	query := parsed.Query()
+	if query.Get("sslmode") != "verify-full" || query.Get("sslrootcert") != "/tmp/ca.pem" || query.Get("application_name") != "retrieval-contract" {
+		t.Fatalf("migration DSN did not preserve runtime connection settings")
+	}
+	if query.Get("passfile") != passfile {
+		t.Fatal("migration DSN did not use the configured passfile")
+	}
+	if query.Has("password") {
+		t.Fatal("migration DSN must not contain a password parameter")
+	}
 }
 
 func readDSNFile(t *testing.T, path string) string {
