@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/indexprofile"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/artifact"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/chunking"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/domain"
@@ -208,6 +209,7 @@ type processorWriter struct {
 	addErr      error
 	finalizeErr error
 	selection   *artifact.ContentSelection
+	event       UploadedEvent
 	aborts      int
 	adds        int
 }
@@ -240,7 +242,8 @@ func (f processorFactory) NewChunker() (Chunker, error) {
 	return processorChunker{}, nil
 }
 
-func (f processorFactory) NewArtifactWriter(UploadedEvent, time.Time) (ArtifactWriter, error) {
+func (f processorFactory) NewArtifactWriter(event UploadedEvent, _ time.Time) (ArtifactWriter, error) {
+	f.writer.event = event
 	return f.writer, nil
 }
 
@@ -249,6 +252,16 @@ func (processorFactory) ConfigDigest(mediaType string) ([32]byte, error) {
 		return [32]byte{}, ErrUnsupportedProcessingProfile
 	}
 	return sha256.Sum256([]byte(mediaType)), nil
+}
+
+func (f processorFactory) ExtractionVersion(mediaType string) (string, error) {
+	if mediaType != MediaTypePDF && mediaType != MediaTypeEPUB {
+		return "", ErrUnsupportedProcessingProfile
+	}
+	if f.ContentSelectionProfile().Mode != ContentSelectionDisabled {
+		return indexprofile.ExtractionPDFFiltered, nil
+	}
+	return extractor.ExtractionVersion, nil
 }
 
 func (f processorFactory) ContentSelectionProfile() ContentSelectionProfile {
@@ -264,6 +277,8 @@ type processorEvents struct {
 	selectionRequested int
 	ready              int
 	failed             int
+	startedEvent       UploadedEvent
+	readyEvent         UploadedEvent
 }
 
 type processorDiagnostics struct {
@@ -286,8 +301,9 @@ func (d *processorDiagnostics) FailurePersisted(_, _, _, _, detail string) {
 	d.lastDetail = detail
 }
 
-func (e *processorEvents) Started(UploadedEvent, domain.ProcessingJob, time.Time) (OutboxEvent, error) {
+func (e *processorEvents) Started(event UploadedEvent, _ domain.ProcessingJob, _ time.Time) (OutboxEvent, error) {
 	e.started++
+	e.startedEvent = event
 	return OutboxEvent{ID: "started-1"}, nil
 }
 
@@ -296,8 +312,9 @@ func (e *processorEvents) ContentSelectionRequested(UploadedEvent, domain.Proces
 	return OutboxEvent{ID: "selection-request-1", Type: "ingestion.book.content-selection-requested.v1", Payload: []byte{1}, OccurredAt: time.Now().UTC()}, nil
 }
 
-func (e *processorEvents) Ready(UploadedEvent, domain.ProcessingJob, artifact.Result, time.Time) (OutboxEvent, error) {
+func (e *processorEvents) Ready(event UploadedEvent, _ domain.ProcessingJob, _ artifact.Result, _ time.Time) (OutboxEvent, error) {
 	e.ready++
+	e.readyEvent = event
 	return OutboxEvent{ID: "ready-1"}, e.readyErr
 }
 
@@ -346,6 +363,60 @@ func TestProcessorPersistsAwaitingSelectionBeforeExtraction(t *testing.T) {
 	}
 	if writer.adds != 0 || extractor.sourcePath != "" || repository.completes != 0 {
 		t.Fatalf("processing started before selection: writer=%#v source=%q", writer, extractor.sourcePath)
+	}
+}
+
+func TestProcessorUsesLegacyExtractionVersionWhenSelectionIsDisabled(t *testing.T) {
+	processor, _, writer, events, _, _ := newTestProcessor(t, processorOptions{})
+
+	if err := processor.Process(context.Background(), validProcessorEvent()); err != nil {
+		t.Fatal(err)
+	}
+	if events.startedEvent.ExtractionVersion != extractor.ExtractionVersion {
+		t.Fatalf("started extraction version = %q, want %q", events.startedEvent.ExtractionVersion, extractor.ExtractionVersion)
+	}
+	if writer.event.ExtractionVersion != extractor.ExtractionVersion {
+		t.Fatalf("manifest extraction version = %q, want %q", writer.event.ExtractionVersion, extractor.ExtractionVersion)
+	}
+	if events.readyEvent.ExtractionVersion != extractor.ExtractionVersion {
+		t.Fatalf("ready extraction version = %q, want %q", events.readyEvent.ExtractionVersion, extractor.ExtractionVersion)
+	}
+}
+
+func TestProcessorUsesFilteredExtractionVersionWhenSelectionIsEnabled(t *testing.T) {
+	profile := validSelectionProfile(ContentSelectionEnforcement)
+	event := validProcessorEvent()
+	result := validSelectionResult(event, profile)
+	job := processingSelectionJob(t, event)
+	initialProcessor, _, _, initialEvents, _, _ := newTestProcessor(t, processorOptions{
+		selection:       profile,
+		decodeUploaded:  func([]byte) (UploadedEvent, error) { return event, nil },
+		decodeSelection: func([]byte, int) (ContentSelectionResult, error) { return result, nil },
+	})
+
+	if err := initialProcessor.Process(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if initialEvents.startedEvent.ExtractionVersion != indexprofile.ExtractionPDFFiltered {
+		t.Fatalf("started extraction version = %q", initialEvents.startedEvent.ExtractionVersion)
+	}
+
+	resumeProcessor, _, writer, resumeEvents, _, _ := newTestProcessor(t, processorOptions{
+		selection:         profile,
+		selectionAccepted: true,
+		selectionJob:      job,
+		uploadedPayload:   event.Payload,
+		decodeUploaded:    func([]byte) (UploadedEvent, error) { return event, nil },
+		decodeSelection:   func([]byte, int) (ContentSelectionResult, error) { return result, nil },
+	})
+	if err := resumeProcessor.ProcessContentSelection(context.Background(), result); err != nil {
+		t.Fatal(err)
+	}
+	if writer.event.ExtractionVersion != indexprofile.ExtractionPDFFiltered {
+		t.Fatalf("manifest extraction version = %q", writer.event.ExtractionVersion)
+	}
+	if resumeEvents.readyEvent.ExtractionVersion != indexprofile.ExtractionPDFFiltered {
+		t.Fatalf("ready extraction version = %q", resumeEvents.readyEvent.ExtractionVersion)
 	}
 }
 

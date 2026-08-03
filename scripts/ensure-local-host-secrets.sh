@@ -134,6 +134,7 @@ derive_rabbit_host_uri() {
   ensure_file catalog_ingestion_rabbitmq_uri "$(derive_rabbit_host_uri catalog_ingestion_rabbitmq_uri)"
   ensure_file catalog_retrieval_rabbitmq_uri "$(derive_rabbit_host_uri catalog_retrieval_rabbitmq_uri)"
   ensure_file ingestion_rabbitmq_uri "$(derive_rabbit_host_uri ingestion_rabbitmq_uri)"
+  ensure_file layout_rabbitmq_uri "$(derive_rabbit_host_uri layout_rabbitmq_uri)"
   ensure_file edge_status_rabbitmq_uri_1 "$(derive_rabbit_host_uri edge_status_rabbitmq_uri_1)"
   ensure_file edge_status_rabbitmq_uri_2 "$(derive_rabbit_host_uri edge_status_rabbitmq_uri_2)"
   ensure_file retrieval_consumer_rabbitmq_uri "$(derive_rabbit_host_uri retrieval_consumer_rabbitmq_uri)"

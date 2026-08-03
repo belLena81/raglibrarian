@@ -69,6 +69,22 @@ func TestDecodeManifestBindsOuterDescriptorAndProcessingIdentity(t *testing.T) {
 	}
 }
 
+func TestDecodeManifestMapsFilteredEPUBContentSelection(t *testing.T) {
+	payload, manifestPayload := filteredEPUBManifestPayloads(t)
+
+	event, err := DecodeManifest(payload, manifestPayload)
+	if err != nil {
+		t.Fatalf("DecodeManifest() error = %v", err)
+	}
+	selection := event.Manifest.ContentSelection
+	if selection == nil || selection.Mode != "enforcement" || selection.SelectorVersion != "layout-selector-v1" ||
+		selection.FallbackReason != "none" || selection.OriginalCount != 1 || selection.RetainedCount != 0 ||
+		selection.ExcludedCount != 1 || selection.ExcludedRatio != 1 || len(selection.Ranges) != 1 ||
+		selection.Ranges[0] != (application.ContentSelectionRange{Start: 1, End: 1, Reason: "title_page"}) {
+		t.Fatalf("DecodeManifest() content selection = %#v", selection)
+	}
+}
+
 func TestDecodeManifestEnvelopeValidatesOuterDescriptorWithoutArtifact(t *testing.T) {
 	payload, _ := validManifestPayloads(t)
 
@@ -222,6 +238,69 @@ func validManifestPayloads(t *testing.T) ([]byte, []byte) {
 		ChunkingVersion: manifest.ChunkingVersion, StructureVersion: manifest.StructureVersion, MaximumTokens: manifest.MaximumTokens, OverlapTokens: manifest.OverlapTokens,
 		CorrelationId: "correlation-1", OccurredAt: timestamppb.New(generated.Add(time.Minute)), CausationId: "cause-1", Producer: "ingestion-service", SchemaVersion: "v1", IdempotencyKey: "book-1:" + hex.EncodeToString(processing[:]) + ":ready"}
 	eventPayload, err := proto.MarshalOptions{Deterministic: true}.Marshal(outer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return eventPayload, manifestPayload
+}
+
+func filteredEPUBManifestPayloads(t *testing.T) ([]byte, []byte) {
+	t.Helper()
+	eventPayload, manifestPayload := validManifestPayloads(t)
+	var manifest ingestionv1.ChunkManifestV1
+	if err := proto.Unmarshal(manifestPayload, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	profile, ok := domain.SupportedIndexProfileForExtraction("epub-spine-v1+layout-selector-v1")
+	if !ok {
+		t.Fatal("filtered EPUB profile is not supported")
+	}
+	model := sha256.Sum256([]byte("layout model"))
+	policy := sha256.Sum256([]byte("layout policy"))
+	manifest.ExtractionVersion = profile.ExtractionVersion
+	manifest.NormalizationVersion = profile.NormalizationVersion
+	manifest.TokenizerVersion = profile.TokenizerVersion
+	manifest.ChunkingVersion = profile.ChunkingVersion
+	manifest.StructureVersion = profile.StructureVersion
+	manifest.MaximumTokens = uint32(profile.MaximumTokens)
+	manifest.OverlapTokens = uint32(profile.OverlapTokens)
+	manifest.ContentSelection = &ingestionv1.ContentSelectionV1{
+		Mode:                    ingestionv1.ContentSelectionMode_CONTENT_SELECTION_MODE_ENFORCEMENT,
+		SelectorVersion:         profile.ContentSelectionVersion,
+		ParserVersion:           "epub-layout-v1",
+		ModelDigest:             model[:],
+		PolicyDigest:            policy[:],
+		FallbackReason:          ingestionv1.ContentSelectionFallbackReason_CONTENT_SELECTION_FALLBACK_REASON_NONE,
+		OriginalOrdinalCount:    1,
+		RetainedOrdinalCount:    0,
+		ExcludedOrdinalCount:    1,
+		ExcludedRatio:           1,
+		ProcessingProfileDigest: manifest.ProcessingConfigDigest,
+		ExcludedRanges: []*ingestionv1.ExcludedRangeV1{{
+			StartOrdinal: 1,
+			EndOrdinal:   1,
+			Reason:       ingestionv1.ContentExclusionReason_CONTENT_EXCLUSION_REASON_TITLE_PAGE,
+		}},
+	}
+	manifestPayload, err := proto.MarshalOptions{Deterministic: true}.Marshal(&manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outer ingestionv1.BookChunksReadyV1
+	if err := proto.Unmarshal(eventPayload, &outer); err != nil {
+		t.Fatal(err)
+	}
+	manifestDigest := sha256.Sum256(manifestPayload)
+	outer.ManifestSha256 = manifestDigest[:]
+	outer.ManifestByteSize = int64(len(manifestPayload))
+	outer.ExtractionVersion = manifest.ExtractionVersion
+	outer.NormalizationVersion = manifest.NormalizationVersion
+	outer.TokenizerVersion = manifest.TokenizerVersion
+	outer.ChunkingVersion = manifest.ChunkingVersion
+	outer.StructureVersion = manifest.StructureVersion
+	outer.MaximumTokens = manifest.MaximumTokens
+	outer.OverlapTokens = manifest.OverlapTokens
+	eventPayload, err = proto.MarshalOptions{Deterministic: true}.Marshal(&outer)
 	if err != nil {
 		t.Fatal(err)
 	}

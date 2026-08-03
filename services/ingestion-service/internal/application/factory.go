@@ -16,6 +16,7 @@ type ProcessingFactory struct {
 	store     artifact.Store
 	policy    chunking.Policy
 	limits    artifact.Limits
+	versions  map[string]string
 	digests   map[string][32]byte
 	selection ContentSelectionProfile
 }
@@ -48,7 +49,7 @@ func NewProcessingFactoryWithSelection(tokenizer chunking.Tokenizer, store artif
 		}
 		digests[mediaType] = sha256.Sum256([]byte(profile))
 	}
-	return &ProcessingFactory{tokenizer: tokenizer, store: store, policy: policy, limits: limits, digests: digests, selection: selection}, nil
+	return &ProcessingFactory{tokenizer: tokenizer, store: store, policy: policy, limits: limits, versions: extractionVersions, digests: digests, selection: selection}, nil
 }
 
 func (f *ProcessingFactory) NewChunker() (Chunker, error) {
@@ -60,7 +61,26 @@ func (f *ProcessingFactory) NewArtifactWriter(event UploadedEvent, generatedAt t
 	if err != nil || event.ExtractionVersion == "" || event.LifecycleVersion < 1 {
 		return nil, ErrUnsupportedProcessingProfile
 	}
-	return artifact.NewWriter(f.store, artifact.Metadata{BookID: event.BookID, SourceSHA256: event.SourceSHA256, ConfigDigest: digest, GeneratedAt: generatedAt, LifecycleVersion: event.LifecycleVersion}, artifact.Versions{Extraction: event.ExtractionVersion, Normalization: chunking.NormalizationVersion, Tokenizer: chunking.TokenizerVersion, Chunking: chunking.ChunkingVersion, Structure: chunking.StructureVersion}, artifact.ProcessingProfile{MaximumTokens: f.policy.MaximumTokens, OverlapTokens: f.policy.OverlapTokens}, f.limits)
+	metadata := artifact.Metadata{
+		BookID:           event.BookID,
+		SourceSHA256:     event.SourceSHA256,
+		ConfigDigest:     digest,
+		GeneratedAt:      generatedAt,
+		LifecycleVersion: event.LifecycleVersion,
+	}
+	versions := artifact.Versions{
+		Extraction:    event.ExtractionVersion,
+		Normalization: chunking.NormalizationVersion,
+		Tokenizer:     chunking.TokenizerVersion,
+		Chunking:      chunking.ChunkingVersion,
+		Structure:     chunking.StructureVersion,
+	}
+	profile := artifact.ProcessingProfile{
+		MaximumTokens:           f.policy.MaximumTokens,
+		OverlapTokens:           f.policy.OverlapTokens,
+		RequireContentSelection: f.selection.Mode != ContentSelectionDisabled,
+	}
+	return artifact.NewWriter(f.store, metadata, versions, profile, f.limits)
 }
 
 func (f *ProcessingFactory) ConfigDigest(mediaType string) ([32]byte, error) {
@@ -69,6 +89,14 @@ func (f *ProcessingFactory) ConfigDigest(mediaType string) ([32]byte, error) {
 		return [32]byte{}, ErrUnsupportedProcessingProfile
 	}
 	return digest, nil
+}
+
+func (f *ProcessingFactory) ExtractionVersion(mediaType string) (string, error) {
+	version, found := f.versions[mediaType]
+	if !found {
+		return "", ErrUnsupportedProcessingProfile
+	}
+	return version, nil
 }
 
 func (f *ProcessingFactory) ContentSelectionProfile() ContentSelectionProfile {

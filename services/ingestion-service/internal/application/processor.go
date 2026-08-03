@@ -201,6 +201,7 @@ type Factory interface {
 	NewChunker() (Chunker, error)
 	NewArtifactWriter(UploadedEvent, time.Time) (ArtifactWriter, error)
 	ConfigDigest(string) ([32]byte, error)
+	ExtractionVersion(string) (string, error)
 	ContentSelectionProfile() ContentSelectionProfile
 }
 
@@ -325,7 +326,10 @@ func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
 	if err != nil {
 		return err
 	}
-	event.ExtractionVersion = adapter.Version
+	event.ExtractionVersion, err = p.factory.ExtractionVersion(event.MediaType)
+	if err != nil {
+		return err
+	}
 	configDigest, err := p.factory.ConfigDigest(event.MediaType)
 	if err != nil {
 		return err
@@ -426,7 +430,10 @@ func (p *Processor) ProcessContentSelection(parent context.Context, selectionRes
 	if err != nil {
 		return err
 	}
-	event.ExtractionVersion = adapter.Version
+	event.ExtractionVersion, err = p.factory.ExtractionVersion(event.MediaType)
+	if err != nil {
+		return err
+	}
 	if err = p.validateSelectionForJob(event, job, selectionResult); err != nil {
 		return err
 	}

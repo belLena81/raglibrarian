@@ -3,6 +3,7 @@ package transport
 
 import (
 	"crypto/sha256"
+	"strings"
 
 	"github.com/belLena81/raglibrarian/pkg/contracts"
 	catalogv1 "github.com/belLena81/raglibrarian/pkg/proto/catalog/v1"
@@ -111,12 +112,92 @@ func DecodeManifest(payload, manifestPayload []byte) (application.ManifestEvent,
 		manifest.Shards[index] = application.Shard{Reference: shard.Reference, SHA256: bytesToDigest(shard.Sha256), CompressedBytes: shard.CompressedByteSize, UncompressedBytes: shard.UncompressedByteSize,
 			ChunkCount: shard.ChunkCount, FirstChunkOrder: shard.FirstChunkOrder, LastChunkOrder: shard.LastChunkOrder}
 	}
+	if manifestMessage.ContentSelection != nil {
+		selection, selectionErr := mapContentSelection(manifestMessage.ContentSelection)
+		if selectionErr != nil {
+			return event, application.ErrInvalidEvent
+		}
+		manifest.ContentSelection = selection
+	}
 	event.Manifest = manifest
 	profile, ok := domain.SupportedIndexProfileForExtraction(manifest.ExtractionVersion)
 	if !ok {
 		return event, application.ErrUnsupportedIndexProfile
 	}
 	return event, event.Validate(profile, defaultManifestPolicy)
+}
+
+func mapContentSelection(value *ingestionv1.ContentSelectionV1) (*application.ContentSelection, error) {
+	if len(value.ModelDigest) != sha256.Size || len(value.PolicyDigest) != sha256.Size ||
+		len(value.ProcessingProfileDigest) != sha256.Size || len(value.ExcludedRanges) > int(defaultManifestPolicy.MaxPages) {
+		return nil, application.ErrInvalidEvent
+	}
+	mode, ok := mapContentSelectionMode(value.Mode)
+	if !ok {
+		return nil, application.ErrInvalidEvent
+	}
+	fallbackReason, ok := mapContentSelectionFallback(value.FallbackReason)
+	if !ok {
+		return nil, application.ErrInvalidEvent
+	}
+	selection := &application.ContentSelection{
+		Mode:                    mode,
+		SelectorVersion:         value.SelectorVersion,
+		ParserVersion:           value.ParserVersion,
+		FallbackReason:          fallbackReason,
+		ModelDigest:             bytesToDigest(value.ModelDigest),
+		PolicyDigest:            bytesToDigest(value.PolicyDigest),
+		ProcessingProfileDigest: bytesToDigest(value.ProcessingProfileDigest),
+		OriginalCount:           value.OriginalOrdinalCount,
+		RetainedCount:           value.RetainedOrdinalCount,
+		ExcludedCount:           value.ExcludedOrdinalCount,
+		ExcludedRatio:           value.ExcludedRatio,
+		Ranges:                  make([]application.ContentSelectionRange, len(value.ExcludedRanges)),
+	}
+	for index, excludedRange := range value.ExcludedRanges {
+		if excludedRange == nil {
+			return nil, application.ErrInvalidEvent
+		}
+		reason, reasonOK := mapExclusionReason(excludedRange.Reason)
+		if !reasonOK {
+			return nil, application.ErrInvalidEvent
+		}
+		selection.Ranges[index] = application.ContentSelectionRange{
+			Start:  excludedRange.StartOrdinal,
+			End:    excludedRange.EndOrdinal,
+			Reason: reason,
+		}
+	}
+	return selection, nil
+}
+
+func mapContentSelectionMode(value ingestionv1.ContentSelectionMode) (string, bool) {
+	switch value {
+	case ingestionv1.ContentSelectionMode_CONTENT_SELECTION_MODE_DISABLED:
+		return "disabled", true
+	case ingestionv1.ContentSelectionMode_CONTENT_SELECTION_MODE_OBSERVATION:
+		return "observation", true
+	case ingestionv1.ContentSelectionMode_CONTENT_SELECTION_MODE_ENFORCEMENT:
+		return "enforcement", true
+	default:
+		return "", false
+	}
+}
+
+func mapContentSelectionFallback(value ingestionv1.ContentSelectionFallbackReason) (string, bool) {
+	name, ok := ingestionv1.ContentSelectionFallbackReason_name[int32(value)]
+	if !ok || value == ingestionv1.ContentSelectionFallbackReason_CONTENT_SELECTION_FALLBACK_REASON_UNSPECIFIED {
+		return "", false
+	}
+	return strings.ToLower(strings.TrimPrefix(name, "CONTENT_SELECTION_FALLBACK_REASON_")), true
+}
+
+func mapExclusionReason(value ingestionv1.ContentExclusionReason) (string, bool) {
+	name, ok := ingestionv1.ContentExclusionReason_name[int32(value)]
+	if !ok || value == ingestionv1.ContentExclusionReason_CONTENT_EXCLUSION_REASON_UNSPECIFIED {
+		return "", false
+	}
+	return strings.ToLower(strings.TrimPrefix(name, "CONTENT_EXCLUSION_REASON_")), true
 }
 
 func DecodeBatch(payload []byte) (application.BatchWork, error) {

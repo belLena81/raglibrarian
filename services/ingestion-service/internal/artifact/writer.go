@@ -30,8 +30,9 @@ type Store interface {
 
 type Versions struct{ Extraction, Normalization, Tokenizer, Chunking, Structure string }
 type ProcessingProfile struct {
-	MaximumTokens int
-	OverlapTokens int
+	MaximumTokens           int
+	OverlapTokens           int
+	RequireContentSelection bool
 }
 type ContentSelectionRange struct {
 	Start  uint32
@@ -130,6 +131,9 @@ func (w *Writer) Add(ctx context.Context, value domain.Chunk) error {
 func (w *Writer) Finalize(ctx context.Context, pageCount uint32, contentSelection *ContentSelection) (Result, error) {
 	if w.finalized || pageCount == 0 || w.chunkCount == 0 {
 		return Result{}, errors.New("cannot finalize artifacts")
+	}
+	if w.profile.RequireContentSelection && contentSelection == nil {
+		return Result{}, errors.New("content selection audit is required")
 	}
 	if err := w.flush(ctx); err != nil {
 		return Result{}, err

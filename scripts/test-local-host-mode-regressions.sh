@@ -313,6 +313,34 @@ if ! grep -Fq 'bash ./scripts/stop-local-host-services.sh' "$root_dir/scripts/ru
   echo "host services launcher does not stop stale screen sessions before restart" >&2
   exit 1
 fi
+if ! grep -Fq 'raglibrarian-layout-worker layout-worker "$root_dir/services/ingestion-service" env' "$root_dir/scripts/run-local-host-services.sh"; then
+  echo "host services launcher does not start the layout worker with its required extraction limit" >&2
+  exit 1
+fi
+if ! grep -Fq 'INGESTION_MAX_EXTRACTED_BYTES=134217728' "$root_dir/scripts/run-local-host-services.sh"; then
+  echo "host services launcher does not preserve the layout worker extraction profile limit" >&2
+  exit 1
+fi
+if ! grep -Fq 'raglibrarian-layout-worker' "$root_dir/scripts/stop-local-host-services.sh"; then
+  echo "host services stopper does not stop the layout worker" >&2
+  exit 1
+fi
+if ! grep -Fq 'screen -S "$session_id" -X quit' "$root_dir/scripts/stop-local-host-services.sh"; then
+  echo "host services stopper does not stop each exact screen session ID" >&2
+  exit 1
+fi
+if ! grep -Fq '$NF == "(Detached)" || $NF == "(Attached)"' "$root_dir/scripts/stop-local-host-services.sh"; then
+  echo "host services stopper does not recognize screen's timestamp column" >&2
+  exit 1
+fi
+if ! grep -Fq 'export LAYOUT_RABBITMQ_URI_FILE="$root_dir/$host_secret_dir/layout_rabbitmq_uri"' "$root_dir/scripts/render-local-host-env.sh"; then
+  echo "host env renderer does not export the layout worker RabbitMQ secret overlay" >&2
+  exit 1
+fi
+if ! grep -Fq 'ensure_file layout_rabbitmq_uri "$(derive_rabbit_host_uri layout_rabbitmq_uri)"' "$root_dir/scripts/ensure-local-host-secrets.sh"; then
+  echo "host secret overlay does not rewrite the layout worker RabbitMQ URI" >&2
+  exit 1
+fi
 
 screen() {
   if [[ "${1:-}" == "-wipe" ]]; then
@@ -321,9 +349,9 @@ screen() {
   if [[ "${1:-}" == "-ls" ]]; then
     cat <<'EOF'
 There are screens on:
-	1214504.raglibrarian-retrieval-worker	(Dead ???)
-	1193454.raglibrarian-retrieval	(Detached)
-	1193600.raglibrarian-edge	(Attached)
+	1214504.raglibrarian-retrieval-worker	(08/03/26 09:13:34)	(Dead ???)
+	1193454.raglibrarian-retrieval	(08/03/26 09:13:34)	(Detached)
+	1193600.raglibrarian-edge	(08/03/26 09:13:34)	(Attached)
 3 Sockets in /run/screen/S-test.
 EOF
     return 0

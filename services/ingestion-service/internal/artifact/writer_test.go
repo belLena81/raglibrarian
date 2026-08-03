@@ -155,6 +155,33 @@ func TestWriterRejectsMalformedContentSelectionAudit(t *testing.T) {
 	}
 }
 
+func TestWriterRequiresContentSelectionAuditWhenConfigured(t *testing.T) {
+	store := &memoryStore{}
+	writer, err := NewWriter(
+		store,
+		Metadata{BookID: "book-1", SourceSHA256: sum(1), ConfigDigest: sum(2), GeneratedAt: time.Now().UTC(), LifecycleVersion: 1},
+		Versions{Extraction: "e1", Normalization: "n1", Tokenizer: "t1", Chunking: "c1", Structure: "s1"},
+		ProcessingProfile{MaximumTokens: 800, OverlapTokens: 120, RequireContentSelection: true},
+		Limits{ChunksPerShard: 2, MaximumShardBytes: 1 << 20, MaximumManifestBytes: 1 << 20},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk, err := domain.NewChunk(domain.ChunkInput{
+		ID: "chunk-1", BookID: "book-1", Text: "retained",
+		PageStart: 1, PageEnd: 1, TokenEnd: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = writer.Add(context.Background(), chunk); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = writer.Finalize(context.Background(), 1, nil); err == nil {
+		t.Fatal("missing content selection audit was accepted")
+	}
+}
+
 func TestWriterResolvesFailOpenOrdinalCount(t *testing.T) {
 	store := &memoryStore{}
 	writer, err := NewWriter(store, Metadata{BookID: "book-1", SourceSHA256: sum(1), ConfigDigest: sum(2), GeneratedAt: time.Now().UTC(), LifecycleVersion: 1}, Versions{Extraction: "e1", Normalization: "n1", Tokenizer: "t1", Chunking: "c1", Structure: "s1"}, ProcessingProfile{MaximumTokens: 800, OverlapTokens: 120}, Limits{ChunksPerShard: 2, MaximumShardBytes: 1 << 20, MaximumManifestBytes: 1 << 20})

@@ -7,7 +7,7 @@ root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 screen_session_exists() {
   local session="$1"
   cleanup_dead_screen_sessions >/dev/null
-  screen -ls 2>/dev/null | grep -Eq "\\.${session}[[:space:]]+\\((Detached|Attached)\\)"
+  screen -ls 2>/dev/null | grep -Eq "\\.${session}[[:space:]]+\\([^)]*\\)[[:space:]]+\\((Detached|Attached)\\)"
 }
 
 cleanup_dead_screen_sessions() {
@@ -77,6 +77,9 @@ main() {
   start_screen_service raglibrarian-identity identity-service "$root_dir/services/identity-service" go run ./cmd/main.go
   start_screen_service raglibrarian-catalog catalog-service "$root_dir/services/catalog-service" go run ./cmd/main.go
   start_screen_service raglibrarian-ingestion ingestion-service "$root_dir/services/ingestion-service" go run ./cmd/worker
+  start_screen_service raglibrarian-layout-worker layout-worker "$root_dir/services/ingestion-service" env \
+    INGESTION_MAX_EXTRACTED_BYTES=134217728 \
+    go run ./cmd/layout_worker
   start_screen_service raglibrarian-retrieval retrieval-service "$root_dir/services/retrieval-service" go run ./cmd/server
   start_screen_service raglibrarian-retrieval-worker retrieval-worker "$root_dir/services/retrieval-service" env \
     RETRIEVAL_POSTGRES_DSN_FILE="$root_dir/.dev/host-secrets/retrieval_runtime_dsn" \
@@ -109,7 +112,7 @@ main() {
   echo "  Backend     http://127.0.0.1:8080"
   echo "  UI          http://127.0.0.1:5173"
   echo "  Mailpit     http://127.0.0.1:${MAILPIT_UI_PORT:-8025}"
-  echo "  Logs        $root_dir/_logs/{edge-api,identity-service,catalog-service,ingestion-service,retrieval-service,retrieval-worker,answer-service}/service.log"
+  echo "  Logs        $root_dir/_logs/{edge-api,identity-service,catalog-service,ingestion-service,layout-worker,retrieval-service,retrieval-worker,answer-service}/service.log"
   echo "  Sessions    screen -ls | grep raglibrarian-"
   echo "Stop with: bash ./scripts/stop-local.sh"
 }

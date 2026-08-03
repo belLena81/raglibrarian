@@ -7,6 +7,7 @@ sessions=(
   raglibrarian-identity
   raglibrarian-catalog
   raglibrarian-ingestion
+  raglibrarian-layout-worker
   raglibrarian-retrieval
   raglibrarian-retrieval-worker
   raglibrarian-answer
@@ -15,8 +16,13 @@ sessions=(
 
 for session in "${sessions[@]}"; do
   screen -wipe >/dev/null 2>&1 || true
-  if screen -ls 2>/dev/null | grep -Eq "\\.${session}[[:space:]]+\\((Detached|Attached)\\)"; then
-    screen -S "$session" -X quit || true
-    echo "Stopped screen session: $session"
-  fi
+  while IFS= read -r session_id; do
+    [[ -n "$session_id" ]] || continue
+    screen -S "$session_id" -X quit || true
+    echo "Stopped screen session: $session_id"
+  done < <(
+    screen -ls 2>/dev/null | awk -v session="$session" '
+      $1 ~ ("[.]" session "$") && ($NF == "(Detached)" || $NF == "(Attached)") { print $1 }
+    '
+  )
 done

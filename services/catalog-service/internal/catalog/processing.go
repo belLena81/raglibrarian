@@ -38,11 +38,25 @@ type processingProfile struct {
 var supportedM4Profile = newProcessingProfile(indexprofile.ExtractionPDF)
 var supportedM7EPUBProfile = newProcessingProfile(indexprofile.ExtractionEPUB)
 
+// The filtered profile digests bind Catalog to the only currently supported
+// enforcement policy. A producer configuration change requires an explicit
+// Catalog registry update, so unreviewed manifest contracts fail closed.
+var supportedM8PDFFilteredProfile = newProcessingProfileWithConfigDigest(
+	indexprofile.ExtractionPDFFiltered,
+	"3e933f2a3494a0459dffba1dab6ac10e7d5df21066df85f9c0ee2e914e339a06",
+)
+var supportedM8EPUBFilteredProfile = newProcessingProfileWithConfigDigest(
+	indexprofile.ExtractionEPUBFiltered,
+	"29407de6e7afe76f6cba13429c438be0d5daa6396edf89590ca1b1df1f0c6484",
+)
+
 var supportedM5ProfileDigest = newM5ProfileDigest(indexprofile.ExtractionPDF)
 var supportedM7EPUBIndexProfileDigest = newM5ProfileDigest(indexprofile.ExtractionEPUB)
+var supportedM8PDFFilteredIndexProfileDigest = newM5ProfileDigest(indexprofile.ExtractionPDFFiltered)
+var supportedM8EPUBFilteredIndexProfileDigest = newM5ProfileDigest(indexprofile.ExtractionEPUBFiltered)
 
 func newM5ProfileDigest(extractionVersion string) [sha256.Size]byte {
-	return indexprofile.Digest(
+	parts := []string{
 		indexprofile.EmbeddingModel,
 		indexprofile.EmbeddingRevision,
 		strconv.Itoa(indexprofile.EmbeddingDimensions),
@@ -58,7 +72,11 @@ func newM5ProfileDigest(extractionVersion string) [sha256.Size]byte {
 		strconv.Itoa(indexprofile.MaximumTokens),
 		strconv.Itoa(indexprofile.OverlapTokens),
 		indexprofile.ManifestSchema,
-	)
+	}
+	if extractionVersion == indexprofile.ExtractionPDFFiltered || extractionVersion == indexprofile.ExtractionEPUBFiltered {
+		parts = append(parts, indexprofile.ContentSelectionV1)
+	}
+	return indexprofile.Digest(parts...)
 }
 
 func newProcessingProfile(extractionVersion string) processingProfile {
@@ -90,6 +108,16 @@ func newProcessingProfile(extractionVersion string) processingProfile {
 		"256",
 		"4194304",
 	}, "\x00")))
+	return profile
+}
+
+func newProcessingProfileWithConfigDigest(extractionVersion, configDigestHex string) processingProfile {
+	profile := newProcessingProfile(extractionVersion)
+	configDigest, err := hex.DecodeString(configDigestHex)
+	if err != nil || len(configDigest) != sha256.Size {
+		panic("catalog: invalid processing profile digest")
+	}
+	copy(profile.configDigest[:], configDigest)
 	return profile
 }
 
@@ -400,6 +428,10 @@ func processingProfileForExtraction(extractionVersion string) (processingProfile
 		return supportedM4Profile, true
 	case supportedM7EPUBProfile.extractionVersion:
 		return supportedM7EPUBProfile, true
+	case supportedM8PDFFilteredProfile.extractionVersion:
+		return supportedM8PDFFilteredProfile, true
+	case supportedM8EPUBFilteredProfile.extractionVersion:
+		return supportedM8EPUBFilteredProfile, true
 	default:
 		return processingProfile{}, false
 	}
@@ -407,7 +439,9 @@ func processingProfileForExtraction(extractionVersion string) (processingProfile
 
 func supportedIndexProfileDigest(value []byte) bool {
 	return bytes.Equal(value, supportedM5ProfileDigest[:]) ||
-		bytes.Equal(value, supportedM7EPUBIndexProfileDigest[:])
+		bytes.Equal(value, supportedM7EPUBIndexProfileDigest[:]) ||
+		bytes.Equal(value, supportedM8PDFFilteredIndexProfileDigest[:]) ||
+		bytes.Equal(value, supportedM8EPUBFilteredIndexProfileDigest[:])
 }
 
 func unmarshalStrict(payload []byte, message proto.Message) error {
