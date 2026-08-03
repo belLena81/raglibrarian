@@ -160,7 +160,7 @@ type OutboxEvent struct {
 }
 
 type Repository interface {
-	Accept(context.Context, UploadedEvent, [32]byte, domain.ProcessingJob, OutboxEvent) (domain.ProcessingJob, bool, error)
+	Accept(context.Context, UploadedEvent, [32]byte, domain.ProcessingJob, OutboxEvent) (AcceptResult, error)
 	AwaitSelection(context.Context, domain.ProcessingJob, ClaimToken, OutboxEvent) error
 	AcceptContentSelection(context.Context, ContentSelectionRecord, string, time.Time, time.Duration) (domain.ProcessingJob, bool, error)
 	LoadContentSelection(context.Context, string) (ContentSelectionRecord, error)
@@ -169,6 +169,12 @@ type Repository interface {
 	Complete(context.Context, domain.ProcessingJob, ClaimToken, artifact.Result, OutboxEvent) error
 	Fail(context.Context, domain.ProcessingJob, ClaimToken, OutboxEvent) error
 	Retry(context.Context, domain.ProcessingJob, ClaimToken) error
+}
+
+type AcceptResult struct {
+	Job                      domain.ProcessingJob
+	Accepted                 bool
+	ContentSelectionTimedOut bool
 }
 
 type ClaimToken struct {
@@ -217,21 +223,22 @@ type IDGenerator func() (string, error)
 type Clock func() time.Time
 
 type Config struct {
-	MaximumSourceBytes     int64
-	MaximumTemporaryBytes  int64
-	TemporaryDirectory     string
-	ProcessingTimeout      time.Duration
-	PersistenceTimeout     time.Duration
-	ArtifactAbortTimeout   time.Duration
-	JobLease               time.Duration
-	MaximumAttempts        int
-	FirstRetryDelay        time.Duration
-	SecondRetryDelay       time.Duration
-	SubsequentRetryDelay   time.Duration
-	Observer               PhaseObserver
-	Diagnostics            ProcessorDiagnostics
-	DecodeUploaded         UploadDecoder
-	DecodeContentSelection ContentSelectionDecoder
+	MaximumSourceBytes          int64
+	MaximumTemporaryBytes       int64
+	TemporaryDirectory          string
+	ProcessingTimeout           time.Duration
+	PersistenceTimeout          time.Duration
+	ArtifactAbortTimeout        time.Duration
+	JobLease                    time.Duration
+	ContentSelectionWaitTimeout time.Duration
+	MaximumAttempts             int
+	FirstRetryDelay             time.Duration
+	SecondRetryDelay            time.Duration
+	SubsequentRetryDelay        time.Duration
+	Observer                    PhaseObserver
+	Diagnostics                 ProcessorDiagnostics
+	DecodeUploaded              UploadDecoder
+	DecodeContentSelection      ContentSelectionDecoder
 }
 
 type ProcessingPhase uint8
@@ -302,7 +309,7 @@ func NewProcessor(repository Repository, sources SourceReader, extractors Extrac
 		return nil, errors.New("invalid processor configuration")
 	}
 	selectionProfile := factory.ContentSelectionProfile()
-	if repository == nil || sources == nil || extractors == nil || events == nil || newID == nil || now == nil || !safeID(workerID) || config.MaximumSourceBytes < 1 || config.MaximumTemporaryBytes < config.MaximumSourceBytes || config.ProcessingTimeout <= 0 || config.PersistenceTimeout <= 0 || config.ArtifactAbortTimeout <= 0 || config.JobLease < config.ProcessingTimeout+30*time.Second || config.MaximumAttempts < 1 || config.FirstRetryDelay <= 0 || config.SecondRetryDelay <= 0 || config.SubsequentRetryDelay <= 0 || config.TemporaryDirectory == "" || selectionProfile.Validate() != nil || (selectionProfile.Mode != ContentSelectionDisabled && (config.DecodeUploaded == nil || config.DecodeContentSelection == nil)) {
+	if repository == nil || sources == nil || extractors == nil || events == nil || newID == nil || now == nil || !safeID(workerID) || config.MaximumSourceBytes < 1 || config.MaximumTemporaryBytes < config.MaximumSourceBytes || config.ProcessingTimeout <= 0 || config.PersistenceTimeout <= 0 || config.ArtifactAbortTimeout <= 0 || config.JobLease < config.ProcessingTimeout+30*time.Second || config.ContentSelectionWaitTimeout <= 0 || config.MaximumAttempts < 1 || config.FirstRetryDelay <= 0 || config.SecondRetryDelay <= 0 || config.SubsequentRetryDelay <= 0 || config.TemporaryDirectory == "" || selectionProfile.Validate() != nil || (selectionProfile.Mode != ContentSelectionDisabled && (config.DecodeUploaded == nil || config.DecodeContentSelection == nil)) {
 		return nil, errors.New("invalid processor configuration")
 	}
 	observer := config.Observer
@@ -351,17 +358,24 @@ func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
 		return err
 	}
 	payloadDigest := sha256.Sum256(event.Payload)
-	var accepted bool
 	acceptCtx, acceptCancel := context.WithTimeout(parent, p.config.PersistenceTimeout)
-	job, accepted, err = p.repository.Accept(acceptCtx, event, payloadDigest, job, started)
+	accepted, err := p.repository.Accept(acceptCtx, event, payloadDigest, job, started)
 	acceptCancel()
 	if err != nil {
 		return operational("accept_failed", err)
 	}
-	if !accepted {
+	if !accepted.Accepted {
 		return nil
 	}
+	job = accepted.Job
 	if p.selection.Mode != ContentSelectionDisabled {
+		if accepted.ContentSelectionTimedOut {
+			timeoutSelection, timeoutErr := p.timeoutSelection(event, job)
+			if timeoutErr != nil {
+				return timeoutErr
+			}
+			return p.processAccepted(parent, event, adapter, job, timeoutSelection)
+		}
 		loadCtx, loadCancel := context.WithTimeout(parent, p.config.PersistenceTimeout)
 		selectionResult, loadErr := decodeStoredSelection(loadCtx, p.repository, p.decodeSelection, job.ID(), p.selection.MaximumRanges)
 		loadCancel()
@@ -377,6 +391,34 @@ func (p *Processor) Process(parent context.Context, event UploadedEvent) error {
 		return p.awaitSelection(parent, event, &job)
 	}
 	return p.processAccepted(parent, event, adapter, job, nil)
+}
+
+func (p *Processor) timeoutSelection(event UploadedEvent, job domain.ProcessingJob) (*ContentSelectionResult, error) {
+	configDigestBytes, err := hex.DecodeString(job.ConfigDigest())
+	if err != nil || len(configDigestBytes) != sha256.Size {
+		return nil, ErrUnsupportedProcessingProfile
+	}
+	var configDigest [sha256.Size]byte
+	copy(configDigest[:], configDigestBytes)
+	fallback := "processing_timeout"
+	if p.selection.Mode == ContentSelectionObservation {
+		fallback = "observation"
+	}
+	return &ContentSelectionResult{
+		JobID:                   job.ID(),
+		BookID:                  event.BookID,
+		SourceSHA256:            event.SourceSHA256,
+		ProcessingProfileDigest: configDigest,
+		PolicyDigest:            p.selection.PolicyDigest(),
+		MediaType:               event.MediaType,
+		Mode:                    string(p.selection.Mode),
+		PolicyVersion:           p.selection.PolicyVersion,
+		ParserVersion:           p.selection.ParserVersion,
+		ModelSHA256:             p.selection.ModelSHA256,
+		FallbackReason:          fallback,
+		FallbackUnfiltered:      true,
+		LifecycleVersion:        event.LifecycleVersion,
+	}, nil
 }
 
 func (p *Processor) awaitSelection(parent context.Context, event UploadedEvent, job *domain.ProcessingJob) error {

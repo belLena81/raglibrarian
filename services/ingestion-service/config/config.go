@@ -49,7 +49,8 @@ const (
 	DefaultContentSelectionPolicy    = "layout-selector-v1"
 	DefaultContentSelectionParser    = "poppler-bbox-layout-v1"
 	// V1 attests the exact deterministic parser profile and policy implementation.
-	DefaultContentSelectionModelSHA = "55b474c59ef72485c1f1238bf2793c563c49dfa28f7cec3dd298ebacd202d012"
+	DefaultContentSelectionModelSHA    = "55b474c59ef72485c1f1238bf2793c563c49dfa28f7cec3dd298ebacd202d012"
+	DefaultContentSelectionWaitTimeout = 15 * time.Minute
 )
 
 type Config struct {
@@ -85,6 +86,7 @@ type Config struct {
 	ContentSelectionMaximumExcludedRatio                                        float64
 	MaximumPages                                                                uint32
 	ProcessingTimeout, PersistenceTimeout, ArtifactAbortTimeout, JobLease       time.Duration
+	ContentSelectionWaitTimeout                                                 time.Duration
 	FirstRetryDelay, SecondRetryDelay, SubsequentRetryDelay, OutboxInterval     time.Duration
 	RabbitDialTimeout, RabbitHeartbeat, RabbitPublishTimeout, OutboxLease       time.Duration
 	RetryDispatchDelay, OutboxRetryBaseDelay, OutboxRetryMaxDelay               time.Duration
@@ -108,6 +110,7 @@ type CleanupConfig struct {
 	ChunkTargetPages, ChunkMaximumPages                int
 	RetryDispatchDelay, OutboxRetryBaseDelay           time.Duration
 	OutboxRetryMaxDelay                                time.Duration
+	ContentSelectionWaitTimeout                        time.Duration
 	CleanupInterval, OrphanGracePeriod                 time.Duration
 }
 
@@ -136,7 +139,8 @@ type DispatcherConfig struct {
 	SecondRetryDelay,
 	RetryDispatchDelay,
 	OutboxRetryBaseDelay,
-	OutboxRetryMaxDelay time.Duration
+	OutboxRetryMaxDelay,
+	ContentSelectionWaitTimeout time.Duration
 	RunAs process.Identity
 }
 
@@ -189,6 +193,10 @@ func loadLocalDispatcher() (DispatcherConfig, error) {
 	if err != nil {
 		return DispatcherConfig{}, err
 	}
+	contentSelectionWaitTimeout, err := boundedDuration("INGESTION_CONTENT_SELECTION_WAIT_TIMEOUT", time.Second, 24*time.Hour, DefaultContentSelectionWaitTimeout)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
 	chunkMaximumTokens, chunkOverlapTokens, chunkTargetPages, chunkMaximumPages, err := chunkPolicyValues()
 	if err != nil {
 		return DispatcherConfig{}, err
@@ -202,29 +210,30 @@ func loadLocalDispatcher() (DispatcherConfig, error) {
 		return DispatcherConfig{}, err
 	}
 	return DispatcherConfig{
-		RuntimeBackend:             "local",
-		DSN:                        dsn,
-		RabbitURI:                  rabbitURI,
-		ResultExchange:             optional("INGESTION_RESULT_EXCHANGE", DefaultResultExchange),
-		RetryExchange:              optional("INGESTION_RETRY_EXCHANGE", DefaultRetryExchange),
-		OutboxInterval:             outboxInterval,
-		UploadFirstRetryRoute:      optional("INGESTION_UPLOAD_FIRST_RETRY_ROUTE", DefaultUploadFirstRetryRoute),
-		UploadSecondRetryRoute:     optional("INGESTION_UPLOAD_SECOND_RETRY_ROUTE", DefaultUploadSecondRetryRoute),
-		UploadSubsequentRetryRoute: optional("INGESTION_UPLOAD_SUBSEQUENT_RETRY_ROUTE", DefaultUploadThirdRetryRoute),
-		ChunkMaximumTokens:         chunkMaximumTokens,
-		ChunkOverlapTokens:         chunkOverlapTokens,
-		ChunkTargetPages:           chunkTargetPages,
-		ChunkMaximumPages:          chunkMaximumPages,
-		RabbitDialTimeout:          rabbitDialTimeout,
-		RabbitHeartbeat:            rabbitHeartbeat,
-		RabbitPublishTimeout:       rabbitPublishTimeout,
-		OutboxLease:                outboxLease,
-		FirstRetryDelay:            firstRetryDelay,
-		SecondRetryDelay:           secondRetryDelay,
-		RetryDispatchDelay:         retryDispatchDelay,
-		OutboxRetryBaseDelay:       outboxRetryBaseDelay,
-		OutboxRetryMaxDelay:        outboxRetryMaxDelay,
-		RunAs:                      process.Identity{UID: uid, GID: gid},
+		RuntimeBackend:              "local",
+		DSN:                         dsn,
+		RabbitURI:                   rabbitURI,
+		ResultExchange:              optional("INGESTION_RESULT_EXCHANGE", DefaultResultExchange),
+		RetryExchange:               optional("INGESTION_RETRY_EXCHANGE", DefaultRetryExchange),
+		OutboxInterval:              outboxInterval,
+		UploadFirstRetryRoute:       optional("INGESTION_UPLOAD_FIRST_RETRY_ROUTE", DefaultUploadFirstRetryRoute),
+		UploadSecondRetryRoute:      optional("INGESTION_UPLOAD_SECOND_RETRY_ROUTE", DefaultUploadSecondRetryRoute),
+		UploadSubsequentRetryRoute:  optional("INGESTION_UPLOAD_SUBSEQUENT_RETRY_ROUTE", DefaultUploadThirdRetryRoute),
+		ChunkMaximumTokens:          chunkMaximumTokens,
+		ChunkOverlapTokens:          chunkOverlapTokens,
+		ChunkTargetPages:            chunkTargetPages,
+		ChunkMaximumPages:           chunkMaximumPages,
+		RabbitDialTimeout:           rabbitDialTimeout,
+		RabbitHeartbeat:             rabbitHeartbeat,
+		RabbitPublishTimeout:        rabbitPublishTimeout,
+		OutboxLease:                 outboxLease,
+		FirstRetryDelay:             firstRetryDelay,
+		SecondRetryDelay:            secondRetryDelay,
+		RetryDispatchDelay:          retryDispatchDelay,
+		OutboxRetryBaseDelay:        outboxRetryBaseDelay,
+		OutboxRetryMaxDelay:         outboxRetryMaxDelay,
+		ContentSelectionWaitTimeout: contentSelectionWaitTimeout,
+		RunAs:                       process.Identity{UID: uid, GID: gid},
 	}, nil
 }
 
@@ -294,6 +303,10 @@ func loadLocalCleanup() (CleanupConfig, error) {
 	if err != nil {
 		return CleanupConfig{}, err
 	}
+	contentSelectionWaitTimeout, err := boundedDuration("INGESTION_CONTENT_SELECTION_WAIT_TIMEOUT", time.Second, 24*time.Hour, DefaultContentSelectionWaitTimeout)
+	if err != nil {
+		return CleanupConfig{}, err
+	}
 	chunkMaximumTokens, chunkOverlapTokens, chunkTargetPages, chunkMaximumPages, err := chunkPolicyValues()
 	if err != nil {
 		return CleanupConfig{}, err
@@ -315,6 +328,7 @@ func loadLocalCleanup() (CleanupConfig, error) {
 		RetryDispatchDelay:           retryDispatchDelay,
 		OutboxRetryBaseDelay:         outboxRetryBaseDelay,
 		OutboxRetryMaxDelay:          outboxRetryMaxDelay,
+		ContentSelectionWaitTimeout:  contentSelectionWaitTimeout,
 		CleanupInterval:              cleanupInterval,
 		OrphanGracePeriod:            orphanGracePeriod,
 	}, nil
@@ -592,6 +606,10 @@ func loadLocal() (Config, error) {
 	if err != nil || contentSelectionMaximumExcludedRatio != 0.25 {
 		return Config{}, fmt.Errorf("INGESTION_CONTENT_SELECTION_MAX_EXCLUDED_RATIO must be 0.25 for the supported processing profile")
 	}
+	contentSelectionWaitTimeout, err := boundedDuration("INGESTION_CONTENT_SELECTION_WAIT_TIMEOUT", time.Second, 24*time.Hour, DefaultContentSelectionWaitTimeout)
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		RuntimeBackend:                       "local",
 		DSN:                                  dsn,
@@ -653,6 +671,7 @@ func loadLocal() (Config, error) {
 		ContentSelectionMaximumRanges:        contentSelectionMaximumRanges,
 		ContentSelectionMinimumSignals:       contentSelectionMinimumSignals,
 		ContentSelectionMaximumExcludedRatio: contentSelectionMaximumExcludedRatio,
+		ContentSelectionWaitTimeout:          contentSelectionWaitTimeout,
 		MaximumPages:                         maximumPages,
 		ProcessingTimeout:                    timeout,
 		PersistenceTimeout:                   persistenceTimeout,

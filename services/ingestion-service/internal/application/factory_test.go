@@ -97,6 +97,53 @@ func TestM4ProcessingProfileDigestIsStable(t *testing.T) {
 	}
 }
 
+func TestFilteredProcessingProfileDigestFollowsSupportedSelectionMode(t *testing.T) {
+	tests := []struct {
+		name      string
+		mode      ContentSelectionMode
+		mediaType string
+		want      string
+	}{
+		{name: "PDF enforcement", mode: ContentSelectionEnforcement, mediaType: MediaTypePDF, want: "3e933f2a3494a0459dffba1dab6ac10e7d5df21066df85f9c0ee2e914e339a06"},
+		{name: "PDF observation", mode: ContentSelectionObservation, mediaType: MediaTypePDF, want: "6ba67b3df6017c3cbc815d7270939718653922601948e7cb8c0d9f2868cb743c"},
+		{name: "EPUB enforcement", mode: ContentSelectionEnforcement, mediaType: MediaTypeEPUB, want: "29407de6e7afe76f6cba13429c438be0d5daa6396edf89590ca1b1df1f0c6484"},
+		{name: "EPUB observation", mode: ContentSelectionObservation, mediaType: MediaTypeEPUB, want: "89bb7ed49b88673b37361c2834fd50496958067d6bef8a10e47b309f7e0c8da1"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			factory, err := NewProcessingFactoryWithSelection(factoryTokenizer{}, factoryStore{}, chunking.Policy{
+				MaximumTokens: 512,
+				OverlapTokens: 120,
+				TargetPages:   2,
+				MaximumPages:  3,
+				MaximumChunks: 50_000,
+			}, artifact.Limits{
+				ChunksPerShard:       256,
+				MaximumShardBytes:    4 << 20,
+				MaximumManifestBytes: 1 << 20,
+			}, ContentSelectionProfile{
+				Mode:                 test.mode,
+				PolicyVersion:        indexprofile.ContentSelectionV1,
+				ParserVersion:        indexprofile.ContentSelectionParserBBoxLayoutV1,
+				ModelSHA256:          indexprofile.ContentSelectionModelSHA256,
+				MinimumSignals:       indexprofile.ContentSelectionMinimumSignals,
+				MaximumRanges:        indexprofile.ContentSelectionMaximumRanges,
+				MaximumExcludedRatio: indexprofile.ContentSelectionMaximumExcludedRatio,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			configDigest, err := factory.ConfigDigest(test.mediaType)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hex.EncodeToString(configDigest[:]); got != test.want {
+				t.Fatalf("filtered config digest = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestFactoryRequiresContentSelectionAuditForEnabledSelection(t *testing.T) {
 	factory, err := NewProcessingFactoryWithSelection(factoryTokenizer{}, factoryStore{}, chunking.Policy{
 		MaximumTokens: 512,

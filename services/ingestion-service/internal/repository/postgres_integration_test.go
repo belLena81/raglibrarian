@@ -92,13 +92,14 @@ func TestContentSelectionAwaitResumeIsAtomicAndIdempotent(t *testing.T) {
 		CorrelationID: "correlation-" + suffix, CausationID: "cause-" + suffix, Producer: "catalog-service", SchemaVersion: "v1", IdempotencyKey: bookID,
 		SourceSHA256: sourceSHA256, ByteSize: 1, LifecycleVersion: 1, OccurredAt: now, Payload: uploadPayload,
 	}
-	repository := NewPostgres(pool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute})
-	acceptedJob, accepted, err := repository.Accept(ctx, event, [32]byte{3}, job, application.OutboxEvent{
+	repository := NewPostgres(pool, testPolicy())
+	acceptedResult, err := repository.Accept(ctx, event, [32]byte{3}, job, application.OutboxEvent{
 		ID: "selection-started-" + suffix, Type: "ingestion.book.processing-started.v1", Payload: []byte("started"), OccurredAt: now,
 	})
-	if err != nil || !accepted {
-		t.Fatalf("Accept() accepted=%t error=%v", accepted, err)
+	if err != nil || !acceptedResult.Accepted {
+		t.Fatalf("Accept() accepted=%t error=%v", acceptedResult.Accepted, err)
 	}
+	acceptedJob := acceptedResult.Job
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
@@ -115,6 +116,15 @@ func TestContentSelectionAwaitResumeIsAtomicAndIdempotent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AwaitSelection() error = %v", err)
 	}
+	var waitDispatchAfter, waitNextAttemptAt time.Time
+	if err = pool.QueryRow(ctx, `SELECT dispatch_after,next_attempt_at FROM ingestion.retry_dispatches
+		WHERE job_id=$1 AND attempt=$2`, jobID, acceptedJob.Attempts()).Scan(&waitDispatchAfter, &waitNextAttemptAt); err != nil {
+		t.Fatalf("load content-selection wait recovery dispatch: %v", err)
+	}
+	wantSelectionRetryAt := acceptedJob.UpdatedAt().Add(testPolicy().ContentSelectionWaitTimeout)
+	if !waitDispatchAfter.Equal(wantSelectionRetryAt) || !waitNextAttemptAt.Equal(wantSelectionRetryAt) {
+		t.Fatalf("content-selection wait recovery = dispatch_after %v next_attempt_at %v, want %v", waitDispatchAfter, waitNextAttemptAt, wantSelectionRetryAt)
+	}
 	resultPayload := []byte("bounded-selection-result")
 	resultDigest := sha256.Sum256(resultPayload)
 	record := application.ContentSelectionRecord{
@@ -129,15 +139,137 @@ func TestContentSelectionAwaitResumeIsAtomicAndIdempotent(t *testing.T) {
 		t.Fatalf("LoadUploadedPayload() payload=%q error=%v", stored, loadErr)
 	}
 	_, duplicateAccepted, err := repository.AcceptContentSelection(ctx, record, "worker-3", now.Add(3*time.Second), 15*time.Minute)
-	if err != nil || duplicateAccepted {
-		t.Fatalf("duplicate result accepted=%t error=%v", duplicateAccepted, err)
+	if !errors.Is(err, application.ErrProcessingDeferred) || duplicateAccepted {
+		t.Fatalf("active duplicate result accepted=%t error=%v", duplicateAccepted, err)
+	}
+	var dispatchAfter, nextAttemptAt time.Time
+	if err = pool.QueryRow(ctx, `SELECT dispatch_after,next_attempt_at FROM ingestion.retry_dispatches
+		WHERE job_id=$1 AND attempt=$2`, jobID, resumed.Attempts()).Scan(&dispatchAfter, &nextAttemptAt); err != nil {
+		t.Fatalf("load recovery dispatch: %v", err)
+	}
+	if !dispatchAfter.Equal(resumed.LeaseExpiresAt()) || !nextAttemptAt.Equal(resumed.LeaseExpiresAt()) {
+		t.Fatalf("recovery dispatch = dispatch_after %v next_attempt_at %v, want %v", dispatchAfter, nextAttemptAt, resumed.LeaseExpiresAt())
+	}
+	reclaimed, reclaimedNow, err := repository.AcceptContentSelection(ctx, record, "worker-3", resumed.LeaseExpiresAt().Add(time.Second), 15*time.Minute)
+	if err != nil || !reclaimedNow {
+		t.Fatalf("expired duplicate result accepted=%t error=%v", reclaimedNow, err)
+	}
+	if reclaimed.State() != domain.JobProcessing || reclaimed.LeaseOwner() != "worker-3" ||
+		!reclaimed.LeaseExpiresAt().After(resumed.LeaseExpiresAt()) || reclaimed.Attempts() != resumed.Attempts()+1 {
+		t.Fatalf("reclaimed job = state %q owner %q lease %v attempts %d", reclaimed.State(), reclaimed.LeaseOwner(), reclaimed.LeaseExpiresAt(), reclaimed.Attempts())
 	}
 	conflict := record
 	conflict.EventID = "selection-conflict-" + suffix
 	conflict.Payload = []byte("conflicting-result")
 	conflict.PayloadDigest = sha256.Sum256(conflict.Payload)
-	if _, _, err = repository.AcceptContentSelection(ctx, conflict, "worker-3", now.Add(3*time.Second), 15*time.Minute); !errors.Is(err, application.ErrConflictingEvent) {
+	if _, _, err = repository.AcceptContentSelection(ctx, conflict, "worker-4", reclaimed.LeaseExpiresAt().Add(time.Second), 15*time.Minute); !errors.Is(err, application.ErrConflictingEvent) {
 		t.Fatalf("conflicting result error = %v", err)
+	}
+}
+
+func TestAwaitingSelectionUploadRedeliveryRecoversAfterWaitTimeout(t *testing.T) {
+	if os.Getenv("INGESTION_POSTGRES_INTEGRATION") != "true" {
+		t.Skip("set INGESTION_POSTGRES_INTEGRATION=true inside the Compose test network")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, readIngestionIntegrationSecret(t, "INGESTION_POSTGRES_DSN_FILE"))
+	if err != nil {
+		t.Fatalf("connect ingestion database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	suffix := randomRepositoryIntegrationID(t)
+	jobID := "selection-timeout-job-" + suffix
+	bookID := "selection-timeout-book-" + suffix
+	uploadID := "selection-timeout-upload-" + suffix
+	requestID := "selection-timeout-request-" + suffix
+	sourceSHA256 := [32]byte{1}
+	configDigest := [32]byte{2}
+	payloadDigest := [32]byte{3}
+	uploadPayload := []byte("bounded-upload-envelope")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	policy := testPolicy()
+	repository := NewPostgres(pool, policy)
+	job, err := domain.NewProcessingJob(jobID, bookID, sourceSHA256, hex.EncodeToString(configDigest[:]), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = job.Claim("worker-1", now, 15*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	event := application.UploadedEvent{
+		EventID:          uploadID,
+		BookID:           bookID,
+		ObjectReference:  "originals/" + bookID + ".pdf",
+		MediaType:        application.MediaTypePDF,
+		CorrelationID:    "correlation-" + suffix,
+		CausationID:      "cause-" + suffix,
+		Producer:         "catalog-service",
+		SchemaVersion:    "v1",
+		IdempotencyKey:   bookID,
+		SourceSHA256:     sourceSHA256,
+		ByteSize:         1,
+		LifecycleVersion: 1,
+		OccurredAt:       now,
+		Payload:          uploadPayload,
+	}
+	acceptedResult, err := repository.Accept(ctx, event, payloadDigest, job, application.OutboxEvent{
+		ID: "selection-timeout-started-" + suffix, Type: "ingestion.book.processing-started.v1", Payload: []byte("started"), OccurredAt: now,
+	})
+	if err != nil || !acceptedResult.Accepted {
+		t.Fatalf("Accept() accepted=%t error=%v", acceptedResult.Accepted, err)
+	}
+	acceptedJob := acceptedResult.Job
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM ingestion.jobs WHERE id=$1", jobID)
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM ingestion.inbox WHERE event_id=$1", uploadID)
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM ingestion.lifecycle_fences WHERE book_id=$1", bookID)
+	})
+	claim := application.ClaimToken{Owner: acceptedJob.LeaseOwner(), Attempt: acceptedJob.Attempts(), ExpiresAt: acceptedJob.LeaseExpiresAt()}
+	awaitAt := now.Add(time.Second)
+	if err = acceptedJob.AwaitContentSelection(claim.Owner, awaitAt); err != nil {
+		t.Fatal(err)
+	}
+	if err = repository.AwaitSelection(ctx, acceptedJob, claim, application.OutboxEvent{
+		ID: requestID, Type: "ingestion.book.content-selection-requested.v1", Payload: []byte("request"), OccurredAt: awaitAt,
+	}); err != nil {
+		t.Fatalf("AwaitSelection() error = %v", err)
+	}
+
+	beforeTimeout, err := domain.NewProcessingJob("selection-timeout-before-"+suffix, bookID, sourceSHA256, hex.EncodeToString(configDigest[:]), awaitAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = beforeTimeout.Claim("worker-2", beforeTimeout.CreatedAt(), 15*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	beforeResult, err := repository.Accept(ctx, event, payloadDigest, beforeTimeout, application.OutboxEvent{
+		ID: "selection-timeout-before-started-" + suffix, Type: "ingestion.book.processing-started.v1", Payload: []byte("started"), OccurredAt: beforeTimeout.CreatedAt(),
+	})
+	if !errors.Is(err, application.ErrProcessingDeferred) || beforeResult.Accepted {
+		t.Fatalf("before timeout Accept() accepted=%t error=%v", beforeResult.Accepted, err)
+	}
+
+	afterAt := awaitAt.Add(policy.ContentSelectionWaitTimeout).Add(time.Second)
+	afterTimeout, err := domain.NewProcessingJob("selection-timeout-after-"+suffix, bookID, sourceSHA256, hex.EncodeToString(configDigest[:]), afterAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = afterTimeout.Claim("worker-3", afterAt, 15*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	afterResult, err := repository.Accept(ctx, event, payloadDigest, afterTimeout, application.OutboxEvent{
+		ID: "selection-timeout-after-started-" + suffix, Type: "ingestion.book.processing-started.v1", Payload: []byte("started"), OccurredAt: afterAt,
+	})
+	if err != nil || !afterResult.Accepted || !afterResult.ContentSelectionTimedOut {
+		t.Fatalf("after timeout Accept() result=%+v error=%v", afterResult, err)
+	}
+	if afterResult.Job.State() != domain.JobProcessing || afterResult.Job.LeaseOwner() != "worker-3" ||
+		afterResult.Job.Attempts() != acceptedJob.Attempts()+1 {
+		t.Fatalf("after timeout job = state %q owner %q attempts %d", afterResult.Job.State(), afterResult.Job.LeaseOwner(), afterResult.Job.Attempts())
 	}
 }
 
@@ -201,7 +333,7 @@ func TestRetryAdvancesPendingActiveLeaseRecoveryDispatch(t *testing.T) {
 	if err = job.ScheduleRetry(claim.Owner, retryAt, now); err != nil {
 		t.Fatal(err)
 	}
-	if err = NewPostgres(pool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute}).Retry(ctx, job, claim); err != nil {
+	if err = NewPostgres(pool, testPolicy()).Retry(ctx, job, claim); err != nil {
 		t.Fatalf("schedule real retry: %v", err)
 	}
 
@@ -286,7 +418,7 @@ func TestDeletionBarrierWaitsForActiveLeaseAndCleanupRoleCanFinalize(t *testing.
 	ack := application.OutboxEvent{
 		ID: ackID, Type: "ingestion.book.artifacts-deleted.v1", Payload: []byte{1}, OccurredAt: now,
 	}
-	if err = NewPostgres(runtimePool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute}).AcceptDeletion(ctx, deletion, sourceSHA256, ack, now); err != nil {
+	if err = NewPostgres(runtimePool, testPolicy()).AcceptDeletion(ctx, deletion, sourceSHA256, ack, now); err != nil {
 		t.Fatalf("accept deletion: %v", err)
 	}
 
@@ -297,7 +429,7 @@ func TestDeletionBarrierWaitsForActiveLeaseAndCleanupRoleCanFinalize(t *testing.
 	if !cleanupAfter.Equal(leaseExpiresAt) {
 		t.Fatalf("cleanup_after = %v, want active lease %v", cleanupAfter, leaseExpiresAt)
 	}
-	claimed, err := NewPostgres(runtimePool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute}).ClaimDeletionArtifacts(ctx, now, time.Minute, 10)
+	claimed, err := NewPostgres(runtimePool, testPolicy()).ClaimDeletionArtifacts(ctx, now, time.Minute, 10)
 	if err != nil {
 		t.Fatalf("claim before lease: %v", err)
 	}
@@ -326,7 +458,7 @@ func TestDeletionBarrierWaitsForActiveLeaseAndCleanupRoleCanFinalize(t *testing.
 		t.Fatal(err)
 	}
 	claim := application.ClaimToken{Owner: "worker-1", Attempt: 1, ExpiresAt: leaseExpiresAt}
-	if err = NewPostgres(runtimePool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute}).Complete(ctx, job, claim, artifact.Result{}, application.OutboxEvent{}); err != nil {
+	if err = NewPostgres(runtimePool, testPolicy()).Complete(ctx, job, claim, artifact.Result{}, application.OutboxEvent{}); err != nil {
 		t.Fatalf("fenced completion reschedule: %v", err)
 	}
 	if err = runtimePool.QueryRow(ctx, `SELECT cleanup_after FROM ingestion.artifact_sets WHERE job_id=$1`, jobID).Scan(&cleanupAfter); err != nil {
@@ -335,12 +467,12 @@ func TestDeletionBarrierWaitsForActiveLeaseAndCleanupRoleCanFinalize(t *testing.
 	if !cleanupAfter.Equal(finalizedAt) {
 		t.Fatalf("cleanup_after = %v, want finalized time %v", cleanupAfter, finalizedAt)
 	}
-	claimed, err = NewPostgres(runtimePool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute}).ClaimDeletionArtifacts(ctx, finalizedAt, time.Minute, 10)
+	claimed, err = NewPostgres(runtimePool, testPolicy()).ClaimDeletionArtifacts(ctx, finalizedAt, time.Minute, 10)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("claim after fenced final write = (%#v, %v), want one artifact", claimed, err)
 	}
 
-	cleanupRepository := NewPostgres(cleanupPool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute})
+	cleanupRepository := NewPostgres(cleanupPool, testPolicy())
 	start := make(chan struct{})
 	results := make(chan error, 2)
 	for range 2 {
@@ -426,10 +558,10 @@ func TestAcceptRollsBackEarlierWritesWhenOutboxInsertFails(t *testing.T) {
 		_, _ = pool.Exec(cleanupCtx, "DELETE FROM ingestion.lifecycle_fences WHERE book_id=$1", bookID)
 	})
 
-	accepted, _, acceptErr := NewPostgres(pool, Policy{RetryDispatchDelay: time.Second, OutboxRetryBaseDelay: time.Second, OutboxRetryMaxDelay: 5 * time.Minute}).Accept(ctx, event, sourceSHA256, proposed, application.OutboxEvent{
+	accepted, acceptErr := NewPostgres(pool, testPolicy()).Accept(ctx, event, sourceSHA256, proposed, application.OutboxEvent{
 		ID: startedID, Type: "ingestion.book.processing-started.v1", Payload: []byte("started"), OccurredAt: now,
 	})
-	if acceptErr == nil || accepted.ID() != proposed.ID() {
+	if acceptErr == nil || accepted.Job.ID() != proposed.ID() {
 		t.Fatalf("Accept() accepted=%+v error=%v", accepted, acceptErr)
 	}
 	var inboxCount, jobCount, artifactCount, fenceCount int
@@ -469,6 +601,15 @@ func randomRepositoryIntegrationID(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return hex.EncodeToString(value)
+}
+
+func testPolicy() Policy {
+	return Policy{
+		RetryDispatchDelay:          time.Second,
+		OutboxRetryBaseDelay:        time.Second,
+		OutboxRetryMaxDelay:         5 * time.Minute,
+		ContentSelectionWaitTimeout: 15 * time.Minute,
+	}
 }
 
 func isInsufficientPrivilege(err error) bool {

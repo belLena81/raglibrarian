@@ -84,9 +84,10 @@ func NewDispatcher(ctx context.Context, cfg config.DispatcherConfig) (*Dispatche
 	}
 	publisher := transport.NewReconnectingPublisher(cfg.RabbitURI, brokerPolicy)
 	outbox, err := transport.NewOutboxWorker(repository.NewPostgresWithProfile(pool, chunkPolicy, repository.Policy{
-		RetryDispatchDelay:   cfg.RetryDispatchDelay,
-		OutboxRetryBaseDelay: cfg.OutboxRetryBaseDelay,
-		OutboxRetryMaxDelay:  cfg.OutboxRetryMaxDelay,
+		RetryDispatchDelay:          cfg.RetryDispatchDelay,
+		OutboxRetryBaseDelay:        cfg.OutboxRetryBaseDelay,
+		OutboxRetryMaxDelay:         cfg.OutboxRetryMaxDelay,
+		ContentSelectionWaitTimeout: cfg.ContentSelectionWaitTimeout,
 	}), publisher, cfg.ResultExchange, cfg.OutboxInterval, transport.OutboxPolicy{
 		Lease:                      cfg.OutboxLease,
 		PublishTimeout:             cfg.RabbitPublishTimeout,
@@ -150,9 +151,10 @@ func NewCleanup(ctx context.Context, cfg config.CleanupConfig) (*CleanupRuntime,
 		MaximumChunks: 1,
 	}
 	cleaner, err := artifact.NewCleaner(repository.NewPostgresWithProfile(pool, chunkPolicy, repository.Policy{
-		RetryDispatchDelay:   cfg.RetryDispatchDelay,
-		OutboxRetryBaseDelay: cfg.OutboxRetryBaseDelay,
-		OutboxRetryMaxDelay:  cfg.OutboxRetryMaxDelay,
+		RetryDispatchDelay:          cfg.RetryDispatchDelay,
+		OutboxRetryBaseDelay:        cfg.OutboxRetryBaseDelay,
+		OutboxRetryMaxDelay:         cfg.OutboxRetryMaxDelay,
+		ContentSelectionWaitTimeout: cfg.ContentSelectionWaitTimeout,
 	}), artifactStore, cfg.CleanupInterval, cfg.OrphanGracePeriod)
 	if err != nil {
 		pool.Close()
@@ -277,9 +279,10 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		return nil, errors.New("worker identity unavailable")
 	}
 	repo := repository.NewPostgresWithProfile(pool, chunkPolicy, repository.Policy{
-		RetryDispatchDelay:   cfg.RetryDispatchDelay,
-		OutboxRetryBaseDelay: cfg.OutboxRetryBaseDelay,
-		OutboxRetryMaxDelay:  cfg.OutboxRetryMaxDelay,
+		RetryDispatchDelay:          cfg.RetryDispatchDelay,
+		OutboxRetryBaseDelay:        cfg.OutboxRetryBaseDelay,
+		OutboxRetryMaxDelay:         cfg.OutboxRetryMaxDelay,
+		ContentSelectionWaitTimeout: cfg.ContentSelectionWaitTimeout,
 	})
 	recorder := &metrics.Recorder{}
 	diagnosticsLogger := diagnostic.New(nil)
@@ -344,21 +347,22 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		time.Now,
 		workerID,
 		application.Config{
-			MaximumSourceBytes:     cfg.MaximumSourceBytes,
-			MaximumTemporaryBytes:  cfg.MaximumTemporaryBytes,
-			TemporaryDirectory:     cfg.TemporaryDirectory,
-			ProcessingTimeout:      cfg.ProcessingTimeout,
-			PersistenceTimeout:     cfg.PersistenceTimeout,
-			ArtifactAbortTimeout:   cfg.ArtifactAbortTimeout,
-			JobLease:               cfg.JobLease,
-			MaximumAttempts:        cfg.MaximumAttempts,
-			FirstRetryDelay:        cfg.FirstRetryDelay,
-			SecondRetryDelay:       cfg.SecondRetryDelay,
-			SubsequentRetryDelay:   cfg.SubsequentRetryDelay,
-			Observer:               recorder,
-			Diagnostics:            diagnosticsLogger,
-			DecodeUploaded:         transport.DecodeUploaded,
-			DecodeContentSelection: transport.DecodeContentSelectionCompleted,
+			MaximumSourceBytes:          cfg.MaximumSourceBytes,
+			MaximumTemporaryBytes:       cfg.MaximumTemporaryBytes,
+			TemporaryDirectory:          cfg.TemporaryDirectory,
+			ProcessingTimeout:           cfg.ProcessingTimeout,
+			PersistenceTimeout:          cfg.PersistenceTimeout,
+			ArtifactAbortTimeout:        cfg.ArtifactAbortTimeout,
+			JobLease:                    cfg.JobLease,
+			ContentSelectionWaitTimeout: cfg.ContentSelectionWaitTimeout,
+			MaximumAttempts:             cfg.MaximumAttempts,
+			FirstRetryDelay:             cfg.FirstRetryDelay,
+			SecondRetryDelay:            cfg.SecondRetryDelay,
+			SubsequentRetryDelay:        cfg.SubsequentRetryDelay,
+			Observer:                    recorder,
+			Diagnostics:                 diagnosticsLogger,
+			DecodeUploaded:              transport.DecodeUploaded,
+			DecodeContentSelection:      transport.DecodeContentSelectionCompleted,
 		},
 	)
 	if err != nil {

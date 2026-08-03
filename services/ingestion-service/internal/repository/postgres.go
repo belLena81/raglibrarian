@@ -28,9 +28,10 @@ type Postgres struct {
 }
 
 type Policy struct {
-	RetryDispatchDelay   time.Duration
-	OutboxRetryBaseDelay time.Duration
-	OutboxRetryMaxDelay  time.Duration
+	RetryDispatchDelay          time.Duration
+	OutboxRetryBaseDelay        time.Duration
+	OutboxRetryMaxDelay         time.Duration
+	ContentSelectionWaitTimeout time.Duration
 }
 
 type PendingOutboxEvent struct {
@@ -64,7 +65,7 @@ func NewPostgresWithProfile(pool *pgxpool.Pool, profile chunking.Policy, policy 
 		profile.TargetPages < 1 || profile.MaximumPages < profile.TargetPages {
 		panic("ingestion repository: invalid chunking profile")
 	}
-	if policy.RetryDispatchDelay <= 0 || policy.OutboxRetryBaseDelay <= 0 || policy.OutboxRetryMaxDelay < policy.OutboxRetryBaseDelay {
+	if policy.RetryDispatchDelay <= 0 || policy.OutboxRetryBaseDelay <= 0 || policy.OutboxRetryMaxDelay < policy.OutboxRetryBaseDelay || policy.ContentSelectionWaitTimeout <= 0 {
 		panic("ingestion repository: invalid retry policy")
 	}
 	return &Postgres{pool: pool, wake: make(chan struct{}, 1), profile: profile, policy: policy}
@@ -79,82 +80,81 @@ func (r *Postgres) notify() {
 	}
 }
 
-func (r *Postgres) Accept(ctx context.Context, event application.UploadedEvent, payloadDigest [32]byte, proposed domain.ProcessingJob, started application.OutboxEvent) (domain.ProcessingJob, bool, error) {
+func (r *Postgres) Accept(ctx context.Context, event application.UploadedEvent, payloadDigest [32]byte, proposed domain.ProcessingJob, started application.OutboxEvent) (application.AcceptResult, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: begin accept: %w", err)
+		return application.AcceptResult{}, fmt.Errorf("ingestion: begin accept: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	_, err = tx.Exec(ctx, `INSERT INTO ingestion.lifecycle_fences(book_id,lifecycle_version,deleted,updated_at)
 		VALUES($1,$2,false,$3) ON CONFLICT(book_id) DO NOTHING`, event.BookID, event.LifecycleVersion, proposed.CreatedAt())
 	if err != nil {
-		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: initialize lifecycle fence: %w", err)
+		return application.AcceptResult{}, fmt.Errorf("ingestion: initialize lifecycle fence: %w", err)
 	}
 	var fencedVersion int64
 	var deleted bool
 	if err = tx.QueryRow(ctx, `SELECT lifecycle_version,deleted FROM ingestion.lifecycle_fences WHERE book_id=$1 FOR UPDATE`, event.BookID).Scan(&fencedVersion, &deleted); err != nil {
-		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: inspect lifecycle fence: %w", err)
+		return application.AcceptResult{}, fmt.Errorf("ingestion: inspect lifecycle fence: %w", err)
 	}
 	if fencedVersion > event.LifecycleVersion || (deleted && fencedVersion >= event.LifecycleVersion) {
-		return proposed, false, nil
+		return application.AcceptResult{Job: proposed}, nil
 	}
 	if fencedVersion < event.LifecycleVersion {
 		_, err = tx.Exec(ctx, `UPDATE ingestion.lifecycle_fences SET lifecycle_version=$2,deleted=false,updated_at=$3 WHERE book_id=$1`, event.BookID, event.LifecycleVersion, proposed.CreatedAt())
 		if err != nil {
-			return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: advance lifecycle fence: %w", err)
+			return application.AcceptResult{}, fmt.Errorf("ingestion: advance lifecycle fence: %w", err)
 		}
 	}
 	configBytes := configDigestBytes(proposed.ConfigDigest())
 	command, err := tx.Exec(ctx, `INSERT INTO ingestion.inbox(event_id,payload_digest,payload,business_key,source_sha256,processing_config_digest,received_at,lifecycle_version)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`, event.EventID, payloadDigest[:], event.Payload, event.IdempotencyKey, event.SourceSHA256[:], configBytes, proposed.CreatedAt(), event.LifecycleVersion)
 	if err != nil {
-		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: insert inbox: %w", err)
+		return application.AcceptResult{}, fmt.Errorf("ingestion: insert inbox: %w", err)
 	}
 	if command.RowsAffected() == 0 {
 		var existingDigest, existingSource []byte
 		var existingEventID string
 		if err = tx.QueryRow(ctx, `SELECT event_id,payload_digest,source_sha256 FROM ingestion.inbox WHERE event_id=$1 OR business_key=$2 FOR UPDATE`, event.EventID, event.IdempotencyKey).Scan(&existingEventID, &existingDigest, &existingSource); err != nil {
-			return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: inspect duplicate: %w", err)
+			return application.AcceptResult{}, fmt.Errorf("ingestion: inspect duplicate: %w", err)
 		}
 		if !constantEqual(existingDigest, payloadDigest[:]) || !constantEqual(existingSource, event.SourceSHA256[:]) {
-			return domain.ProcessingJob{}, false, application.ErrConflictingEvent
+			return application.AcceptResult{}, application.ErrConflictingEvent
 		}
 		existingJob, loadErr := loadJobForUpdate(ctx, tx, event.BookID, event.SourceSHA256, proposed.ConfigDigest(), r.profile)
 		if errors.Is(loadErr, pgx.ErrNoRows) {
-			return domain.ProcessingJob{}, false, application.ErrConflictingEvent
+			return application.AcceptResult{}, application.ErrConflictingEvent
 		}
 		if loadErr != nil {
-			return domain.ProcessingJob{}, false, loadErr
+			return application.AcceptResult{}, loadErr
 		}
 		now := proposed.UpdatedAt()
-		claimable, decisionErr := existingJobDecision(existingJob, now)
+		timedOutSelection := existingJob.State() == domain.JobAwaitingSelection && !now.Before(existingJob.UpdatedAt().Add(r.policy.ContentSelectionWaitTimeout))
+		claimable, decisionErr := existingJobDecision(existingJob, now, r.policy.ContentSelectionWaitTimeout)
 		if !claimable {
 			if retryAt, deferred := recoveryDispatchTime(decisionErr); deferred {
-				_, err = tx.Exec(ctx, `INSERT INTO ingestion.retry_dispatches(job_id,attempt,event_id,payload,dispatch_after,next_attempt_at)
-					VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(job_id,attempt) DO NOTHING`, existingJob.ID(), existingJob.Attempts(), event.EventID, event.Payload, retryAt, retryAt)
-				if err != nil {
-					return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: persist recovery dispatch: %w", err)
+				if err = scheduleUploadRecovery(ctx, tx, existingJob, retryAt); err != nil {
+					return application.AcceptResult{}, err
 				}
 				if err = tx.Commit(ctx); err != nil {
-					return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: commit recovery dispatch: %w", err)
+					return application.AcceptResult{}, fmt.Errorf("ingestion: commit recovery dispatch: %w", err)
 				}
 				r.notify()
 			}
-			return existingJob, false, decisionErr
+			return application.AcceptResult{Job: existingJob}, decisionErr
 		}
 		lease := proposed.LeaseExpiresAt().Sub(now)
 		if err = existingJob.Claim(proposed.LeaseOwner(), now, lease); err != nil {
-			return domain.ProcessingJob{}, false, err
+			return application.AcceptResult{}, err
 		}
 		_, err = tx.Exec(ctx, `UPDATE ingestion.jobs SET state='processing',attempts=$2,lease_owner=$3,lease_expires_at=$4,next_attempt_at=NULL,updated_at=$5 WHERE id=$1`, existingJob.ID(), existingJob.Attempts(), existingJob.LeaseOwner(), existingJob.LeaseExpiresAt(), existingJob.UpdatedAt())
 		if err != nil {
-			return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: reclaim job: %w", err)
+			return application.AcceptResult{}, fmt.Errorf("ingestion: reclaim job: %w", err)
 		}
 		if err = tx.Commit(ctx); err != nil {
-			return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: commit reclaim: %w", err)
+			return application.AcceptResult{}, fmt.Errorf("ingestion: commit reclaim: %w", err)
 		}
 		r.notify()
-		return existingJob, true, nil
+		return application.AcceptResult{Job: existingJob, Accepted: true, ContentSelectionTimedOut: timedOutSelection}, nil
 	}
 	sourceSHA256 := proposed.SourceSHA256()
 	command, err = tx.Exec(ctx, `INSERT INTO ingestion.jobs
@@ -162,32 +162,32 @@ func (r *Postgres) Accept(ctx context.Context, event application.UploadedEvent, 
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		ON CONFLICT(book_id,source_sha256,processing_config_digest) DO NOTHING`, proposed.ID(), proposed.BookID(), sourceSHA256[:], configDigestBytes(proposed.ConfigDigest()), chunking.StructureVersion, r.profile.MaximumTokens, r.profile.OverlapTokens, proposed.State(), proposed.Attempts(), proposed.LeaseOwner(), proposed.LeaseExpiresAt(), proposed.CreatedAt(), proposed.UpdatedAt(), event.LifecycleVersion)
 	if err != nil {
-		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: insert job: %w", err)
+		return application.AcceptResult{}, fmt.Errorf("ingestion: insert job: %w", err)
 	}
 	if command.RowsAffected() == 0 {
 		if err = tx.Commit(ctx); err != nil {
-			return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: commit duplicate: %w", err)
+			return application.AcceptResult{}, fmt.Errorf("ingestion: commit duplicate: %w", err)
 		}
-		return proposed, false, nil
+		return application.AcceptResult{Job: proposed}, nil
 	}
 	prefix := fmt.Sprintf("books/%s/%x/%x/", proposed.BookID(), proposed.SourceSHA256(), configBytes)
 	_, err = tx.Exec(ctx, `INSERT INTO ingestion.artifact_sets(job_id,prefix,structure_version,maximum_tokens,overlap_tokens,updated_at,lifecycle_version) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(job_id) DO NOTHING`, proposed.ID(), prefix, chunking.StructureVersion, r.profile.MaximumTokens, r.profile.OverlapTokens, proposed.CreatedAt(), event.LifecycleVersion)
 	if err != nil {
-		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: register artifact set: %w", err)
+		return application.AcceptResult{}, fmt.Errorf("ingestion: register artifact set: %w", err)
 	}
 	command, err = tx.Exec(ctx, `INSERT INTO ingestion.outbox(event_id,event_type,aggregate_id,aggregate_sequence,payload,occurred_at,next_attempt_at)
 		VALUES($1,$2,$3,1,$4,$5,$5) ON CONFLICT(aggregate_id,aggregate_sequence) DO NOTHING`, started.ID, started.Type, proposed.ID(), started.Payload, started.OccurredAt)
 	if err != nil {
-		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: insert started outbox: %w", err)
+		return application.AcceptResult{}, fmt.Errorf("ingestion: insert started outbox: %w", err)
 	}
 	if command.RowsAffected() == 0 {
-		return proposed, false, fmt.Errorf("ingestion: insert started outbox: aggregate sequence already exists")
+		return application.AcceptResult{Job: proposed}, fmt.Errorf("ingestion: insert started outbox: aggregate sequence already exists")
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: commit accept: %w", err)
+		return application.AcceptResult{}, fmt.Errorf("ingestion: commit accept: %w", err)
 	}
 	r.notify()
-	return proposed, true, nil
+	return application.AcceptResult{Job: proposed, Accepted: true}, nil
 }
 
 func (r *Postgres) AcceptDeletion(ctx context.Context, event application.DeletionEvent, payloadDigest [32]byte, ack application.OutboxEvent, now time.Time) error {
@@ -292,9 +292,13 @@ func completeDeletionIfReady(ctx context.Context, tx pgx.Tx, eventID string, now
 	return nil
 }
 
-func existingJobDecision(job domain.ProcessingJob, now time.Time) (bool, error) {
+func existingJobDecision(job domain.ProcessingJob, now time.Time, contentSelectionWaitTimeout time.Duration) (bool, error) {
 	if job.State() == domain.JobAwaitingSelection {
-		return false, nil
+		retryAt := job.UpdatedAt().Add(contentSelectionWaitTimeout)
+		if now.Before(retryAt) {
+			return false, application.NewDeferredError(retryAt)
+		}
+		return true, nil
 	}
 	if job.State() == domain.JobRetrying && now.Before(job.NextAttemptAt()) {
 		return false, application.NewDeferredError(job.NextAttemptAt())
@@ -346,6 +350,9 @@ func (r *Postgres) AwaitSelection(ctx context.Context, job domain.ProcessingJob,
 		if eventID != request.ID || !constantEqual(payload, request.Payload) {
 			return application.ErrConflictingEvent
 		}
+	}
+	if err = scheduleUploadRecovery(ctx, tx, job, job.UpdatedAt().Add(r.policy.ContentSelectionWaitTimeout)); err != nil {
+		return err
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return fmt.Errorf("ingestion: commit awaiting content selection: %w", err)
@@ -422,7 +429,7 @@ func (r *Postgres) AcceptContentSelection(ctx context.Context, record applicatio
 			return domain.ProcessingJob{}, false, application.ErrConflictingEvent
 		}
 		if job.State() != domain.JobAwaitingSelection {
-			return job, false, tx.Commit(ctx)
+			return r.acceptDuplicateContentSelection(ctx, tx, job, owner, now, lease)
 		}
 	}
 	if job.State() != domain.JobAwaitingSelection {
@@ -445,10 +452,91 @@ func (r *Postgres) AcceptContentSelection(ctx context.Context, record applicatio
 	if err != nil {
 		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: mark content selection accepted: %w", err)
 	}
+	_, err = tx.Exec(ctx, `DELETE FROM ingestion.retry_dispatches
+		WHERE job_id=$1 AND attempt=$2 AND published_at IS NULL`, job.ID(), job.Attempts())
+	if err != nil {
+		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: cancel content selection recovery dispatch: %w", err)
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: commit content selection result: %w", err)
 	}
 	return job, true, nil
+}
+
+func (r *Postgres) acceptDuplicateContentSelection(ctx context.Context, tx pgx.Tx, job domain.ProcessingJob, owner string, now time.Time, lease time.Duration) (domain.ProcessingJob, bool, error) {
+	switch job.State() {
+	case domain.JobProcessing:
+		if now.Before(job.LeaseExpiresAt()) {
+			if err := scheduleUploadRecovery(ctx, tx, job, job.LeaseExpiresAt()); err != nil {
+				return domain.ProcessingJob{}, false, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: commit content selection recovery dispatch: %w", err)
+			}
+			r.notify()
+			return job, false, application.NewDeferredError(job.LeaseExpiresAt())
+		}
+		previousAttempt := job.Attempts()
+		previousOwner := job.LeaseOwner()
+		previousExpiry := job.LeaseExpiresAt()
+		if err := job.Claim(owner, now, lease); err != nil {
+			return domain.ProcessingJob{}, false, err
+		}
+		command, err := tx.Exec(ctx, `UPDATE ingestion.jobs
+			SET attempts=$2,lease_owner=$3,lease_expires_at=$4,updated_at=$5
+			WHERE id=$1 AND state='processing' AND attempts=$6 AND lease_owner=$7 AND lease_expires_at=$8
+				AND lease_expires_at <= $5`,
+			job.ID(), job.Attempts(), job.LeaseOwner(), job.LeaseExpiresAt(), job.UpdatedAt(),
+			previousAttempt, previousOwner, previousExpiry)
+		if err != nil {
+			return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: reclaim content-selected job: %w", err)
+		}
+		if command.RowsAffected() == 0 {
+			return domain.ProcessingJob{}, false, domain.ErrLeaseNotOwned
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return domain.ProcessingJob{}, false, fmt.Errorf("ingestion: commit content selection reclaim: %w", err)
+		}
+		return job, true, nil
+	case domain.JobRetrying, domain.JobCompleted, domain.JobFailed:
+		return job, false, tx.Commit(ctx)
+	default:
+		return domain.ProcessingJob{}, false, application.ErrConflictingEvent
+	}
+}
+
+func scheduleUploadRecovery(ctx context.Context, tx pgx.Tx, job domain.ProcessingJob, dispatchAt time.Time) error {
+	_, err := tx.Exec(ctx, `INSERT INTO ingestion.retry_dispatches(job_id,attempt,event_id,payload,dispatch_after,next_attempt_at)
+		SELECT j.id,j.attempts,i.event_id,i.payload,$2,$2 FROM ingestion.jobs j
+		JOIN ingestion.inbox i ON i.business_key=j.book_id
+			AND i.source_sha256=j.source_sha256
+			AND i.processing_config_digest=j.processing_config_digest
+			AND i.lifecycle_version=j.lifecycle_version
+		WHERE j.id=$1
+		ON CONFLICT(job_id,attempt) DO UPDATE SET
+			dispatch_after=LEAST(ingestion.retry_dispatches.dispatch_after,EXCLUDED.dispatch_after),
+			next_attempt_at=LEAST(ingestion.retry_dispatches.next_attempt_at,EXCLUDED.next_attempt_at)
+		WHERE ingestion.retry_dispatches.published_at IS NULL
+			AND ingestion.retry_dispatches.event_id=EXCLUDED.event_id
+			AND ingestion.retry_dispatches.payload=EXCLUDED.payload`, job.ID(), dispatchAt)
+	if err != nil {
+		return fmt.Errorf("ingestion: persist upload recovery dispatch: %w", err)
+	}
+	var retryEventID, inboxEventID string
+	var retryPayload, inboxPayload []byte
+	if err = tx.QueryRow(ctx, `SELECT d.event_id,d.payload,i.event_id,i.payload FROM ingestion.retry_dispatches d
+		JOIN ingestion.jobs j ON j.id=d.job_id
+		JOIN ingestion.inbox i ON i.business_key=j.book_id
+			AND i.source_sha256=j.source_sha256
+			AND i.processing_config_digest=j.processing_config_digest
+			AND i.lifecycle_version=j.lifecycle_version
+		WHERE d.job_id=$1 AND d.attempt=$2 FOR UPDATE`, job.ID(), job.Attempts()).Scan(&retryEventID, &retryPayload, &inboxEventID, &inboxPayload); err != nil {
+		return fmt.Errorf("ingestion: verify upload recovery dispatch: %w", err)
+	}
+	if retryEventID != inboxEventID || !constantEqual(retryPayload, inboxPayload) {
+		return errors.New("ingestion: upload recovery dispatch integrity mismatch")
+	}
+	return nil
 }
 
 func (r *Postgres) LoadContentSelection(ctx context.Context, jobID string) (application.ContentSelectionRecord, error) {

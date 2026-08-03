@@ -31,7 +31,8 @@ func TestLoadUsesBoundedProductionDefaults(t *testing.T) {
 		t.Fatalf("unexpected rabbit policy defaults: %#v", value)
 	}
 	if value.PersistenceTimeout != 10*time.Second || value.ArtifactAbortTimeout != 10*time.Second ||
-		value.FirstRetryDelay != 5*time.Second || value.SecondRetryDelay != 30*time.Second || value.SubsequentRetryDelay != 2*time.Minute {
+		value.FirstRetryDelay != 5*time.Second || value.SecondRetryDelay != 30*time.Second ||
+		value.SubsequentRetryDelay != 2*time.Minute || value.ContentSelectionWaitTimeout != DefaultContentSelectionWaitTimeout {
 		t.Fatalf("unexpected processor policy defaults: %#v", value)
 	}
 	if value.MemoryLimitBytes != 2<<30 || value.ParserSandboxMemoryBytes != 1536<<20 {
@@ -149,6 +150,25 @@ func TestLoadRejectsTemporaryLimitBelowAcceptedSource(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsInvalidContentSelectionWaitTimeout(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "too short", value: "0s"},
+		{name: "too long", value: "25h"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			setRequiredEnvironment(t)
+			t.Setenv("INGESTION_CONTENT_SELECTION_WAIT_TIMEOUT", test.value)
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load() accepted INGESTION_CONTENT_SELECTION_WAIT_TIMEOUT=%s", test.value)
+			}
+		})
+	}
+}
+
 func TestLoadParsesArtifactShardPolicy(t *testing.T) {
 	setRequiredEnvironment(t)
 	t.Setenv("INGESTION_ARTIFACT_CHUNKS_PER_SHARD", "128")
@@ -181,6 +201,7 @@ func TestLoadParsesWorkerRuntimePolicy(t *testing.T) {
 	t.Setenv("INGESTION_RABBITMQ_HEARTBEAT", "11s")
 	t.Setenv("INGESTION_RABBITMQ_PUBLISH_TIMEOUT", "8s")
 	t.Setenv("INGESTION_OUTBOX_LEASE", "45s")
+	t.Setenv("INGESTION_CONTENT_SELECTION_WAIT_TIMEOUT", "17m")
 
 	value, err := Load()
 	if err != nil {
@@ -193,7 +214,8 @@ func TestLoadParsesWorkerRuntimePolicy(t *testing.T) {
 		value.RabbitDialTimeout != 4*time.Second ||
 		value.RabbitHeartbeat != 11*time.Second ||
 		value.RabbitPublishTimeout != 8*time.Second ||
-		value.OutboxLease != 45*time.Second {
+		value.OutboxLease != 45*time.Second ||
+		value.ContentSelectionWaitTimeout != 17*time.Minute {
 		t.Fatalf("unexpected worker runtime policy: %#v", value)
 	}
 }
@@ -215,7 +237,8 @@ func TestLoadCleanupRequiresOnlyCleanupCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.DSN == "" || value.MinIOAccessKey == "" || value.ArtifactBucket != "ingestion-artifacts" || value.ArtifactVersionCleanupPasses != 256 {
+	if value.DSN == "" || value.MinIOAccessKey == "" || value.ArtifactBucket != "ingestion-artifacts" ||
+		value.ArtifactVersionCleanupPasses != 256 || value.ContentSelectionWaitTimeout != DefaultContentSelectionWaitTimeout {
 		t.Fatalf("unexpected cleanup config: %#v", value)
 	}
 }
@@ -238,7 +261,8 @@ func TestLoadDispatcherRequiresOnlyDispatcherCredentials(t *testing.T) {
 		t.Fatalf("unexpected dispatcher config: %#v", value)
 	}
 	if value.RabbitDialTimeout != 5*time.Second || value.RabbitHeartbeat != 10*time.Second ||
-		value.RabbitPublishTimeout != 10*time.Second || value.OutboxLease != 30*time.Second {
+		value.RabbitPublishTimeout != 10*time.Second || value.OutboxLease != 30*time.Second ||
+		value.ContentSelectionWaitTimeout != DefaultContentSelectionWaitTimeout {
 		t.Fatalf("unexpected dispatcher rabbit policy: %#v", value)
 	}
 }

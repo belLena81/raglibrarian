@@ -1,7 +1,6 @@
 package application
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"time"
 
@@ -42,12 +41,33 @@ func NewProcessingFactoryWithSelection(tokenizer chunking.Tokenizer, store artif
 	}
 	digests := make(map[string][32]byte, 2)
 	for mediaType, extractionVersion := range extractionVersions {
-		profile := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d", extractionVersion, chunking.NormalizationVersion, chunking.TokenizerVersion, chunking.ChunkingVersion, chunking.StructureVersion, policy.MaximumTokens, policy.OverlapTokens, policy.TargetPages, policy.MaximumPages, policy.MaximumChunks, limits.ChunksPerShard, limits.MaximumShardBytes)
-		if selection.Mode != ContentSelectionDisabled {
-			selectionDigest := selection.Digest()
-			profile = fmt.Sprintf("%s\x00%x", profile, selectionDigest)
+		profile := indexprofile.ProcessingConfigProfile{
+			ExtractionVersion:    extractionVersion,
+			NormalizationVersion: chunking.NormalizationVersion,
+			TokenizerVersion:     chunking.TokenizerVersion,
+			ChunkingVersion:      chunking.ChunkingVersion,
+			StructureVersion:     chunking.StructureVersion,
+			MaximumTokens:        policy.MaximumTokens,
+			OverlapTokens:        policy.OverlapTokens,
+			TargetPages:          policy.TargetPages,
+			MaximumPages:         policy.MaximumPages,
+			MaximumChunks:        policy.MaximumChunks,
+			ChunksPerShard:       limits.ChunksPerShard,
+			MaximumShardBytes:    limits.MaximumShardBytes,
 		}
-		digests[mediaType] = sha256.Sum256([]byte(profile))
+		if selection.Mode != ContentSelectionDisabled {
+			contentSelectionProfile := indexprofile.ContentSelectionProfile{
+				Mode:                 indexprofile.ContentSelectionMode(selection.Mode),
+				PolicyVersion:        selection.PolicyVersion,
+				ParserVersion:        selection.ParserVersion,
+				ModelSHA256:          selection.ModelSHA256,
+				MinimumSignals:       selection.MinimumSignals,
+				MaximumRanges:        selection.MaximumRanges,
+				MaximumExcludedRatio: selection.MaximumExcludedRatio,
+			}
+			profile.ContentSelection = &contentSelectionProfile
+		}
+		digests[mediaType] = profile.Digest()
 	}
 	return &ProcessingFactory{tokenizer: tokenizer, store: store, policy: policy, limits: limits, versions: extractionVersions, digests: digests, selection: selection}, nil
 }

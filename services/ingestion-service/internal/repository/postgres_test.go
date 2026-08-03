@@ -19,7 +19,7 @@ func TestExistingActiveLeaseDefersDeliveryUntilRecoveryBoundary(t *testing.T) {
 	if err = job.Claim("worker-1", now, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	claimable, decisionErr := existingJobDecision(job, now.Add(time.Second))
+	claimable, decisionErr := existingJobDecision(job, now.Add(time.Second), 15*time.Minute)
 	if claimable || !errors.Is(decisionErr, application.ErrProcessingDeferred) {
 		t.Fatalf("active lease must defer delivery: claimable=%v err=%v", claimable, decisionErr)
 	}
@@ -39,7 +39,7 @@ func TestActiveLeaseRecoveryDispatchIsNotPublishedBeforeLongLeaseExpires(t *test
 	if err = job.Claim("worker-1", now, lease); err != nil {
 		t.Fatal(err)
 	}
-	_, decisionErr := existingJobDecision(job, now.Add(time.Second))
+	_, decisionErr := existingJobDecision(job, now.Add(time.Second), 15*time.Minute)
 	nextAttemptAt, deferred := recoveryDispatchTime(decisionErr)
 	if !deferred || !nextAttemptAt.Equal(job.LeaseExpiresAt()) {
 		t.Fatalf("recovery dispatch must remain pending until lease expiry: at=%v err=%v", nextAttemptAt, decisionErr)
@@ -53,20 +53,29 @@ func TestExpiredLeaseCanBeReclaimed(t *testing.T) {
 	now := time.Now().UTC()
 	job, _ := domain.NewProcessingJob("job-1", "book-1", [32]byte{1}, "config", now)
 	_ = job.Claim("worker-1", now, time.Second)
-	claimable, err := existingJobDecision(job, now.Add(2*time.Second))
+	claimable, err := existingJobDecision(job, now.Add(2*time.Second), 15*time.Minute)
 	if err != nil || !claimable {
 		t.Fatalf("expired lease should be claimable: claimable=%v err=%v", claimable, err)
 	}
 }
 
-func TestAwaitingSelectionCannotBeReclaimedByUploadRedelivery(t *testing.T) {
+func TestAwaitingSelectionDefersUploadRedeliveryUntilWaitTimeout(t *testing.T) {
 	now := time.Now().UTC()
 	job, _ := domain.NewProcessingJob("job-1", "book-1", [32]byte{1}, "config", now)
 	_ = job.Claim("worker-1", now, time.Minute)
 	_ = job.AwaitContentSelection("worker-1", now.Add(time.Second))
-	claimable, err := existingJobDecision(job, now.Add(2*time.Second))
-	if err != nil || claimable {
-		t.Fatalf("awaiting job must wait for a selection result: claimable=%v err=%v", claimable, err)
+	claimable, err := existingJobDecision(job, now.Add(2*time.Second), 15*time.Minute)
+	if claimable || !errors.Is(err, application.ErrProcessingDeferred) {
+		t.Fatalf("awaiting job must defer before timeout: claimable=%v err=%v", claimable, err)
+	}
+	var deferred application.DeferredError
+	wantRetryAt := job.UpdatedAt().Add(15 * time.Minute)
+	if !errors.As(err, &deferred) || !deferred.RetryAt.Equal(wantRetryAt) {
+		t.Fatalf("awaiting retry time = %v, want %v", err, wantRetryAt)
+	}
+	claimable, err = existingJobDecision(job, wantRetryAt.Add(time.Second), 15*time.Minute)
+	if err != nil || !claimable {
+		t.Fatalf("awaiting job should recover after timeout: claimable=%v err=%v", claimable, err)
 	}
 }
 

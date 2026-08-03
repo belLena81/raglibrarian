@@ -178,6 +178,74 @@ func TestProcessingServiceAcceptsFilteredEPUBReadyAndIndexedEvents(t *testing.T)
 	}
 }
 
+func TestProcessingServiceAcceptsObservationProfileReadyEvents(t *testing.T) {
+	now := time.Date(2026, 8, 3, 5, 40, 28, 0, time.UTC)
+	checksum := bytes.Repeat([]byte{1}, sha256.Size)
+	manifestChecksum := bytes.Repeat([]byte{2}, sha256.Size)
+
+	tests := []struct {
+		name              string
+		message           *ingestionv1.BookChunksReadyV1
+		manifestReference string
+	}{
+		{
+			name:              "PDF",
+			manifestReference: observationM8FilteredManifestReference("book-1", checksum),
+			message: &ingestionv1.BookChunksReadyV1{
+				EventId: "event-ready-pdf", BookId: "book-1", SourceSha256: checksum,
+				ManifestSha256: manifestChecksum, ManifestByteSize: 128, PageCount: 2, ChunkCount: 3,
+				ExtractionVersion:    supportedM8PDFFilteredProfile.extractionVersion,
+				NormalizationVersion: supportedM8PDFFilteredProfile.normalizationVersion,
+				TokenizerVersion:     supportedM8PDFFilteredProfile.tokenizerVersion,
+				ChunkingVersion:      supportedM8PDFFilteredProfile.chunkingVersion,
+				StructureVersion:     supportedM8PDFFilteredProfile.structureVersion,
+				MaximumTokens:        supportedM8PDFFilteredProfile.maximumTokens,
+				OverlapTokens:        supportedM8PDFFilteredProfile.overlapTokens,
+				CorrelationId:        "correlation-1", CausationId: "upload-1", Producer: "ingestion-service",
+				SchemaVersion: "v1", IdempotencyKey: "book-1:ready-pdf", OccurredAt: timestamppb.New(now),
+			},
+		},
+		{
+			name:              "EPUB",
+			manifestReference: observationM8FilteredEPUBManifestReference("book-1", checksum),
+			message: &ingestionv1.BookChunksReadyV1{
+				EventId: "event-ready-epub", BookId: "book-1", SourceSha256: checksum,
+				ManifestSha256: manifestChecksum, ManifestByteSize: 128, PageCount: 2, ChunkCount: 3,
+				ExtractionVersion:    supportedM8EPUBFilteredProfile.extractionVersion,
+				NormalizationVersion: supportedM8EPUBFilteredProfile.normalizationVersion,
+				TokenizerVersion:     supportedM8EPUBFilteredProfile.tokenizerVersion,
+				ChunkingVersion:      supportedM8EPUBFilteredProfile.chunkingVersion,
+				StructureVersion:     supportedM8EPUBFilteredProfile.structureVersion,
+				MaximumTokens:        supportedM8EPUBFilteredProfile.maximumTokens,
+				OverlapTokens:        supportedM8EPUBFilteredProfile.overlapTokens,
+				CorrelationId:        "correlation-1", CausationId: "upload-1", Producer: "ingestion-service",
+				SchemaVersion: "v1", IdempotencyKey: "book-1:ready-epub", OccurredAt: timestamppb.New(now),
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.message.ManifestReference = test.manifestReference
+			payload, err := proto.Marshal(test.message)
+			if err != nil {
+				t.Fatal(err)
+			}
+			repository := &processingRepositoryFake{}
+			service := NewProcessingService(repository, func() time.Time { return now }, func() (string, error) { return "status-1", nil })
+
+			changed, err := service.Handle(context.Background(), "ingestion.book.chunks-ready.v1", payload)
+
+			if err != nil || !changed {
+				t.Fatalf("Handle() = %v, %v", changed, err)
+			}
+			if repository.event.Fact.Kind != ProcessingChunksReady {
+				t.Fatalf("fact kind = %q, want %q", repository.event.Fact.Kind, ProcessingChunksReady)
+			}
+		})
+	}
+}
+
 func TestSupportedM4ProfileDigestMatchesProducerContract(t *testing.T) {
 	const expected = "23a35a6f4f9485df637c85efa3e5b005858d3318d58ffab1c90a66cd4d4849e9"
 	if digest := hex.EncodeToString(supportedM4Profile.configDigest[:]); digest != expected {
@@ -199,14 +267,24 @@ func TestSupportedFilteredProfileDigestsMatchProducerContract(t *testing.T) {
 		want string
 	}{
 		{
-			name: "PDF processing",
+			name: "PDF enforcement processing",
 			got:  supportedM8PDFFilteredProfile.configDigest[:],
 			want: "3e933f2a3494a0459dffba1dab6ac10e7d5df21066df85f9c0ee2e914e339a06",
 		},
 		{
-			name: "EPUB processing",
+			name: "PDF observation processing",
+			got:  supportedM8PDFFilteredProfile.configDigests[1][:],
+			want: "6ba67b3df6017c3cbc815d7270939718653922601948e7cb8c0d9f2868cb743c",
+		},
+		{
+			name: "EPUB enforcement processing",
 			got:  supportedM8EPUBFilteredProfile.configDigest[:],
 			want: "29407de6e7afe76f6cba13429c438be0d5daa6396edf89590ca1b1df1f0c6484",
+		},
+		{
+			name: "EPUB observation processing",
+			got:  supportedM8EPUBFilteredProfile.configDigests[1][:],
+			want: "89bb7ed49b88673b37361c2834fd50496958067d6bef8a10e47b309f7e0c8da1",
 		},
 		{
 			name: "PDF index",
@@ -546,8 +624,16 @@ func validM8FilteredManifestReference(bookID string, sourceChecksum []byte) stri
 	return "books/" + bookID + "/" + hex.EncodeToString(sourceChecksum) + "/" + hex.EncodeToString(supportedM8PDFFilteredProfile.configDigest[:]) + "/manifest.pb"
 }
 
+func observationM8FilteredManifestReference(bookID string, sourceChecksum []byte) string {
+	return "books/" + bookID + "/" + hex.EncodeToString(sourceChecksum) + "/" + hex.EncodeToString(supportedM8PDFFilteredProfile.configDigests[1][:]) + "/manifest.pb"
+}
+
 func validM8FilteredEPUBManifestReference(bookID string, sourceChecksum []byte) string {
 	return "books/" + bookID + "/" + hex.EncodeToString(sourceChecksum) + "/" + hex.EncodeToString(supportedM8EPUBFilteredProfile.configDigest[:]) + "/manifest.pb"
+}
+
+func observationM8FilteredEPUBManifestReference(bookID string, sourceChecksum []byte) string {
+	return "books/" + bookID + "/" + hex.EncodeToString(sourceChecksum) + "/" + hex.EncodeToString(supportedM8EPUBFilteredProfile.configDigests[1][:]) + "/manifest.pb"
 }
 
 func TestProcessingServiceRejectsUnknownAndMalformedEvents(t *testing.T) {

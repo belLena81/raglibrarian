@@ -6,10 +6,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"math"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/belLena81/raglibrarian/pkg/indexprofile"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/artifact"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/domain"
 	"github.com/belLena81/raglibrarian/services/ingestion-service/internal/selection"
@@ -50,15 +50,15 @@ func (p ContentSelectionProfile) Validate() error {
 }
 
 func (p ContentSelectionProfile) Digest() [sha256.Size]byte {
-	return sha256.Sum256([]byte(strings.Join([]string{
-		string(p.Mode),
-		p.PolicyVersion,
-		p.ParserVersion,
-		p.ModelSHA256,
-		strconv.Itoa(p.MinimumSignals),
-		strconv.Itoa(p.MaximumRanges),
-		strconv.FormatFloat(p.MaximumExcludedRatio, 'g', -1, 64),
-	}, "\x00") + "\x00"))
+	return indexprofile.ContentSelectionProfile{
+		Mode:                 indexprofile.ContentSelectionMode(p.Mode),
+		PolicyVersion:        p.PolicyVersion,
+		ParserVersion:        p.ParserVersion,
+		ModelSHA256:          p.ModelSHA256,
+		MinimumSignals:       p.MinimumSignals,
+		MaximumRanges:        p.MaximumRanges,
+		MaximumExcludedRatio: p.MaximumExcludedRatio,
+	}.Digest()
 }
 
 func (p ContentSelectionProfile) PolicyDigest() [sha256.Size]byte {

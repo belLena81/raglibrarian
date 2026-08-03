@@ -21,6 +21,7 @@ import (
 
 type processorRepository struct {
 	accepted          bool
+	selectionTimedOut bool
 	acceptErr         error
 	acceptWait        bool
 	completeErr       error
@@ -44,14 +45,14 @@ type processorRepository struct {
 	uploadedPayload   []byte
 }
 
-func (r *processorRepository) Accept(ctx context.Context, _ UploadedEvent, _ [32]byte, job domain.ProcessingJob, _ OutboxEvent) (domain.ProcessingJob, bool, error) {
+func (r *processorRepository) Accept(ctx context.Context, _ UploadedEvent, _ [32]byte, job domain.ProcessingJob, _ OutboxEvent) (AcceptResult, error) {
 	r.accepts++
 	if r.acceptWait {
 		<-ctx.Done()
 		r.acceptCtxErr = ctx.Err()
-		return job, false, ctx.Err()
+		return AcceptResult{Job: job}, ctx.Err()
 	}
-	return job, r.accepted, r.acceptErr
+	return AcceptResult{Job: job, Accepted: r.accepted, ContentSelectionTimedOut: r.selectionTimedOut}, r.acceptErr
 }
 
 func (r *processorRepository) AcceptDeletion(ctx context.Context, _ DeletionEvent, _ [32]byte, _ OutboxEvent, _ time.Time) error {
@@ -363,6 +364,58 @@ func TestProcessorPersistsAwaitingSelectionBeforeExtraction(t *testing.T) {
 	}
 	if writer.adds != 0 || extractor.sourcePath != "" || repository.completes != 0 {
 		t.Fatalf("processing started before selection: writer=%#v source=%q", writer, extractor.sourcePath)
+	}
+}
+
+func TestProcessorFailsOpenWhenContentSelectionTimesOut(t *testing.T) {
+	profile := validSelectionProfile(ContentSelectionEnforcement)
+	event := validProcessorEvent()
+	job := processingSelectionJob(t, event)
+	chunker := &selectionTrackingChunker{}
+	processor, repository, writer, _, _, _ := newTestProcessor(t, processorOptions{
+		selection:         profile,
+		selectionTimedOut: true,
+		selectionJob:      job,
+		decodeUploaded:    func([]byte) (UploadedEvent, error) { return event, nil },
+		decodeSelection:   func([]byte, int) (ContentSelectionResult, error) { return ContentSelectionResult{}, nil },
+		chunker:           chunker,
+		pages:             []extractor.Page{{Number: 1, Text: "first"}, {Number: 2, Text: "second"}},
+	})
+
+	if err := processor.Process(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+
+	if repository.awaits != 0 || repository.completes != 1 || fmt.Sprint(chunker.pages) != "[1 2]" {
+		t.Fatalf("timeout recovery = awaits %d completes %d pages %v", repository.awaits, repository.completes, chunker.pages)
+	}
+	if writer.selection == nil || writer.selection.FallbackReason != "processing_timeout" || len(writer.selection.Ranges) != 0 {
+		t.Fatalf("timeout selection audit = %#v", writer.selection)
+	}
+}
+
+func TestProcessorObservationTimeoutUsesObservationAudit(t *testing.T) {
+	profile := validSelectionProfile(ContentSelectionObservation)
+	event := validProcessorEvent()
+	job := processingSelectionJob(t, event)
+	processor, repository, writer, _, _, _ := newTestProcessor(t, processorOptions{
+		selection:         profile,
+		selectionTimedOut: true,
+		selectionJob:      job,
+		decodeUploaded:    func([]byte) (UploadedEvent, error) { return event, nil },
+		decodeSelection:   func([]byte, int) (ContentSelectionResult, error) { return ContentSelectionResult{}, nil },
+		pages:             []extractor.Page{{Number: 1, Text: "first"}},
+	})
+
+	if err := processor.Process(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+
+	if repository.awaits != 0 || repository.completes != 1 {
+		t.Fatalf("observation timeout recovery = repo %#v", repository)
+	}
+	if writer.selection == nil || writer.selection.FallbackReason != "observation" || len(writer.selection.Ranges) != 0 {
+		t.Fatalf("observation timeout audit = %#v", writer.selection)
 	}
 }
 
@@ -804,6 +857,7 @@ type processorOptions struct {
 	decodeUploaded     UploadDecoder
 	decodeSelection    ContentSelectionDecoder
 	selectionAccepted  bool
+	selectionTimedOut  bool
 	selectionJob       domain.ProcessingJob
 	uploadedPayload    []byte
 	pages              []extractor.Page
@@ -826,6 +880,7 @@ func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *proc
 		completeErr:       options.completeErr,
 		deletionWait:      options.deletionWait,
 		selectionAccepted: options.selectionAccepted,
+		selectionTimedOut: options.selectionTimedOut,
 		selectionJob:      options.selectionJob,
 		uploadedPayload:   append([]byte(nil), options.uploadedPayload...),
 	}
@@ -861,20 +916,21 @@ func newTestProcessor(t *testing.T, options processorOptions) (*Processor, *proc
 		func() time.Time { return now },
 		"worker-1",
 		Config{
-			MaximumSourceBytes:     25 << 20,
-			MaximumTemporaryBytes:  25 << 20,
-			TemporaryDirectory:     t.TempDir(),
-			ProcessingTimeout:      10 * time.Millisecond,
-			PersistenceTimeout:     persistenceTimeout,
-			ArtifactAbortTimeout:   10 * time.Second,
-			JobLease:               31 * time.Second,
-			MaximumAttempts:        maximumAttempts,
-			FirstRetryDelay:        5 * time.Second,
-			SecondRetryDelay:       30 * time.Second,
-			SubsequentRetryDelay:   2 * time.Minute,
-			Diagnostics:            diagnostics,
-			DecodeUploaded:         options.decodeUploaded,
-			DecodeContentSelection: options.decodeSelection,
+			MaximumSourceBytes:          25 << 20,
+			MaximumTemporaryBytes:       25 << 20,
+			TemporaryDirectory:          t.TempDir(),
+			ProcessingTimeout:           10 * time.Millisecond,
+			PersistenceTimeout:          persistenceTimeout,
+			ArtifactAbortTimeout:        10 * time.Second,
+			JobLease:                    31 * time.Second,
+			ContentSelectionWaitTimeout: 15 * time.Minute,
+			MaximumAttempts:             maximumAttempts,
+			FirstRetryDelay:             5 * time.Second,
+			SecondRetryDelay:            30 * time.Second,
+			SubsequentRetryDelay:        2 * time.Minute,
+			Diagnostics:                 diagnostics,
+			DecodeUploaded:              options.decodeUploaded,
+			DecodeContentSelection:      options.decodeSelection,
 		},
 	)
 	if err != nil {

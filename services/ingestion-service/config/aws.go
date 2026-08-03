@@ -261,6 +261,10 @@ func loadAWS(ctx context.Context) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	contentSelectionWaitTimeout, err := boundedDuration("INGESTION_CONTENT_SELECTION_WAIT_TIMEOUT", time.Second, 24*time.Hour, DefaultContentSelectionWaitTimeout)
+	if err != nil {
+		return Config{}, err
+	}
 	cleanupInterval, err := boundedDuration("INGESTION_CLEANUP_INTERVAL", time.Minute, 24*time.Hour, 15*time.Minute)
 	if err != nil {
 		return Config{}, err
@@ -355,6 +359,7 @@ func loadAWS(ctx context.Context) (Config, error) {
 		RetryDispatchDelay:             retryDispatchDelay,
 		OutboxRetryBaseDelay:           outboxRetryBaseDelay,
 		OutboxRetryMaxDelay:            outboxRetryMaxDelay,
+		ContentSelectionWaitTimeout:    contentSelectionWaitTimeout,
 		CleanupInterval:                cleanupInterval,
 		OrphanGracePeriod:              grace,
 		WorkerReadinessProbeTimeout:    workerReadinessProbeTimeout,
@@ -421,6 +426,10 @@ func loadAWSDispatcher(ctx context.Context) (DispatcherConfig, error) {
 	if err != nil {
 		return DispatcherConfig{}, err
 	}
+	contentSelectionWaitTimeout, err := boundedDuration("INGESTION_CONTENT_SELECTION_WAIT_TIMEOUT", time.Second, 24*time.Hour, DefaultContentSelectionWaitTimeout)
+	if err != nil {
+		return DispatcherConfig{}, err
+	}
 	chunkMaximumTokens, chunkOverlapTokens, chunkTargetPages, chunkMaximumPages, err := chunkPolicyValues()
 	if err != nil {
 		return DispatcherConfig{}, err
@@ -434,29 +443,30 @@ func loadAWSDispatcher(ctx context.Context) (DispatcherConfig, error) {
 		return DispatcherConfig{}, err
 	}
 	return DispatcherConfig{
-		RuntimeBackend:             "aws",
-		DSN:                        dsn,
-		RabbitURI:                  rabbitURI,
-		ResultExchange:             optional("INGESTION_RESULT_EXCHANGE", DefaultResultExchange),
-		RetryExchange:              optional("INGESTION_RETRY_EXCHANGE", DefaultRetryExchange),
-		OutboxInterval:             outboxInterval,
-		UploadFirstRetryRoute:      optional("INGESTION_UPLOAD_FIRST_RETRY_ROUTE", DefaultUploadFirstRetryRoute),
-		UploadSecondRetryRoute:     optional("INGESTION_UPLOAD_SECOND_RETRY_ROUTE", DefaultUploadSecondRetryRoute),
-		UploadSubsequentRetryRoute: optional("INGESTION_UPLOAD_SUBSEQUENT_RETRY_ROUTE", DefaultUploadThirdRetryRoute),
-		ChunkMaximumTokens:         chunkMaximumTokens,
-		ChunkOverlapTokens:         chunkOverlapTokens,
-		ChunkTargetPages:           chunkTargetPages,
-		ChunkMaximumPages:          chunkMaximumPages,
-		RabbitDialTimeout:          rabbitDialTimeout,
-		RabbitHeartbeat:            rabbitHeartbeat,
-		RabbitPublishTimeout:       rabbitPublishTimeout,
-		OutboxLease:                outboxLease,
-		FirstRetryDelay:            firstRetryDelay,
-		SecondRetryDelay:           secondRetryDelay,
-		RetryDispatchDelay:         retryDispatchDelay,
-		OutboxRetryBaseDelay:       outboxRetryBaseDelay,
-		OutboxRetryMaxDelay:        outboxRetryMaxDelay,
-		RunAs:                      process.Identity{UID: uid, GID: gid},
+		RuntimeBackend:              "aws",
+		DSN:                         dsn,
+		RabbitURI:                   rabbitURI,
+		ResultExchange:              optional("INGESTION_RESULT_EXCHANGE", DefaultResultExchange),
+		RetryExchange:               optional("INGESTION_RETRY_EXCHANGE", DefaultRetryExchange),
+		OutboxInterval:              outboxInterval,
+		UploadFirstRetryRoute:       optional("INGESTION_UPLOAD_FIRST_RETRY_ROUTE", DefaultUploadFirstRetryRoute),
+		UploadSecondRetryRoute:      optional("INGESTION_UPLOAD_SECOND_RETRY_ROUTE", DefaultUploadSecondRetryRoute),
+		UploadSubsequentRetryRoute:  optional("INGESTION_UPLOAD_SUBSEQUENT_RETRY_ROUTE", DefaultUploadThirdRetryRoute),
+		ChunkMaximumTokens:          chunkMaximumTokens,
+		ChunkOverlapTokens:          chunkOverlapTokens,
+		ChunkTargetPages:            chunkTargetPages,
+		ChunkMaximumPages:           chunkMaximumPages,
+		RabbitDialTimeout:           rabbitDialTimeout,
+		RabbitHeartbeat:             rabbitHeartbeat,
+		RabbitPublishTimeout:        rabbitPublishTimeout,
+		OutboxLease:                 outboxLease,
+		FirstRetryDelay:             firstRetryDelay,
+		SecondRetryDelay:            secondRetryDelay,
+		RetryDispatchDelay:          retryDispatchDelay,
+		OutboxRetryBaseDelay:        outboxRetryBaseDelay,
+		OutboxRetryMaxDelay:         outboxRetryMaxDelay,
+		ContentSelectionWaitTimeout: contentSelectionWaitTimeout,
+		RunAs:                       process.Identity{UID: uid, GID: gid},
 	}, nil
 }
 
@@ -504,6 +514,10 @@ func loadAWSCleanup(ctx context.Context) (CleanupConfig, error) {
 	if err != nil {
 		return CleanupConfig{}, err
 	}
+	contentSelectionWaitTimeout, err := boundedDuration("INGESTION_CONTENT_SELECTION_WAIT_TIMEOUT", time.Second, 24*time.Hour, DefaultContentSelectionWaitTimeout)
+	if err != nil {
+		return CleanupConfig{}, err
+	}
 	chunkMaximumTokens, chunkOverlapTokens, chunkTargetPages, chunkMaximumPages, err := chunkPolicyValues()
 	if err != nil {
 		return CleanupConfig{}, err
@@ -522,6 +536,7 @@ func loadAWSCleanup(ctx context.Context) (CleanupConfig, error) {
 		RetryDispatchDelay:           retryDispatchDelay,
 		OutboxRetryBaseDelay:         outboxRetryBaseDelay,
 		OutboxRetryMaxDelay:          outboxRetryMaxDelay,
+		ContentSelectionWaitTimeout:  contentSelectionWaitTimeout,
 		CleanupInterval:              interval,
 		OrphanGracePeriod:            grace,
 	}, nil

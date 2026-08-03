@@ -33,21 +33,25 @@ type processingProfile struct {
 	maximumTokens        uint32
 	overlapTokens        uint32
 	configDigest         [sha256.Size]byte
+	configDigests        [][sha256.Size]byte
 }
 
 var supportedM4Profile = newProcessingProfile(indexprofile.ExtractionPDF)
 var supportedM7EPUBProfile = newProcessingProfile(indexprofile.ExtractionEPUB)
 
-// The filtered profile digests bind Catalog to the only currently supported
-// enforcement policy. A producer configuration change requires an explicit
-// Catalog registry update, so unreviewed manifest contracts fail closed.
-var supportedM8PDFFilteredProfile = newProcessingProfileWithConfigDigest(
+// The filtered profile digests bind Catalog to every currently supported
+// content-selection mode for the v1 selector profile. A producer configuration
+// change requires an explicit Catalog registry update, so unreviewed manifest
+// contracts fail closed.
+var supportedM8PDFFilteredProfile = newProcessingProfileWithContentSelection(
 	indexprofile.ExtractionPDFFiltered,
-	"3e933f2a3494a0459dffba1dab6ac10e7d5df21066df85f9c0ee2e914e339a06",
+	indexprofile.ContentSelectionModeEnforcement,
+	indexprofile.ContentSelectionModeObservation,
 )
-var supportedM8EPUBFilteredProfile = newProcessingProfileWithConfigDigest(
+var supportedM8EPUBFilteredProfile = newProcessingProfileWithContentSelection(
 	indexprofile.ExtractionEPUBFiltered,
-	"29407de6e7afe76f6cba13429c438be0d5daa6396edf89590ca1b1df1f0c6484",
+	indexprofile.ContentSelectionModeEnforcement,
+	indexprofile.ContentSelectionModeObservation,
 )
 
 var supportedM5ProfileDigest = newM5ProfileDigest(indexprofile.ExtractionPDF)
@@ -91,34 +95,53 @@ func newProcessingProfile(extractionVersion string) processingProfile {
 		maximumTokens:        indexprofile.MaximumTokens,
 		overlapTokens:        indexprofile.OverlapTokens,
 	}
-	// The final values are M4's maximum chunks, chunks per shard, and maximum
-	// shard bytes. Future profiles need an explicit registry entry rather than
-	// permissive acceptance on this v1 route.
-	profile.configDigest = sha256.Sum256([]byte(strings.Join([]string{
-		profile.extractionVersion,
-		profile.normalizationVersion,
-		profile.tokenizerVersion,
-		profile.chunkingVersion,
-		profile.structureVersion,
-		fmt.Sprint(profile.maximumTokens),
-		fmt.Sprint(profile.overlapTokens),
-		"2",
-		"3",
-		"50000",
-		"256",
-		"4194304",
-	}, "\x00")))
+	profile.configDigest = processingConfigDigest(extractionVersion, nil)
+	profile.configDigests = [][sha256.Size]byte{profile.configDigest}
 	return profile
 }
 
-func newProcessingProfileWithConfigDigest(extractionVersion, configDigestHex string) processingProfile {
+func newProcessingProfileWithContentSelection(extractionVersion string, modes ...indexprofile.ContentSelectionMode) processingProfile {
 	profile := newProcessingProfile(extractionVersion)
-	configDigest, err := hex.DecodeString(configDigestHex)
-	if err != nil || len(configDigest) != sha256.Size {
-		panic("catalog: invalid processing profile digest")
+	profile.configDigests = make([][sha256.Size]byte, 0, len(modes))
+	for _, mode := range modes {
+		contentSelection := supportedContentSelectionProfile(mode)
+		profile.configDigests = append(profile.configDigests, processingConfigDigest(extractionVersion, &contentSelection))
 	}
-	copy(profile.configDigest[:], configDigest)
+	if len(profile.configDigests) == 0 {
+		panic("catalog: content-selection profile requires at least one digest")
+	}
+	profile.configDigest = profile.configDigests[0]
 	return profile
+}
+
+func processingConfigDigest(extractionVersion string, selection *indexprofile.ContentSelectionProfile) [sha256.Size]byte {
+	return (indexprofile.ProcessingConfigProfile{
+		ExtractionVersion:    extractionVersion,
+		NormalizationVersion: indexprofile.NormalizationNFC,
+		TokenizerVersion:     indexprofile.TokenizerCL100K,
+		ChunkingVersion:      indexprofile.ChunkingChapterPageWindow,
+		StructureVersion:     indexprofile.StructureChapterBoundary,
+		MaximumTokens:        indexprofile.MaximumTokens,
+		OverlapTokens:        indexprofile.OverlapTokens,
+		TargetPages:          2,
+		MaximumPages:         3,
+		MaximumChunks:        50_000,
+		ChunksPerShard:       256,
+		MaximumShardBytes:    4 << 20,
+		ContentSelection:     selection,
+	}).Digest()
+}
+
+func supportedContentSelectionProfile(mode indexprofile.ContentSelectionMode) indexprofile.ContentSelectionProfile {
+	return indexprofile.ContentSelectionProfile{
+		Mode:                 mode,
+		PolicyVersion:        indexprofile.ContentSelectionV1,
+		ParserVersion:        indexprofile.ContentSelectionParserBBoxLayoutV1,
+		ModelSHA256:          indexprofile.ContentSelectionModelSHA256,
+		MinimumSignals:       indexprofile.ContentSelectionMinimumSignals,
+		MaximumRanges:        indexprofile.ContentSelectionMaximumRanges,
+		MaximumExcludedRatio: indexprofile.ContentSelectionMaximumExcludedRatio,
+	}
 }
 
 var (
@@ -419,7 +442,15 @@ func validReadyDescriptor(message *ingestionv1.BookChunksReadyV1) bool {
 	}
 	prefix := "books/" + message.GetBookId() + "/" + hex.EncodeToString(message.GetSourceSha256()) + "/"
 	remainder, found := strings.CutPrefix(message.GetManifestReference(), prefix)
-	return found && remainder == hex.EncodeToString(profile.configDigest[:])+"/manifest.pb"
+	if !found {
+		return false
+	}
+	for _, configDigest := range profile.configDigests {
+		if remainder == hex.EncodeToString(configDigest[:])+"/manifest.pb" {
+			return true
+		}
+	}
+	return false
 }
 
 func processingProfileForExtraction(extractionVersion string) (processingProfile, bool) {
