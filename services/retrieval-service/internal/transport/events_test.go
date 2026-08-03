@@ -287,7 +287,7 @@ func filteredEPUBManifestPayloads(t *testing.T) ([]byte, []byte) {
 		t.Fatal(err)
 	}
 	var outer ingestionv1.BookChunksReadyV1
-	if err := proto.Unmarshal(eventPayload, &outer); err != nil {
+	if err = proto.Unmarshal(eventPayload, &outer); err != nil {
 		t.Fatal(err)
 	}
 	manifestDigest := sha256.Sum256(manifestPayload)

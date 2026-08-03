@@ -143,7 +143,12 @@ func (r *Postgres) Accept(ctx context.Context, event application.UploadedEvent, 
 			return application.AcceptResult{Job: existingJob}, decisionErr
 		}
 		lease := proposed.LeaseExpiresAt().Sub(now)
-		if err = existingJob.Claim(proposed.LeaseOwner(), now, lease); err != nil {
+		if timedOutSelection {
+			err = existingJob.ReclaimAfterContentSelectionTimeout(proposed.LeaseOwner(), now, lease)
+		} else {
+			err = existingJob.Claim(proposed.LeaseOwner(), now, lease)
+		}
+		if err != nil {
 			return application.AcceptResult{}, err
 		}
 		_, err = tx.Exec(ctx, `UPDATE ingestion.jobs SET state='processing',attempts=$2,lease_owner=$3,lease_expires_at=$4,next_attempt_at=NULL,updated_at=$5 WHERE id=$1`, existingJob.ID(), existingJob.Attempts(), existingJob.LeaseOwner(), existingJob.LeaseExpiresAt(), existingJob.UpdatedAt())

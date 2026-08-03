@@ -113,6 +113,9 @@ COPY --from=builder /bin/service /service
 COPY --from=builder /bin/healthcheck /healthcheck
 COPY --from=ingestion-sandbox-builder /bin/parser-sandbox /parser-sandbox
 COPY --from=ingestion-sandbox-builder /bin/epub-parser /usr/local/bin/epub-parser
+# The worker reads root-owned 0400 secrets, then permanently drops to the
+# configured non-root identity before consuming layout requests.
+# hadolint ignore=DL3002
 USER root:root
 ENTRYPOINT ["/service"]
 

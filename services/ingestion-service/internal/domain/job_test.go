@@ -58,6 +58,26 @@ func TestProcessingJobWaitsForAndResumesAfterContentSelection(t *testing.T) {
 	}
 }
 
+func TestProcessingJobContentSelectionTimeoutReclaimStartsNewAttempt(t *testing.T) {
+	now := time.Date(2026, 7, 31, 8, 0, 0, 0, time.UTC)
+	job, err := NewProcessingJob("job-1", "book-1", checksum(1), "config-1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = job.Claim("ingestion-1", now, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err = job.AwaitContentSelection("ingestion-1", now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err = job.ReclaimAfterContentSelectionTimeout("ingestion-2", now.Add(2*time.Minute), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if job.State() != JobProcessing || job.Attempts() != 2 || job.LeaseOwner() != "ingestion-2" {
+		t.Fatalf("unexpected timeout reclaim state: %s attempts=%d owner=%q", job.State(), job.Attempts(), job.LeaseOwner())
+	}
+}
+
 func TestProcessingJobContentSelectionTransitionsAreFenced(t *testing.T) {
 	now := time.Now().UTC()
 	job, _ := NewProcessingJob("job-1", "book-1", checksum(1), "config-1", now)

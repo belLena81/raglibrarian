@@ -138,6 +138,18 @@ func (j *ProcessingJob) ResumeAfterContentSelection(owner string, now time.Time,
 	return nil
 }
 
+func (j *ProcessingJob) ReclaimAfterContentSelectionTimeout(owner string, now time.Time, lease time.Duration) error {
+	if j.state != JobAwaitingSelection || !validIdentifier(owner) || now.IsZero() || lease <= 0 {
+		return ErrInvalidJob
+	}
+	j.state = JobProcessing
+	j.attempts++
+	j.leaseOwner = owner
+	j.leaseExpiresAt = now.Add(lease).UTC()
+	j.updatedAt = now.UTC()
+	return nil
+}
+
 func (j *ProcessingJob) RenewLease(owner string, now time.Time, lease time.Duration) error {
 	if j.state != JobProcessing || j.leaseOwner != owner || !now.Before(j.leaseExpiresAt) {
 		return ErrLeaseNotOwned
