@@ -44,7 +44,7 @@ jobs:
           command -v az >/dev/null
           command -v jq >/dev/null
       - name: Authenticate with the protected Azure deployment identity
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
