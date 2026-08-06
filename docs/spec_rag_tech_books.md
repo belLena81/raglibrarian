@@ -272,7 +272,7 @@ cross-service profile and captured in the manifest; changing them creates a new
 supported profile rather than silently rewriting indexed evidence.
 
 The default chunking profile is `chapter-page-window-v1`: target two source
-pages, cap a passage at three source pages and 800 embedding-input tokens, and
+pages, cap a passage at three source pages and a 512-token embedding input, and
 use 120-token overlap only inside the same chapter. A chapter or part boundary
 flushes the active passage and drops overlap-only tails so text from a previous
 chapter is never injected into the next chapter. Smaller or larger profiles may

@@ -284,7 +284,7 @@ Implementation:
 - Preserve book, chapter, section, page range, chunk order, token bounds,
   extraction/structure/chunking profile, and checksums for every chunk. Use the
   `chapter-page-window-v1` profile by default: target two source pages, cap a
-  passage at three source pages and 800 embedding-input tokens, keep 120-token
+  passage at three source pages and a 512-token embedding input, keep 120-token
   overlap only inside the same chapter, and flush without overlap at chapter or
   part boundaries. Treat these values as a fixed versioned cross-service
   contract; do not tune them with Ingestion-only runtime overrides.
