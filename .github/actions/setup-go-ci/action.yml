@@ -75,6 +75,28 @@ runs:
         install_go_tool protoc-gen-go google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10
         install_go_tool protoc-gen-go-grpc google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
 
+        verify_tool_version() {
+          local binary="$1"
+          local expected="$2"
+          local actual
+          actual="$("$tool_dir/$binary" --version)"
+
+          if [ "$actual" != "$expected" ]; then
+            echo "$binary version mismatch: expected '$expected', got '$actual'" >&2
+            exit 1
+          fi
+        }
+
+        verify_tool_version protoc "libprotoc 31.1"
+        verify_tool_version protoc-gen-go "protoc-gen-go v1.36.10"
+        verify_tool_version protoc-gen-go-grpc "protoc-gen-go-grpc 1.5.1"
+
+        {
+          echo "PROTOC=$tool_dir/protoc"
+          echo "PROTOC_GEN_GO=$tool_dir/protoc-gen-go"
+          echo "PROTOC_GEN_GO_GRPC=$tool_dir/protoc-gen-go-grpc"
+        } >> "$GITHUB_ENV"
+
         if [ "${{ inputs.install-buf }}" = "true" ]; then
           install_go_tool buf github.com/bufbuild/buf/cmd/buf@v1.71.0
         fi

@@ -19,7 +19,7 @@ COPY tests ./tests
 RUN apk add --no-cache protobuf protobuf-dev \
     && go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10 \
     && go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1 \
-    && PATH="$(go env GOPATH)/bin:$PATH" protoc --experimental_allow_proto3_optional -I api/proto --go_out=paths=source_relative:pkg/proto --go-grpc_out=paths=source_relative:pkg/proto api/proto/identity/v1/identity.proto api/proto/catalog/v1/catalog.proto api/proto/ingestion/v1/ingestion.proto api/proto/retrieval/v1/retrieval.proto api/proto/answer/v1/answer.proto \
+    && PATH="$(go env GOPATH)/bin:$PATH" protoc --experimental_allow_proto3_optional -I api/proto --go_out=paths=source_relative:pkg/proto --go_opt=Mgoogle/protobuf/timestamp.proto=google.golang.org/protobuf/types/known/timestamppb --go-grpc_out=paths=source_relative:pkg/proto api/proto/identity/v1/identity.proto api/proto/catalog/v1/catalog.proto api/proto/ingestion/v1/ingestion.proto api/proto/retrieval/v1/retrieval.proto api/proto/answer/v1/answer.proto \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /bin/service ./services/${SERVICE}/${SERVICE_COMMAND} \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /bin/healthcheck ./tools/healthcheck
 

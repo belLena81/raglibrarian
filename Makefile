@@ -8,6 +8,9 @@
 
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
 HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
+PROTOC ?= $(shell command -v protoc)
+PROTOC_GEN_GO ?= $(shell command -v protoc-gen-go)
+PROTOC_GEN_GO_GRPC ?= $(shell command -v protoc-gen-go-grpc)
 # 0.69.2 is the vendor-designated unaffected Trivy release after the 2026
 # publishing incident. Do not move this pin without reviewing the advisory.
 TRIVY_IMAGE := aquasec/trivy:0.69.2
@@ -681,8 +684,25 @@ proto: _require_root
 	$(MAKE) proto-check
 	$(MAKE) proto-generate
 
-proto-generate: _require_root
-	PATH="$$HOME/go/bin:$$PATH" protoc --experimental_allow_proto3_optional -I api/proto --go_out=paths=source_relative:pkg/proto --go-grpc_out=paths=source_relative:pkg/proto api/proto/identity/v1/identity.proto api/proto/catalog/v1/catalog.proto api/proto/ingestion/v1/ingestion.proto api/proto/retrieval/v1/retrieval.proto api/proto/answer/v1/answer.proto
+_require_proto_tools:
+	@test -x "$(PROTOC)" || { echo "protoc is required"; exit 1; }
+	@test -x "$(PROTOC_GEN_GO)" || { echo "protoc-gen-go is required"; exit 1; }
+	@test -x "$(PROTOC_GEN_GO_GRPC)" || { echo "protoc-gen-go-grpc is required"; exit 1; }
+
+proto-generate: _require_root _require_proto_tools
+	"$(PROTOC)" \
+		--plugin="protoc-gen-go=$(PROTOC_GEN_GO)" \
+		--plugin="protoc-gen-go-grpc=$(PROTOC_GEN_GO_GRPC)" \
+		--experimental_allow_proto3_optional \
+		-I api/proto \
+		--go_out=paths=source_relative:pkg/proto \
+		--go_opt=Mgoogle/protobuf/timestamp.proto=google.golang.org/protobuf/types/known/timestamppb \
+		--go-grpc_out=paths=source_relative:pkg/proto \
+		api/proto/identity/v1/identity.proto \
+		api/proto/catalog/v1/catalog.proto \
+		api/proto/ingestion/v1/ingestion.proto \
+		api/proto/retrieval/v1/retrieval.proto \
+		api/proto/answer/v1/answer.proto
 
 proto-check: _require_root
 	XDG_CACHE_HOME=/tmp/raglibrarian-cache buf lint api/proto
