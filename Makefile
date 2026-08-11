@@ -4,7 +4,7 @@
 #
 # Rule: ALL make targets must be run from the REPO ROOT (where go.work lives).
 #
-.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer dev local-run local-run-host local-infra-up local-stop local-stop-host local-reset tidy e2e m4-fixtures m4-contract-test m4-integration-test m4-m5-integration-test m4-m5-m6-integration-test release-local-stack release-local-test m4-worker-recovery-test m4-e2e m4-performance-smoke m4-sse-load m4-soak m5-contract-test m5-contract-only-test m5-contract-ci-test m5-integration-test m5-search-quality-test m5-search-quality-test-real m5-worker-recovery-test m5-e2e m5-performance-smoke m6-contract-test m6-answer-quality-test m6-answer-quality-test-real m6-e2e m6-performance-smoke m6-integration-test m7-e2e m7-integration-test contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down migrate-retrieval-up migrate-retrieval-down infra-up infra-down stack-up m6-stack-up keygen proto dev-certs dev-secrets test-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-m5 dev-secrets-m6 dev-secrets-test m6-dev-config-test m5-model-bootstrap m5-model-bootstrap-test bootstrap-verifier compose-config m5-mode-policy sam-validate sam-package-check sam-m5-validate sam-m5-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-build-ci image-scan image-scan-ci image-scan-images security-check security-check-ci ci-bootstrap-local-config ci-go ci-ui ci-security ci-iac ci-contract ci-pr full-gates integration-gates smtp-url
+.PHONY: test test-race lint fmt fmt-check vet vuln arch-check proto-check proto-breaking proto-generate build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer dev local-run local-run-host local-infra-up local-stop local-stop-host local-reset tidy tidy-check e2e m4-fixtures m4-contract-test m4-integration-test m4-m5-integration-test m4-m5-m6-integration-test release-local-stack release-local-test m4-worker-recovery-test m4-e2e m4-performance-smoke m4-sse-load m4-soak m5-contract-test m5-contract-only-test m5-contract-ci-test m5-integration-test m5-search-quality-test m5-search-quality-test-real m5-worker-recovery-test m5-e2e m5-performance-smoke m6-contract-test m6-answer-quality-test m6-answer-quality-test-real m6-e2e m6-performance-smoke m6-integration-test m7-e2e m7-integration-test contract-test minio-runtime-test migrate-identity-up migrate-identity-down migrate-catalog-up migrate-catalog-down migrate-ingestion-up migrate-ingestion-down migrate-retrieval-up migrate-retrieval-down infra-up infra-down stack-up m6-stack-up keygen proto dev-certs dev-secrets test-secrets dev-secrets-catalog-db dev-secrets-m3 dev-secrets-m4 dev-secrets-m5 dev-secrets-m6 dev-secrets-test m6-dev-config-test m5-model-bootstrap m5-model-bootstrap-test bootstrap-verifier compose-config m5-mode-policy sam-validate sam-package-check sam-m5-validate sam-m5-package-check ui-check ui-audit secret-scan dockerfile-lint image-build image-build-ci image-build-retry-test image-scan image-scan-ci image-scan-images security-check security-check-ci ci-bootstrap-local-config ci-go ci-ui ci-security ci-iac ci-contract ci-pr full-gates integration-gates smtp-url
 
 GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
 HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
@@ -12,8 +12,9 @@ HADOLINT_IMAGE := hadolint/hadolint:2.12.0-alpine
 # publishing incident. Do not move this pin without reviewing the advisory.
 TRIVY_IMAGE := aquasec/trivy:0.69.2
 SERVICE_IMAGES := raglibrarian-identity-service:local raglibrarian-catalog-service:local raglibrarian-edge-api:local raglibrarian-ingestion-service:local raglibrarian-layout-parser-worker:local raglibrarian-retrieval-service:local raglibrarian-retrieval-worker:local raglibrarian-answer-service:local
-QDRANT_IMAGE := qdrant/qdrant:v1.18.3
-QDRANT_TRIVY_IGNORE_FILE := security/trivy/qdrant-v1.18.3.ignore.yaml
+QDRANT_IMAGE := qdrant/qdrant:v1.19.0
+QDRANT_TRIVY_IGNORE_FILE := security/trivy/qdrant-v1.19.0.ignore.yaml
+QDRANT_TRIVY_IGNORE_NAME := $(notdir $(QDRANT_TRIVY_IGNORE_FILE))
 M5_TEI_IMAGE := ghcr.io/huggingface/text-embeddings-inference@sha256:cb570aabbfa016b86684f576b5bd72d1ee96cc0b7a00b0ad221b298762b32157
 M5_TEI_TRIVY_IGNORE_FILE := security/trivy/text-embeddings-inference-cpu-latest.ignore.yaml
 M5_PROVIDER_IMAGES := $(QDRANT_IMAGE) $(M5_TEI_IMAGE)
@@ -39,27 +40,12 @@ M4_E2E_EDGE_BASE_URLS ?= http://127.0.0.1:8080,http://127.0.0.1:8081
 M4_E2E_PUBLIC_ORIGIN ?= http://localhost:5173
 E2E_PUBLIC_ORIGIN ?= $(M4_E2E_PUBLIC_ORIGIN)
 
-# Service/library modules — looped over by test, lint, tidy, fmt.
-MODULES := \
-	pkg/auth \
-	pkg/grpcauth \
-	pkg/internaltls \
-	pkg/logger \
-	pkg/process \
-	pkg/proto \
-	services/identity-service \
-	services/catalog-service \
-	services/ingestion-service \
-	services/retrieval-service \
-	services/answer-service \
-	services/edge-api \
-	tests/e2e \
-	tools/healthcheck \
-	tools/rabbitmq-topology
+# Keep every Go quality gate aligned with the modules declared by go.work.
+MODULES := $(shell go work edit -json | sed -n 's/^[[:space:]]*"DiskPath": "\(.*\)"[,]*$$/\1/p' | sed 's|^\./||')
 
 # Go packages import generated protobuf bindings. Generate them before any
 # target that compiles or analyzes those packages.
-GO_PROTO_TARGETS := test test-race lint fmt fmt-check vet vuln build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer tidy e2e m6-answer-quality-test m6-e2e m6-performance-smoke m7-e2e
+GO_PROTO_TARGETS := test test-race lint fmt fmt-check vet vuln build run-edge-api run-identity run-catalog run-ingestion run-retrieval run-answer tidy tidy-check e2e m6-answer-quality-test m6-e2e m6-performance-smoke m7-e2e
 $(GO_PROTO_TARGETS): proto-generate
 $(TEST_SECRET_TARGETS): test-secrets
 
@@ -71,6 +57,10 @@ _require_root:
 		echo ""; \
 		exit 1; \
 	}
+	@test -n "$(strip $(MODULES))" || { echo "Unable to read modules from go.work"; exit 1; }
+	@for mod in $(MODULES); do \
+		test -f "$$mod/go.mod" || { echo "go.work module is missing go.mod: $$mod"; exit 1; }; \
+	done
 
 TEST_RESET_CMD = if [ "$(TEST_RESET_STATE)" != "false" ]; then TEST_COMPOSE_FILES="$(TEST_COMPOSE_FILES)" bash ./scripts/reset-test-state.sh; fi
 
@@ -230,11 +220,21 @@ local-reset: _require_root
 
 # ── Tidy ──────────────────────────────────────────────────────────────────────
 tidy: _require_root
-	@for mod in $(MODULES); do \
+	@fail=0; \
+	for mod in $(MODULES); do \
 		echo "Tidying $$mod..."; \
-		(cd $$mod && GOWORK=off go mod tidy); \
-	done
+		(cd "$$mod" && GOWORK=off go mod tidy) || fail=1; \
+	done; \
+	exit $$fail
 	go work sync
+
+tidy-check: _require_root
+	@fail=0; \
+	for mod in $(MODULES); do \
+		echo "Checking module metadata for $$mod..."; \
+		(cd "$$mod" && GOWORK=off go mod tidy -diff) || fail=1; \
+	done; \
+	exit $$fail
 
 # ── E2e ───────────────────────────────────────────────────────────────────────
 # Requires the local service stack. Start with:
@@ -764,7 +764,7 @@ image-build-ci: _require_root
 		image="$$1"; \
 		scope="$$2"; \
 		shift 2; \
-		docker buildx build --load --cache-from "type=gha,scope=$$scope" --cache-to "type=gha,mode=max,scope=$$scope" "$$@" -t "$$image" .; \
+		./scripts/build-image-ci.sh "$$image" "$$scope" "$$@"; \
 	}; \
 	build_ci raglibrarian-identity-service:local identity-service --build-arg SERVICE=identity-service; \
 	build_ci raglibrarian-catalog-service:local catalog-service --target catalog-runtime --build-arg SERVICE=catalog-service; \
@@ -784,6 +784,9 @@ image-build-ci: _require_root
 	build_ci llm-provider-stub answer-service --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/provider_stub; \
 	build_ci raglibrarian-answer-service:local answer-service --target service-runtime --build-arg SERVICE=answer-service --build-arg SERVICE_COMMAND=cmd/server
 
+image-build-retry-test: _require_root
+	bash ./scripts/test-build-image-ci.sh
+
 image-scan: image-build image-scan-images
 
 image-scan-ci: image-build-ci image-scan-images
@@ -792,26 +795,26 @@ image-scan-images: _require_root
 	@mkdir -p "$${TRIVY_CACHE_DIR:-$$HOME/.cache/trivy}"
 	@for image in $(SERVICE_IMAGES) $(DEPLOYABLE_IMAGES) $(M5_PROVIDER_IMAGES); do \
 		ignorefile=""; \
-		if [ "$$image" = "$(QDRANT_IMAGE)" ]; then ignorefile="--ignorefile /trivyignore/qdrant-v1.18.3.ignore.yaml"; fi; \
+		if [ "$$image" = "$(QDRANT_IMAGE)" ]; then ignorefile="--ignorefile /trivyignore/$(QDRANT_TRIVY_IGNORE_NAME)"; fi; \
 		if [ "$$image" = "$(M5_TEI_IMAGE)" ]; then ignorefile="--ignorefile /trivyignore/text-embeddings-inference-cpu-latest.ignore.yaml"; fi; \
 		docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
 			--user "$$(id -u):$$(id -g)" \
 			--group-add "$$(stat -c %g /var/run/docker.sock)" \
 			-e TRIVY_CACHE_DIR=/tmp/trivy-cache \
 			-v "$${TRIVY_CACHE_DIR:-$$HOME/.cache/trivy}:/tmp/trivy-cache" \
-			-v "$(CURDIR)/$(QDRANT_TRIVY_IGNORE_FILE):/trivyignore/qdrant-v1.18.3.ignore.yaml:ro" \
+			-v "$(CURDIR)/$(QDRANT_TRIVY_IGNORE_FILE):/trivyignore/$(QDRANT_TRIVY_IGNORE_NAME):ro" \
 			-v "$(CURDIR)/$(M5_TEI_TRIVY_IGNORE_FILE):/trivyignore/text-embeddings-inference-cpu-latest.ignore.yaml:ro" \
 			$(TRIVY_IMAGE) image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL $$ignorefile "$$image" || exit 1; \
 	done
 
 security-check: secret-scan dockerfile-lint image-scan ui-audit
 
-security-check-ci: secret-scan dockerfile-lint image-scan-ci ui-audit
+security-check-ci: secret-scan dockerfile-lint image-build-retry-test image-scan-ci ui-audit
 
 ci-bootstrap-local-config: _require_root
 	bash ./scripts/ci-bootstrap-local-config.sh
 
-ci-go: fmt-check vet lint test test-race arch-check vuln proto-check proto-breaking dev-secrets-test m6-dev-config-test
+ci-go: fmt-check tidy-check vet lint test test-race arch-check vuln proto-check proto-breaking dev-secrets-test m6-dev-config-test
 
 ci-ui: ui-check
 

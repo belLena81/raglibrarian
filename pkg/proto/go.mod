@@ -6,6 +6,7 @@ module github.com/belLena81/raglibrarian/pkg/proto
 go 1.26.5
 
 require (
+	github.com/golang/protobuf v1.5.4
 	google.golang.org/grpc v1.83.0
 	google.golang.org/protobuf v1.36.11
 )

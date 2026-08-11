@@ -484,7 +484,7 @@ services:
 
   qdrant:
     profiles: ["raglibrarian"]
-    image: ${M5_QDRANT_IMAGE:-qdrant/qdrant:v1.18.3}
+    image: ${M5_QDRANT_IMAGE:-qdrant/qdrant:v1.19.0}
     read_only: true
     user: "0:0"
     security_opt:

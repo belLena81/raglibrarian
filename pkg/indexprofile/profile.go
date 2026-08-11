@@ -34,7 +34,7 @@ const (
 	ContentSelectionMaximumExcludedRatio = 0.25
 	NormalizationNFC                     = "nfc-v1"
 	NormalizationNormalized              = "normalized"
-	TokenizerCL100K                      = "cl100k_base-v1"
+	TokenizerCL100K                      = "cl100k_base-v1" //nolint:gosec // G101: public tokenizer profile identifier, not a credential.
 	ChunkingChapterPageWindow            = "chapter-page-window-v1"
 	StructureChapterBoundary             = "chapter-boundary-v1"
 	MaximumTokens                        = 512

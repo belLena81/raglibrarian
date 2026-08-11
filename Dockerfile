@@ -82,7 +82,9 @@ COPY --from=ingestion-sandbox-builder /bin/parser-sandbox /parser-sandbox
 USER root:root
 ENTRYPOINT ["/service"]
 
-FROM gcr.io/distroless/static:nonroot AS retrieval-runtime
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:f7f8f729987ad0fdf6b05eeeae94b26e6a0f613bdf46feea7fc40f7bd72953e6 AS distroless-static
+
+FROM distroless-static AS retrieval-runtime
 COPY --from=builder /bin/service /service
 COPY --from=builder /bin/healthcheck /healthcheck
 # The process reads root-owned Compose secrets, then drops permanently to the
@@ -91,12 +93,12 @@ COPY --from=builder /bin/healthcheck /healthcheck
 USER root:root
 ENTRYPOINT ["/service"]
 
-FROM gcr.io/distroless/static:nonroot AS retrieval-lambda-runtime
+FROM distroless-static AS retrieval-lambda-runtime
 COPY --from=builder /bin/service /service
 USER 65532:65532
 ENTRYPOINT ["/service"]
 
-FROM gcr.io/distroless/static:nonroot AS service-runtime
+FROM distroless-static AS service-runtime
 COPY --from=builder /bin/service /service
 COPY --from=builder /bin/healthcheck /healthcheck
 # hadolint ignore=DL3002
@@ -119,7 +121,7 @@ COPY --from=ingestion-sandbox-builder /bin/epub-parser /usr/local/bin/epub-parse
 USER root:root
 ENTRYPOINT ["/service"]
 
-FROM gcr.io/distroless/static:nonroot
+FROM distroless-static
 COPY --from=builder /bin/service /service
 COPY --from=builder /bin/healthcheck /healthcheck
 # The process starts with only SETUID/SETGID capabilities so it can read its

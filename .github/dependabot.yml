@@ -3,16 +3,25 @@ updates:
   - package-ecosystem: gomod
     directories:
       - "/pkg/auth"
+      - "/pkg/contracts"
       - "/pkg/grpcauth"
+      - "/pkg/indexprofile"
       - "/pkg/internaltls"
       - "/pkg/logger"
       - "/pkg/process"
+      - "/pkg/providerhttp"
       - "/pkg/proto"
+      - "/pkg/rabbitmqconn"
+      - "/pkg/retrydelay"
+      - "/services/answer-service"
       - "/services/catalog-service"
       - "/services/edge-api"
       - "/services/identity-service"
+      - "/services/ingestion-service"
+      - "/services/retrieval-service"
       - "/tests/e2e"
       - "/tools/healthcheck"
+      - "/tools/rabbitmq-topology"
     schedule: { interval: weekly }
     groups:
       workspace-dependencies:
