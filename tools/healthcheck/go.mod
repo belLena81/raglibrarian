@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/belLena81/raglibrarian/pkg/internaltls v0.0.0-00010101000000-000000000000
-	google.golang.org/grpc v1.83.0
+	google.golang.org/grpc v1.83.1
 )
 
 require (
